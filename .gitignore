@@ -1,0 +1,13 @@
+# .gitignore for .NET and MosaicTools
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+.agent/
+MosaicToolsSettings.json
+debug_ocr_capture.png
+debug_yellow_scan.png
+publish/

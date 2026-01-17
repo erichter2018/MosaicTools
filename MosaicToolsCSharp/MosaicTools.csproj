@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>false</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>MosaicTools</AssemblyName>
+    <RootNamespace>MosaicTools</RootNamespace>
+    
+    <!-- Single-file self-contained deployment (no admin required) -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    
+    <!-- Trim unused code to reduce size -->
+    <PublishTrimmed>false</PublishTrimmed>
+    
+    <!-- Enable Windows-specific APIs -->
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- HID Device Communication -->
+    <PackageReference Include="HidSharp" Version="2.1.0" />
+    
+    <!-- UI Automation (FlaUI is more modern than System.Windows.Automation) -->
+    <PackageReference Include="FlaUI.UIA3" Version="4.0.0" />
+    
+    <!-- Global Keyboard Hooks -->
+    <PackageReference Include="SharpHook" Version="5.3.8" />
+    
+    <!-- JSON Configuration -->
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+</Project>
