@@ -14,8 +14,18 @@ static class Program
     private static Mutex? _mutex;
     
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
+        // Parse command line arguments
+        foreach (var arg in args)
+        {
+            if (arg.Equals("-headless", StringComparison.OrdinalIgnoreCase) ||
+                arg.Equals("--headless", StringComparison.OrdinalIgnoreCase))
+            {
+                App.IsHeadless = true;
+            }
+        }
+        
         // Single instance enforcement
         const string mutexName = "MosaicTools_SingleInstance_Mutex";
         _mutex = new Mutex(true, mutexName, out bool createdNew);

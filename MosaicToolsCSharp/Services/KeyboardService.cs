@@ -18,6 +18,7 @@ public class KeyboardService : IDisposable
     private readonly HashSet<KeyCode> _pressedModifiers = new();
     private volatile bool _isRecording = false;
     private Action<string>? _recordCallback;
+    private readonly ConcurrentDictionary<string, DateTime> _lastTriggers = new();
     
     public event Action<string>? HotkeyTriggered;
     
@@ -101,12 +102,25 @@ public class KeyboardService : IDisposable
                 return;
             }
             
+            // 2. Cooldown check (prevent accidental double-triggers or feedback loops)
+            var now = DateTime.UtcNow;
+            var hotkeyStr = BuildHotkeyString(code, mask);
+            
             // Check registered hotkeys
-            var current = BuildHotkeyString(code, mask);
-            if (_hotkeyActions.TryGetValue(current, out var action))
+            if (_hotkeyActions.TryGetValue(hotkeyStr, out var action))
             {
-                Logger.Trace($"Hotkey triggered: {current}");
-                HotkeyTriggered?.Invoke(current);
+                // Simple 300ms cooldown per specific hotkey string
+                // We'll use a local static or a dictionary if needed, but for now a global simple check
+                // or just trust the simulated flag. Let's add a per-key cooldown.
+                if (_lastTriggers.TryGetValue(hotkeyStr, out var lastTime) && (now - lastTime).TotalMilliseconds < 300)
+                {
+                    Logger.Trace($"Ignoring rapid repeat: {hotkeyStr}");
+                    return;
+                }
+                _lastTriggers[hotkeyStr] = now;
+
+                Logger.Trace($"Hotkey triggered: {hotkeyStr}");
+                HotkeyTriggered?.Invoke(hotkeyStr);
                 
                 // Run action on thread pool to not block hook
                 ThreadPool.QueueUserWorkItem(_ =>

@@ -125,45 +125,45 @@ public class NoteFormatter
             
             // 3. Extract Text Time and Timezone
             string finalTimeDisplay = "N/A";
-            var textTimeMatch = Regex.Match(rawText, @"(?:at|@|\.)\s+(\d{1,2}:\d{2}\s*(?:AM|PM))\s*([a-zA-Z\s]+)?", RegexOptions.IgnoreCase);
+            var textTimeMatch = Regex.Match(rawText, @"(?:at|@|\.|-)\s*(\d{1,2}:\d{2}\s*(?i:AM|PM))\s*([a-zA-Z\s]+)?", RegexOptions.IgnoreCase);
             
             if (textTimeMatch.Success && dtEnd.HasValue)
             {
                 var textTimeStr = NormalizeTimeStr(textTimeMatch.Groups[1].Value);
                 var rawTz = textTimeMatch.Groups[2].Success ? textTimeMatch.Groups[2].Value.Trim() : "";
-                var timezoneStr = GetTimezoneDisplay(rawTz);
                 
-                var tzOffsets = new Dictionary<string, int>
-                {
-                    ["Eastern Time"] = 1, ["Central Time"] = 0, ["Mountain Time"] = -1, ["Pacific Time"] = -2
-                };
-                int offset = tzOffsets.GetValueOrDefault(timezoneStr, 0);
+                // Determine source timezone relative to Central (0)
+                int offsetFromCentral = GetTzHoursFromCentral(rawTz);
                 
                 if (DateTime.TryParseExact($"{endDate} {textTimeStr}", "MM/dd/yyyy h:mm tt",
                     System.Globalization.CultureInfo.InvariantCulture,
                     System.Globalization.DateTimeStyles.None, out var dtText))
                 {
-                    var dtTextCt = dtText.AddHours(-offset);
-                    var diffSeconds = (dtTextCt - dtEnd.Value).TotalSeconds;
+                    // Convert discovered text time to Central (CDT/CST)
+                    // If Mountain (-1), we subtract -1 (add 1 hour) to get Central.
+                    var dtTextCt = dtText.AddHours(-offsetFromCentral);
                     
+                    // Cross-reference with system "end" timestamp (which is already Central)
+                    var diffSeconds = (dtTextCt - dtEnd.Value).TotalSeconds;
                     if (diffSeconds > 43200) dtTextCt = dtTextCt.AddDays(-1);
                     else if (diffSeconds < -43200) dtTextCt = dtTextCt.AddDays(1);
                     
                     var timeDiffMin = Math.Abs((dtTextCt - dtEnd.Value).TotalMinutes);
                     
-                    if (timeDiffMin <= 10)
-                        finalTimeDisplay = $"{textTimeStr} {timezoneStr}";
-                    else
-                        finalTimeDisplay = $"{textTimeStr} {timezoneStr} (? Diff: {(int)timeDiffMin}m)";
+                    // Always normalize to Central for the final display
+                    finalTimeDisplay = $"{dtTextCt:h:mm tt} CST";
+                    
+                    if (timeDiffMin > 10)
+                        finalTimeDisplay += $" (? Diff: {(int)timeDiffMin}m)";
                 }
                 else
                 {
-                    finalTimeDisplay = textTimeStr;
+                    finalTimeDisplay = $"{textTimeStr} CST";
                 }
             }
             else
             {
-                finalTimeDisplay = endTimeCtStr;
+                finalTimeDisplay = string.IsNullOrEmpty(endTimeCtStr) || endTimeCtStr == "N/A" ? "N/A" : $"{endTimeCtStr} CST";
             }
             
             string template = _template ?? "Critical findings were discussed with and acknowledged by {name} at {time} on {date}.";
@@ -185,21 +185,30 @@ public class NoteFormatter
         return ts;
     }
     
-    private static string GetTimezoneDisplay(string rawTz)
+    private static int GetTzHoursFromCentral(string rawTz)
     {
+        if (string.IsNullOrWhiteSpace(rawTz)) return 0;
+        
         var firstWord = rawTz.Split(' ')[0].ToLowerInvariant();
         
-        string[] validTokens = { "eastern", "central", "mountain", "pacific", "east", "est", "cst", "mst", "pst", "edt", "cdt", "mdt", "pdt" };
+        if (firstWord is "east" or "eastern" or "est" or "edt") return 1;
+        if (firstWord is "central" or "cst" or "cdt") return 0;
+        if (firstWord is "mountain" or "mst" or "mdt") return -1;
+        if (firstWord is "pacific" or "pst" or "pdt") return -2;
         
-        if (!validTokens.Contains(firstWord))
-            return "Central Time";
-        
-        if (firstWord is "east" or "eastern" or "est" or "edt") return "Eastern Time";
-        if (firstWord is "central" or "cst" or "cdt") return "Central Time";
-        if (firstWord is "mountain" or "mst" or "mdt") return "Mountain Time";
-        if (firstWord is "pacific" or "pst" or "pdt") return "Pacific Time";
-        
-        return "Central Time";
+        return 0;
+    }
+    
+    private static string GetTimezoneDisplay(string rawTz)
+    {
+        int offset = GetTzHoursFromCentral(rawTz);
+        return offset switch
+        {
+            1 => "Eastern Time",
+            -1 => "Mountain Time",
+            -2 => "Pacific Time",
+            _ => "Central Time"
+        };
     }
     
     private static string ToTitleCase(string s)

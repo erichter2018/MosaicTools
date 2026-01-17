@@ -220,8 +220,8 @@ public class SettingsForm : Form
         tab.Controls.Add(_dictationPauseNum);
         y += 35;
         
-        // IV Report Hotkey
-        tab.Controls.Add(CreateLabel("IV Report Hotkey:", 20, y, labelWidth));
+        // IV Report Hotkey (hide in headless mode)
+        var ivHotkeyLabel = CreateLabel("IV Report Hotkey:", 20, y, labelWidth);
         _ivHotkeyBox = new TextBox
         {
             Location = new Point(200, y),
@@ -232,8 +232,13 @@ public class SettingsForm : Form
             Cursor = Cursors.Hand
         };
         SetupHotkeyCapture(_ivHotkeyBox);
-        tab.Controls.Add(_ivHotkeyBox);
-        y += 40;
+        
+        if (!App.IsHeadless)
+        {
+            tab.Controls.Add(ivHotkeyLabel);
+            tab.Controls.Add(_ivHotkeyBox);
+            y += 40;
+        }
         
         // Checkboxes
         _floatingToolbarCheck = new CheckBox
@@ -246,6 +251,7 @@ public class SettingsForm : Form
         tab.Controls.Add(_floatingToolbarCheck);
         y += 25;
         
+        // Show Recording Indicator (hide in headless mode)
         _indicatorCheck = new CheckBox
         {
             Text = "Show Recording Indicator",
@@ -253,9 +259,13 @@ public class SettingsForm : Form
             ForeColor = Color.White,
             AutoSize = true
         };
-        tab.Controls.Add(_indicatorCheck);
-        y += 25;
+        if (!App.IsHeadless)
+        {
+            tab.Controls.Add(_indicatorCheck);
+            y += 25;
+        }
         
+        // Auto-Stop Dictation (hide in headless mode)
         _autoStopCheck = new CheckBox
         {
             Text = "Auto-Stop Dictation on Process",
@@ -263,8 +273,11 @@ public class SettingsForm : Form
             ForeColor = Color.White,
             AutoSize = true
         };
-        tab.Controls.Add(_autoStopCheck);
-        y += 25;
+        if (!App.IsHeadless)
+        {
+            tab.Controls.Add(_autoStopCheck);
+            y += 25;
+        }
         
         _deadManCheck = new CheckBox
         {
@@ -289,8 +302,11 @@ public class SettingsForm : Form
         int y = 20;
         
         tab.Controls.Add(CreateLabel("Action", 20, y, 150));
-        tab.Controls.Add(CreateLabel("Hotkey", 180, y, 120));
-        tab.Controls.Add(CreateLabel("Mic Button", 310, y, 120));
+        if (!App.IsHeadless)
+        {
+            tab.Controls.Add(CreateLabel("Hotkey", 180, y, 120));
+        }
+        tab.Controls.Add(CreateLabel("Mic Button", App.IsHeadless ? 180 : 310, y, 120));
         y += 30;
         
         foreach (var action in Actions.All)
@@ -313,12 +329,17 @@ public class SettingsForm : Form
             };
             hotkeyBox.Text = _config.ActionMappings.GetValueOrDefault(action)?.Hotkey ?? "";
             SetupHotkeyCapture(hotkeyBox);
-            tab.Controls.Add(hotkeyBox);
+            
+            // Hide hotkey in headless mode
+            if (!App.IsHeadless)
+            {
+                tab.Controls.Add(hotkeyBox);
+            }
             
             var micCombo = new ComboBox
             {
                 Name = $"mic_{action}",
-                Location = new Point(310, y),
+                Location = new Point(App.IsHeadless ? 180 : 310, y),
                 Width = 140,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(60, 60, 60),
@@ -596,6 +617,7 @@ public class SettingsForm : Form
             ReadOnly = true,
             Cursor = Cursors.Hand
         };
+        _keystrokeBox.TextChanged += (_, _) => { if (!_updatingEditor) ApplyEditorChanges(); };
         SetupHotkeyCapture(_keystrokeBox);
         editorPanel.Controls.Add(_keystrokeBox);
         
@@ -891,8 +913,9 @@ public class SettingsForm : Form
         _iconButton.Text = "";
         _labelBox.Text = "";
         _keystrokeBox.Text = "";
+        UpdateEditorFromSelection();
     }
-    
+
     private void DeleteButton()
     {
         if (_studioButtons.Count == 0) return;
@@ -1143,7 +1166,22 @@ Settings stored in: MosaicToolsSettings.json
             if (keyName.Length == 2 && keyName[0] == 'd' && char.IsDigit(keyName[1]))
                 keyName = keyName.Substring(1);
 
-            tb.Text = mods.Count > 0 ? string.Join("+", mods) + "+" + keyName : keyName;
+            string result = mods.Count > 0 ? string.Join("+", mods) + "+" + keyName : keyName;
+
+            if (Configuration.IsHotkeyRestricted(result))
+            {
+                MessageBox.Show(
+                    $"The hotkey '{result}' is reserved by Mosaic and cannot be used as a trigger for this tool to avoid feedback loops and conflicts.\n\n" +
+                    "Please choose a different combination (e.g. including Shift or using different keys).",
+                    "Restricted Hotkey",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                tb.Text = "";
+            }
+            else
+            {
+                tb.Text = result;
+            }
         };
     }
     

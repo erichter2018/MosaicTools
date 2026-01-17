@@ -11,7 +11,24 @@ namespace MosaicTools.Services;
 /// </summary>
 public class Configuration
 {
-    private static readonly string SettingsPath = Path.Combine(AppContext.BaseDirectory, "MosaicToolsSettings.json");
+    public static readonly string SettingsPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "MosaicTools", "MosaicToolsSettings.json");
+
+    /// <summary>
+    /// Hotkeys reserved by Mosaic that shouldn't be used as triggers to avoid feedback loops.
+    /// </summary>
+    public static readonly HashSet<string> RestrictedHotkeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "alt+n", "alt+r", "alt+p", "alt+s", "alt+t", "alt+c", "alt+f", "alt+1", "alt+2", "ctrl+/"
+    };
+
+    public static bool IsHotkeyRestricted(string hotkey)
+    {
+        if (string.IsNullOrWhiteSpace(hotkey)) return false;
+        var normalized = hotkey.ToLowerInvariant().Replace(" ", "");
+        return RestrictedHotkeys.Contains(normalized);
+    }
     
     // General
     [JsonPropertyName("doctor_name")]
@@ -102,6 +119,23 @@ public class Configuration
     /// </summary>
     public static Configuration Load()
     {
+        // 1. Migration: If new path doesn't exist, but old path DOES, move it.
+        string oldPath = Path.Combine(AppContext.BaseDirectory, "MosaicToolsSettings.json");
+        if (!File.Exists(SettingsPath) && File.Exists(oldPath))
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(SettingsPath);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                File.Move(oldPath, SettingsPath);
+                Logger.Trace("Settings migrated to AppData location.");
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"Migration failed: {ex.Message}");
+            }
+        }
+
         if (File.Exists(SettingsPath))
         {
             try
@@ -136,7 +170,7 @@ public class Configuration
             System.Windows.Forms.MessageBoxButtons.OK,
             System.Windows.Forms.MessageBoxIcon.Information);
         
-        var name = Microsoft.VisualBasic.Interaction.InputBox(
+        var name = InputBox.Show(
             "Enter your last name (e.g., Smith):",
             "Doctor Name",
             "Radiologist");
@@ -184,6 +218,9 @@ public class Configuration
     {
         try
         {
+            var dir = Path.GetDirectoryName(SettingsPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
             var options = new JsonSerializerOptions { WriteIndented = true };
             var json = JsonSerializer.Serialize(this, options);
             File.WriteAllText(SettingsPath, json);

@@ -90,8 +90,11 @@ public static class NativeWindows
         byte vk = GetVirtualKeyCode(key);
         
         keybd_event(VK_MENU, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(20); // Delay for modifier registration
         keybd_event(vk, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(20); // Hold key
         keybd_event(vk, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        Thread.Sleep(10);
         keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
     }
 
@@ -351,29 +354,42 @@ public static class NativeWindows
     {
         var hWnd = FindWindowByTitle(new[] { "mosaic" }, new[] { "reporting", "info hub" });
         if (hWnd == IntPtr.Zero) return false;
-        
-        try
+
+        for (int i = 0; i < 3; i++) // Try up to 3 times
         {
-            uint currentThread = GetCurrentThreadId();
-            uint targetThread = GetWindowThreadProcessId(hWnd, out _);
-            
-            AttachThreadInput(currentThread, targetThread, true);
-            SwitchToThisWindow(hWnd, true);
-            BringWindowToTop(hWnd);
-            SetForegroundWindow(hWnd);
-            AttachThreadInput(currentThread, targetThread, false);
-            
-            // Double-tap with gentle method
-            Thread.Sleep(50);
-            ActivateWindow(hWnd);
-            
-            return true;
+            if (GetForegroundWindow() == hWnd) return true;
+
+            try
+            {
+                uint currentThread = GetCurrentThreadId();
+                uint targetThread = GetWindowThreadProcessId(hWnd, out _);
+
+                AttachThreadInput(currentThread, targetThread, true);
+                SwitchToThisWindow(hWnd, true);
+                BringWindowToTop(hWnd);
+                SetForegroundWindow(hWnd);
+                AttachThreadInput(currentThread, targetThread, false);
+
+                // Double-tap with gentle method
+                Thread.Sleep(100); // Increased from 50ms
+                ActivateWindow(hWnd);
+
+                // Verification loop (200ms)
+                var sw = Stopwatch.StartNew();
+                while (sw.ElapsedMilliseconds < 200)
+                {
+                    if (GetForegroundWindow() == hWnd) return true;
+                    Thread.Sleep(20);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"Force activate attempt {i+1} failed: {ex.Message}");
+            }
+            Thread.Sleep(100); // Wait before retry
         }
-        catch (Exception ex)
-        {
-            Logger.Trace($"Force activate failed: {ex.Message}");
-            return false;
-        }
+
+        return GetForegroundWindow() == hWnd;
     }
     
     #endregion
@@ -434,6 +450,7 @@ public static class NativeWindows
     public const int WM_TRIGGER_TOGGLE_RECORD = 0x0407;
     public const int WM_TRIGGER_PROCESS_REPORT = 0x0408;
     public const int WM_TRIGGER_SIGN_REPORT = 0x0409;
+    public const int WM_TRIGGER_OPEN_SETTINGS = 0x040A;
     
     #endregion
 

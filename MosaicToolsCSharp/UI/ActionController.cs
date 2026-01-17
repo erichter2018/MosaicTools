@@ -43,6 +43,9 @@ public class ActionController : IDisposable
     // PTT (Push-to-talk) state
     private bool _pttBusy = false;
     private DateTime _lastSyncTime = DateTime.Now;
+    private readonly System.Threading.Timer? _syncTimer;
+    private DateTime _lastManualToggleTime = DateTime.MinValue;
+    private int _consecutiveInactiveCount = 0; // For indicator debounce
     
     public ActionController(Configuration config, MainForm mainForm)
     {
@@ -59,6 +62,9 @@ public class ActionController : IDisposable
         _actionThread = new Thread(ActionLoop) { IsBackground = true };
         _actionThread.SetApartmentState(ApartmentState.STA);
         _actionThread.Start();
+
+        // 250ms heartbeat for registry sync (high frequency for "Instant ON")
+        _syncTimer = new System.Threading.Timer(OnSyncTimerCallback, null, 250, 250);
     }
 
     private void ActionLoop()
@@ -91,24 +97,27 @@ public class ActionController : IDisposable
     
     public void Start()
     {
-        // Wire up HID events
+        // Wire up HID events (always active, including headless)
         _hidService.ButtonPressed += OnMicButtonPressed;
         _hidService.RecordButtonStateChanged += OnRecordButtonStateChanged;
         _hidService.DeviceConnected += msg => 
             _mainForm.Invoke(() => _mainForm.ShowStatusToast(msg));
         _hidService.Start();
         
-        // Register hotkeys
-        RegisterHotkeys();
-        _keyboardService.Start();
+        // Register hotkeys (skip in headless mode)
+        if (!App.IsHeadless)
+        {
+            RegisterHotkeys();
+            _keyboardService.Start();
+        }
         
-        // Start background dictation sync if indicator is enabled
-        if (_config.IndicatorEnabled)
+        // Start background dictation sync (skip in headless mode)
+        if (!App.IsHeadless && _config.IndicatorEnabled)
         {
             StartDictationSync();
         }
         
-        Logger.Trace("ActionController started");
+        Logger.Trace($"ActionController started (Headless={App.IsHeadless})");
     }
     
     public void Stop()
@@ -317,9 +326,49 @@ public class ActionController : IDisposable
         });
     }
     
+    private void OnSyncTimerCallback(object? state)
+    {
+        bool? registryActive = NativeWindows.IsMicrophoneActiveFromRegistry();
+        if (!registryActive.HasValue) return;
+
+        bool active = registryActive.Value;
+
+        // 1. Instant ON: If it's active, reset count and update UI immediately
+        if (active)
+        {
+            _consecutiveInactiveCount = 0;
+            _mainForm.Invoke(() => _mainForm.UpdateIndicatorState(true));
+        }
+        else
+        {
+            // 2. Sticky OFF: Require 3 consecutive inactive checks (~750ms) to turn off
+            _consecutiveInactiveCount++;
+            if (_consecutiveInactiveCount >= 3)
+            {
+                _mainForm.Invoke(() => _mainForm.UpdateIndicatorState(false));
+            }
+        }
+
+        // 3. Update internal logical state (with 500ms lockout for manual toggles)
+        if ((DateTime.Now - _lastManualToggleTime).TotalMilliseconds > 500)
+        {
+            if (active != _dictationActive)
+            {
+                // Only sync logical state once the debounce has settled for OFF
+                if (active || _consecutiveInactiveCount >= 3)
+                {
+                    Logger.Trace($"Registry Sync: Internal state updated to {active}");
+                    _dictationActive = active;
+                }
+            }
+        }
+    }
+
     private void PerformToggleRecord(bool? desiredState = null, bool sendKey = true)
     {
         Logger.Trace($"PerformToggleRecord (desired={desiredState}, sendKey={sendKey})");
+        
+        _lastManualToggleTime = DateTime.Now;
 
         // 1. Python-style early exit: If we specify a state and are already there, just beeps
         if (desiredState.HasValue)
@@ -351,7 +400,6 @@ public class ActionController : IDisposable
                 }
                 
                 _dictationActive = currentReal;
-                _mainForm.Invoke(() => _mainForm.UpdateIndicatorState(_dictationActive));
                 return;
             }
         }
@@ -360,7 +408,7 @@ public class ActionController : IDisposable
         if (sendKey)
         {
             NativeWindows.ActivateMosaicForcefully();
-            Thread.Sleep(100); // Matching Python's time.sleep(0.1)
+            Thread.Sleep(100);
             NativeWindows.SendAltKey('R');
         }
         
@@ -376,7 +424,7 @@ public class ActionController : IDisposable
             _dictationActive = !currentReal;
         }
         
-        _mainForm.Invoke(() => _mainForm.UpdateIndicatorState(_dictationActive));
+        // Removed optimistic UI update: light now only turns on when registry confirms recording state.
 
         // 4. Play beep feedback strictly matching Python
         bool shouldPlay = _dictationActive ? _config.StartBeepEnabled : _config.StopBeepEnabled;
@@ -407,7 +455,11 @@ public class ActionController : IDisposable
     private void PerformProcessReport(string source = "Manual")
     {
         Logger.Trace($"Process Report (Source: {source})");
-        
+
+        // Safety: Release all modifiers before starting automated sequence
+        NativeWindows.KeyUpModifiers();
+        Thread.Sleep(50);
+
         bool dictationWasActive = _dictationActive;
 
         // 1. Auto-stop dictation if enabled
@@ -452,6 +504,9 @@ public class ActionController : IDisposable
     private void PerformSignReport()
     {
         Logger.Trace("Sign Report");
+        NativeWindows.KeyUpModifiers();
+        Thread.Sleep(50);
+
         NativeWindows.ActivateMosaicForcefully();
         Thread.Sleep(100);
         NativeWindows.SendAltKey('F');
@@ -797,9 +852,9 @@ public class ActionController : IDisposable
         _stopThread = true;
         _actionEvent.Set();
         _actionThread.Join(500);
-
-        _hidService.Dispose();
-        _keyboardService.Dispose();
+        _syncTimer?.Dispose();
+        _hidService?.Dispose();
+        _keyboardService?.Dispose();
         _automationService.Dispose();
     }
 }

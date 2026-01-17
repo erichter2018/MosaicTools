@@ -23,6 +23,9 @@ public class MainForm : Form
     private FloatingToolbarForm? _toolbarWindow;
     private IndicatorForm? _indicatorWindow;
     
+    // System Tray (headless mode)
+    private NotifyIcon? _trayIcon;
+    
     // Drag state
     private Point _dragStart;
     private bool _dragging;
@@ -87,12 +90,34 @@ public class MainForm : Form
         _titleLabel.Click += (_, _) => OpenSettings();
         _innerFrame.Controls.Add(_titleLabel);
         
-        // Context menu
+        // Context menu (for normal mode right-click)
         var contextMenu = new ContextMenuStrip();
         contextMenu.Items.Add("Reload", null, (_, _) => ReloadApp());
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Exit", null, (_, _) => ExitApp());
         ContextMenuStrip = contextMenu;
+        
+        // Headless mode: hide the widget bar, show tray icon
+        if (App.IsHeadless)
+        {
+            Opacity = 0;
+            ShowInTaskbar = false;
+            
+            // Create system tray icon
+            var trayMenu = new ContextMenuStrip();
+            trayMenu.Items.Add("Settings", null, (_, _) => OpenSettings());
+            trayMenu.Items.Add(new ToolStripSeparator());
+            trayMenu.Items.Add("Exit", null, (_, _) => ExitApp());
+            
+            _trayIcon = new NotifyIcon
+            {
+                Text = "Mosaic Tools (Headless)",
+                Icon = SystemIcons.Application,
+                ContextMenuStrip = trayMenu,
+                Visible = true
+            };
+            _trayIcon.DoubleClick += (_, _) => OpenSettings();
+        }
         
         // Defer initialization until form is shown (handle exists)
         Shown += OnFormShown;
@@ -105,7 +130,9 @@ public class MainForm : Form
         {
             ToggleFloatingToolbar(true);
         }
-        if (_config.IndicatorEnabled)
+        
+        // Indicator: only show if NOT headless AND setting is enabled
+        if (!App.IsHeadless && _config.IndicatorEnabled)
         {
             ToggleIndicator(true);
         }
@@ -114,7 +141,8 @@ public class MainForm : Form
         _controller.Start();
         
         // Startup toast
-        ShowStatusToast($"Mosaic Tools Started ({_config.DoctorName})", 2000);
+        string modeStr = App.IsHeadless ? " [Headless]" : "";
+        ShowStatusToast($"Mosaic Tools Started ({_config.DoctorName}){modeStr}", 2000);
     }
     
     #region Drag Logic
@@ -338,6 +366,15 @@ public class MainForm : Form
         _controller.Dispose();
         _toolbarWindow?.Close();
         _indicatorWindow?.Close();
+        
+        // Cleanup tray icon
+        if (_trayIcon != null)
+        {
+            _trayIcon.Visible = false;
+            _trayIcon.Dispose();
+            _trayIcon = null;
+        }
+        
         base.OnFormClosed(e);
     }
     
@@ -409,6 +446,9 @@ public class MainForm : Form
                 break;
             case NativeWindows.WM_TRIGGER_SIGN_REPORT:
                 BeginInvoke(() => _controller.TriggerAction(Actions.SignReport));
+                break;
+            case NativeWindows.WM_TRIGGER_OPEN_SETTINGS:
+                BeginInvoke(() => OpenSettings());
                 break;
         }
         
