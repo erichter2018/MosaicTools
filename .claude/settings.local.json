@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /s /b)",
+      "Bash(git -C \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\" log --oneline -20)",
+      "Bash(git -C \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\" show:*)",
+      "Bash(powershell.exe -NoProfile -Command \"Set-Location ''C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp''; taskkill /IM MosaicTools.exe /F; Start-Sleep -Seconds 1; & ''c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe'' publish -c Release -r win-x64 --self-contained; Start-Process ''C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.exe''\")"
+    ]
+  }
+}

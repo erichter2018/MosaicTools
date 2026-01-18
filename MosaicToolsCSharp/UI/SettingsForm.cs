@@ -34,6 +34,10 @@ public class SettingsForm : Form
     private TextBox _criticalTemplateBox = null!;
     private TextBox _seriesTemplateBox = null!;
     
+    // Advanced tab controls
+    private CheckBox _restoreFocusCheck = null!;
+    private CheckBox _scrollToBottomCheck = null!;
+    
     public SettingsForm(Configuration config, ActionController controller, MainForm mainForm)
     {
         _config = config;
@@ -80,7 +84,11 @@ public class SettingsForm : Form
         var templatesTab = CreateTemplatesTab();
         _tabControl.TabPages.Add(templatesTab);
         
-        // Advanced tab
+        // AHK tab
+        var ahkTab = CreateAhkTab();
+        _tabControl.TabPages.Add(ahkTab);
+
+        // Advanced tab (empty for now)
         var advancedTab = CreateAdvancedTab();
         _tabControl.TabPages.Add(advancedTab);
         
@@ -977,9 +985,9 @@ public class SettingsForm : Form
         UpdateEditorFromSelection();
     }
     
-    private TabPage CreateAdvancedTab()
+    private TabPage CreateAhkTab()
     {
-        var tab = new TabPage("Advanced")
+        var tab = new TabPage("AHK")
         {
             BackColor = Color.FromArgb(40, 40, 40)
         };
@@ -1016,10 +1024,77 @@ Settings stored in: MosaicToolsSettings.json
 "
         };
         tab.Controls.Add(infoBox);
-        
+
         return tab;
     }
-    
+
+    private TabPage CreateAdvancedTab()
+    {
+        var tab = new TabPage("Advanced")
+        {
+            BackColor = Color.FromArgb(40, 40, 40)
+        };
+
+        int y = 20;
+
+        // Warning label
+        var warningLabel = new Label
+        {
+            Text = "Change these settings if you know what you're doing.",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(255, 180, 50),
+            Font = new Font("Segoe UI", 9, FontStyle.Italic)
+        };
+        tab.Controls.Add(warningLabel);
+        y += 35;
+
+        // Restore Focus checkbox
+        _restoreFocusCheck = new CheckBox
+        {
+            Text = "Restore Focus After Action",
+            Location = new Point(20, y),
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_restoreFocusCheck);
+        y += 25;
+
+        var restoreFocusHint = new Label
+        {
+            Text = "Return focus to the previous window after Mosaic actions complete.",
+            Location = new Point(40, y),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(restoreFocusHint);
+        y += 30;
+
+        // Scroll to Bottom checkbox
+        _scrollToBottomCheck = new CheckBox
+        {
+            Text = "Scroll to Bottom on Process",
+            Location = new Point(20, y),
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_scrollToBottomCheck);
+        y += 25;
+
+        var scrollHint = new Label
+        {
+            Text = "After 'Process Report', send 3 Page Down keys to scroll down the report.",
+            Location = new Point(40, y),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(scrollHint);
+
+        return tab;
+    }
+
     private TabPage CreateTemplatesTab()
     {
         var tab = new TabPage("Templates")
@@ -1201,6 +1276,10 @@ Settings stored in: MosaicToolsSettings.json
         _criticalTemplateBox.Text = _config.CriticalFindingsTemplate;
         _seriesTemplateBox.Text = _config.SeriesImageTemplate;
         
+        // Advanced tab
+        _restoreFocusCheck.Checked = _config.RestoreFocusAfterAction;
+        _scrollToBottomCheck.Checked = _config.ScrollToBottomOnProcess;
+        
         UpdateVolumeLabels();
     }
     
@@ -1240,6 +1319,10 @@ Settings stored in: MosaicToolsSettings.json
         _config.DeadManSwitch = _deadManCheck.Checked;
         _config.CriticalFindingsTemplate = _criticalTemplateBox.Text.Trim();
         _config.SeriesImageTemplate = _seriesTemplateBox.Text.Trim();
+        
+        // Advanced tab
+        _config.RestoreFocusAfterAction = _restoreFocusCheck.Checked;
+        _config.ScrollToBottomOnProcess = _scrollToBottomCheck.Checked;
 
         // Position
         _config.SettingsX = this.Location.X;

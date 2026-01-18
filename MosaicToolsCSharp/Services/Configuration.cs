@@ -72,6 +72,12 @@ public class Configuration
     [JsonPropertyName("series_image_template")]
     public string SeriesImageTemplate { get; set; } = "(series {series}, image {image})";
     
+    [JsonPropertyName("restore_focus_after_action")]
+    public bool RestoreFocusAfterAction { get; set; } = true;
+    
+    [JsonPropertyName("scroll_to_bottom_on_process")]
+    public bool ScrollToBottomOnProcess { get; set; } = false;
+    
     // Window Positions
     [JsonPropertyName("window_x")]
     public int WindowX { get; set; } = 100;

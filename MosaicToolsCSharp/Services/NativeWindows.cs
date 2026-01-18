@@ -45,6 +45,9 @@ public static class NativeWindows
     [DllImport("user32.dll")]
     public static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab);
     
+    [DllImport("user32.dll")]
+    public static extern bool IsWindow(IntPtr hWnd);
+    
     public const int SW_RESTORE = 9;
     public const int SW_SHOWMINIMIZED = 2;
     
@@ -74,6 +77,8 @@ public static class NativeWindows
     public const int VK_MENU = 0x12; // Alt
     public const int VK_CONTROL = 0x11;
     public const int VK_SHIFT = 0x10;
+    public const int VK_END = 0x23;
+    public const int VK_NEXT = 0x22; // Page Down
     public const int KEYEVENTF_KEYUP = 0x0002;
     
     // Virtual key codes for common keys
@@ -390,6 +395,55 @@ public static class NativeWindows
         }
 
         return GetForegroundWindow() == hWnd;
+    }
+    
+    #endregion
+    
+    #region Focus Restoration
+    
+    private static IntPtr _previousFocusHwnd = IntPtr.Zero;
+    
+    /// <summary>
+    /// Save the current foreground window for later restoration.
+    /// Skips saving if the current window is Mosaic itself.
+    /// </summary>
+    public static void SavePreviousFocus()
+    {
+        var foreground = GetForegroundWindow();
+        if (foreground == IntPtr.Zero) 
+        {
+            _previousFocusHwnd = IntPtr.Zero;
+            return;
+        }
+        
+        var title = GetWindowTitle(foreground);
+        // Don't save if it's already Mosaic
+        if (title.Contains("Mosaic", StringComparison.OrdinalIgnoreCase))
+        {
+            _previousFocusHwnd = IntPtr.Zero;
+            return;
+        }
+        
+        _previousFocusHwnd = foreground;
+        Logger.Trace($"Focus saved: {title}");
+    }
+    
+    /// <summary>
+    /// Restore focus to the previously saved window.
+    /// </summary>
+    public static void RestorePreviousFocus(int delayMs = 50)
+    {
+        if (_previousFocusHwnd == IntPtr.Zero) return;
+        if (!IsWindow(_previousFocusHwnd))
+        {
+            _previousFocusHwnd = IntPtr.Zero;
+            return;
+        }
+        
+        Thread.Sleep(delayMs);
+        SetForegroundWindow(_previousFocusHwnd);
+        Logger.Trace($"Focus restored: {GetWindowTitle(_previousFocusHwnd)}");
+        _previousFocusHwnd = IntPtr.Zero;
     }
     
     #endregion

@@ -77,6 +77,13 @@ public class ActionController : IDisposable
             while (_actionQueue.TryDequeue(out var req))
             {
                 _isUserActive = true;
+                
+                // Save previous focus before activating Mosaic
+                if (_config.RestoreFocusAfterAction)
+                {
+                    NativeWindows.SavePreviousFocus();
+                }
+                
                 try
                 {
                     ExecuteAction(req);
@@ -89,6 +96,13 @@ public class ActionController : IDisposable
                 finally
                 {
                     _isUserActive = false;
+                    
+                    // Restore focus after action completes
+                    if (_config.RestoreFocusAfterAction)
+                    {
+                        NativeWindows.RestorePreviousFocus(50);
+                    }
+                    
                     _mainForm.Invoke(() => _mainForm.EnsureWindowsOnTop());
                 }
             }
@@ -498,6 +512,22 @@ public class ActionController : IDisposable
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(100);
             NativeWindows.SendAltKey('P');
+        }
+        
+        // Scroll down if enabled (3 rapid Page Down presses)
+        if (_config.ScrollToBottomOnProcess)
+        {
+            Thread.Sleep(50);
+            NativeWindows.ActivateMosaicForcefully();
+            Thread.Sleep(50);
+            for (int i = 0; i < 3; i++)
+            {
+                NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, 0, UIntPtr.Zero);
+                Thread.Sleep(10);
+                NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                Thread.Sleep(30);
+            }
+            Logger.Trace("Process Report: Sent 3 Page Down keys to scroll down");
         }
     }
     
