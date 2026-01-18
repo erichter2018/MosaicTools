@@ -1,10 +1,26 @@
 {
   "permissions": {
     "allow": [
+      "Bash(powershell.exe:*)",
       "Bash(dir /s /b)",
       "Bash(git -C \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\" log --oneline -20)",
       "Bash(git -C \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\" show:*)",
-      "Bash(powershell.exe -NoProfile -Command \"Set-Location ''C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp''; taskkill /IM MosaicTools.exe /F; Start-Sleep -Seconds 1; & ''c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe'' publish -c Release -r win-x64 --self-contained; Start-Process ''C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.exe''\")"
+      "Bash(dotnet build:*)",
+      "Bash(taskkill:*)",
+      "Bash(c:Userserik.richterDesktopdotnetdotnet.exe build C:Userserik.richterDesktopMosaicToolsMosaicToolsCSharpMosaicTools.csproj -c Release)",
+      "Bash(powershell.exe -Command \"taskkill /f /im MosaicTools.exe; c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe build c:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\MosaicTools.csproj -c Release\")",
+      "Bash(powershell.exe -Command \"Start-Process ''c:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\MosaicTools.exe''\")",
+      "Bash(powershell.exe -Command \"taskkill /f /im MosaicTools.exe; c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe build c:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\MosaicTools.csproj -c Release; Start-Process ''c:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\MosaicTools.exe''\")",
+      "Bash(powershell.exe -Command \"Get-Content \\(Join-Path $env:LOCALAPPDATA ''MosaicTools\\\\MosaicTools.log''\\) -Tail 100\")",
+      "Bash(powershell.exe -Command \"Get-Content ''C:\\\\Users\\\\erik.richter\\\\AppData\\\\Local\\\\MosaicTools\\\\MosaicTools.log'' -Tail 100\")",
+      "Bash(powershell.exe -Command \"Get-ChildItem ''C:\\\\Users\\\\erik.richter\\\\AppData\\\\Local\\\\MosaicTools'' -Recurse\")",
+      "Bash(powershell -Command \"cd C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp; taskkill /IM MosaicTools.exe /F 2>$null; Start-Sleep -Seconds 1; c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe publish -c Release -r win-x64 --self-contained; Start-Process ''C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.exe''\")",
+      "Bash(powershell -Command \"cd C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp; taskkill /IM MosaicTools.exe /F; Start-Sleep -Seconds 1; c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe publish -c Release -r win-x64 --self-contained\")",
+      "Bash(powershell -Command \"Start-Process ''C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.exe''\")",
+      "Bash(powershell -Command \"taskkill /IM MosaicTools.exe /F; Start-Sleep -Seconds 1; cd C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp; c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe publish -c Release -r win-x64 --self-contained; Start-Process ''C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.exe''\")",
+      "Bash(git checkout:*)",
+      "Bash(git merge:*)",
+      "Bash(git add:*)"
     ]
   }
 }

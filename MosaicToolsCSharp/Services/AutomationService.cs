@@ -16,6 +16,24 @@ public class AutomationService : IDisposable
 {
     private readonly UIA3Automation _automation;
     
+    // Cached window for fast repeated scrapes
+    private AutomationElement? _cachedSlimHubWindow;
+    
+    // Last scraped final report (public for external access)
+    public string? LastFinalReport { get; private set; }
+
+    // Last detected drafted state
+    public bool LastDraftedState { get; private set; }
+
+    // Last scraped study description (e.g., "CT ABDOMEN PELVIS WITHOUT IV CONTRAST")
+    public string? LastDescription { get; private set; }
+
+    // Last template name from final report (2nd line after EXAM:)
+    public string? LastTemplateName { get; private set; }
+
+    // Debug flag
+    private bool _hasLoggedDebugInfo = false;
+    
     public AutomationService()
     {
         _automation = new UIA3Automation();
@@ -163,7 +181,9 @@ public class AutomationService : IDisposable
     /// <summary>
     /// Perform the tiered Clario scrape.
     /// </summary>
-    public string? PerformClarioScrape(Action<string>? statusCallback = null)
+    /// <param name="statusCallback">Optional callback for status updates</param>
+    /// <param name="focusWindow">Whether to focus the Clario window (set false for background scrapes)</param>
+    public string? PerformClarioScrape(Action<string>? statusCallback = null, bool focusWindow = true)
     {
         var window = FindClarioWindow();
         if (window == null)
@@ -171,15 +191,18 @@ public class AutomationService : IDisposable
             Logger.Trace("Clario window NOT found.");
             return null;
         }
-        
-        // Ensure window is focused
-        try
+
+        // Only focus window if requested (skip for background scrapes to avoid stealing focus)
+        if (focusWindow)
         {
-            Logger.Trace("Focusing Clario window before scrape...");
-            window.Focus();
-            Thread.Sleep(500);
+            try
+            {
+                Logger.Trace("Focusing Clario window before scrape...");
+                window.Focus();
+                Thread.Sleep(500);
+            }
+            catch { }
         }
-        catch { }
         
         // Fast path: Check if Note Dialog is open
         var noteDialogText = GetNoteDialogText(window);
@@ -369,6 +392,237 @@ public class AutomationService : IDisposable
     }
     
     /// <summary>
+    /// Fast scrape of the Final Report from Mosaic/SlimHub.
+    /// Uses caching and targeted search for speed.
+    /// </summary>
+    public string? GetFinalReportFast(bool checkDraftedStatus = false)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        
+        try
+        {
+            // Try to use cached window first
+            if (_cachedSlimHubWindow != null)
+            {
+                try
+                {
+                    // Verify cached window is still valid
+                    var title = _cachedSlimHubWindow.Name?.ToLowerInvariant() ?? "";
+                    bool isValid = (title.Contains("mosaic") && title.Contains("info hub")) ||
+                                   (title.Contains("mosaic") && title.Contains("reporting"));
+                                   
+                    if (!isValid)
+                    {
+                        _cachedSlimHubWindow = null;
+                        Logger.Trace("GetFinalReportFast: Cached window invalid/closed.");
+                    }
+                }
+                catch
+                {
+                    _cachedSlimHubWindow = null;
+                }
+            }
+            
+            // Find Mosaic window if not cached
+            if (_cachedSlimHubWindow == null)
+            {
+                var desktop = _automation.GetDesktop();
+                var windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
+                
+                foreach (var window in windows)
+                {
+                    try
+                    {
+                        var title = window.Name?.ToLowerInvariant() ?? "";
+                        if (title.Contains("rvu counter") || title.Contains("test")) continue;
+                        
+                        if ((title.Contains("mosaic") && title.Contains("info hub")) ||
+                            (title.Contains("mosaic") && title.Contains("reporting")))
+                        {
+                            _cachedSlimHubWindow = window;
+                            Logger.Trace($"Cached Mosaic window: {window.Name}");
+                            break;
+                        }
+                    }
+                    catch { continue; }
+                }
+            }
+            
+            if (_cachedSlimHubWindow == null)
+            {
+                Logger.Trace($"GetFinalReportFast: Mosaic window not found ({sw.ElapsedMilliseconds}ms)");
+                return null;
+            }
+
+            // Single traversal: find DRAFTED status, Report document, and Description
+            AutomationElement? reportDoc = null;
+            LastDescription = null; // Reset
+
+            if (checkDraftedStatus)
+            {
+                // Search for DRAFTED, Report doc, and Description in one traversal using OR condition
+                var draftedCondition = _cachedSlimHubWindow.ConditionFactory
+                    .ByControlType(FlaUI.Core.Definitions.ControlType.Text)
+                    .And(_cachedSlimHubWindow.ConditionFactory.ByName("DRAFTED"));
+                var reportCondition = _cachedSlimHubWindow.ConditionFactory
+                    .ByControlType(FlaUI.Core.Definitions.ControlType.Document)
+                    .And(_cachedSlimHubWindow.ConditionFactory.ByName("Report", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+                var descriptionCondition = _cachedSlimHubWindow.ConditionFactory
+                    .ByControlType(FlaUI.Core.Definitions.ControlType.Text)
+                    .And(_cachedSlimHubWindow.ConditionFactory.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+                var combinedCondition = draftedCondition.Or(reportCondition).Or(descriptionCondition);
+
+                var elements = _cachedSlimHubWindow.FindAllDescendants(combinedCondition);
+
+                LastDraftedState = false;
+                foreach (var el in elements)
+                {
+                    if (el.ControlType == FlaUI.Core.Definitions.ControlType.Text && el.Name == "DRAFTED")
+                    {
+                        LastDraftedState = true;
+                    }
+                    else if (el.ControlType == FlaUI.Core.Definitions.ControlType.Document &&
+                             el.Name?.Contains("Report") == true && reportDoc == null)
+                    {
+                        reportDoc = el;
+                    }
+                    else if (el.ControlType == FlaUI.Core.Definitions.ControlType.Text &&
+                             el.Name?.StartsWith("Description:", StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        // Extract just the description text after "Description: "
+                        LastDescription = el.Name.Substring("Description:".Length).Trim();
+                        Logger.Trace($"Found Description: {LastDescription}");
+                    }
+                }
+            }
+            else
+            {
+                // Just find the Report document
+                reportDoc = _cachedSlimHubWindow.FindFirstDescendant(cf =>
+                    cf.ByControlType(FlaUI.Core.Definitions.ControlType.Document)
+                    .And(cf.ByName("Report", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring)));
+            }
+
+            if (reportDoc == null)
+            {
+                Logger.Trace($"GetFinalReportFast: Report Document not found ({sw.ElapsedMilliseconds}ms)");
+                return null;
+            }
+            
+            // Strategy from Python: Look for ProseMirror editor
+            // This is robust for Tiptap editors used in Mosaic
+            var flowDoc = reportDoc; // Start search from the document
+            
+            // Find all potential editors
+            var candidates = flowDoc.FindAllDescendants(cf => 
+                cf.ByClassName("ProseMirror", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+
+            if (candidates.Length > 0)
+            {
+                Logger.Trace($"GetFinalReportFast: Found {candidates.Length} ProseMirror candidates");
+                
+                string bestText = "";
+                int maxScore = -1;
+                string[] keywords = { "TECHNIQUE", "CLINICAL HISTORY", "FINDINGS", "IMPRESSION", "EXAM" };
+
+                foreach (var candidate in candidates)
+                {
+                    string text = candidate.Name ?? "";
+
+                    // Try ValuePattern (common for edit controls)
+                    if (string.IsNullOrWhiteSpace(text))
+                    {
+                        var valPattern = candidate.Patterns.Value.PatternOrDefault;
+                        if (valPattern != null) text = valPattern.Value.Value;
+                    }
+
+                    // Try TextPattern (rich edit controls)
+                    if (string.IsNullOrWhiteSpace(text))
+                    {
+                        var txtPattern = candidate.Patterns.Text.PatternOrDefault;
+                        if (txtPattern != null) text = txtPattern.DocumentRange.GetText(-1);
+                    }
+
+                    if (string.IsNullOrWhiteSpace(text)) continue;
+
+                    // MUST start with "EXAM:" to be the correct final report box
+                    if (!text.TrimStart().StartsWith("EXAM:", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    int score = 0;
+                    foreach (var kw in keywords)
+                    {
+                        if (text.Contains(kw, StringComparison.OrdinalIgnoreCase)) score++;
+                    }
+
+                    if (score > maxScore)
+                    {
+                        maxScore = score;
+                        bestText = text;
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(bestText) && maxScore > 0)
+                {
+                    sw.Stop();
+                    int lineCount = bestText.Split('\n').Length;
+                    Logger.Trace($"GetFinalReportFast: ProseMirror SUCCESS in {sw.ElapsedMilliseconds}ms, {lineCount} lines, Score={maxScore}");
+                    LastFinalReport = bestText;
+                    LastTemplateName = ExtractTemplateName(bestText);
+                    return bestText;
+                }
+            }
+            
+            Logger.Trace($"GetFinalReportFast: ProseMirror search failed (Candidates={candidates.Length}). Proceeding to fallback...");
+
+            // FALLBACK: Sibling/Fragment search
+            // This runs if ProseMirror elements weren't found OR didn't contain the report
+            var examElement = reportDoc.FindFirstDescendant(cf => 
+                    cf.ByName("EXAM:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+
+            if (examElement != null)
+            {
+                // The report text is fragmented across siblings.
+                var container = examElement.Parent;
+                if (container != null)
+                {
+                    var sb = new System.Text.StringBuilder();
+                    var allDescendants = container.FindAllDescendants();
+                    
+                    foreach (var desc in allDescendants)
+                    {
+                        var t = desc.Name;
+                        if (!string.IsNullOrWhiteSpace(t)) sb.AppendLine(t);
+                    }
+                    
+                    var fullText = sb.ToString();
+                    Logger.Trace($"GetFinalReportFast: Fallback Reconstruction found {fullText.Length} chars");
+                    
+                    if (fullText.Length > 50)
+                    {
+                        sw.Stop();
+                        int lineCount = fullText.Split('\n').Length;
+                        Logger.Trace($"GetFinalReportFast: Fallback SUCCESS in {sw.ElapsedMilliseconds}ms, {lineCount} lines");
+                        LastFinalReport = fullText;
+                        LastTemplateName = ExtractTemplateName(fullText);
+                        return fullText;
+                    }
+                }
+            }
+            
+            Logger.Trace($"GetFinalReportFast: Failed to find report content ({sw.ElapsedMilliseconds}ms)");
+
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"GetFinalReportFast error: {ex.Message} ({sw.ElapsedMilliseconds}ms)");
+            _cachedSlimHubWindow = null; // Invalidate cache on error
+        }
+        
+        return null;
+    }
+    
+    /// <summary>
     /// Check if Mosaic is currently recording using UIA (slow method).
     /// </summary>
     public bool IsDictationActiveUIA()
@@ -415,7 +669,131 @@ public class AutomationService : IDisposable
     }
     
     #endregion
-    
+
+    #region Template Matching
+
+    /// <summary>
+    /// Extract the template name from the final report (2nd line after EXAM:).
+    /// </summary>
+    public static string? ExtractTemplateName(string? reportText)
+    {
+        if (string.IsNullOrWhiteSpace(reportText)) return null;
+
+        var lines = reportText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            if (lines[i].Trim().StartsWith("EXAM:", StringComparison.OrdinalIgnoreCase))
+            {
+                // The template name is the next line after EXAM:
+                if (i + 1 < lines.Length)
+                {
+                    return lines[i + 1].Trim();
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Common body parts to look for when matching templates.
+    /// </summary>
+    private static readonly string[] BodyParts = new[]
+    {
+        "HEAD", "BRAIN", "NECK", "CERVICAL", "C-SPINE", "CSPINE",
+        "CHEST", "THORAX", "THORACIC", "T-SPINE", "TSPINE", "LUNG",
+        "ABDOMEN", "ABDOMINAL", "PELVIS", "PELVIC", "LUMBAR", "L-SPINE", "LSPINE",
+        "SPINE", "EXTREMITY", "UPPER EXTREMITY", "LOWER EXTREMITY",
+        "ARM", "LEG", "SHOULDER", "HIP", "KNEE", "ANKLE", "WRIST", "ELBOW",
+        "FOOT", "HAND", "FINGER", "TOE",
+        "CARDIAC", "HEART", "CORONARY", "CTA", "MRA",
+        "ANGIOGRAPHY", "ANGIOGRAM", "VENOGRAM",
+        "PULMONARY VEINS", "PULMONARY ARTERIES", "PULMONARY EMBOLISM", "PE PROTOCOL",
+        "AORTA", "AORTIC", "RUNOFF", "CAROTID",
+        "SINUS", "ORBIT", "FACE", "FACIAL", "TEMPORAL", "IAC",
+        "RENAL", "KIDNEY", "UROGRAM", "ENTEROGRAPHY", "LIVER", "PANCREAS"
+    };
+
+    /// <summary>
+    /// Extract body parts found in a text string.
+    /// </summary>
+    public static HashSet<string> ExtractBodyParts(string? text)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(text)) return result;
+
+        var upperText = text.ToUpperInvariant();
+
+        // Check for "CT ANGIOGRAPHY" and normalize to CTA
+        if (upperText.Contains("CT ANGIOGRAPHY") || upperText.Contains("CT ANGIO"))
+        {
+            result.Add("CTA");
+        }
+
+        // Check for "MR ANGIOGRAPHY" and normalize to MRA
+        if (upperText.Contains("MR ANGIOGRAPHY") || upperText.Contains("MR ANGIO"))
+        {
+            result.Add("MRA");
+        }
+
+        foreach (var part in BodyParts)
+        {
+            if (upperText.Contains(part))
+            {
+                // Normalize some common variations
+                var normalized = part switch
+                {
+                    "ABDOMINAL" => "ABDOMEN",
+                    "PELVIC" => "PELVIS",
+                    "C-SPINE" or "CSPINE" => "CERVICAL",
+                    "T-SPINE" or "TSPINE" => "THORACIC",
+                    "L-SPINE" or "LSPINE" => "LUMBAR",
+                    "THORAX" => "CHEST",
+                    "LUNG" => "CHEST",
+                    "ANGIOGRAPHY" or "ANGIOGRAM" => "CTA", // Normalize angio terms
+                    "AORTIC" => "AORTA",
+                    _ => part
+                };
+                result.Add(normalized);
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Check if the description and template body parts match.
+    /// Returns true if they match exactly (no warning needed), false if any mismatch detected.
+    /// </summary>
+    public static bool DoBodyPartsMatch(string? description, string? templateName)
+    {
+        if (string.IsNullOrWhiteSpace(description) || string.IsNullOrWhiteSpace(templateName))
+            return true; // Can't determine, assume OK
+
+        var descParts = ExtractBodyParts(description);
+        var templateParts = ExtractBodyParts(templateName);
+
+        if (descParts.Count == 0 || templateParts.Count == 0)
+            return true; // Can't determine, assume OK
+
+        // Require complete agreement - both sets must be equal
+        bool match = descParts.SetEquals(templateParts);
+
+        if (match)
+        {
+            Logger.Trace($"Template MATCH: [{string.Join(", ", descParts)}]");
+        }
+        else
+        {
+            Logger.Trace($"Template MISMATCH: Description [{string.Join(", ", descParts)}] vs Template [{string.Join(", ", templateParts)}]");
+        }
+
+        return match;
+    }
+
+    #endregion
+
     public void Dispose()
     {
         _automation.Dispose();

@@ -9,6 +9,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>MosaicTools</AssemblyName>
     <RootNamespace>MosaicTools</RootNamespace>
+
+    <!-- Version -->
+    <Version>2.1.0</Version>
+    <AssemblyVersion>2.1.0.0</AssemblyVersion>
+    <FileVersion>2.1.0.0</FileVersion>
     
     <!-- Single-file self-contained deployment (no admin required) -->
     <PublishSingleFile>true</PublishSingleFile>

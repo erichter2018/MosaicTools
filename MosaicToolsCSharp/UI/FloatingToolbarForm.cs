@@ -23,7 +23,7 @@ public class FloatingToolbarForm : Form
     {
         _config = config;
         _controller = controller;
-        
+
         // Form properties
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
@@ -31,24 +31,20 @@ public class FloatingToolbarForm : Form
         BackColor = Color.Black;
         StartPosition = FormStartPosition.Manual;
         Location = new Point(_config.FloatingToolbarX, _config.FloatingToolbarY);
-        
+
         // Calculate size based on config
-        Size = CalculateFormSize();
-        
-        // Main frame
-        var mainFrame = new Panel
-        {
-            BackColor = Color.Black,
-            Dock = DockStyle.Fill
-        };
-        Controls.Add(mainFrame);
-        
-        // Drag bar
+        var formSize = CalculateFormSize();
+        Size = formSize;
+        MinimumSize = formSize;
+        MaximumSize = formSize;
+
+        // Drag bar at top - explicit size and position
         var dragBar = new Panel
         {
             BackColor = Color.Black,
-            Height = 15,
-            Dock = DockStyle.Top
+            Location = new Point(0, 0),
+            Size = new Size(formSize.Width, DragBarHeight),
+            Cursor = Cursors.SizeAll
         };
         var dragIndicator = new Label
         {
@@ -56,32 +52,33 @@ public class FloatingToolbarForm : Form
             Font = new Font("Segoe UI", 10),
             ForeColor = Color.FromArgb(102, 102, 102),
             BackColor = Color.Black,
-            Dock = DockStyle.Right,
-            AutoSize = true
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleCenter
         };
         dragBar.Controls.Add(dragIndicator);
-        
+
         dragBar.MouseDown += OnDragStart;
         dragBar.MouseMove += OnDragMove;
         dragBar.MouseUp += OnDragEnd;
         dragIndicator.MouseDown += OnDragStart;
         dragIndicator.MouseMove += OnDragMove;
         dragIndicator.MouseUp += OnDragEnd;
-        
-        // Button frame - add BEFORE dragBar so Fill works correctly
+        Controls.Add(dragBar);
+
+        // Button frame below drag bar - explicit size and position
         _buttonFrame = new Panel
         {
             BackColor = Color.Black,
-            Dock = DockStyle.Fill
+            Location = new Point(0, DragBarHeight),
+            Size = new Size(formSize.Width, formSize.Height - DragBarHeight)
         };
-        mainFrame.Controls.Add(_buttonFrame);
-        mainFrame.Controls.Add(dragBar);  // Add dragBar LAST for Top dock priority
-        
+        Controls.Add(_buttonFrame);
+
         // Context menu
         var menu = new ContextMenuStrip();
         menu.Items.Add("Close", null, (_, _) => Close());
         ContextMenuStrip = menu;
-        
+
         // Render buttons
         RenderButtons();
     }
@@ -140,7 +137,7 @@ public class FloatingToolbarForm : Form
     private void RenderButtons()
     {
         _buttonFrame.Controls.Clear();
-        
+
         var buttons = _config.FloatingButtons.Buttons;
         int columns = _config.FloatingButtons.Columns;
         
@@ -283,7 +280,11 @@ public class FloatingToolbarForm : Form
     public void Refresh(FloatingButtonsConfig newConfig)
     {
         _config.FloatingButtons = newConfig;
-        Size = CalculateFormSize();  // Resize form to fit new button layout
+        var formSize = CalculateFormSize();
+        Size = formSize;
+        MinimumSize = formSize;
+        MaximumSize = formSize;
+        _buttonFrame.Size = new Size(formSize.Width, formSize.Height - DragBarHeight);
         RenderButtons();
     }
     

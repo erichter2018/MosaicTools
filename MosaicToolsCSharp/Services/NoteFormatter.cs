@@ -34,12 +34,12 @@ public class NoteFormatter
             if (verbMatch.Success)
             {
                 var fullSegment = verbMatch.Groups[1].Value;
-                var parts = Regex.Split(fullSegment, @"\s+(?:to|with|w/)\s+", RegexOptions.IgnoreCase);
+                var parts = Regex.Split(fullSegment, @"\s+(?:to|with|w/|and|&)\s+", RegexOptions.IgnoreCase);
                 segments.AddRange(parts);
             }
             
             // Fallback: Individual title matches (Dr. or Nurse)
-            var namePattern = @"((?:Dr\.|Nurse)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is)|\s*[-;:,]|\s+(?:Dr\.|Nurse)|\s+\d{2}/\d{2}/|$)";
+            var namePattern = @"((?:Dr\.|Nurse)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is|and|&)|\s*[-;:,]|\s+(?:Dr\.|Nurse)|\s+\d{2}/\d{2}/|$)";
             var nameMatches = Regex.Matches(rawText, namePattern, RegexOptions.IgnoreCase);
             foreach (Match m in nameMatches)
             {

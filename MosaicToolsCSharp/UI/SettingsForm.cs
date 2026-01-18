@@ -37,6 +37,15 @@ public class SettingsForm : Form
     // Advanced tab controls
     private CheckBox _restoreFocusCheck = null!;
     private CheckBox _scrollToBottomCheck = null!;
+    private CheckBox _scrapeMosaicCheck = null!;
+    private CheckBox _showClinicalHistoryCheck = null!;
+    private CheckBox _showDraftedIndicatorCheck = null!;
+    private CheckBox _showTemplateMismatchCheck = null!;
+    private CheckBox _showImpressionCheck = null!;
+    private CheckBox _showLineCountToastCheck = null!;
+    private NumericUpDown _scrollThreshold1 = null!;
+    private NumericUpDown _scrollThreshold2 = null!;
+    private NumericUpDown _scrollThreshold3 = null!;
     
     public SettingsForm(Configuration config, ActionController controller, MainForm mainForm)
     {
@@ -50,7 +59,9 @@ public class SettingsForm : Form
     
     private void InitializeUI()
     {
-        Text = "Mosaic Tools Settings";
+        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        var versionStr = version != null ? $" v{version.Major}.{version.Minor}" : "";
+        Text = $"Mosaic Tools Settings{versionStr}";
         Size = new Size(500, 550);
         StartPosition = FormStartPosition.Manual;
         Location = new Point(_config.SettingsX, _config.SettingsY);
@@ -92,14 +103,26 @@ public class SettingsForm : Form
         var advancedTab = CreateAdvancedTab();
         _tabControl.TabPages.Add(advancedTab);
         
-        // Save/Cancel buttons
+        // Save/Cancel/Help buttons
         var buttonPanel = new Panel
         {
             Dock = DockStyle.Bottom,
             Height = 50,
             BackColor = Color.FromArgb(40, 40, 40)
         };
-        
+
+        var helpBtn = new Button
+        {
+            Text = "Help",
+            Size = new Size(80, 30),
+            Location = new Point(10, 10),
+            BackColor = Color.FromArgb(51, 51, 102),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        helpBtn.Click += (_, _) => ShowTabHelp();
+        buttonPanel.Controls.Add(helpBtn);
+
         var saveBtn = new Button
         {
             Text = "Save",
@@ -111,7 +134,7 @@ public class SettingsForm : Form
         };
         saveBtn.Click += (_, _) => SaveAndClose();
         buttonPanel.Controls.Add(saveBtn);
-        
+
         var cancelBtn = new Button
         {
             Text = "Cancel",
@@ -123,7 +146,7 @@ public class SettingsForm : Form
         };
         cancelBtn.Click += (_, _) => Close();
         buttonPanel.Controls.Add(cancelBtn);
-        
+
         Controls.Add(buttonPanel);
     }
     
@@ -1032,7 +1055,8 @@ Settings stored in: MosaicToolsSettings.json
     {
         var tab = new TabPage("Advanced")
         {
-            BackColor = Color.FromArgb(40, 40, 40)
+            BackColor = Color.FromArgb(40, 40, 40),
+            AutoScroll = true
         };
 
         int y = 20;
@@ -1071,7 +1095,117 @@ Settings stored in: MosaicToolsSettings.json
         tab.Controls.Add(restoreFocusHint);
         y += 30;
 
-        // Scroll to Bottom checkbox
+        // Scrape Mosaic checkbox (First)
+        _scrapeMosaicCheck = new CheckBox
+        {
+            Text = "Scrape Mosaic",
+            Location = new Point(20, y),
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_scrapeMosaicCheck);
+        y += 25;
+
+        var scrapeHint = new Label
+        {
+            Text = "Enable background scraping of Mosaic report editor.",
+            Location = new Point(40, y),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(scrapeHint);
+        y += 30;
+
+        // Show Clinical History checkbox (subset of Scrape Mosaic)
+        _showClinicalHistoryCheck = new CheckBox
+        {
+            Text = "Show Clinical History",
+            Location = new Point(40, y), // Indented under Scrape Mosaic
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_showClinicalHistoryCheck);
+        y += 25;
+
+        var clinicalHint = new Label
+        {
+            Text = "Display clinical history from Clario in a floating box.",
+            Location = new Point(60, y),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(clinicalHint);
+        y += 25;
+
+        // Show Drafted Indicator checkbox (subset of Show Clinical History)
+        _showDraftedIndicatorCheck = new CheckBox
+        {
+            Text = "Indicate Drafted Status",
+            Location = new Point(60, y), // Indented further under Show Clinical History
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_showDraftedIndicatorCheck);
+        y += 25;
+
+        var draftedHint = new Label
+        {
+            Text = "Green border on clinical history when study is drafted.",
+            Location = new Point(80, y),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(draftedHint);
+        y += 25;
+
+        // Show Template Mismatch checkbox (subset of Show Clinical History)
+        _showTemplateMismatchCheck = new CheckBox
+        {
+            Text = "Warn on Template Mismatch",
+            Location = new Point(60, y), // Indented further under Show Clinical History
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_showTemplateMismatchCheck);
+        y += 25;
+
+        var templateHint = new Label
+        {
+            Text = "Red border when study description doesn't match the report template.",
+            Location = new Point(80, y),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(templateHint);
+        y += 30;
+
+        // Show Impression checkbox (subset of Scrape Mosaic)
+        _showImpressionCheck = new CheckBox
+        {
+            Text = "Show Impression",
+            Location = new Point(40, y), // Indented under Scrape Mosaic
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_showImpressionCheck);
+        y += 25;
+
+        var impressionHint = new Label
+        {
+            Text = "Display impression in a floating box after Process Report.",
+            Location = new Point(60, y),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(impressionHint);
+        y += 35;
+
+        // Scroll to Bottom checkbox (Second)
         _scrollToBottomCheck = new CheckBox
         {
             Text = "Scroll to Bottom on Process",
@@ -1091,8 +1225,147 @@ Settings stored in: MosaicToolsSettings.json
             Font = new Font("Segoe UI", 8)
         };
         tab.Controls.Add(scrollHint);
+        y += 35;
+
+
+        // Show Line Count Toast (Subset)
+        _showLineCountToastCheck = new CheckBox
+        {
+            Text = "Show Line Count Toast",
+            Location = new Point(40, y), // Indented
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_showLineCountToastCheck);
+        y += 30;
+        
+        // Smart Scroll Thresholds
+        var threshGroup = new GroupBox
+        {
+            Text = "Smart Scroll Thresholds (Lines)",
+            Location = new Point(20, y),
+            Size = new Size(420, 100), // Narrower to avoid horizontal scroll
+            ForeColor = Color.White
+        };
+        tab.Controls.Add(threshGroup);
+
+        int rowY = 50;
+        int inputWidth = 55;
+
+        // Block 1
+        threshGroup.Controls.Add(CreateLabel("1 PgDn >", 10, rowY+2, 55));
+        _scrollThreshold1 = new NumericUpDown
+        {
+            Location = new Point(68, rowY),
+            Width = inputWidth,
+            Minimum = 1,
+            Maximum = 500,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White
+        };
+        threshGroup.Controls.Add(_scrollThreshold1);
+
+        // Block 2
+        threshGroup.Controls.Add(CreateLabel("2 PgDn >", 140, rowY+2, 55));
+        _scrollThreshold2 = new NumericUpDown
+        {
+            Location = new Point(198, rowY),
+            Width = inputWidth,
+            Minimum = 1,
+            Maximum = 500,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White
+        };
+        threshGroup.Controls.Add(_scrollThreshold2);
+
+        // Block 3
+        threshGroup.Controls.Add(CreateLabel("3 PgDn >", 270, rowY+2, 55));
+        _scrollThreshold3 = new NumericUpDown
+        {
+            Location = new Point(328, rowY),
+            Width = inputWidth,
+            Minimum = 1,
+            Maximum = 500,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White
+        };
+        threshGroup.Controls.Add(_scrollThreshold3);
+        
+        // Event handlers for enable/disable logic
+        _scrollToBottomCheck.CheckedChanged += (_, _) => UpdateThresholdStates();
+        _scrapeMosaicCheck.CheckedChanged += (_, _) => UpdateThresholdStates();
+        _showClinicalHistoryCheck.CheckedChanged += (_, _) => UpdateThresholdStates();
+
+        // Enforce logical constraints (T1 < T2 < T3)
+        // Using explicit updates to ensure propagation
+
+        _scrollThreshold1.ValueChanged += (_, _) =>
+        {
+            // Pushing Up: T1 -> T2 -> T3
+            if (_scrollThreshold2.Value <= _scrollThreshold1.Value)
+            {
+                _scrollThreshold2.Value = Math.Min(_scrollThreshold2.Maximum, _scrollThreshold1.Value + 1);
+                // The change to T2 will trigger T2's handler, but we can be explicit if needed
+            }
+        };
+
+        _scrollThreshold2.ValueChanged += (_, _) =>
+        {
+            // Pushing Down: T2 -> T1
+            if (_scrollThreshold1.Value >= _scrollThreshold2.Value)
+            {
+                 _scrollThreshold1.Value = Math.Max(_scrollThreshold1.Minimum, _scrollThreshold2.Value - 1);
+            }
+
+            // Pushing Up: T2 -> T3
+            if (_scrollThreshold3.Value <= _scrollThreshold2.Value)
+            {
+                _scrollThreshold3.Value = Math.Min(_scrollThreshold3.Maximum, _scrollThreshold2.Value + 1);
+            }
+        };
+
+        _scrollThreshold3.ValueChanged += (_, _) =>
+        {
+            // Pushing Down: T3 -> T2 -> T1
+            if (_scrollThreshold2.Value >= _scrollThreshold3.Value)
+            {
+                _scrollThreshold2.Value = Math.Max(_scrollThreshold2.Minimum, _scrollThreshold3.Value - 1);
+            }
+        };
+
+        y += 115; // After thresholds group
+
+        // Debug tip section
+        var debugTipLabel = new Label
+        {
+            Text = "Debug Tip: Right-click on the Clinical History or Impression floating\n" +
+                   "windows to copy debug information to the clipboard.",
+            Location = new Point(20, y),
+            Size = new Size(420, 35),
+            ForeColor = Color.FromArgb(150, 150, 150),
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        };
+        tab.Controls.Add(debugTipLabel);
 
         return tab;
+    }
+
+    private void UpdateThresholdStates()
+    {
+        bool thresholdsEnabled = _scrollToBottomCheck.Checked && _scrapeMosaicCheck.Checked;
+        _scrollThreshold1.Enabled = thresholdsEnabled;
+        _scrollThreshold2.Enabled = thresholdsEnabled;
+        _scrollThreshold3.Enabled = thresholdsEnabled;
+        _showLineCountToastCheck.Enabled = thresholdsEnabled;
+
+        // Clinical history and impression depend on scrape mosaic being enabled
+        _showClinicalHistoryCheck.Enabled = _scrapeMosaicCheck.Checked;
+        _showImpressionCheck.Enabled = _scrapeMosaicCheck.Checked;
+
+        // Drafted indicator and template mismatch depend on show clinical history being enabled
+        bool clinicalHistoryEnabled = _scrapeMosaicCheck.Checked && _showClinicalHistoryCheck.Checked;
+        _showDraftedIndicatorCheck.Enabled = clinicalHistoryEnabled;
+        _showTemplateMismatchCheck.Enabled = clinicalHistoryEnabled;
     }
 
     private TabPage CreateTemplatesTab()
@@ -1279,6 +1552,17 @@ Settings stored in: MosaicToolsSettings.json
         // Advanced tab
         _restoreFocusCheck.Checked = _config.RestoreFocusAfterAction;
         _scrollToBottomCheck.Checked = _config.ScrollToBottomOnProcess;
+        _showLineCountToastCheck.Checked = _config.ShowLineCountToast;
+        _scrapeMosaicCheck.Checked = _config.ScrapeMosaicEnabled;
+        _showClinicalHistoryCheck.Checked = _config.ShowClinicalHistory;
+        _showDraftedIndicatorCheck.Checked = _config.ShowDraftedIndicator;
+        _showTemplateMismatchCheck.Checked = _config.ShowTemplateMismatch;
+        _showImpressionCheck.Checked = _config.ShowImpression;
+        _scrollThreshold1.Value = _config.ScrollThreshold1;
+        _scrollThreshold2.Value = _config.ScrollThreshold2;
+        _scrollThreshold3.Value = _config.ScrollThreshold3;
+
+        UpdateThresholdStates();
         
         UpdateVolumeLabels();
     }
@@ -1303,6 +1587,388 @@ Settings stored in: MosaicToolsSettings.json
         return (int)Math.Round(50.0 * Math.Log10(volume * 99.0 + 1.0));
     }
     
+    private void ShowTabHelp()
+    {
+        string title = "Help";
+        string content = "";
+
+        switch (_tabControl.SelectedIndex)
+        {
+            case 0: // General
+                title = "General Settings Help";
+                content = @"GENERAL SETTINGS
+═══════════════════════════════════════
+
+DOCTOR NAME
+Your last name (e.g., ""Smith""). This is used when parsing Clario exam notes for critical findings. When the note contains text like ""Discussed with Smith and Jones"", the tool uses your name to identify that Jones is the contact person, not you.
+
+BEEP SETTINGS
+These control the audio feedback when dictation starts and stops.
+
+• Start Beep Enabled: Play a tone when dictation begins.
+• Start Volume: How loud the start beep is (0-100%).
+• Stop Beep Enabled: Play a tone when dictation ends.
+• Stop Volume: How loud the stop beep is (0-100%).
+• Start Beep Pause: Delay (in milliseconds) before playing the start beep. This helps avoid the beep being recorded at the beginning of your dictation. Recommended: 800-1200ms.
+
+IV REPORT HOTKEY
+The keyboard shortcut used to open a report in InteleViewer. This is used by the ""Get Prior"" action. Default is ""v"" (the standard InteleViewer shortcut).
+
+FLOATING TOOLBAR
+When enabled, shows a small toolbar with customizable buttons that can send keystrokes to InteleViewer (for window/level presets, zoom, etc.). Configure the buttons in the ""Button Studio"" tab.
+
+RECORDING INDICATOR
+When enabled, shows a small colored dot on screen that indicates whether dictation is currently active (recording) or not.
+
+AUTO-STOP DICTATION ON PROCESS
+When enabled, automatically stops dictation when you trigger ""Process Report"". This prevents accidentally continuing to dictate while reviewing the processed report.
+
+PUSH-TO-TALK (DEAD MAN'S SWITCH)
+When enabled, you must hold down the Record Button on your PowerMic to dictate. Releasing the button stops recording. This is useful if you prefer push-to-talk style dictation rather than toggle on/off.";
+                break;
+
+            case 1: // Control Map
+                title = "Control Map Help";
+                content = @"CONTROL MAP
+═══════════════════════════════════════
+
+This tab lets you assign keyboard shortcuts (hotkeys) and PowerMic buttons to various actions.
+
+AVAILABLE ACTIONS
+
+• System Beep: Plays an audio tone to indicate dictation state change. Useful if you want a separate button just for audio feedback.
+
+• Get Prior: Extracts the comparison study information from InteleViewer and pastes it into Mosaic. Position your cursor in InteleViewer on the prior study, then trigger this action.
+
+• Critical Findings: Scrapes the Clario worklist for exam notes and extracts critical findings information (contact name, time, etc.) and pastes it into Mosaic using your template.
+
+• Debug Scrape: Same as Critical Findings but also shows a debug window with the raw scraped data. Useful for troubleshooting if critical findings aren't being extracted correctly.
+
+• Show Report: Copies the current report from Mosaic and displays it in a popup window. Useful for reviewing while looking at images.
+
+• Capture Series/Image: Uses OCR to read the series and image numbers from the yellow selection box in InteleViewer and pastes them into Mosaic using your template.
+
+• Start/Stop Recording: Toggles dictation on/off in Mosaic.
+
+• Process Report: Sends Alt+P to Mosaic to process the report with RadPair.
+
+• Sign Report: Sends Alt+F to Mosaic to sign/finalize the report.
+
+HOTKEY COLUMN
+Click on a hotkey field and press your desired key combination. Use Backspace or Delete to clear. Some hotkeys (like Alt+P, Alt+R) are restricted because they conflict with Mosaic's built-in shortcuts.
+
+MIC BUTTON COLUMN
+Select which PowerMic II button triggers this action. Note: Some buttons have hardcoded Mosaic functions (Skip Back = Process, Checkmark = Sign) - the tool works alongside these.";
+                break;
+
+            case 2: // Button Studio
+                title = "Button Studio Help";
+                content = @"BUTTON STUDIO
+═══════════════════════════════════════
+
+Create custom buttons for the floating toolbar. These buttons send keystrokes to InteleViewer for quick access to window/level presets, zoom controls, and other shortcuts.
+
+COLUMNS
+Set how many columns of buttons to display (1-3). More columns = wider toolbar.
+
+LIVE PREVIEW
+Shows how your toolbar will look. Click any button to select it for editing.
+
+BUTTON LIST
+Quick reference showing all buttons. Click to select.
+
+BUTTON CONTROLS
+• +Add: Add a new button (maximum 9 buttons).
+• -Del: Delete the selected button.
+• ▲/▼: Move the selected button up or down in the order.
+• Reset: Restore the default button configuration.
+
+BUTTON EDITOR
+
+• Type:
+  - Square: A small square button, good for icons.
+  - Wide: A full-width button that spans all columns, good for text labels.
+
+• Icon: Click the icon button to open a picker with common symbols. Click X to clear the icon.
+
+• Label: Text label for the button. For square buttons, only the first few characters show. For wide buttons, the full label is displayed.
+
+• Key: The keystroke to send when clicked. Click the field and press your desired key combination (e.g., Ctrl+V for vertical flip in InteleViewer).
+
+TIPS FOR INTELEVIEWER
+Configure custom shortcuts in InteleViewer under Utilities > User Preferences > Keyboard Shortcuts. Then assign those same shortcuts to your toolbar buttons here.
+
+Common InteleViewer shortcuts:
+• Ctrl+V: Vertical flip
+• Ctrl+H: Horizontal flip
+• , and . : Rotate
+• - : Zoom out";
+                break;
+
+            case 3: // Templates
+                title = "Templates Help";
+                content = @"TEMPLATES
+═══════════════════════════════════════
+
+Customize the text that gets inserted into your reports.
+
+CRITICAL FINDINGS TEMPLATE
+═══════════════════════════
+This template is used when you trigger the ""Critical Findings"" action. The tool scrapes Clario for exam note information and fills in the placeholders.
+
+Available placeholders:
+• {name} - The contact person's name (Dr./Nurse who was notified)
+• {time} - The time of communication (e.g., ""2:30 PM EST"")
+• {date} - The date (e.g., ""01/15/2026"")
+
+Example template:
+""Critical findings were discussed with and acknowledged by {name} at {time} on {date}.""
+
+Result:
+""Critical findings were discussed with and acknowledged by Dr. Jones at 2:30 PM EST on 01/15/2026.""
+
+DEBUGGING CRITICAL FINDINGS
+If the critical findings aren't being extracted correctly:
+1. Map ""Debug Scrape"" to a button or hotkey in the Control Map tab.
+2. Open Clario with the exam note visible.
+3. Trigger Debug Scrape.
+4. A window will show the raw scraped text and the formatted result.
+5. This helps identify if the note format is different than expected.
+
+SERIES/IMAGE TEMPLATE
+═════════════════════
+This template is used when you trigger ""Capture Series/Image"". The tool uses OCR to read the series and image numbers from your screen.
+
+Available placeholders:
+• {series} - The series number
+• {image} - The image number
+
+Example template:
+""(series {series}, image {image})""
+
+Result:
+""(series 3, image 142)""
+
+TIPS
+• Position the yellow selection box in InteleViewer so the series/image info is visible in the header area.
+• The OCR looks for patterns like ""S: 3"" or ""Series: 3"" and ""I: 142"" or ""Image: 142"".";
+                break;
+
+            case 4: // AHK
+                title = "AHK Integration Help";
+                content = @"AHK (AUTOHOTKEY) INTEGRATION
+═══════════════════════════════════════
+
+This tab shows how to trigger Mosaic Tools actions from external programs like AutoHotkey scripts.
+
+HOW IT WORKS
+Mosaic Tools listens for Windows Messages. You can send these messages from any program to trigger actions without needing to set up hotkeys.
+
+WINDOWS MESSAGE CODES
+• 0x0401 - Critical Findings
+• 0x0402 - Debug Scrape
+• 0x0403 - System Beep
+• 0x0404 - Show Report
+• 0x0405 - Capture Series/Image
+• 0x0406 - Get Prior
+• 0x0407 - Toggle Recording
+• 0x0408 - Process Report
+• 0x0409 - Sign Report
+
+AUTOHOTKEY EXAMPLE
+To trigger Critical Findings from an AHK script:
+
+DetectHiddenWindows, On
+PostMessage, 0x0401, 0, 0,, ahk_class WindowsForms
+
+This can be useful if you want to:
+• Trigger actions from other applications
+• Create complex macros that combine multiple tools
+• Use foot pedals or other input devices that only support AHK
+
+SETTINGS FILE LOCATION
+Your settings are saved to:
+%LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
+
+You can back up this file or copy it to other workstations.";
+                break;
+
+            case 5: // Advanced
+                title = "Advanced Settings Help";
+                content = @"ADVANCED SETTINGS
+═══════════════════════════════════════
+
+These settings control background features and behaviors.
+
+RESTORE FOCUS AFTER ACTION
+When enabled, after an action completes (like pasting text into Mosaic), focus returns to the window you were previously using. This is helpful if you trigger actions from InteleViewer and want to continue working there.
+
+SCRAPE MOSAIC
+═════════════
+Enables background monitoring of the Mosaic report editor. This powers several sub-features below. The tool reads the report content every few seconds.
+
+  SHOW CLINICAL HISTORY
+  ─────────────────────
+  Displays a floating window showing the clinical history from the current report. This keeps the relevant patient info visible while you review images.
+
+  • Drag the ⋯ handle to reposition the window.
+  • The window auto-updates when you switch studies.
+
+    INDICATE DRAFTED STATUS
+    Shows a GREEN border around the clinical history window when the current study has a drafted report. This helps you quickly see if you've already started a report.
+
+    WARN ON TEMPLATE MISMATCH
+    Shows a RED border around the clinical history window when the study description doesn't match the report template. For example, if the order says ""CT Chest Abdomen Pelvis"" but the template is ""CT Abdomen Pelvis"", you'll see a red warning.
+
+    This helps catch cases where Mosaic selected the wrong default template.
+
+  SHOW IMPRESSION
+  ───────────────
+  Displays a floating window showing the Impression section after you process a report. This lets you review your impression while looking at images.
+
+  • Click the impression window to dismiss it.
+  • It auto-hides when you sign the report.
+
+DEBUGGING THE FLOATING WINDOWS
+══════════════════════════════
+Right-click on either the Clinical History or Impression floating window to copy debug information to your clipboard. A small ""Debug copied!"" message appears.
+
+For Clinical History, the debug info includes:
+• The study description (from the order)
+• The template name (from the report)
+• Whether a mismatch was detected
+
+This is useful for reporting issues or understanding why a template mismatch warning appeared.
+
+SCROLL TO BOTTOM ON PROCESS
+═══════════════════════════
+When enabled, after processing a report, the tool sends Page Down keys to scroll down in the report editor. This helps you see the Impression section without manual scrolling.
+
+  SHOW LINE COUNT TOAST
+  Shows a notification with the report line count and how many Page Down keys were sent.
+
+  SMART SCROLL THRESHOLDS
+  Configure how many Page Down keys are sent based on report length:
+  • Short reports (< threshold 1): No scrolling
+  • Medium reports: 1 Page Down
+  • Long reports: 2 Page Downs
+  • Very long reports (> threshold 3): 3 Page Downs
+
+  Adjust these thresholds based on your typical report lengths and screen size.";
+                break;
+
+            default:
+                content = "No help available for this tab.";
+                break;
+        }
+
+        // Show help in a scrollable window with formatted text
+        var helpForm = new Form
+        {
+            Text = title,
+            Size = new Size(550, 500),
+            StartPosition = FormStartPosition.CenterParent,
+            BackColor = Color.FromArgb(30, 30, 30),
+            ForeColor = Color.White,
+            FormBorderStyle = FormBorderStyle.Sizable,
+            MinimumSize = new Size(400, 300)
+        };
+
+        var richTextBox = new RichTextBox
+        {
+            ReadOnly = true,
+            Dock = DockStyle.Fill,
+            BackColor = Color.FromArgb(40, 40, 40),
+            ForeColor = Color.FromArgb(200, 200, 200),
+            Font = new Font("Segoe UI", 10),
+            BorderStyle = BorderStyle.None,
+            DetectUrls = false
+        };
+
+        // Format the content with highlighted headers
+        FormatHelpText(richTextBox, content);
+
+        // Deselect text
+        richTextBox.SelectionStart = 0;
+        richTextBox.SelectionLength = 0;
+
+        var closeBtn = new Button
+        {
+            Text = "Close",
+            Size = new Size(80, 30),
+            Dock = DockStyle.Bottom,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        closeBtn.Click += (_, _) => helpForm.Close();
+
+        helpForm.Controls.Add(richTextBox);
+        helpForm.Controls.Add(closeBtn);
+        helpForm.ShowDialog(this);
+    }
+
+    /// <summary>
+    /// Format help text with highlighted section headers.
+    /// </summary>
+    private static void FormatHelpText(RichTextBox rtb, string content)
+    {
+        var headerColor = Color.FromArgb(100, 180, 255); // Bright blue for main headers
+        var subHeaderColor = Color.FromArgb(255, 200, 100); // Orange/gold for sub-headers
+        var normalColor = Color.FromArgb(200, 200, 200); // Normal text
+
+        var lines = content.Split('\n');
+
+        foreach (var line in lines)
+        {
+            var trimmed = line.TrimStart();
+
+            // Main headers: ALL CAPS lines (at least 3 caps words, or contains ═)
+            if (trimmed.Length > 0 && (trimmed.Contains('═') || IsAllCapsHeader(trimmed)))
+            {
+                rtb.SelectionColor = headerColor;
+                rtb.SelectionFont = new Font(rtb.Font, FontStyle.Bold);
+                rtb.AppendText(line + "\n");
+            }
+            // Sub-headers: Lines with ─ or indented ALL CAPS
+            else if (trimmed.Contains('─') || (line.StartsWith("  ") && IsAllCapsHeader(trimmed)))
+            {
+                rtb.SelectionColor = subHeaderColor;
+                rtb.SelectionFont = new Font(rtb.Font, FontStyle.Bold);
+                rtb.AppendText(line + "\n");
+            }
+            else
+            {
+                rtb.SelectionColor = normalColor;
+                rtb.SelectionFont = new Font(rtb.Font, FontStyle.Regular);
+                rtb.AppendText(line + "\n");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Check if a line is an ALL CAPS header (most characters are uppercase letters).
+    /// </summary>
+    private static bool IsAllCapsHeader(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line)) return false;
+
+        int upperCount = 0;
+        int letterCount = 0;
+
+        foreach (char c in line)
+        {
+            if (char.IsLetter(c))
+            {
+                letterCount++;
+                if (char.IsUpper(c)) upperCount++;
+            }
+        }
+
+        // At least 3 letters and 90%+ uppercase
+        return letterCount >= 3 && upperCount >= letterCount * 0.9;
+    }
+
     private void SaveAndClose()
     {
         // General settings
@@ -1323,6 +1989,15 @@ Settings stored in: MosaicToolsSettings.json
         // Advanced tab
         _config.RestoreFocusAfterAction = _restoreFocusCheck.Checked;
         _config.ScrollToBottomOnProcess = _scrollToBottomCheck.Checked;
+        _config.ShowLineCountToast = _showLineCountToastCheck.Checked;
+        _config.ScrapeMosaicEnabled = _scrapeMosaicCheck.Checked;
+        _config.ShowClinicalHistory = _showClinicalHistoryCheck.Checked;
+        _config.ShowDraftedIndicator = _showDraftedIndicatorCheck.Checked;
+        _config.ShowTemplateMismatch = _showTemplateMismatchCheck.Checked;
+        _config.ShowImpression = _showImpressionCheck.Checked;
+        _config.ScrollThreshold1 = (int)_scrollThreshold1.Value;
+        _config.ScrollThreshold2 = (int)_scrollThreshold2.Value;
+        _config.ScrollThreshold3 = (int)_scrollThreshold3.Value;
 
         // Position
         _config.SettingsX = this.Location.X;
@@ -1363,8 +2038,9 @@ Settings stored in: MosaicToolsSettings.json
         // Apply changes
         _mainForm.ToggleFloatingToolbar(_config.FloatingToolbarEnabled);
         _mainForm.ToggleIndicator(_config.IndicatorEnabled);
+        _mainForm.ToggleClinicalHistory(_config.ShowClinicalHistory && _config.ScrapeMosaicEnabled);
         _mainForm.RefreshFloatingToolbar(_config.FloatingButtons);
-        
+
         Close();
     }
 }

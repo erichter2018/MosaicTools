@@ -77,6 +77,46 @@ public class Configuration
     
     [JsonPropertyName("scroll_to_bottom_on_process")]
     public bool ScrollToBottomOnProcess { get; set; } = false;
+
+    [JsonPropertyName("scrape_mosaic_enabled")]
+    public bool ScrapeMosaicEnabled { get; set; } = false;
+
+    [JsonPropertyName("show_clinical_history")]
+    public bool ShowClinicalHistory { get; set; } = false;
+
+    [JsonPropertyName("show_drafted_indicator")]
+    public bool ShowDraftedIndicator { get; set; } = false;
+
+    [JsonPropertyName("show_template_mismatch")]
+    public bool ShowTemplateMismatch { get; set; } = false;
+
+    [JsonPropertyName("clinical_history_x")]
+    public int ClinicalHistoryX { get; set; } = 100;
+
+    [JsonPropertyName("clinical_history_y")]
+    public int ClinicalHistoryY { get; set; } = 200;
+
+    [JsonPropertyName("show_impression")]
+    public bool ShowImpression { get; set; } = false;
+
+    [JsonPropertyName("impression_x")]
+    public int ImpressionX { get; set; } = 300;
+
+    [JsonPropertyName("impression_y")]
+    public int ImpressionY { get; set; } = 200;
+
+    // Smart Scroll Thresholds
+    [JsonPropertyName("scroll_threshold_1")]
+    public int ScrollThreshold1 { get; set; } = 10; // 0 -> 1 PgDn
+    
+    [JsonPropertyName("scroll_threshold_2")]
+    public int ScrollThreshold2 { get; set; } = 30; // 1 -> 2 PgDn
+    
+    [JsonPropertyName("scroll_threshold_3")]
+    public int ScrollThreshold3 { get; set; } = 50; // 2 -> 3 PgDn
+
+    [JsonPropertyName("show_line_count_toast")]
+    public bool ShowLineCountToast { get; set; } = false;
     
     // Window Positions
     [JsonPropertyName("window_x")]

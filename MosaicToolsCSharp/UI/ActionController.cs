@@ -39,11 +39,19 @@ public class ActionController : IDisposable
     private bool _dictationActive = false;
     private bool _isUserActive = false;
     private volatile bool _stopThread = false;
-    
+
+    // Impression search state
+    private bool _searchingForImpression = false;
+    private bool _impressionFromProcessReport = false; // True if opened by Process Report (stays until Sign)
+    private int _normalScrapeIntervalMs = 5000;
+    private int _fastScrapeIntervalMs = 1000;
+    private int _postImpressionScrapeIntervalMs = 3000;
+
     // PTT (Push-to-talk) state
     private bool _pttBusy = false;
     private DateTime _lastSyncTime = DateTime.Now;
     private readonly System.Threading.Timer? _syncTimer;
+    private System.Threading.Timer? _scrapeTimer;
     private DateTime _lastManualToggleTime = DateTime.MinValue;
     private int _consecutiveInactiveCount = 0; // For indicator debounce
     
@@ -131,6 +139,12 @@ public class ActionController : IDisposable
             StartDictationSync();
         }
         
+        // Start Mosaic scrape timer if enabled
+        if (_config.ScrapeMosaicEnabled)
+        {
+            StartMosaicScrapeTimer();
+        }
+        
         Logger.Trace($"ActionController started (Headless={App.IsHeadless})");
     }
     
@@ -146,6 +160,9 @@ public class ActionController : IDisposable
         // Recreate services that depend on config
         _noteFormatter = new NoteFormatter(_config.DoctorName, _config.CriticalFindingsTemplate);
         RegisterHotkeys();
+        
+        // Toggle scraper based on setting
+        ToggleMosaicScraper(_config.ScrapeMosaicEnabled);
     }
     
     private void RegisterHotkeys()
@@ -268,7 +285,7 @@ public class ActionController : IDisposable
                 PerformProcessReport(req.Source);
                 break;
             case Actions.SignReport:
-                PerformSignReport();
+                PerformSignReport(req.Source);
                 break;
         }
     }
@@ -515,31 +532,129 @@ public class ActionController : IDisposable
         }
         
         // Scroll down if enabled (3 rapid Page Down presses)
+        // Scroll down if enabled (Smart Scroll)
         if (_config.ScrollToBottomOnProcess)
         {
-            Thread.Sleep(50);
-            NativeWindows.ActivateMosaicForcefully();
-            Thread.Sleep(50);
-            for (int i = 0; i < 3; i++)
+            int pageDowns = 0;
+            
+            // Only smart scroll if we have data from the scraper
+            if (_config.ScrapeMosaicEnabled)
             {
-                NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, 0, UIntPtr.Zero);
-                Thread.Sleep(10);
-                NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
-                Thread.Sleep(30);
+                string? report = _automationService.LastFinalReport;
+                if (!string.IsNullOrEmpty(report))
+                {
+                    int lines = report.Split('\n').Length;
+                    
+                    if (lines >= _config.ScrollThreshold3) pageDowns = 3;
+                    else if (lines >= _config.ScrollThreshold2) pageDowns = 2;
+                    else if (lines >= _config.ScrollThreshold1) pageDowns = 1;
+                    
+                    Logger.Trace($"Smart Scroll: Report has {lines} lines -> sending {pageDowns} PgDn(s).");
+                    
+                    if (_config.ShowLineCountToast)
+                    {
+                        string pgDnText = pageDowns == 1 ? "1 PgDn" : $"{pageDowns} PgDns";
+                        _mainForm.ShowStatusToast($"Smart Scroll: {lines} lines -> {pgDnText}");
+                    }
+                }
+                else
+                {
+                    Logger.Trace("Smart Scroll: No report scraped yet. Skipping scroll.");
+                }
             }
-            Logger.Trace("Process Report: Sent 3 Page Down keys to scroll down");
+            else
+            {
+                 Logger.Trace("Smart Scroll: Scrape disabled. Skipping scroll.");
+            }
+            
+            if (pageDowns > 0)
+            {
+                Thread.Sleep(50);
+                NativeWindows.ActivateMosaicForcefully();
+                Thread.Sleep(50);
+                for (int i = 0; i < pageDowns; i++)
+                {
+                    NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(10);
+                    NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                    Thread.Sleep(30);
+                }
+                Logger.Trace($"Process Report: Sent {pageDowns} Page Down keys to scroll down");
+            }
+        }
+
+        // Start impression search if enabled
+        if (_config.ShowImpression)
+        {
+            StartImpressionSearch();
         }
     }
-    
-    private void PerformSignReport()
-    {
-        Logger.Trace("Sign Report");
-        NativeWindows.KeyUpModifiers();
-        Thread.Sleep(50);
 
-        NativeWindows.ActivateMosaicForcefully();
-        Thread.Sleep(100);
-        NativeWindows.SendAltKey('F');
+    private void StartImpressionSearch()
+    {
+        Logger.Trace("Starting impression search (fast scrape mode)...");
+        _searchingForImpression = true;
+        _impressionFromProcessReport = true; // Mark as manually triggered - stays until Sign Report
+
+        // Show the impression window with waiting message
+        _mainForm.Invoke(() => _mainForm.ShowImpressionWindow());
+
+        // Switch to fast scrape rate (1 second)
+        RestartScrapeTimer(_fastScrapeIntervalMs);
+    }
+
+    private void OnImpressionFound(string impression)
+    {
+        Logger.Trace("Impression found! Switching to slow scrape mode.");
+        _searchingForImpression = false;
+
+        // Update the impression window with content
+        _mainForm.Invoke(() => _mainForm.UpdateImpression(impression));
+
+        // Switch to slow scrape rate (3 seconds)
+        RestartScrapeTimer(_postImpressionScrapeIntervalMs);
+    }
+
+    private void RestartScrapeTimer(int intervalMs)
+    {
+        _scrapeTimer?.Change(intervalMs, intervalMs);
+        Logger.Trace($"Scrape timer interval changed to {intervalMs}ms");
+    }
+
+    private void PerformSignReport(string source = "Manual")
+    {
+        Logger.Trace($"Sign Report (Source: {source})");
+
+        // Check if Checkmark button triggered this and is mapped to Sign Report
+        // If so, Mosaic handles the actual signing - we only clean up impression state
+        bool isCheckmarkTrigger = (source == "Checkmark");
+        bool isCheckmarkMappedToSign = _config.ActionMappings.GetValueOrDefault(Actions.SignReport)?.MicButton == "Checkmark";
+
+        if (isCheckmarkTrigger && isCheckmarkMappedToSign)
+        {
+            Logger.Trace("Sign Report: Checkmark button - Mosaic handles signing, only cleaning up impression.");
+        }
+        else
+        {
+            // Standard behavior - send Alt+F
+            NativeWindows.KeyUpModifiers();
+            Thread.Sleep(50);
+
+            NativeWindows.ActivateMosaicForcefully();
+            Thread.Sleep(100);
+            NativeWindows.SendAltKey('F');
+        }
+
+        // Close impression window on sign
+        if (_config.ShowImpression)
+        {
+            _searchingForImpression = false;
+            _impressionFromProcessReport = false; // Clear manual trigger flag
+            _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
+
+            // Restore normal scrape rate
+            RestartScrapeTimer(_normalScrapeIntervalMs);
+        }
     }
     
     private void PerformGetPrior()
@@ -655,7 +770,10 @@ public class ActionController : IDisposable
                 _mainForm.Invoke(() => _mainForm.ShowStatusToast("No EXAM NOTE found"));
                 return;
             }
-            
+
+            // Update clinical history window if visible
+            _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(rawNote));
+
             // Format
             var formatted = _noteFormatter.FormatNote(rawNote);
             
@@ -683,12 +801,16 @@ public class ActionController : IDisposable
         
         try
         {
-            var rawNote = _automationService.PerformClarioScrape(msg => 
+            var rawNote = _automationService.PerformClarioScrape(msg =>
             {
                 _mainForm.Invoke(() => _mainForm.ShowStatusToast(msg));
             });
+
+            // Update clinical history window if visible
+            _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(rawNote));
+
             var formatted = rawNote != null ? _noteFormatter.FormatNote(rawNote) : "No note found";
-            
+
             _mainForm.ShowDebugResults(rawNote ?? "None", formatted);
         }
         finally
@@ -876,6 +998,126 @@ public class ActionController : IDisposable
     
     #endregion
     
+    #region Mosaic Scrape Timer
+    
+    private void StartMosaicScrapeTimer()
+    {
+        if (_scrapeTimer != null) return; // Already running
+
+        Logger.Trace("Starting Mosaic scrape timer (5s interval)...");
+        _scrapeTimer = new System.Threading.Timer(_ =>
+        {
+            if (_isUserActive) return; // Don't scrape during user actions
+
+            try
+            {
+                // Only check drafted status if we need it for features
+                bool needDraftedCheck = _config.ShowDraftedIndicator || _config.ShowImpression;
+
+                // Scrape Mosaic for report data
+                var reportText = _automationService.GetFinalReportFast(needDraftedCheck);
+
+                // Update clinical history from Mosaic report (not Clario - Chrome needs focus)
+                if (_config.ShowClinicalHistory)
+                {
+                    // Pass null to clear if no report found (e.g., changing studies)
+                    _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(reportText));
+
+                    // Check template matching (red border when mismatch) if enabled
+                    if (_config.ShowTemplateMismatch)
+                    {
+                        var description = _automationService.LastDescription;
+                        var templateName = _automationService.LastTemplateName;
+                        bool bodyPartsMatch = AutomationService.DoBodyPartsMatch(description, templateName);
+                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(!bodyPartsMatch, description, templateName));
+                    }
+                    else
+                    {
+                        // Clear any existing mismatch state when disabled
+                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(false, null, null));
+                    }
+
+                    // Update drafted state (green border when drafted) if enabled
+                    // Note: Template mismatch (red) overrides drafted (green)
+                    if (_config.ShowDraftedIndicator)
+                    {
+                        bool isDrafted = _automationService.LastDraftedState;
+                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryDraftedState(isDrafted));
+                    }
+                }
+
+                // Handle impression display
+                if (_config.ShowImpression)
+                {
+                    var impression = ImpressionForm.ExtractImpression(reportText);
+                    bool isDrafted = _automationService.LastDraftedState;
+
+                    if (_searchingForImpression)
+                    {
+                        // Fast search mode after Process Report - looking for impression
+                        if (!string.IsNullOrEmpty(impression))
+                        {
+                            OnImpressionFound(impression);
+                        }
+                    }
+                    else if (_impressionFromProcessReport)
+                    {
+                        // Process Report triggered - keep updating impression until Sign Report
+                        // Don't auto-hide, just update if we have new content
+                        if (!string.IsNullOrEmpty(impression))
+                        {
+                            _mainForm.Invoke(() => _mainForm.UpdateImpression(impression));
+                        }
+                    }
+                    else if (isDrafted && !string.IsNullOrEmpty(impression))
+                    {
+                        // Auto-show impression when study is drafted (passive mode)
+                        // Only show window if not already visible to avoid flashing
+                        _mainForm.Invoke(() =>
+                        {
+                            _mainForm.ShowImpressionWindowIfNotVisible();
+                            _mainForm.UpdateImpression(impression);
+                        });
+                    }
+                    else if (!isDrafted)
+                    {
+                        // Hide impression window when study is not drafted (only for auto-shown)
+                        // Don't hide if it was manually triggered by Process Report
+                        _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"Mosaic scrape error: {ex.Message}");
+            }
+        }, null, 0, _normalScrapeIntervalMs);
+    }
+    
+    private void StopMosaicScrapeTimer()
+    {
+        if (_scrapeTimer != null)
+        {
+            Logger.Trace("Stopping Mosaic scrape timer...");
+            _scrapeTimer.Dispose();
+            _scrapeTimer = null;
+        }
+    }
+    
+    public void ToggleMosaicScraper(bool enabled)
+    {
+        if (enabled)
+        {
+            StartMosaicScrapeTimer();
+        }
+        else
+        {
+            StopMosaicScrapeTimer();
+        }
+    }
+    
+    #endregion
+    
     
     public void Dispose()
     {
@@ -883,6 +1125,7 @@ public class ActionController : IDisposable
         _actionEvent.Set();
         _actionThread.Join(500);
         _syncTimer?.Dispose();
+        _scrapeTimer?.Dispose();
         _hidService?.Dispose();
         _keyboardService?.Dispose();
         _automationService.Dispose();

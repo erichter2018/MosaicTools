@@ -22,6 +22,8 @@ public class MainForm : Form
     // Child Windows
     private FloatingToolbarForm? _toolbarWindow;
     private IndicatorForm? _indicatorWindow;
+    private ClinicalHistoryForm? _clinicalHistoryWindow;
+    private ImpressionForm? _impressionWindow;
     
     // System Tray (headless mode)
     private NotifyIcon? _trayIcon;
@@ -136,13 +138,21 @@ public class MainForm : Form
         {
             ToggleIndicator(true);
         }
-        
+
+        // Clinical History window: show if enabled and scrape mosaic is on
+        if (_config.ShowClinicalHistory && _config.ScrapeMosaicEnabled)
+        {
+            ToggleClinicalHistory(true);
+        }
+
         // Start controller (HID, hotkeys, etc.)
         _controller.Start();
         
         // Startup toast
+        var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        var versionStr = version != null ? $" v{version.Major}.{version.Minor}" : "";
         string modeStr = App.IsHeadless ? " [Headless]" : "";
-        ShowStatusToast($"Mosaic Tools Started ({_config.DoctorName}){modeStr}", 2000);
+        ShowStatusToast($"Mosaic Tools{versionStr} Started ({_config.DoctorName}){modeStr}", 2000);
     }
     
     #region Drag Logic
@@ -318,6 +328,99 @@ public class MainForm : Form
         _indicatorWindow?.SetState(isRecording);
     }
 
+    public void ToggleClinicalHistory(bool show)
+    {
+        if (show)
+        {
+            if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            {
+                _clinicalHistoryWindow = new ClinicalHistoryForm(_config);
+                _clinicalHistoryWindow.Show();
+            }
+        }
+        else
+        {
+            if (_clinicalHistoryWindow != null && !_clinicalHistoryWindow.IsDisposed)
+            {
+                _clinicalHistoryWindow.Close();
+            }
+            _clinicalHistoryWindow = null;
+        }
+    }
+
+    public void UpdateClinicalHistory(string? rawClarioText)
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        var extracted = ClinicalHistoryForm.ExtractClinicalHistory(rawClarioText);
+        _clinicalHistoryWindow.SetClinicalHistory(extracted);
+    }
+
+    public void UpdateClinicalHistoryDraftedState(bool isDrafted)
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        _clinicalHistoryWindow.SetDraftedState(isDrafted);
+    }
+
+    public void UpdateClinicalHistoryTemplateMismatch(bool isMismatch, string? description, string? templateName)
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        _clinicalHistoryWindow.SetTemplateMismatchState(isMismatch, description, templateName);
+    }
+
+    public void ShowImpressionWindow()
+    {
+        if (_impressionWindow == null || _impressionWindow.IsDisposed)
+        {
+            _impressionWindow = new ImpressionForm(_config);
+        }
+        _impressionWindow.SetImpression(null); // Show waiting message
+        if (!_impressionWindow.Visible)
+        {
+            _impressionWindow.Show();
+        }
+    }
+
+    public void ShowImpressionWindowIfNotVisible()
+    {
+        // Only create/show if not already visible - avoids flashing for auto-shown impressions
+        if (_impressionWindow != null && !_impressionWindow.IsDisposed && _impressionWindow.Visible)
+        {
+            return; // Already visible, don't reset
+        }
+
+        if (_impressionWindow == null || _impressionWindow.IsDisposed)
+        {
+            _impressionWindow = new ImpressionForm(_config);
+        }
+        if (!_impressionWindow.Visible)
+        {
+            _impressionWindow.Show();
+        }
+    }
+
+    public void HideImpressionWindow()
+    {
+        if (_impressionWindow != null && !_impressionWindow.IsDisposed)
+        {
+            _impressionWindow.Close();
+        }
+        _impressionWindow = null;
+    }
+
+    public void UpdateImpression(string? impression)
+    {
+        if (_impressionWindow == null || _impressionWindow.IsDisposed)
+            return;
+
+        _impressionWindow.SetImpression(impression);
+    }
+
     public void EnsureWindowsOnTop()
     {
         if (InvokeRequired)
@@ -329,6 +432,8 @@ public class MainForm : Form
         NativeWindows.ForceTopMost(this.Handle);
         _toolbarWindow?.EnsureOnTop();
         _indicatorWindow?.EnsureOnTop();
+        _clinicalHistoryWindow?.EnsureOnTop();
+        _impressionWindow?.EnsureOnTop();
     }
     
     #endregion
@@ -366,7 +471,9 @@ public class MainForm : Form
         _controller.Dispose();
         _toolbarWindow?.Close();
         _indicatorWindow?.Close();
-        
+        _clinicalHistoryWindow?.Close();
+        _impressionWindow?.Close();
+
         // Cleanup tray icon
         if (_trayIcon != null)
         {
