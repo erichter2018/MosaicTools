@@ -61,7 +61,9 @@
       "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" log --oneline -3)",
       "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" branch -d gendercheck)",
       "Bash(wc:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" release create:*)",
+      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" release delete v2.3.1 --yes)"
     ]
   }
 }
