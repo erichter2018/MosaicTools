@@ -63,7 +63,9 @@
       "Bash(wc:*)",
       "Bash(grep:*)",
       "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" release create:*)",
-      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" release delete v2.3.1 --yes)"
+      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" release delete v2.3.1 --yes)",
+      "Bash(git tag:*)",
+      "Bash(git push:*)"
     ]
   }
 }

@@ -1,5 +1,18 @@
 # MosaicTools Project
 
+## For New Claude Sessions
+
+This file is automatically loaded at the start of every Claude Code session. It contains everything needed to understand this codebase without re-exploring. If you're a new Claude session:
+
+1. **Don't re-analyze** - The architecture section below has the full codebase structure
+2. **Check recent commits** - Run `git log --oneline -10` to see what changed recently
+3. **Read the relevant service** - Jump straight to the file you need (paths are in Architecture section)
+4. **Build command is below** - Just use it, don't ask for confirmation
+
+If making significant changes to the codebase structure, update the Architecture section at the bottom of this file so future sessions stay current.
+
+---
+
 ## Build Instructions
 
 **IMPORTANT: When user says "build" or "rebuild", OR when you finish making code changes, just run the full build command immediately without asking for confirmation. This includes taskkill, compile, and starting the app - do it all automatically.**
@@ -84,3 +97,151 @@ When user says "create a release" or "publish release vX.X":
 ### Settings
 - **Auto-update** checkbox in General tab (ON by default)
 - **Check for Updates** button for manual checks
+
+### IMPORTANT: Version Numbers
+When releasing, you MUST update ALL THREE version fields in the csproj:
+```xml
+<Version>2.3.1</Version>
+<AssemblyVersion>2.3.1.0</AssemblyVersion>
+<FileVersion>2.3.1.0</FileVersion>
+```
+The auto-update uses `AssemblyVersion` for comparison - if it doesn't match the release tag, users get stuck in an update loop!
+
+---
+
+## Architecture Overview
+
+### Project Structure
+```
+MosaicToolsCSharp/
+├── Program.cs              # Entry point, mutex, exe normalization
+├── App.cs                  # Global state (IsHeadless flag)
+├── MosaicTools.csproj      # Project file with version info
+├── Services/               # Business logic layer
+│   ├── Configuration.cs    # Settings (JSON persistence to AppData)
+│   ├── ActionController.cs # Central coordinator for all actions
+│   ├── AutomationService.cs# UI Automation (FlaUI) for Mosaic/Clario
+│   ├── HidService.cs       # PowerMic USB HID communication
+│   ├── KeyboardService.cs  # Global hotkey registration
+│   ├── NativeWindows.cs    # Win32 API (window mgmt, keyboard sim)
+│   ├── UpdateService.cs    # GitHub release auto-update
+│   ├── NoteFormatter.cs    # Clario note parsing → critical findings
+│   ├── GetPriorService.cs  # Prior study text formatting
+│   ├── OcrService.cs       # Windows.Media.Ocr for series/image capture
+│   ├── ClipboardService.cs # Clipboard operations (STA-safe)
+│   ├── AudioService.cs     # Beep sounds for dictation feedback
+│   ├── Logger.cs           # File logging to mosaic_tools_log.txt
+│   └── InputBox.cs         # Simple text input dialog
+└── UI/                     # WinForms presentation layer
+    ├── MainForm.cs         # Main widget bar + toast system
+    ├── SettingsForm.cs     # Configuration dialog (tabbed)
+    ├── FloatingToolbarForm.cs  # Configurable button grid
+    ├── IndicatorForm.cs    # Recording state indicator light
+    ├── ClinicalHistoryForm.cs  # Clinical history display window
+    ├── ImpressionForm.cs   # Auto-show impression during drafting
+    └── ReportPopupForm.cs  # Full report viewer popup
+```
+
+### Key Data Flow
+
+**Startup Flow:**
+```
+Program.Main()
+  → Mutex check (single instance)
+  → NormalizeExecutableName() (ensures MosaicTools.exe name)
+  → Configuration.Load() (from %LOCALAPPDATA%\MosaicTools\)
+  → MainForm created
+    → ActionController created (coordinates everything)
+    → OnFormShown: starts services, checks updates
+```
+
+**Action Triggering (3 input sources):**
+```
+1. PowerMic buttons → HidService.ButtonPressed → ActionController.TriggerAction()
+2. Keyboard hotkeys → KeyboardService → ActionController.TriggerAction()
+3. Windows messages → MainForm.WndProc() → ActionController.TriggerAction()
+```
+
+**Action Execution:**
+- All actions queued to dedicated STA thread (required for clipboard/SendKeys)
+- `ActionController.ExecuteAction()` dispatches to specific `Perform*()` methods
+- Focus saved/restored around Mosaic interactions
+
+### Available Actions (defined in Configuration.cs)
+| Action | Description |
+|--------|-------------|
+| `Get Prior` | Extract prior study from InteleViewer, format, paste to Mosaic |
+| `Critical Findings` | Scrape Clario for exam note, format, paste to Mosaic |
+| `Capture Series` | OCR screen for series/image numbers, paste to Mosaic |
+| `Process Report` | Alt+P in Mosaic, optional auto-stop dictation, smart scroll |
+| `Sign Report` | Alt+F in Mosaic |
+| `Toggle Record` | Alt+R in Mosaic, with beep feedback |
+| `System Beep` | Toggle dictation state tracking with audio feedback |
+| `Show Report` | Alt+C to copy report, show in popup |
+
+### Key Services Detail
+
+**AutomationService (FlaUI-based):**
+- `FindClarioWindow()` - Locates Chrome with "Clario - Worklist"
+- `GetExamNoteElements()` - Searches DataItem elements for "EXAM NOTE"
+- `GetFinalReportFast()` - Fast scrape of Mosaic's ProseMirror editor
+- Tracks: `LastFinalReport`, `LastAccession`, `LastDraftedState`, `LastDescription`, `LastPatientGender`
+
+**HidService (HidSharp library):**
+- Connects to Nuance PowerMic (Vendor IDs: 0x0554, 0x0558)
+- Button events: `ButtonPressed`, `RecordButtonStateChanged` (for PTT mode)
+- Runs on background thread with non-blocking reads
+
+**NativeWindows (Win32 interop):**
+- Window activation: `ActivateMosaicForcefully()` - aggressive multi-attempt activation
+- Keyboard simulation: `SendAltKey()`, `SendHotkey()`, `KeyUpModifiers()`
+- Dictation state: `IsMicrophoneActiveFromRegistry()` - reads Windows mic consent store
+- Focus management: `SavePreviousFocus()`, `RestorePreviousFocus()`
+
+**NoteFormatter:**
+- Parses Clario exam notes (e.g., "Transferred Smith to Jones at 3:45 PM...")
+- Extracts: contact name, timestamp, timezone
+- Outputs: "Critical findings were discussed with and acknowledged by {name} at {time} on {date}."
+- Filters out the user's own name via `Configuration.DoctorName`
+
+### Configuration System
+- **Path:** `%LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json`
+- **Migration:** Auto-migrates from old exe-relative location
+- **First run:** Shows onboarding dialog for doctor name
+- **Key settings:**
+  - `DoctorName` - Used to filter names in note parsing
+  - `ActionMappings` - Maps actions to hotkeys and mic buttons
+  - `FloatingButtons` - Configurable button grid definition
+  - `ScrapeMosaicEnabled` - Background polling of Mosaic state
+  - Feature flags: `ShowClinicalHistory`, `ShowImpression`, `GenderCheckEnabled`, etc.
+
+### Background Timers
+1. **Sync Timer (250ms)** - Registry-based dictation state polling for indicator
+2. **Scrape Timer (configurable, default 3s)** - Mosaic UI scraping when enabled
+   - Tracks accession changes, drafted state, clinical history
+   - Speeds up to 1s when searching for impression after Process Report
+
+### UI Windows
+All forms are borderless, topmost, draggable:
+- **MainForm** - 160x40px "Mosaic Tools" bar, click for settings
+- **FloatingToolbarForm** - Dynamic button grid from `FloatingButtons` config
+- **IndicatorForm** - Small red/gray dot showing recording state
+- **ClinicalHistoryForm** - Shows extracted clinical history, color-coded warnings
+- **ImpressionForm** - Auto-shows impression section when report drafted
+
+### Headless Mode
+Launch with `-headless` flag:
+- No widget bar (invisible)
+- No hotkeys registered
+- System tray icon for settings access
+- PowerMic, floating toolbar, and toasts still work
+
+### External Dependencies
+- **FlaUI** - UI Automation wrapper (NuGet: FlaUI.UIA3)
+- **HidSharp** - USB HID communication (NuGet: HidSharp)
+- **Windows.Media.Ocr** - Built-in Windows OCR API
+
+### Common Debugging
+- **Log file:** `mosaic_tools_log.txt` in exe directory
+- **Debug scrape:** Hold Win key + trigger Critical Findings → shows raw data dialog
+- **Toast messages:** Bottom-right stacking notifications
