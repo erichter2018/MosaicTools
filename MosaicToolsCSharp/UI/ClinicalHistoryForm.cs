@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -43,6 +44,31 @@ public class ClinicalHistoryForm : Form
     // Track displayed text and whether it was "fixed" from original
     private string? _currentDisplayedText;
     private bool _currentTextWasFixed = false;
+
+    // Gender check - terms that are impossible for the opposite gender
+    // Female-only terms (flag if patient is Male)
+    private static readonly string[] FemaleOnlyTerms = {
+        "uterus", "uterine", "ovary", "ovaries", "ovarian",
+        "fallopian", "endometrium", "endometrial",
+        "vagina", "vaginal", "vulva", "vulvar",
+        "adnexa", "adnexal", "pregnancy", "pregnant", "gravid", "gestational",
+        "placenta", "placental", "fetus", "fetal"
+    };
+
+    // Male-only terms (flag if patient is Female)
+    private static readonly string[] MaleOnlyTerms = {
+        "prostate", "prostatic", "seminal vesicle", "seminal vesicles",
+        "testicle", "testis", "testes", "testicular",
+        "scrotum", "scrotal", "epididymis", "epididymal",
+        "spermatic cord", "penis", "penile", "vas deferens"
+    };
+
+    // Gender warning state
+    private bool _genderWarningActive = false;
+    private string? _genderWarningText;
+    private string? _savedClinicalHistoryText;
+    private System.Windows.Forms.Timer? _blinkTimer;
+    private bool _blinkState = false;
 
     public ClinicalHistoryForm(Configuration config)
     {
@@ -330,7 +356,7 @@ public class ClinicalHistoryForm : Form
 
         // Look for CLINICAL HISTORY section
         var match = Regex.Match(reportText,
-            @"CLINICAL HISTORY[:\s]*(.*?)(?=\b(?:TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|EXAM|PROCEDURE|INDICATION|CONCLUSION|RECOMMENDATION)\b|$)",
+            @"CLINICAL HISTORY[:\s]*(.*?)(?=\b(?:TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|PROCEDURE|CONCLUSION|RECOMMENDATION)\b|$)",
             RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
         if (!match.Success || match.Groups.Count < 2)
@@ -685,7 +711,8 @@ public class ClinicalHistoryForm : Form
         }
 
         // Common section headers that follow CLINICAL HISTORY
-        var sectionHeaders = @"TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|EXAM|PROCEDURE|INDICATION|CONCLUSION|RECOMMENDATION";
+        // Note: Don't include EXAM here - it causes false matches with "Reason for exam:" in clinical text
+        var sectionHeaders = @"TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|PROCEDURE|CONCLUSION|RECOMMENDATION";
 
         // Find "CLINICAL HISTORY" section - look for content until next section header or end
         var match = Regex.Match(rawText,
@@ -750,7 +777,8 @@ public class ClinicalHistoryForm : Form
         if (!rawText.Contains("CLINICAL HISTORY", StringComparison.OrdinalIgnoreCase))
             return (null, null);
 
-        var sectionHeaders = @"TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|EXAM|PROCEDURE|INDICATION|CONCLUSION|RECOMMENDATION";
+        // Note: Don't include EXAM here - it causes false matches with "Reason for exam:" in clinical text
+        var sectionHeaders = @"TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|PROCEDURE|CONCLUSION|RECOMMENDATION";
         var match = Regex.Match(rawText,
             $@"CLINICAL HISTORY[:\s]*(.*?)(?=\b({sectionHeaders})\b|$)",
             RegexOptions.Singleline | RegexOptions.IgnoreCase);
@@ -852,6 +880,166 @@ public class ClinicalHistoryForm : Form
         _config.ClinicalHistoryY = Location.Y + Height / 2;
         _config.Save();
     }
+
+    #endregion
+
+    #region Gender Check
+
+    /// <summary>
+    /// Check report text for gender-specific terms that don't match the patient's gender.
+    /// Returns a list of mismatched terms found in the report.
+    /// </summary>
+    public static List<string> CheckGenderMismatch(string? reportText, string? patientGender)
+    {
+        var mismatches = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(reportText) || string.IsNullOrWhiteSpace(patientGender))
+            return mismatches;
+
+        var reportLower = reportText.ToLowerInvariant();
+        var genderUpper = patientGender.ToUpperInvariant();
+
+        if (genderUpper == "MALE")
+        {
+            // Check for female-only terms in male patient's report
+            foreach (var term in FemaleOnlyTerms)
+            {
+                // Use word boundary matching to avoid partial matches
+                if (Regex.IsMatch(reportLower, $@"\b{Regex.Escape(term)}\b"))
+                {
+                    mismatches.Add(term);
+                }
+            }
+        }
+        else if (genderUpper == "FEMALE")
+        {
+            // Check for male-only terms in female patient's report
+            foreach (var term in MaleOnlyTerms)
+            {
+                if (Regex.IsMatch(reportLower, $@"\b{Regex.Escape(term)}\b"))
+                {
+                    mismatches.Add(term);
+                }
+            }
+        }
+
+        return mismatches;
+    }
+
+    /// <summary>
+    /// Set or clear the gender warning state.
+    /// When active, replaces clinical history with a blinking red warning.
+    /// </summary>
+    public void SetGenderWarning(bool active, string? patientGender, List<string>? mismatchedTerms)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(() => SetGenderWarning(active, patientGender, mismatchedTerms));
+            return;
+        }
+
+        if (active && mismatchedTerms != null && mismatchedTerms.Count > 0)
+        {
+            // Save current clinical history text if not already in warning mode
+            if (!_genderWarningActive)
+            {
+                _savedClinicalHistoryText = _contentLabel.Text;
+            }
+
+            _genderWarningActive = true;
+            _genderWarningText = $"GENDER MISMATCH!\nPatient: {patientGender}\nTerms: {string.Join(", ", mismatchedTerms)}";
+
+            // Start blinking
+            StartBlinking();
+        }
+        else
+        {
+            // Clear warning and restore clinical history
+            if (_genderWarningActive)
+            {
+                _genderWarningActive = false;
+                StopBlinking();
+
+                // Restore label background to black
+                _contentLabel.BackColor = Color.Black;
+
+                // Restore current clinical history text (set by SetClinicalHistory before this call)
+                // Use _currentDisplayedText which is kept up-to-date, not the old saved text
+                if (!string.IsNullOrEmpty(_currentDisplayedText))
+                {
+                    _contentLabel.Text = _currentDisplayedText;
+                    _contentLabel.ForeColor = _currentTextWasFixed ? FixedTextColor : NormalTextColor;
+                }
+                else if (!string.IsNullOrEmpty(_savedClinicalHistoryText))
+                {
+                    // Fallback to saved text if no current text
+                    _contentLabel.Text = _savedClinicalHistoryText;
+                    _contentLabel.ForeColor = NormalTextColor;
+                }
+
+                // Restore normal border (may be overridden by template mismatch or drafted state)
+                if (!_templateMismatch)
+                {
+                    BackColor = NormalBorderColor;
+                }
+
+                _savedClinicalHistoryText = null;
+            }
+        }
+    }
+
+    private void StartBlinking()
+    {
+        if (_blinkTimer != null) return;
+
+        _blinkState = true;
+        UpdateBlinkDisplay();
+
+        _blinkTimer = new System.Windows.Forms.Timer { Interval = 500 }; // Blink every 500ms
+        _blinkTimer.Tick += (_, _) =>
+        {
+            _blinkState = !_blinkState;
+            UpdateBlinkDisplay();
+        };
+        _blinkTimer.Start();
+    }
+
+    private void StopBlinking()
+    {
+        if (_blinkTimer != null)
+        {
+            _blinkTimer.Stop();
+            _blinkTimer.Dispose();
+            _blinkTimer = null;
+        }
+    }
+
+    private void UpdateBlinkDisplay()
+    {
+        if (!_genderWarningActive) return;
+
+        if (_blinkState)
+        {
+            // Bright red background, white text
+            BackColor = Color.FromArgb(220, 0, 0);
+            _contentLabel.BackColor = Color.FromArgb(180, 0, 0);
+            _contentLabel.ForeColor = Color.White;
+            _contentLabel.Text = _genderWarningText ?? "GENDER MISMATCH!";
+        }
+        else
+        {
+            // Darker red background
+            BackColor = Color.FromArgb(120, 0, 0);
+            _contentLabel.BackColor = Color.FromArgb(80, 0, 0);
+            _contentLabel.ForeColor = Color.FromArgb(255, 200, 200);
+            _contentLabel.Text = _genderWarningText ?? "GENDER MISMATCH!";
+        }
+    }
+
+    /// <summary>
+    /// Returns whether gender warning is currently active.
+    /// </summary>
+    public bool IsGenderWarningActive => _genderWarningActive;
 
     #endregion
 }

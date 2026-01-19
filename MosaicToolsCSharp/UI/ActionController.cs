@@ -1040,11 +1040,19 @@ public class ActionController : IDisposable
                         }
                         // Reset clinical history state on study change
                         _mainForm.Invoke(() => _mainForm.OnClinicalHistoryStudyChanged());
+                        // Hide impression window on new study
+                        _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
+                        _searchingForImpression = false;
+                        _impressionFromProcessReport = false;
                     }
                     else if (_lastKnownAccession != null)
                     {
                         // Accession disappeared (e.g., switched to worklist)
                         _mainForm.Invoke(() => _mainForm.OnClinicalHistoryStudyChanged(isNewStudy: false));
+                        // Hide impression window when no study
+                        _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
+                        _searchingForImpression = false;
+                        _impressionFromProcessReport = false;
                     }
                     _lastKnownAccession = currentAccession;
                 }
@@ -1083,6 +1091,18 @@ public class ActionController : IDisposable
                     {
                         bool isDrafted = _automationService.LastDraftedState;
                         _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryDraftedState(isDrafted));
+                    }
+
+                    // Check for gender mismatch (terms in report that don't match patient gender)
+                    if (_config.GenderCheckEnabled && !string.IsNullOrWhiteSpace(reportText))
+                    {
+                        var patientGender = _automationService.LastPatientGender;
+                        _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
+                    }
+                    else if (!_config.GenderCheckEnabled)
+                    {
+                        // Clear any existing warning when disabled
+                        _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(null, null));
                     }
                 }
 

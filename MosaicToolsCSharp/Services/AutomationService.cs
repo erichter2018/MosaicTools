@@ -34,6 +34,9 @@ public class AutomationService : IDisposable
     // Last scraped accession number
     public string? LastAccession { get; private set; }
 
+    // Last scraped patient gender ("Male", "Female", or null if unknown)
+    public string? LastPatientGender { get; private set; }
+
     // Debug flag
     private bool _hasLoggedDebugInfo = false;
     
@@ -462,6 +465,7 @@ public class AutomationService : IDisposable
             LastDescription = null; // Reset
             LastTemplateName = null; // Reset - prevents stale template from previous study causing false mismatch
             LastAccession = null; // Reset - will be set if found, stays null if no study open
+            LastPatientGender = null; // Reset - will be set if found
 
             // Extract accession: find "Current Study" text and the next text element after it
             try
@@ -504,6 +508,34 @@ public class AutomationService : IDisposable
             catch (Exception ex)
             {
                 Logger.Trace($"Accession extraction error: {ex.Message}");
+            }
+
+            // Extract patient gender: look for text matching "MALE, AGE" or "FEMALE, AGE"
+            try
+            {
+                var textElements = _cachedSlimHubWindow.FindAllDescendants(cf =>
+                    cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
+
+                foreach (var textEl in textElements)
+                {
+                    var text = textEl.Name?.ToUpperInvariant() ?? "";
+                    if (text.StartsWith("MALE, AGE") || text.StartsWith("MALE,AGE"))
+                    {
+                        LastPatientGender = "Male";
+                        Logger.Trace($"Found Patient Gender: Male");
+                        break;
+                    }
+                    else if (text.StartsWith("FEMALE, AGE") || text.StartsWith("FEMALE,AGE"))
+                    {
+                        LastPatientGender = "Female";
+                        Logger.Trace($"Found Patient Gender: Female");
+                        break;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"Gender extraction error: {ex.Message}");
             }
 
             if (checkDraftedStatus)

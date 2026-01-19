@@ -156,7 +156,7 @@ public class MainForm : Form
 
         // Startup toast
         var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
-        var versionStr = version != null ? $" v{version.Major}.{version.Minor}" : "";
+        var versionStr = version != null ? $" v{version.Major}.{version.Minor}.{version.Build}" : "";
         string modeStr = App.IsHeadless ? " [Headless]" : "";
         ShowStatusToast($"Mosaic Tools{versionStr} Started ({_config.DoctorName}){modeStr}", 2000);
 
@@ -547,6 +547,15 @@ public class MainForm : Form
             return;
 
         _clinicalHistoryWindow.UpdateTextColorFromFinalReport(finalReportText);
+    }
+
+    public void UpdateGenderCheck(string? reportText, string? patientGender)
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        var mismatches = ClinicalHistoryForm.CheckGenderMismatch(reportText, patientGender);
+        _clinicalHistoryWindow.SetGenderWarning(mismatches.Count > 0, patientGender, mismatches);
     }
 
     public void ShowImpressionWindow()

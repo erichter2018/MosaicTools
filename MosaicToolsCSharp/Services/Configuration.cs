@@ -99,6 +99,9 @@ public class Configuration
     [JsonPropertyName("show_template_mismatch")]
     public bool ShowTemplateMismatch { get; set; } = false;
 
+    [JsonPropertyName("gender_check_enabled")]
+    public bool GenderCheckEnabled { get; set; } = false;
+
     [JsonPropertyName("clinical_history_x")]
     public int ClinicalHistoryX { get; set; } = 100;
 

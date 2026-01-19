@@ -44,6 +44,7 @@ public class SettingsForm : Form
     private CheckBox _autoFixClinicalHistoryCheck = null!;
     private CheckBox _showDraftedIndicatorCheck = null!;
     private CheckBox _showTemplateMismatchCheck = null!;
+    private CheckBox _genderCheckEnabledCheck = null!;
     private CheckBox _showImpressionCheck = null!;
     private CheckBox _showLineCountToastCheck = null!;
     private NumericUpDown _scrollThreshold1 = null!;
@@ -1281,6 +1282,28 @@ Settings stored in: MosaicToolsSettings.json
         tab.Controls.Add(templateHint);
         y += 30;
 
+        // Gender Check checkbox (subset of Show Clinical History)
+        _genderCheckEnabledCheck = new CheckBox
+        {
+            Text = "Gender Check",
+            Location = new Point(60, y), // Indented further under Show Clinical History
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_genderCheckEnabledCheck);
+        y += 25;
+
+        var genderCheckHint = new Label
+        {
+            Text = "Warn if report has terms that don't match patient gender.",
+            Location = new Point(80, y),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(genderCheckHint);
+        y += 30;
+
         // Show Impression checkbox (subset of Scrape Mosaic)
         _showImpressionCheck = new CheckBox
         {
@@ -1460,11 +1483,12 @@ Settings stored in: MosaicToolsSettings.json
         _showClinicalHistoryCheck.Enabled = _scrapeMosaicCheck.Checked;
         _showImpressionCheck.Enabled = _scrapeMosaicCheck.Checked;
 
-        // Drafted indicator, template mismatch, and auto-fix depend on show clinical history being enabled
+        // Drafted indicator, template mismatch, gender check, and auto-fix depend on show clinical history being enabled
         bool clinicalHistoryEnabled = _scrapeMosaicCheck.Checked && _showClinicalHistoryCheck.Checked;
         _autoFixClinicalHistoryCheck.Enabled = clinicalHistoryEnabled;
         _showDraftedIndicatorCheck.Enabled = clinicalHistoryEnabled;
         _showTemplateMismatchCheck.Enabled = clinicalHistoryEnabled;
+        _genderCheckEnabledCheck.Enabled = clinicalHistoryEnabled;
     }
 
     private TabPage CreateTemplatesTab()
@@ -1659,6 +1683,7 @@ Settings stored in: MosaicToolsSettings.json
         _autoFixClinicalHistoryCheck.Checked = _config.AutoFixClinicalHistory;
         _showDraftedIndicatorCheck.Checked = _config.ShowDraftedIndicator;
         _showTemplateMismatchCheck.Checked = _config.ShowTemplateMismatch;
+        _genderCheckEnabledCheck.Checked = _config.GenderCheckEnabled;
         _showImpressionCheck.Checked = _config.ShowImpression;
         _scrollThreshold1.Value = _config.ScrollThreshold1;
         _scrollThreshold2.Value = _config.ScrollThreshold2;
@@ -2110,6 +2135,7 @@ When enabled, after processing a report, the tool sends Page Down keys to scroll
         _config.AutoFixClinicalHistory = _autoFixClinicalHistoryCheck.Checked;
         _config.ShowDraftedIndicator = _showDraftedIndicatorCheck.Checked;
         _config.ShowTemplateMismatch = _showTemplateMismatchCheck.Checked;
+        _config.GenderCheckEnabled = _genderCheckEnabledCheck.Checked;
         _config.ShowImpression = _showImpressionCheck.Checked;
         _config.ScrollThreshold1 = (int)_scrollThreshold1.Value;
         _config.ScrollThreshold2 = (int)_scrollThreshold2.Value;
