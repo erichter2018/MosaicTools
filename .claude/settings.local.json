@@ -51,7 +51,17 @@
       "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" checkout -b gendercheck)",
       "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" status --short)",
       "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" reset -- \"MosaicToolsCSharp/New Compressed \\(zipped\\) Folder.zip\")",
-      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" commit -m \"$\\(cat <<''EOF''\nv2.3.0: Gender check, impression auto-hide, clinical history fixes\n\n- Add gender check feature: warns when report contains terms impossible for patient''s gender \\(e.g., prostate in female patient\\)\n- Blinking red warning replaces clinical history box when gender mismatch detected\n- Hide impression window automatically on study change or when no study open\n- Fix clinical history extraction cutting off at \"Reason for exam:\" \n- Fix clinical history box staying dark red after gender warning cleared\n- Add Gender Check checkbox in Advanced settings\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" commit -m \"$\\(cat <<''EOF''\nv2.3.0: Gender check, impression auto-hide, clinical history fixes\n\n- Add gender check feature: warns when report contains terms impossible for patient''s gender \\(e.g., prostate in female patient\\)\n- Blinking red warning replaces clinical history box when gender mismatch detected\n- Hide impression window automatically on study change or when no study open\n- Fix clinical history extraction cutting off at \"Reason for exam:\" \n- Fix clinical history box staying dark red after gender warning cleared\n- Add Gender Check checkbox in Advanced settings\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" checkout main)",
+      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" merge gendercheck)",
+      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" stash:*)",
+      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" stash pop)",
+      "Bash(\"C:/Users/erik.richter/Desktop/GH CLI/gh.exe\" release create v2.3.0 \"C:/Users/erik.richter/Desktop/MosaicTools/MosaicToolsCSharp/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/MosaicTools.exe\" --title \"v2.3.0\" --notes \"$\\(cat <<''EOF''\n## What''s New\n\n- **Gender Check**: New feature that warns when a report contains anatomical terms impossible for the patient''s gender \\(e.g., \"prostate\" for a female patient, \"uterus\" for a male patient\\)\n  - Blinking red warning replaces the clinical history box when mismatch detected\n  - Shows patient gender and the offending terms\n  - Enable in Advanced settings under \"Gender Check\"\n\n- **Impression Auto-Hide**: Impression window now automatically hides when switching to a new study or when no study is open \\(fixes issue when signing via Mosaic button instead of keyboard/mic\\)\n\n- **Clinical History Fixes**:\n  - Fixed extraction cutting off at \"Reason for exam:\" text\n  - Fixed clinical history box staying dark red after gender warning cleared\n\n## Settings\n\nNew checkbox in Advanced tab: **Gender Check** - Warn if report has terms that don''t match patient gender.\nEOF\n\\)\" --repo erichter2018/MosaicTools)",
+      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" branch -a)",
+      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" log --oneline -3)",
+      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" branch -d gendercheck)",
+      "Bash(wc:*)",
+      "Bash(grep:*)"
     ]
   }
 }
