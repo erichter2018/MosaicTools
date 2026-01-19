@@ -26,10 +26,23 @@ public class ClinicalHistoryForm : Form
     private static readonly Color DraftedBorderColor = Color.FromArgb(0, 180, 0); // Green
     private static readonly Color TemplateMismatchBorderColor = Color.FromArgb(220, 50, 50); // Red
 
+    // Text colors
+    private static readonly Color NormalTextColor = Color.FromArgb(200, 200, 200); // White-ish
+    private static readonly Color FixedTextColor = Color.FromArgb(255, 255, 120); // Light yellow
+    private static readonly Color EmptyTextColor = Color.FromArgb(128, 128, 128); // Gray
+
     // Template matching state for debug
     private string? _lastDescription;
     private string? _lastTemplateName;
     private bool _templateMismatch = false;
+
+    // Auto-fix tracking - stores the cleaned text we've already auto-fixed to prevent loops
+    private string? _lastAutoFixedCleanedText;
+    private DateTime _lastAutoFixTime = DateTime.MinValue;
+
+    // Track displayed text and whether it was "fixed" from original
+    private string? _currentDisplayedText;
+    private bool _currentTextWasFixed = false;
 
     public ClinicalHistoryForm(Configuration config)
     {
@@ -134,24 +147,223 @@ public class ClinicalHistoryForm : Form
     /// <summary>
     /// Update the displayed clinical history text.
     /// </summary>
-    public void SetClinicalHistory(string? text)
+    public void SetClinicalHistory(string? text, bool wasFixed = false)
     {
         if (InvokeRequired)
         {
-            Invoke(() => SetClinicalHistory(text));
+            Invoke(() => SetClinicalHistory(text, wasFixed));
             return;
         }
 
         if (string.IsNullOrWhiteSpace(text))
         {
+            // Don't clear if we already have valid displayed text - only OnStudyChanged should clear
+            // This prevents brief "No clinical history" flashes during Process Report
+            if (!string.IsNullOrWhiteSpace(_currentDisplayedText))
+                return;
+
             _contentLabel.Text = "(No clinical history)";
-            _contentLabel.ForeColor = Color.FromArgb(128, 128, 128);
+            _contentLabel.ForeColor = EmptyTextColor;
+            _currentDisplayedText = null;
+            _currentTextWasFixed = false;
         }
         else
         {
             _contentLabel.Text = text;
-            _contentLabel.ForeColor = Color.FromArgb(200, 200, 200);
+            _currentDisplayedText = text;
+            _currentTextWasFixed = wasFixed;
+            // Set color based on fixed state - will be updated by UpdateTextColorFromFinalReport
+            _contentLabel.ForeColor = wasFixed ? FixedTextColor : NormalTextColor;
         }
+    }
+
+    /// <summary>
+    /// Set clinical history with auto-fix support.
+    /// If auto-fix is enabled and the text was modified (malformed), automatically paste to Mosaic.
+    /// </summary>
+    public void SetClinicalHistoryWithAutoFix(string? preCleaned, string? cleaned)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(() => SetClinicalHistoryWithAutoFix(preCleaned, cleaned));
+            return;
+        }
+
+        // Check if text was actually fixed (preCleaned differs from cleaned)
+        bool wasFixed = !string.IsNullOrWhiteSpace(preCleaned) &&
+                        !string.IsNullOrWhiteSpace(cleaned) &&
+                        !string.Equals(preCleaned, cleaned, StringComparison.Ordinal);
+
+        // Always update the display with fixed state
+        SetClinicalHistory(cleaned, wasFixed);
+
+        // Check if auto-fix should trigger
+        if (!_config.AutoFixClinicalHistory)
+        {
+            Logger.Trace("Auto-fix: disabled in config");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(cleaned))
+        {
+            Logger.Trace("Auto-fix: cleaned is empty");
+            return;
+        }
+
+        Logger.Trace($"Auto-fix check: wasFixed={wasFixed}, preCleaned='{preCleaned?.Substring(0, Math.Min(50, preCleaned?.Length ?? 0))}...', cleaned='{cleaned?.Substring(0, Math.Min(50, cleaned?.Length ?? 0))}...'");
+
+        if (!wasFixed)
+            return;
+
+        // Prevent loops: don't re-fix the same content
+        if (string.Equals(_lastAutoFixedCleanedText, cleaned, StringComparison.Ordinal))
+        {
+            Logger.Trace("Auto-fix: already fixed this content");
+            return;
+        }
+
+        // Prevent rapid re-firing (e.g., during report transitions)
+        var secondsSinceLastFix = (DateTime.Now - _lastAutoFixTime).TotalSeconds;
+        if (secondsSinceLastFix < 5)
+        {
+            Logger.Trace($"Auto-fix: cooldown ({secondsSinceLastFix:F1}s < 5s)");
+            return;
+        }
+
+        // All conditions met - trigger auto-fix
+        Logger.Trace($"Auto-fix triggered: preCleaned='{preCleaned}' -> cleaned='{cleaned}'");
+        _lastAutoFixedCleanedText = cleaned;
+        _lastAutoFixTime = DateTime.Now;
+
+        // Trigger the paste (this runs on background thread)
+        PasteClinicalHistoryToMosaic();
+    }
+
+    /// <summary>
+    /// Reset auto-fix tracking. Call when study changes to allow re-fixing.
+    /// </summary>
+    public void ResetAutoFixTracking()
+    {
+        _lastAutoFixedCleanedText = null;
+    }
+
+    /// <summary>
+    /// Called when study changes (accession changes). Resets all tracking state and clears display.
+    /// </summary>
+    /// <param name="isNewStudy">True if switching to a new study (show "Loading..."), false if no study (show "No clinical history")</param>
+    public void OnStudyChanged(bool isNewStudy = true)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(() => OnStudyChanged(isNewStudy));
+            return;
+        }
+
+        Logger.Trace($"ClinicalHistoryForm: Study changed (isNewStudy={isNewStudy}) - resetting state");
+
+        // Reset auto-fix tracking
+        _lastAutoFixedCleanedText = null;
+        _lastAutoFixTime = DateTime.MinValue;
+
+        // Reset template mismatch
+        _templateMismatch = false;
+        _lastDescription = null;
+        _lastTemplateName = null;
+        BackColor = NormalBorderColor;
+
+        // Clear displayed text immediately so old study's history doesn't persist
+        _contentLabel.Text = isNewStudy ? "(Loading...)" : "(No clinical history)";
+        _contentLabel.ForeColor = EmptyTextColor;
+        _currentDisplayedText = null;
+        _currentTextWasFixed = false;
+    }
+
+    /// <summary>
+    /// Update text color based on whether displayed history matches the final report.
+    /// If they match, text is white. If different (we fixed it), text is yellow.
+    /// </summary>
+    public void UpdateTextColorFromFinalReport(string? finalReportText)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(() => UpdateTextColorFromFinalReport(finalReportText));
+            return;
+        }
+
+        // If no displayed text or it wasn't fixed, nothing to do
+        if (string.IsNullOrWhiteSpace(_currentDisplayedText))
+            return;
+
+        // If it wasn't marked as fixed, keep normal color
+        if (!_currentTextWasFixed)
+        {
+            _contentLabel.ForeColor = NormalTextColor;
+            return;
+        }
+
+        // Extract clinical history from final report
+        var reportHistory = ExtractClinicalHistoryFromReport(finalReportText);
+
+        // Compare with displayed text (normalize for comparison)
+        bool matches = CompareHistoryText(_currentDisplayedText, reportHistory);
+
+        if (matches)
+        {
+            // Final report now has our fixed text - show white
+            _contentLabel.ForeColor = NormalTextColor;
+            Logger.Trace("Clinical history matches final report - text color: white");
+        }
+        else
+        {
+            // Still different - show yellow
+            _contentLabel.ForeColor = FixedTextColor;
+        }
+    }
+
+    /// <summary>
+    /// Extract clinical history text from a final report.
+    /// </summary>
+    private static string? ExtractClinicalHistoryFromReport(string? reportText)
+    {
+        if (string.IsNullOrWhiteSpace(reportText))
+            return null;
+
+        // Look for CLINICAL HISTORY section
+        var match = Regex.Match(reportText,
+            @"CLINICAL HISTORY[:\s]*\n?(.+?)(?=\n\s*(?:TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|EXAM|PROCEDURE|INDICATION|CONCLUSION|RECOMMENDATION)\s*[:\n]|$)",
+            RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+        if (!match.Success || match.Groups.Count < 2)
+            return null;
+
+        return match.Groups[1].Value.Trim();
+    }
+
+    /// <summary>
+    /// Compare two clinical history texts, normalizing whitespace and punctuation.
+    /// </summary>
+    private static bool CompareHistoryText(string? text1, string? text2)
+    {
+        if (string.IsNullOrWhiteSpace(text1) || string.IsNullOrWhiteSpace(text2))
+            return false;
+
+        // Normalize: lowercase, collapse whitespace, remove trailing punctuation
+        var norm1 = NormalizeForComparison(text1);
+        var norm2 = NormalizeForComparison(text2);
+
+        return string.Equals(norm1, norm2, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Normalize text for comparison - collapse whitespace, remove trailing punctuation.
+    /// </summary>
+    private static string NormalizeForComparison(string text)
+    {
+        // Collapse whitespace
+        var result = Regex.Replace(text, @"\s+", " ").Trim();
+        // Remove trailing period if present
+        result = result.TrimEnd('.', ',', ';', ' ');
+        return result;
     }
 
     /// <summary>
@@ -201,14 +413,71 @@ public class ClinicalHistoryForm : Form
     }
 
     /// <summary>
-    /// Handle right-click on content label - copy debug info to clipboard.
+    /// Handle mouse clicks on content label.
+    /// Left-click: paste clinical history to Mosaic
+    /// Right-click: copy debug info to clipboard
     /// </summary>
     private void OnContentLabelMouseDown(object? sender, MouseEventArgs e)
     {
-        if (e.Button == MouseButtons.Right)
+        if (e.Button == MouseButtons.Left)
+        {
+            PasteClinicalHistoryToMosaic();
+        }
+        else if (e.Button == MouseButtons.Right)
         {
             CopyDebugInfoToClipboard();
         }
+    }
+
+    /// <summary>
+    /// Paste the clinical history to Mosaic and return focus to previous window.
+    /// </summary>
+    private void PasteClinicalHistoryToMosaic()
+    {
+        var text = _contentLabel.Text;
+        if (string.IsNullOrWhiteSpace(text) || text == "(No clinical history)")
+        {
+            ShowToast("No clinical history to paste");
+            return;
+        }
+
+        // Format the text
+        var formatted = $"Clinical history: {text}.";
+
+        // Save current focus before we do anything (likely IntelliViewer)
+        NativeWindows.SavePreviousFocus();
+
+        // Set clipboard on UI thread (STA required for clipboard)
+        Clipboard.SetText(formatted);
+
+        // Run the rest on background thread to avoid blocking UI
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            try
+            {
+                System.Threading.Thread.Sleep(50);
+
+                if (!NativeWindows.ActivateMosaicForcefully())
+                {
+                    Invoke(() => ShowToast("Mosaic not found"));
+                    return;
+                }
+
+                System.Threading.Thread.Sleep(200);
+                NativeWindows.SendHotkey("ctrl+v");
+                System.Threading.Thread.Sleep(100);
+
+                // Restore focus to previous window
+                NativeWindows.RestorePreviousFocus();
+
+                Invoke(() => ShowToast("Pasted to Mosaic"));
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"PasteClinicalHistoryToMosaic error: {ex.Message}");
+                Invoke(() => ShowToast("Paste failed"));
+            }
+        });
     }
 
     /// <summary>
@@ -236,7 +505,12 @@ public class ClinicalHistoryForm : Form
     /// <summary>
     /// Show a brief toast indicating debug info was copied.
     /// </summary>
-    private void ShowCopiedToast()
+    private void ShowCopiedToast() => ShowToast("Debug copied!");
+
+    /// <summary>
+    /// Show a brief toast with a custom message.
+    /// </summary>
+    private void ShowToast(string message)
     {
         var toast = new Form
         {
@@ -244,14 +518,14 @@ public class ClinicalHistoryForm : Form
             ShowInTaskbar = false,
             TopMost = true,
             BackColor = Color.FromArgb(51, 51, 51),
-            Size = new Size(120, 30),
+            Size = new Size(140, 30),
             StartPosition = FormStartPosition.Manual,
-            Location = new Point(Location.X + Width / 2 - 60, Location.Y - 35)
+            Location = new Point(Location.X + Width / 2 - 70, Location.Y - 35)
         };
 
         var label = new Label
         {
-            Text = "Debug copied!",
+            Text = message,
             ForeColor = Color.White,
             BackColor = Color.FromArgb(51, 51, 51),
             Font = new Font("Segoe UI", 9),
@@ -297,6 +571,10 @@ public class ClinicalHistoryForm : Form
         // Collapse multiple spaces
         var cleaned = Regex.Replace(sb.ToString(), @"\s+", " ").Trim();
 
+        // Remove junk phrases and re-collapse any gaps left behind
+        cleaned = Regex.Replace(cleaned, @"Other\s*\(Please Specify\)\s*;?\s*", " ", RegexOptions.IgnoreCase);
+        cleaned = Regex.Replace(cleaned, @"\s+", " ").Trim();
+
         // Remove repeating phrases
         return RemoveRepeatingPhrases(cleaned);
     }
@@ -304,68 +582,21 @@ public class ClinicalHistoryForm : Form
     /// <summary>
     /// Detect and remove repeating phrases in text.
     /// Handles cases like:
+    /// - "fall fall fall fall" -> "fall"
     /// - "Chest Pain >18 Chest Pain >18 Chest Pain >18" -> "Chest Pain >18"
     /// - "A; B A; B B A; B" -> "A; B"
     /// </summary>
     private static string RemoveRepeatingPhrases(string text)
     {
-        if (string.IsNullOrEmpty(text) || text.Length < 10)
+        if (string.IsNullOrEmpty(text) || text.Length < 6)
             return text;
 
-        // Strategy: Find phrases that appear multiple times and keep only one instance
-        // Try different phrase lengths, starting with longer (more specific) phrases
-
         string result = text;
-        int maxPhraseLen = text.Length / 2;
 
-        // First pass: find and remove exact duplicate phrases (longer phrases first)
-        for (int phraseLen = maxPhraseLen; phraseLen >= 5; phraseLen--)
-        {
-            // Slide a window to find repeating phrases
-            for (int startPos = 0; startPos <= result.Length - phraseLen; startPos++)
-            {
-                string phrase = result.Substring(startPos, phraseLen).Trim();
-
-                // Skip if phrase is too short after trimming or starts/ends mid-word
-                if (phrase.Length < 5) continue;
-
-                // Count occurrences of this phrase
-                int count = 0;
-                int idx = 0;
-                while ((idx = result.IndexOf(phrase, idx, StringComparison.OrdinalIgnoreCase)) >= 0)
-                {
-                    count++;
-                    idx += phrase.Length;
-                }
-
-                // If phrase appears 2+ times, keep only first occurrence
-                if (count >= 2)
-                {
-                    // Remove all but first occurrence
-                    int firstOccurrence = result.IndexOf(phrase, StringComparison.OrdinalIgnoreCase);
-                    string beforeFirst = result.Substring(0, firstOccurrence + phrase.Length);
-                    string afterFirst = result.Substring(firstOccurrence + phrase.Length);
-
-                    // Remove subsequent occurrences from afterFirst
-                    while (afterFirst.IndexOf(phrase, StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        int pos = afterFirst.IndexOf(phrase, StringComparison.OrdinalIgnoreCase);
-                        afterFirst = afterFirst.Remove(pos, phrase.Length);
-                    }
-
-                    result = beforeFirst + afterFirst;
-
-                    // Clean up multiple spaces
-                    result = Regex.Replace(result, @"\s+", " ").Trim();
-
-                    // Restart with the cleaned result
-                    break;
-                }
-            }
-        }
-
-        // Second pass: check if whole string is just repetitions (simpler patterns)
-        for (int patternLen = 3; patternLen <= result.Length / 2; patternLen++)
+        // FIRST: Check if whole string is just repetitions of a simple pattern
+        // This catches "fall fall fall fall" -> "fall" before complex logic messes it up
+        // Use (Length + 1) / 2 to handle odd-length strings like "fall fall" (9 chars, pattern "fall " is 5)
+        for (int patternLen = 1; patternLen <= (result.Length + 1) / 2; patternLen++)
         {
             string pattern = result.Substring(0, patternLen);
 
@@ -381,6 +612,50 @@ public class ClinicalHistoryForm : Form
             if (string.Equals(result, expectedStr, StringComparison.OrdinalIgnoreCase))
             {
                 return pattern.Trim();
+            }
+        }
+
+        // SECOND: Find and remove CONSECUTIVE duplicate phrases only
+        // This handles cases like "Chest Pain >18 Chest Pain >18" but NOT "midepigastric pain... midepigastric region"
+        // Only remove when the same phrase appears immediately after itself (with optional whitespace/punctuation between)
+        bool foundDuplicate = true;
+        while (foundDuplicate)
+        {
+            foundDuplicate = false;
+            int maxPhraseLen = result.Length / 2;
+
+            for (int phraseLen = maxPhraseLen; phraseLen >= 5; phraseLen--)
+            {
+                for (int startPos = 0; startPos <= result.Length - phraseLen * 2; startPos++)
+                {
+                    string phrase = result.Substring(startPos, phraseLen).Trim();
+                    if (phrase.Length < 5) continue;
+
+                    // Look for the same phrase immediately following (with optional whitespace/punctuation gap)
+                    int afterFirstPhrase = startPos + phraseLen;
+
+                    // Skip whitespace and minor punctuation between potential duplicates
+                    while (afterFirstPhrase < result.Length &&
+                           (char.IsWhiteSpace(result[afterFirstPhrase]) || result[afterFirstPhrase] == ';' || result[afterFirstPhrase] == ','))
+                    {
+                        afterFirstPhrase++;
+                    }
+
+                    // Check if the phrase repeats immediately after
+                    if (afterFirstPhrase + phrase.Length <= result.Length)
+                    {
+                        string nextChunk = result.Substring(afterFirstPhrase, phrase.Length);
+                        if (string.Equals(phrase, nextChunk.Trim(), StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Found consecutive duplicate - remove the second occurrence
+                            result = result.Substring(0, startPos + phraseLen) + result.Substring(afterFirstPhrase + phrase.Length);
+                            result = Regex.Replace(result, @"\s+", " ").Trim();
+                            foundDuplicate = true;
+                            break;
+                        }
+                    }
+                }
+                if (foundDuplicate) break;
             }
         }
 
@@ -460,6 +735,78 @@ public class ClinicalHistoryForm : Form
 
         // Join and clean the text
         return CleanText(string.Join(" ", uniqueLines));
+    }
+
+    /// <summary>
+    /// Extract clinical history and return both pre-cleaned and cleaned versions.
+    /// Used to detect if fixing was needed.
+    /// </summary>
+    public static (string? preCleaned, string? cleaned) ExtractClinicalHistoryWithFixInfo(string? rawText)
+    {
+        if (string.IsNullOrWhiteSpace(rawText))
+            return (null, null);
+
+        if (!rawText.Contains("CLINICAL HISTORY", StringComparison.OrdinalIgnoreCase))
+            return (null, null);
+
+        var sectionHeaders = @"TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|EXAM|PROCEDURE|INDICATION|CONCLUSION|RECOMMENDATION";
+        var match = Regex.Match(rawText,
+            $@"CLINICAL HISTORY[:\s]*\n?(.+?)(?=\n\s*({sectionHeaders})\s*[:\n]|$)",
+            RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+        if (!match.Success || match.Groups.Count < 2)
+            return (null, null);
+
+        var content = match.Groups[1].Value.Trim();
+        if (string.IsNullOrWhiteSpace(content))
+            return (null, null);
+
+        // Capture ALL lines BEFORE deduplication for pre-cleaned comparison
+        var allLines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        var allTrimmedLines = new System.Collections.Generic.List<string>();
+        foreach (var line in allLines)
+        {
+            var trimmed = line.Trim();
+            if (!string.IsNullOrWhiteSpace(trimmed))
+                allTrimmedLines.Add(trimmed);
+        }
+
+        if (allTrimmedLines.Count == 0)
+            return (null, null);
+
+        // Pre-cleaned: BEFORE line dedup and phrase removal (just basic char cleanup)
+        var preCleanedRaw = string.Join(" ", allTrimmedLines);
+        var sb = new System.Text.StringBuilder();
+        foreach (char c in preCleanedRaw)
+        {
+            if (char.IsLetterOrDigit(c) || char.IsPunctuation(c) || char.IsWhiteSpace(c) || c == '-' || c == '/' || c == '\'')
+                sb.Append(c);
+            else if (char.IsControl(c))
+                sb.Append(' ');
+        }
+        var preCleaned = Regex.Replace(sb.ToString(), @"\s+", " ").Trim();
+
+        // Now deduplicate lines for the cleaned version
+        var uniqueLines = new System.Collections.Generic.List<string>();
+        foreach (var line in allTrimmedLines)
+        {
+            bool isDuplicate = false;
+            foreach (var existing in uniqueLines)
+            {
+                if (string.Equals(existing, line, StringComparison.OrdinalIgnoreCase))
+                {
+                    isDuplicate = true;
+                    break;
+                }
+            }
+            if (!isDuplicate)
+                uniqueLines.Add(line);
+        }
+
+        // Fully cleaned: with line dedup AND phrase removal
+        var cleaned = CleanText(string.Join(" ", uniqueLines));
+
+        return (preCleaned, cleaned);
     }
 
     public void EnsureOnTop()

@@ -39,7 +39,8 @@ public class NoteFormatter
             }
             
             // Fallback: Individual title matches (Dr. or Nurse)
-            var namePattern = @"((?:Dr\.|Nurse)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is|and|&)|\s*[-;:,]|\s+(?:Dr\.|Nurse)|\s+\d{2}/\d{2}/|$)";
+            // Stop at common verbs/prepositions that indicate end of name
+            var namePattern = @"((?:Dr\.|Nurse)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is|and|&|connected|contacted|spoke|discussed|transferred|called|notified|informed|reached|paged)|\s*[-;:,]|\s+(?:Dr\.|Nurse)|\s+\d{2}/\d{2}/|$)";
             var nameMatches = Regex.Matches(rawText, namePattern, RegexOptions.IgnoreCase);
             foreach (Match m in nameMatches)
             {

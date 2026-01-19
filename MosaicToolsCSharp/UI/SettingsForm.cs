@@ -39,7 +39,9 @@ public class SettingsForm : Form
     private CheckBox _restoreFocusCheck = null!;
     private CheckBox _scrollToBottomCheck = null!;
     private CheckBox _scrapeMosaicCheck = null!;
+    private NumericUpDown _scrapeIntervalUpDown = null!;
     private CheckBox _showClinicalHistoryCheck = null!;
+    private CheckBox _autoFixClinicalHistoryCheck = null!;
     private CheckBox _showDraftedIndicatorCheck = null!;
     private CheckBox _showTemplateMismatchCheck = null!;
     private CheckBox _showImpressionCheck = null!;
@@ -1160,15 +1162,36 @@ Settings stored in: MosaicToolsSettings.json
         tab.Controls.Add(restoreFocusHint);
         y += 30;
 
-        // Scrape Mosaic checkbox (First)
+        // Scrape Mosaic checkbox with interval selector on same line
         _scrapeMosaicCheck = new CheckBox
         {
-            Text = "Scrape Mosaic",
+            Text = "Scrape Mosaic every",
             Location = new Point(20, y),
             ForeColor = Color.White,
             AutoSize = true
         };
         tab.Controls.Add(_scrapeMosaicCheck);
+
+        _scrapeIntervalUpDown = new NumericUpDown
+        {
+            Location = new Point(_scrapeMosaicCheck.Right + 5, y - 2),
+            Width = 50,
+            Minimum = 1,
+            Maximum = 30,
+            Value = 3,
+            BackColor = Color.FromArgb(45, 45, 48),
+            ForeColor = Color.White
+        };
+        tab.Controls.Add(_scrapeIntervalUpDown);
+
+        var secondsLabel = new Label
+        {
+            Text = "seconds",
+            Location = new Point(_scrapeIntervalUpDown.Right + 5, y + 2),
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(secondsLabel);
         y += 25;
 
         var scrapeHint = new Label
@@ -1191,18 +1214,28 @@ Settings stored in: MosaicToolsSettings.json
             AutoSize = true
         };
         tab.Controls.Add(_showClinicalHistoryCheck);
+
+        // Auto-fix checkbox on same line
+        _autoFixClinicalHistoryCheck = new CheckBox
+        {
+            Text = "auto-fix",
+            Location = new Point(_showClinicalHistoryCheck.Right + 20, y),
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_autoFixClinicalHistoryCheck);
         y += 25;
 
         var clinicalHint = new Label
         {
-            Text = "Display clinical history from Clario in a floating box.",
+            Text = "Click to paste into Mosaic. Auto-fix pastes automatically when malformed.\nYellow text = fixed version not yet in final report. White = matches report.",
             Location = new Point(60, y),
-            AutoSize = true,
+            Size = new Size(380, 28),
             ForeColor = Color.Gray,
             Font = new Font("Segoe UI", 8)
         };
         tab.Controls.Add(clinicalHint);
-        y += 25;
+        y += 35;
 
         // Show Drafted Indicator checkbox (subset of Show Clinical History)
         _showDraftedIndicatorCheck = new CheckBox
@@ -1427,8 +1460,9 @@ Settings stored in: MosaicToolsSettings.json
         _showClinicalHistoryCheck.Enabled = _scrapeMosaicCheck.Checked;
         _showImpressionCheck.Enabled = _scrapeMosaicCheck.Checked;
 
-        // Drafted indicator and template mismatch depend on show clinical history being enabled
+        // Drafted indicator, template mismatch, and auto-fix depend on show clinical history being enabled
         bool clinicalHistoryEnabled = _scrapeMosaicCheck.Checked && _showClinicalHistoryCheck.Checked;
+        _autoFixClinicalHistoryCheck.Enabled = clinicalHistoryEnabled;
         _showDraftedIndicatorCheck.Enabled = clinicalHistoryEnabled;
         _showTemplateMismatchCheck.Enabled = clinicalHistoryEnabled;
     }
@@ -1620,7 +1654,9 @@ Settings stored in: MosaicToolsSettings.json
         _scrollToBottomCheck.Checked = _config.ScrollToBottomOnProcess;
         _showLineCountToastCheck.Checked = _config.ShowLineCountToast;
         _scrapeMosaicCheck.Checked = _config.ScrapeMosaicEnabled;
+        _scrapeIntervalUpDown.Value = Math.Clamp(_config.ScrapeIntervalSeconds, 1, 30);
         _showClinicalHistoryCheck.Checked = _config.ShowClinicalHistory;
+        _autoFixClinicalHistoryCheck.Checked = _config.AutoFixClinicalHistory;
         _showDraftedIndicatorCheck.Checked = _config.ShowDraftedIndicator;
         _showTemplateMismatchCheck.Checked = _config.ShowTemplateMismatch;
         _showImpressionCheck.Checked = _config.ShowImpression;
@@ -1872,12 +1908,24 @@ SCRAPE MOSAIC
 ═════════════
 Enables background monitoring of the Mosaic report editor. This powers several sub-features below. The tool reads the report content every few seconds.
 
+ACCESSION TRACKING
+When you switch to a new study, a toast notification shows the new accession number. This also resets all tracking state (auto-fix, template mismatch, etc.) so each study starts fresh.
+
   SHOW CLINICAL HISTORY
   ─────────────────────
-  Displays a floating window showing the clinical history from the current report. This keeps the relevant patient info visible while you review images.
+  Displays a floating window showing the clinical history from the current report. The history is automatically cleaned (removes duplicates, junk text, fixes formatting).
 
   • Drag the ⋯ handle to reposition the window.
+  • Left-click to paste the cleaned history into Mosaic's transcript box.
+  • Right-click to copy debug info to clipboard.
   • The window auto-updates when you switch studies.
+
+  TEXT COLOR INDICATOR
+  • Yellow text: The displayed history was cleaned/fixed and differs from what's in the final report. This means the fix hasn't been processed into the report yet.
+  • White text: The displayed history matches the final report (fix was processed, or no fix was needed).
+
+    AUTO-FIX
+    When enabled, automatically pastes the cleaned history into Mosaic when malformed text is detected. This saves you from manually clicking to paste.
 
     INDICATE DRAFTED STATUS
     Shows a GREEN border around the clinical history window when the current study has a drafted report. This helps you quickly see if you've already started a report.
@@ -2057,7 +2105,9 @@ When enabled, after processing a report, the tool sends Page Down keys to scroll
         _config.ScrollToBottomOnProcess = _scrollToBottomCheck.Checked;
         _config.ShowLineCountToast = _showLineCountToastCheck.Checked;
         _config.ScrapeMosaicEnabled = _scrapeMosaicCheck.Checked;
+        _config.ScrapeIntervalSeconds = (int)_scrapeIntervalUpDown.Value;
         _config.ShowClinicalHistory = _showClinicalHistoryCheck.Checked;
+        _config.AutoFixClinicalHistory = _autoFixClinicalHistoryCheck.Checked;
         _config.ShowDraftedIndicator = _showDraftedIndicatorCheck.Checked;
         _config.ShowTemplateMismatch = _showTemplateMismatchCheck.Checked;
         _config.ShowImpression = _showImpressionCheck.Checked;

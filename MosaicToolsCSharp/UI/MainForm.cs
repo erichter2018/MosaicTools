@@ -516,8 +516,9 @@ public class MainForm : Form
         if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
             return;
 
-        var extracted = ClinicalHistoryForm.ExtractClinicalHistory(rawClarioText);
-        _clinicalHistoryWindow.SetClinicalHistory(extracted);
+        // Use the version that returns both pre-cleaned and cleaned for auto-fix detection
+        var (preCleaned, cleaned) = ClinicalHistoryForm.ExtractClinicalHistoryWithFixInfo(rawClarioText);
+        _clinicalHistoryWindow.SetClinicalHistoryWithAutoFix(preCleaned, cleaned);
     }
 
     public void UpdateClinicalHistoryDraftedState(bool isDrafted)
@@ -534,6 +535,22 @@ public class MainForm : Form
             return;
 
         _clinicalHistoryWindow.SetTemplateMismatchState(isMismatch, description, templateName);
+    }
+
+    public void OnClinicalHistoryStudyChanged(bool isNewStudy = true)
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        _clinicalHistoryWindow.OnStudyChanged(isNewStudy);
+    }
+
+    public void UpdateClinicalHistoryTextColor(string? finalReportText)
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        _clinicalHistoryWindow.UpdateTextColorFromFinalReport(finalReportText);
     }
 
     public void ShowImpressionWindow()

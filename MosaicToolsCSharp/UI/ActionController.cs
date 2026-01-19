@@ -43,7 +43,8 @@ public class ActionController : IDisposable
     // Impression search state
     private bool _searchingForImpression = false;
     private bool _impressionFromProcessReport = false; // True if opened by Process Report (stays until Sign)
-    private int _normalScrapeIntervalMs = 5000;
+    private DateTime _impressionSearchStartTime; // When we started searching - used for initial delay
+    private int NormalScrapeIntervalMs => _config.ScrapeIntervalSeconds * 1000;
     private int _fastScrapeIntervalMs = 1000;
     private int _postImpressionScrapeIntervalMs = 3000;
 
@@ -54,6 +55,9 @@ public class ActionController : IDisposable
     private System.Threading.Timer? _scrapeTimer;
     private DateTime _lastManualToggleTime = DateTime.MinValue;
     private int _consecutiveInactiveCount = 0; // For indicator debounce
+
+    // Accession tracking
+    private string? _lastKnownAccession;
     
     public ActionController(Configuration config, MainForm mainForm)
     {
@@ -594,6 +598,7 @@ public class ActionController : IDisposable
         Logger.Trace("Starting impression search (fast scrape mode)...");
         _searchingForImpression = true;
         _impressionFromProcessReport = true; // Mark as manually triggered - stays until Sign Report
+        _impressionSearchStartTime = DateTime.Now; // Track when we started - wait 2s before showing
 
         // Show the impression window with waiting message
         _mainForm.Invoke(() => _mainForm.ShowImpressionWindow());
@@ -652,7 +657,7 @@ public class ActionController : IDisposable
             _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
 
             // Restore normal scrape rate
-            RestartScrapeTimer(_normalScrapeIntervalMs);
+            RestartScrapeTimer(NormalScrapeIntervalMs);
         }
     }
     
@@ -1009,7 +1014,7 @@ public class ActionController : IDisposable
     {
         if (_scrapeTimer != null) return; // Already running
 
-        Logger.Trace("Starting Mosaic scrape timer (5s interval)...");
+        Logger.Trace($"Starting Mosaic scrape timer ({_config.ScrapeIntervalSeconds}s interval)...");
         _scrapeTimer = new System.Threading.Timer(_ =>
         {
             if (_isUserActive) return; // Don't scrape during user actions
@@ -1022,11 +1027,41 @@ public class ActionController : IDisposable
                 // Scrape Mosaic for report data
                 var reportText = _automationService.GetFinalReportFast(needDraftedCheck);
 
+                // Check for accession change and reset state
+                var currentAccession = _automationService.LastAccession;
+                if (currentAccession != _lastKnownAccession)
+                {
+                    if (!string.IsNullOrEmpty(currentAccession))
+                    {
+                        // New study detected
+                        if (_lastKnownAccession != null) // Don't toast on first detection
+                        {
+                            _mainForm.Invoke(() => _mainForm.ShowStatusToast($"New Study: {currentAccession}", 3000));
+                        }
+                        // Reset clinical history state on study change
+                        _mainForm.Invoke(() => _mainForm.OnClinicalHistoryStudyChanged());
+                    }
+                    else if (_lastKnownAccession != null)
+                    {
+                        // Accession disappeared (e.g., switched to worklist)
+                        _mainForm.Invoke(() => _mainForm.OnClinicalHistoryStudyChanged(isNewStudy: false));
+                    }
+                    _lastKnownAccession = currentAccession;
+                }
+
                 // Update clinical history from Mosaic report (not Clario - Chrome needs focus)
                 if (_config.ShowClinicalHistory)
                 {
-                    // Pass null to clear if no report found (e.g., changing studies)
-                    _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(reportText));
+                    // Only update if we have content - don't clear during brief processing gaps
+                    // (when report temporarily disappears but we're still on the same accession)
+                    if (!string.IsNullOrWhiteSpace(reportText))
+                    {
+                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(reportText));
+
+                        // Update text color based on whether displayed history matches final report
+                        // Yellow = our fixed version differs from report, White = they match
+                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryTextColor(reportText));
+                    }
 
                     // Check template matching (red border when mismatch) if enabled
                     if (_config.ShowTemplateMismatch)
@@ -1060,9 +1095,14 @@ public class ActionController : IDisposable
                     if (_searchingForImpression)
                     {
                         // Fast search mode after Process Report - looking for impression
+                        // Wait 2 seconds before showing to let RadPair finish initial processing
                         if (!string.IsNullOrEmpty(impression))
                         {
-                            OnImpressionFound(impression);
+                            var elapsed = (DateTime.Now - _impressionSearchStartTime).TotalSeconds;
+                            if (elapsed >= 2.0)
+                            {
+                                OnImpressionFound(impression);
+                            }
                         }
                     }
                     else if (_impressionFromProcessReport)
@@ -1096,7 +1136,7 @@ public class ActionController : IDisposable
             {
                 Logger.Trace($"Mosaic scrape error: {ex.Message}");
             }
-        }, null, 0, _normalScrapeIntervalMs);
+        }, null, 0, NormalScrapeIntervalMs);
     }
     
     private void StopMosaicScrapeTimer()
@@ -1113,6 +1153,8 @@ public class ActionController : IDisposable
     {
         if (enabled)
         {
+            // Stop and restart to pick up any interval changes from settings
+            StopMosaicScrapeTimer();
             StartMosaicScrapeTimer();
         }
         else

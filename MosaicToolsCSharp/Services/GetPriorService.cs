@@ -149,15 +149,17 @@ public class GetPriorService
     {
         var match = Regex.Match(text, @"MR.*SIGNXED", RegexOptions.IgnoreCase);
         if (!match.Success) return "";
-        
+
         var desc = match.Value;
         desc = Regex.Replace(desc, @"^MR", "", RegexOptions.IgnoreCase);
         desc = desc.Replace(" SIGNXED", "").Trim();
         desc = desc.Replace(" + ", " and ").Replace(" W/O", " without").Replace(" W/", " with");
         desc = desc.Replace(" W WO", " with and without").Replace(" WO", " without").Replace(" IV ", " ");
-        
+        // Normalize "without then with" to "with and without"
+        desc = Regex.Replace(desc, @"\s+without\s+then\s+with\b", " with and without", RegexOptions.IgnoreCase);
+
         desc = ReorderLaterality(desc.ToLower());
-        
+
         bool modifierFound = false;
         if (desc.Contains(" mra") || desc.Contains(" mrv"))
         {
@@ -188,10 +190,10 @@ public class GetPriorService
             desc = Regex.Replace(desc, @"\s+(with)", " MR $1", RegexOptions.IgnoreCase);
             modifierFound = true;
         }
-        
+
         if (!modifierFound)
             desc += " MR";
-        
+
         return desc;
     }
     
@@ -283,7 +285,9 @@ public class GetPriorService
         desc = desc.Replace("abdomen/pelvis", "abdomen and pelvis").Replace("chest/abdomen/pelvis", "chest, abdomen, and pelvis");
         desc = desc.Replace("Thorax", "chest").Replace("thorax", "chest").Replace("P.E", "PE").Replace("p.e", "PE");
         desc = Regex.Replace(desc, @"\s+protocol\s*$", "", RegexOptions.IgnoreCase);
-        
+        // Normalize "without then with" to "with and without"
+        desc = Regex.Replace(desc, @"\s+without\s+then\s+with\b", " with and without", RegexOptions.IgnoreCase);
+
         desc = ReorderLaterality(desc.ToLower());
         
         bool modifierFound = false;

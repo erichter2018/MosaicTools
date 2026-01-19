@@ -31,6 +31,9 @@ public class AutomationService : IDisposable
     // Last template name from final report (2nd line after EXAM:)
     public string? LastTemplateName { get; private set; }
 
+    // Last scraped accession number
+    public string? LastAccession { get; private set; }
+
     // Debug flag
     private bool _hasLoggedDebugInfo = false;
     
@@ -454,9 +457,54 @@ public class AutomationService : IDisposable
                 return null;
             }
 
-            // Single traversal: find DRAFTED status, Report document, and Description
+            // Single traversal: find DRAFTED status, Report document, Description, and Accession
             AutomationElement? reportDoc = null;
             LastDescription = null; // Reset
+            LastTemplateName = null; // Reset - prevents stale template from previous study causing false mismatch
+            LastAccession = null; // Reset - will be set if found, stays null if no study open
+
+            // Extract accession: find "Current Study" text and the next text element after it
+            try
+            {
+                var currentStudyElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
+                    cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text)
+                    .And(cf.ByName("Current Study")));
+
+                if (currentStudyElement != null)
+                {
+                    // Get parent and find all Text children
+                    var parent = currentStudyElement.Parent;
+                    if (parent != null)
+                    {
+                        var textElements = parent.FindAllChildren(cf =>
+                            cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
+
+                        bool foundCurrentStudy = false;
+                        foreach (var textEl in textElements)
+                        {
+                            if (foundCurrentStudy)
+                            {
+                                // This is the element after "Current Study" - should be accession
+                                var accession = textEl.Name?.Trim();
+                                if (!string.IsNullOrWhiteSpace(accession) && accession != "Current Study")
+                                {
+                                    LastAccession = accession;
+                                    Logger.Trace($"Found Accession: {LastAccession}");
+                                }
+                                break;
+                            }
+                            if (textEl.Name == "Current Study")
+                            {
+                                foundCurrentStudy = true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"Accession extraction error: {ex.Message}");
+            }
 
             if (checkDraftedStatus)
             {
@@ -751,6 +799,7 @@ public class AutomationService : IDisposable
                     "L-SPINE" or "LSPINE" => "LUMBAR",
                     "THORAX" => "CHEST",
                     "LUNG" => "CHEST",
+                    "BRAIN" => "HEAD", // Brain CT = Head CT
                     "ANGIOGRAPHY" or "ANGIOGRAM" => "CTA", // Normalize angio terms
                     "AORTIC" => "AORTA",
                     "FACIAL" or "MAXILLOFACIAL" => "FACE",

@@ -84,8 +84,14 @@ public class Configuration
     [JsonPropertyName("scrape_mosaic_enabled")]
     public bool ScrapeMosaicEnabled { get; set; } = false;
 
+    [JsonPropertyName("scrape_interval_seconds")]
+    public int ScrapeIntervalSeconds { get; set; } = 3;
+
     [JsonPropertyName("show_clinical_history")]
     public bool ShowClinicalHistory { get; set; } = false;
+
+    [JsonPropertyName("auto_fix_clinical_history")]
+    public bool AutoFixClinicalHistory { get; set; } = false;
 
     [JsonPropertyName("show_drafted_indicator")]
     public bool ShowDraftedIndicator { get; set; } = false;
