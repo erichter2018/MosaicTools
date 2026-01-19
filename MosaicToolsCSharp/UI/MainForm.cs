@@ -193,6 +193,13 @@ public class MainForm : Form
     /// </summary>
     public async System.Threading.Tasks.Task CheckForUpdatesManualAsync()
     {
+        // If update already downloaded and ready, just show the toast again
+        if (_updateService.UpdateReady)
+        {
+            ShowUpdateToast($"MosaicTools v{_updateService.LatestVersion} ready!");
+            return;
+        }
+
         ShowStatusToast("Checking for updates...", 2000);
 
         var updateAvailable = await _updateService.CheckForUpdateAsync();
@@ -212,7 +219,7 @@ public class MainForm : Form
         else
         {
             var currentVersion = UpdateService.GetCurrentVersion();
-            ShowStatusToast($"You're up to date (v{currentVersion.Major}.{currentVersion.Minor})", 3000);
+            ShowStatusToast($"You're up to date (v{currentVersion.Major}.{currentVersion.Minor}.{currentVersion.Build})", 3000);
         }
     }
     

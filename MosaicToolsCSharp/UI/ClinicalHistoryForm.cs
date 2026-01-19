@@ -157,9 +157,9 @@ public class ClinicalHistoryForm : Form
 
         if (string.IsNullOrWhiteSpace(text))
         {
-            // Don't clear if we already have valid displayed text - only OnStudyChanged should clear
-            // This prevents brief "No clinical history" flashes during Process Report
-            if (!string.IsNullOrWhiteSpace(_currentDisplayedText))
+            // If text is null, we couldn't find CLINICAL HISTORY section - persist old text
+            // If text is empty string, section exists but is empty - show "(No clinical history)"
+            if (text == null && !string.IsNullOrWhiteSpace(_currentDisplayedText))
                 return;
 
             _contentLabel.Text = "(No clinical history)";
@@ -330,7 +330,7 @@ public class ClinicalHistoryForm : Form
 
         // Look for CLINICAL HISTORY section
         var match = Regex.Match(reportText,
-            @"CLINICAL HISTORY[:\s]*\n?(.+?)(?=\n\s*(?:TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|EXAM|PROCEDURE|INDICATION|CONCLUSION|RECOMMENDATION)\s*[:\n]|$)",
+            @"CLINICAL HISTORY[:\s]*(.*?)(?=\b(?:TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|EXAM|PROCEDURE|INDICATION|CONCLUSION|RECOMMENDATION)\b|$)",
             RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
         if (!match.Success || match.Groups.Count < 2)
@@ -689,7 +689,7 @@ public class ClinicalHistoryForm : Form
 
         // Find "CLINICAL HISTORY" section - look for content until next section header or end
         var match = Regex.Match(rawText,
-            $@"CLINICAL HISTORY[:\s]*\n?(.+?)(?=\n\s*({sectionHeaders})\s*[:\n]|$)",
+            $@"CLINICAL HISTORY[:\s]*(.*?)(?=\b({sectionHeaders})\b|$)",
             RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
         if (!match.Success || match.Groups.Count < 2)
@@ -702,8 +702,9 @@ public class ClinicalHistoryForm : Form
 
         var content = match.Groups[1].Value.Trim();
 
+        // Section exists but is empty - return empty string (not null)
         if (string.IsNullOrWhiteSpace(content))
-            return null;
+            return string.Empty;
 
         // Deduplicate: split into lines and remove consecutive duplicates
         var lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -751,15 +752,17 @@ public class ClinicalHistoryForm : Form
 
         var sectionHeaders = @"TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|EXAM|PROCEDURE|INDICATION|CONCLUSION|RECOMMENDATION";
         var match = Regex.Match(rawText,
-            $@"CLINICAL HISTORY[:\s]*\n?(.+?)(?=\n\s*({sectionHeaders})\s*[:\n]|$)",
+            $@"CLINICAL HISTORY[:\s]*(.*?)(?=\b({sectionHeaders})\b|$)",
             RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
         if (!match.Success || match.Groups.Count < 2)
             return (null, null);
 
         var content = match.Groups[1].Value.Trim();
+
+        // Section exists but is empty - return empty strings (not null)
         if (string.IsNullOrWhiteSpace(content))
-            return (null, null);
+            return (string.Empty, string.Empty);
 
         // Capture ALL lines BEFORE deduplication for pre-cleaned comparison
         var allLines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -772,7 +775,7 @@ public class ClinicalHistoryForm : Form
         }
 
         if (allTrimmedLines.Count == 0)
-            return (null, null);
+            return (string.Empty, string.Empty);
 
         // Pre-cleaned: BEFORE line dedup and phrase removal (just basic char cleanup)
         var preCleanedRaw = string.Join(" ", allTrimmedLines);

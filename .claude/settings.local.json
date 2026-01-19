@@ -35,7 +35,13 @@
       "Bash(\"c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe\" publish:*)",
       "Bash(git push)",
       "Bash(git branch:*)",
-      "Bash(powershell -Command:*)"
+      "Bash(powershell -Command:*)",
+      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" release list --repo erichter2018/MosaicTools)",
+      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" status)",
+      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" log --oneline -5)",
+      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" diff --stat)",
+      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" add:*)",
+      "Bash(git -C \"C:/Users/erik.richter/Desktop/MosaicTools\" commit -m \"v2.2.2: UI improvements and bug fixes\")"
     ]
   }
 }
