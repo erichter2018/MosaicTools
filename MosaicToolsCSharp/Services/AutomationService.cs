@@ -711,7 +711,7 @@ public class AutomationService : IDisposable
         "ANGIOGRAPHY", "ANGIOGRAM", "VENOGRAM",
         "PULMONARY VEINS", "PULMONARY ARTERIES", "PULMONARY EMBOLISM", "PE PROTOCOL",
         "AORTA", "AORTIC", "RUNOFF", "CAROTID",
-        "SINUS", "ORBIT", "FACE", "FACIAL", "TEMPORAL", "IAC",
+        "SINUS", "ORBIT", "FACE", "FACIAL", "MAXILLOFACIAL", "TEMPORAL", "IAC",
         "RENAL", "KIDNEY", "UROGRAM", "ENTEROGRAPHY", "LIVER", "PANCREAS"
     };
 
@@ -753,6 +753,7 @@ public class AutomationService : IDisposable
                     "LUNG" => "CHEST",
                     "ANGIOGRAPHY" or "ANGIOGRAM" => "CTA", // Normalize angio terms
                     "AORTIC" => "AORTA",
+                    "FACIAL" or "MAXILLOFACIAL" => "FACE",
                     _ => part
                 };
                 result.Add(normalized);

@@ -33,7 +33,10 @@ public class Configuration
     // General
     [JsonPropertyName("doctor_name")]
     public string DoctorName { get; set; } = "Radiologist";
-    
+
+    [JsonPropertyName("auto_update_enabled")]
+    public bool AutoUpdateEnabled { get; set; } = true;
+
     // Beep Settings
     [JsonPropertyName("start_beep_enabled")]
     public bool StartBeepEnabled { get; set; } = true;
@@ -243,7 +246,6 @@ public class Configuration
             {
                 [Actions.GetPrior] = new() { Hotkey = "", MicButton = "Left Button" },
                 [Actions.CriticalFindings] = new() { Hotkey = "", MicButton = "Skip Forward" },
-                [Actions.DebugScrape] = new() { Hotkey = "", MicButton = "T Button" },
                 [Actions.SystemBeep] = new() { Hotkey = "", MicButton = "" },
                 [Actions.ShowReport] = new() { Hotkey = "", MicButton = "" },
                 [Actions.CaptureSeries] = new() { Hotkey = "", MicButton = "Right Button" },
@@ -333,15 +335,14 @@ public static class Actions
     public const string SystemBeep = "System Beep";
     public const string GetPrior = "Get Prior";
     public const string CriticalFindings = "Critical Findings";
-    public const string DebugScrape = "Debug Scrape";
     public const string ShowReport = "Show Report";
     public const string CaptureSeries = "Capture Series/Image";
     public const string ToggleRecord = "Start/Stop Recording";
     public const string ProcessReport = "Process Report";
     public const string SignReport = "Sign Report";
-    
+
     public static readonly string[] All = {
-        None, SystemBeep, GetPrior, CriticalFindings, DebugScrape,
+        None, SystemBeep, GetPrior, CriticalFindings,
         ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport
     };
 }

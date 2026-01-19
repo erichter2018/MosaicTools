@@ -267,10 +267,9 @@ public class ActionController : IDisposable
                 PerformGetPrior();
                 break;
             case Actions.CriticalFindings:
-                PerformCriticalFindings();
-                break;
-            case Actions.DebugScrape:
-                PerformDebugScrape();
+                // Win key held = debug mode
+                bool debugMode = _keyboardService.IsWinKeyHeld();
+                PerformCriticalFindings(debugMode);
                 break;
             case Actions.ShowReport:
                 PerformShowReport();
@@ -751,20 +750,51 @@ public class ActionController : IDisposable
         }
     }
     
-    private void PerformCriticalFindings()
+    private void PerformCriticalFindings(bool debugMode = false)
     {
         _isUserActive = true;
+
+        if (debugMode)
+        {
+            // Debug mode: scrape but show dialog instead of pasting
+            Logger.Trace("Critical Findings DEBUG MODE");
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Debug mode: Scraping Clario...", 2000));
+
+            try
+            {
+                var rawNote = _automationService.PerformClarioScrape(msg =>
+                {
+                    _mainForm.Invoke(() => _mainForm.ShowStatusToast(msg));
+                });
+
+                // Update clinical history window if visible
+                _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(rawNote));
+
+                var formatted = rawNote != null ? _noteFormatter.FormatNote(rawNote) : "No note found";
+
+                _mainForm.ShowDebugResults(rawNote ?? "None", formatted);
+                _mainForm.Invoke(() => _mainForm.ShowStatusToast(
+                    "Debug complete. Review the raw data above to troubleshoot extraction.", 10000));
+            }
+            finally
+            {
+                _isUserActive = false;
+            }
+            return;
+        }
+
+        // Normal mode: scrape and paste
         Logger.Trace("Critical Findings (Clario Scrape)");
         _mainForm.Invoke(() => _mainForm.ShowStatusToast("Scraping Clario..."));
-        
+
         try
         {
             // Scrape with repeating toast callback
-            var rawNote = _automationService.PerformClarioScrape(msg => 
+            var rawNote = _automationService.PerformClarioScrape(msg =>
             {
                 _mainForm.Invoke(() => _mainForm.ShowStatusToast(msg));
             });
-            
+
             if (string.IsNullOrEmpty(rawNote))
             {
                 _mainForm.Invoke(() => _mainForm.ShowStatusToast("No EXAM NOTE found"));
@@ -776,42 +806,17 @@ public class ActionController : IDisposable
 
             // Format
             var formatted = _noteFormatter.FormatNote(rawNote);
-            
+
             // Paste into Mosaic
             ClipboardService.SetText(formatted);
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(200);
-            
+
             NativeWindows.SendHotkey("ctrl+v");
-            
+
             Logger.Trace($"Critical Findings complete: {formatted}");
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Critical findings inserted"));
-        }
-        finally
-        {
-            _isUserActive = false;
-        }
-    }
-    
-    private void PerformDebugScrape()
-    {
-        _isUserActive = true;
-        Logger.Trace("Debug Scrape");
-        _mainForm.Invoke(() => _mainForm.ShowStatusToast("Debug scraping..."));
-        
-        try
-        {
-            var rawNote = _automationService.PerformClarioScrape(msg =>
-            {
-                _mainForm.Invoke(() => _mainForm.ShowStatusToast(msg));
-            });
-
-            // Update clinical history window if visible
-            _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(rawNote));
-
-            var formatted = rawNote != null ? _noteFormatter.FormatNote(rawNote) : "No note found";
-
-            _mainForm.ShowDebugResults(rawNote ?? "None", formatted);
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast(
+                "Critical findings inserted.\nHold Win key and trigger again to debug.", 20000));
         }
         finally
         {

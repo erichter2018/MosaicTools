@@ -34,7 +34,10 @@ public class MainForm : Form
     
     // Toast management
     private readonly List<Form> _activeToasts = new();
-    
+
+    // Update service
+    private readonly UpdateService _updateService = new();
+
     public MainForm(Configuration config)
     {
         _config = config;
@@ -147,12 +150,70 @@ public class MainForm : Form
 
         // Start controller (HID, hotkeys, etc.)
         _controller.Start();
-        
+
+        // Clean up old version from previous update
+        UpdateService.CleanupOldVersion();
+
         // Startup toast
         var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
         var versionStr = version != null ? $" v{version.Major}.{version.Minor}" : "";
         string modeStr = App.IsHeadless ? " [Headless]" : "";
         ShowStatusToast($"Mosaic Tools{versionStr} Started ({_config.DoctorName}){modeStr}", 2000);
+
+        // Check for updates (async, non-blocking)
+        if (_config.AutoUpdateEnabled)
+        {
+            _ = CheckForUpdatesAsync();
+        }
+    }
+
+    private async System.Threading.Tasks.Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            var updateAvailable = await _updateService.CheckForUpdateAsync();
+            if (updateAvailable)
+            {
+                ShowStatusToast($"Downloading update v{_updateService.LatestVersion}...", 3000);
+                var success = await _updateService.DownloadUpdateAsync();
+                if (success)
+                {
+                    Invoke(() => ShowUpdateToast($"Update v{_updateService.LatestVersion} ready!", 20000));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Update check error: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Trigger update check manually (from Settings).
+    /// </summary>
+    public async System.Threading.Tasks.Task CheckForUpdatesManualAsync()
+    {
+        ShowStatusToast("Checking for updates...", 2000);
+
+        var updateAvailable = await _updateService.CheckForUpdateAsync();
+        if (updateAvailable)
+        {
+            ShowStatusToast($"Downloading update v{_updateService.LatestVersion}...", 3000);
+            var success = await _updateService.DownloadUpdateAsync();
+            if (success)
+            {
+                Invoke(() => ShowUpdateToast($"Update v{_updateService.LatestVersion} ready!", 20000));
+            }
+            else
+            {
+                ShowStatusToast("Download failed. Try again later.", 5000);
+            }
+        }
+        else
+        {
+            var currentVersion = UpdateService.GetCurrentVersion();
+            ShowStatusToast($"You're up to date (v{currentVersion.Major}.{currentVersion.Minor})", 3000);
+        }
     }
     
     #region Drag Logic
@@ -196,8 +257,6 @@ public class MainForm : Form
     
     public void ShowStatusToast(string message, int durationMs = 5000)
     {
-        durationMs = 5000; // Force 5 seconds always!
-        
         if (InvokeRequired)
         {
             Invoke(() => ShowStatusToast(message, durationMs));
@@ -249,7 +308,111 @@ public class MainForm : Form
         };
         timer.Start();
     }
-    
+
+    /// <summary>
+    /// Show a toast with a "Restart Now" button for updates.
+    /// </summary>
+    public void ShowUpdateToast(string message, int durationMs = 20000)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(() => ShowUpdateToast(message, durationMs));
+            return;
+        }
+
+        Logger.Trace($"Update Toast: {message}");
+
+        var toast = new Form
+        {
+            FormBorderStyle = FormBorderStyle.None,
+            ShowInTaskbar = false,
+            TopMost = true,
+            BackColor = Color.FromArgb(51, 51, 51),
+            Opacity = 0.95,
+            StartPosition = FormStartPosition.Manual
+        };
+
+        var panel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            BackColor = Color.FromArgb(51, 51, 51),
+            Padding = new Padding(10, 8, 10, 8)
+        };
+
+        var label = new Label
+        {
+            Text = message,
+            ForeColor = Color.LightGreen,
+            BackColor = Color.FromArgb(51, 51, 51),
+            Font = new Font("Segoe UI", 10, FontStyle.Bold),
+            AutoSize = true,
+            Margin = new Padding(5, 5, 10, 5)
+        };
+        panel.Controls.Add(label);
+
+        var restartBtn = new Button
+        {
+            Text = "Restart Now",
+            ForeColor = Color.White,
+            BackColor = Color.FromArgb(0, 120, 215),
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            AutoSize = true,
+            Margin = new Padding(5),
+            Cursor = Cursors.Hand
+        };
+        restartBtn.FlatAppearance.BorderSize = 0;
+        restartBtn.Click += (_, _) =>
+        {
+            toast.Close();
+            UpdateService.RestartApp();
+        };
+        panel.Controls.Add(restartBtn);
+
+        var dismissBtn = new Button
+        {
+            Text = "Later",
+            ForeColor = Color.Gray,
+            BackColor = Color.FromArgb(70, 70, 70),
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 9),
+            AutoSize = true,
+            Margin = new Padding(5),
+            Cursor = Cursors.Hand
+        };
+        dismissBtn.FlatAppearance.BorderSize = 0;
+        dismissBtn.Click += (_, _) =>
+        {
+            _activeToasts.Remove(toast);
+            toast.Close();
+            RepositionToasts();
+        };
+        panel.Controls.Add(dismissBtn);
+
+        toast.Controls.Add(panel);
+        toast.ClientSize = panel.PreferredSize;
+
+        _activeToasts.Add(toast);
+        RepositionToasts();
+
+        toast.Show();
+
+        // Auto-dismiss after duration
+        var timer = new System.Windows.Forms.Timer { Interval = durationMs };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            _activeToasts.Remove(toast);
+            if (!toast.IsDisposed)
+                toast.Close();
+            RepositionToasts();
+        };
+        timer.Start();
+    }
+
     private void RepositionToasts()
     {
         // Stack from bottom-right upwards
@@ -529,9 +692,6 @@ public class MainForm : Form
         {
             case NativeWindows.WM_TRIGGER_SCRAPE:
                 BeginInvoke(() => _controller.TriggerAction(Actions.CriticalFindings));
-                break;
-            case NativeWindows.WM_TRIGGER_DEBUG:
-                BeginInvoke(() => _controller.TriggerAction(Actions.DebugScrape));
                 break;
             case NativeWindows.WM_TRIGGER_BEEP:
                 BeginInvoke(() => _controller.TriggerAction(Actions.SystemBeep));

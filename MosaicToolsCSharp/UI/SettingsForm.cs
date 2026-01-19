@@ -33,7 +33,8 @@ public class SettingsForm : Form
     private TextBox _ivHotkeyBox = null!;
     private TextBox _criticalTemplateBox = null!;
     private TextBox _seriesTemplateBox = null!;
-    
+    private CheckBox _autoUpdateCheck = null!;
+
     // Advanced tab controls
     private CheckBox _restoreFocusCheck = null!;
     private CheckBox _scrollToBottomCheck = null!;
@@ -122,6 +123,18 @@ public class SettingsForm : Form
         };
         helpBtn.Click += (_, _) => ShowTabHelp();
         buttonPanel.Controls.Add(helpBtn);
+
+        // Version label (centered)
+        var appVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        var versionLabel = new Label
+        {
+            Text = appVersion != null ? $"v{appVersion.Major}.{appVersion.Minor}.{appVersion.Build}" : "",
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 9),
+            AutoSize = true
+        };
+        versionLabel.Location = new Point((Width - versionLabel.PreferredWidth) / 2, 15);
+        buttonPanel.Controls.Add(versionLabel);
 
         var saveBtn = new Button
         {
@@ -318,7 +331,48 @@ public class SettingsForm : Form
             AutoSize = true
         };
         tab.Controls.Add(_deadManCheck);
-        
+        y += 35;
+
+        // Auto-update section
+        _autoUpdateCheck = new CheckBox
+        {
+            Text = "Auto-update",
+            Location = new Point(20, y),
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_autoUpdateCheck);
+
+        var checkUpdatesBtn = new Button
+        {
+            Text = "Check for Updates",
+            Location = new Point(200, y - 3),
+            Size = new Size(130, 25),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        checkUpdatesBtn.FlatAppearance.BorderColor = Color.Gray;
+        checkUpdatesBtn.Click += async (s, e) =>
+        {
+            checkUpdatesBtn.Enabled = false;
+            checkUpdatesBtn.Text = "Checking...";
+            try
+            {
+                await _mainForm.CheckForUpdatesManualAsync();
+            }
+            finally
+            {
+                if (!checkUpdatesBtn.IsDisposed)
+                {
+                    checkUpdatesBtn.Text = "Check for Updates";
+                    checkUpdatesBtn.Enabled = true;
+                }
+            }
+        };
+        tab.Controls.Add(checkUpdatesBtn);
+
         return tab;
     }
     
@@ -1028,8 +1082,7 @@ public class SettingsForm : Form
 
 Send Windows Messages to trigger actions:
 
-WM_TRIGGER_SCRAPE = 0x0401        # Critical Findings
-WM_TRIGGER_DEBUG = 0x0402         # Debug Scrape
+WM_TRIGGER_SCRAPE = 0x0401        # Critical Findings (Win key = debug)
 WM_TRIGGER_BEEP = 0x0403          # System Beep
 WM_TRIGGER_SHOW_REPORT = 0x0404   # Show Report
 WM_TRIGGER_CAPTURE_SERIES = 0x0405 # Capture Series
@@ -1071,7 +1124,19 @@ Settings stored in: MosaicToolsSettings.json
             Font = new Font("Segoe UI", 9, FontStyle.Italic)
         };
         tab.Controls.Add(warningLabel);
-        y += 35;
+        y += 25;
+
+        // Debug info blurb
+        var debugBlurb = new Label
+        {
+            Text = "Tip: Right-click the Clinical History or Impression windows to copy debug info.\nIf extraction isn't working correctly, send this to the author via Teams for finetuning.",
+            Location = new Point(20, y),
+            Size = new Size(420, 35),
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(debugBlurb);
+        y += 45;
 
         // Restore Focus checkbox
         _restoreFocusCheck = new CheckBox
@@ -1384,7 +1449,7 @@ Settings stored in: MosaicToolsSettings.json
         {
             Location = new Point(20, y),
             Width = 410,
-            Height = 150,
+            Height = 75,
             Multiline = true,
             ScrollBars = ScrollBars.Vertical,
             BackColor = Color.FromArgb(60, 60, 60),
@@ -1392,7 +1457,7 @@ Settings stored in: MosaicToolsSettings.json
             Font = new Font("Segoe UI", 9)
         };
         tab.Controls.Add(_criticalTemplateBox);
-        y += 160;
+        y += 85;
         
         var helpLabel = new Label
         {
@@ -1546,6 +1611,7 @@ Settings stored in: MosaicToolsSettings.json
         _indicatorCheck.Checked = _config.IndicatorEnabled;
         _autoStopCheck.Checked = _config.AutoStopDictation;
         _deadManCheck.Checked = _config.DeadManSwitch;
+        _autoUpdateCheck.Checked = _config.AutoUpdateEnabled;
         _criticalTemplateBox.Text = _config.CriticalFindingsTemplate;
         _seriesTemplateBox.Text = _config.SeriesImageTemplate;
         
@@ -1624,7 +1690,10 @@ AUTO-STOP DICTATION ON PROCESS
 When enabled, automatically stops dictation when you trigger ""Process Report"". This prevents accidentally continuing to dictate while reviewing the processed report.
 
 PUSH-TO-TALK (DEAD MAN'S SWITCH)
-When enabled, you must hold down the Record Button on your PowerMic to dictate. Releasing the button stops recording. This is useful if you prefer push-to-talk style dictation rather than toggle on/off.";
+When enabled, you must hold down the Record Button on your PowerMic to dictate. Releasing the button stops recording. This is useful if you prefer push-to-talk style dictation rather than toggle on/off.
+
+AUTO-UPDATE
+When enabled, the app automatically checks for updates on startup. If a newer version is available, it downloads in the background and prompts you to restart. Click ""Check for Updates"" to manually check at any time.";
                 break;
 
             case 1: // Control Map
@@ -1640,9 +1709,7 @@ AVAILABLE ACTIONS
 
 • Get Prior: Extracts the comparison study information from InteleViewer and pastes it into Mosaic. Position your cursor in InteleViewer on the prior study, then trigger this action.
 
-• Critical Findings: Scrapes the Clario worklist for exam notes and extracts critical findings information (contact name, time, etc.) and pastes it into Mosaic using your template.
-
-• Debug Scrape: Same as Critical Findings but also shows a debug window with the raw scraped data. Useful for troubleshooting if critical findings aren't being extracted correctly.
+• Critical Findings: Scrapes the Clario worklist for exam notes and extracts critical findings information (contact name, time, etc.) and pastes it into Mosaic using your template. Hold the Windows key while triggering to enter debug mode (shows raw data without pasting).
 
 • Show Report: Copies the current report from Mosaic and displays it in a popup window. Useful for reviewing while looking at images.
 
@@ -1729,11 +1796,10 @@ Result:
 
 DEBUGGING CRITICAL FINDINGS
 If the critical findings aren't being extracted correctly:
-1. Map ""Debug Scrape"" to a button or hotkey in the Control Map tab.
-2. Open Clario with the exam note visible.
-3. Trigger Debug Scrape.
-4. A window will show the raw scraped text and the formatted result.
-5. This helps identify if the note format is different than expected.
+1. Hold the Windows key on your keyboard
+2. While holding Win, trigger Critical Findings (mic button or hotkey)
+3. Debug mode activates - a window shows the raw scraped text and formatted result
+4. This helps identify if the note format is different than expected
 
 SERIES/IMAGE TEMPLATE
 ═════════════════════
@@ -1765,8 +1831,7 @@ HOW IT WORKS
 Mosaic Tools listens for Windows Messages. You can send these messages from any program to trigger actions without needing to set up hotkeys.
 
 WINDOWS MESSAGE CODES
-• 0x0401 - Critical Findings
-• 0x0402 - Debug Scrape
+• 0x0401 - Critical Findings (hold Win key for debug mode)
 • 0x0403 - System Beep
 • 0x0404 - Show Report
 • 0x0405 - Capture Series/Image
@@ -1983,6 +2048,7 @@ When enabled, after processing a report, the tool sends Page Down keys to scroll
         _config.IndicatorEnabled = _indicatorCheck.Checked;
         _config.AutoStopDictation = _autoStopCheck.Checked;
         _config.DeadManSwitch = _deadManCheck.Checked;
+        _config.AutoUpdateEnabled = _autoUpdateCheck.Checked;
         _config.CriticalFindingsTemplate = _criticalTemplateBox.Text.Trim();
         _config.SeriesImageTemplate = _seriesTemplateBox.Text.Trim();
         

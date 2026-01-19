@@ -36,51 +36,51 @@ c:\Users\erik.richter\Desktop\dotnet\dotnet.exe build MosaicTools.csproj
 
 - **URL:** https://github.com/erichter2018/MosaicTools
 - **Account:** erichter@gmail.com
+- **Visibility:** Public (required for auto-update to work)
+
+### gh CLI Location
+```
+"C:\Users\erik.richter\Desktop\GH CLI\gh.exe"
+```
 
 ---
 
-## Future Feature: Auto-Update System
+## Auto-Update System
 
-**Status:** Not implemented yet - discussed January 2026
+The app auto-updates via GitHub Releases using a rename trick (no batch files, no installer, no admin required).
 
-### Recommended Approach: GitHub Releases + Simple Downloader
+### How it works
+1. On startup, checks `https://api.github.com/repos/erichter2018/MosaicTools/releases/latest`
+2. If newer version found, downloads exe to `MosaicTools_new.exe`
+3. Renames running exe to `MosaicTools_old.exe` (Windows allows renaming running files)
+4. Renames new exe to `MosaicTools.exe`
+5. Shows toast with "Restart Now" button
+6. On next startup, deletes `_old.exe`
 
-Since the repo is already on GitHub, we can use the GitHub Releases API directly:
-- `https://api.github.com/repos/erichter2018/MosaicTools/releases/latest`
-- No need for separate hosting of `latest.json`
+### Publishing a new release
 
-Since MosaicTools is distributed as a single self-contained exe, the recommended approach is:
+When user says "create a release" or "publish release vX.X":
 
-1. **Version check mechanism:**
-   - Host a `latest.json` file (on GitHub releases, S3, or simple web server) containing:
-     ```json
-     {"version": "2.1", "url": "https://..../MosaicTools.exe", "notes": "Bug fixes..."}
-     ```
-   - On app startup, fetch this JSON and compare with current version
-   - If newer version exists, notify user
+1. **Update version** in `MosaicToolsCSharp/MosaicTools.csproj`:
+   ```xml
+   <Version>2.2.0</Version>
+   ```
 
-2. **Update delivery options (choose one):**
-   - **Simple:** Show "Update available" toast that opens browser to download page - user manually replaces exe
-   - **Better:** Download new exe in background to temp location, then use batch script replacement
+2. **Commit and push** the version change:
+   ```bash
+   git add -A && git commit -m "Bump version to 2.2.0" && git push
+   ```
 
-3. **Batch script replacement method:**
-   - App downloads new exe to temp folder
-   - App creates and launches a small batch script:
-     ```batch
-     timeout 2
-     copy /y "temp\MosaicTools_new.exe" "MosaicTools.exe"
-     start MosaicTools.exe
-     del updater.bat
-     ```
-   - App exits, batch script waits, replaces exe, restarts app
+3. **Build** the release exe:
+   ```bash
+   c:\Users\erik.richter\Desktop\dotnet\dotnet.exe publish MosaicTools.csproj -c Release -r win-x64 --self-contained
+   ```
 
-4. **Alternative libraries considered:**
-   - **Squirrel.Windows** - Battle-tested (Slack/Discord use it), but changes deployment model to installer-based
-   - **ClickOnce** - Built into .NET but feels dated, limited customization
-   - Both overkill for a single-exe distribution
+4. **Create the GitHub release** using gh CLI:
+   ```bash
+   "C:\Users\erik.richter\Desktop\GH CLI\gh.exe" release create v2.2.0 "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe" --title "v2.2.0" --notes "Release notes here"
+   ```
 
-### Implementation Notes
-- Version is already set in `MosaicTools.csproj` (currently 2.1.0)
-- Version displayed in startup toast and Settings form title
-- GitHub API can be used to check releases (generous rate limits)
-- Consider checking for updates only once per day to avoid annoyance
+### Settings
+- **Auto-update** checkbox in General tab (ON by default)
+- **Check for Updates** button for manual checks

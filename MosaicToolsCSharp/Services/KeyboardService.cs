@@ -67,7 +67,17 @@ public class KeyboardService : IDisposable
     {
         _hotkeyActions.Clear();
     }
-    
+
+    /// <summary>
+    /// Check if Windows key is currently held down.
+    /// Used for modifier-based debug modes.
+    /// </summary>
+    public bool IsWinKeyHeld()
+    {
+        return _pressedModifiers.Contains(KeyCode.VcLeftMeta) ||
+               _pressedModifiers.Contains(KeyCode.VcRightMeta);
+    }
+
     /// <summary>
     /// Start recording a hotkey (for settings UI).
     /// </summary>

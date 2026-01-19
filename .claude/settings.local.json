@@ -20,7 +20,19 @@
       "Bash(powershell -Command \"taskkill /IM MosaicTools.exe /F; Start-Sleep -Seconds 1; cd C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp; c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe publish -c Release -r win-x64 --self-contained; Start-Process ''C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.exe''\")",
       "Bash(git checkout:*)",
       "Bash(git merge:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(cmd /c \"cd /d C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp && taskkill /IM MosaicTools.exe /F 2>nul & timeout /t 1 >nul & c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe publish -c Release -r win-x64 --self-contained\")",
+      "Bash(cmd /c \"taskkill /IM MosaicTools.exe /F 2>nul\")",
+      "Bash(cmd /c:*)",
+      "Bash(\"c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe\" publish \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\MosaicTools.csproj\" -c Release -r win-x64 --self-contained)",
+      "Bash(\"c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe\" clean:*)",
+      "Bash(gh repo edit:*)",
+      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" repo edit erichter2018/MosaicTools --visibility public)",
+      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" repo edit erichter2018/MosaicTools --visibility public --accept-visibility-change-consequences)",
+      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" repo view erichter2018/MosaicTools --json visibility)",
+      "Bash(\"c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe\" clean \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\MosaicTools.csproj\")",
+      "Bash(\"c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe\" publish:*)"
     ]
   }
 }
