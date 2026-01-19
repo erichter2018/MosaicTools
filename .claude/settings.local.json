@@ -32,7 +32,10 @@
       "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" repo edit erichter2018/MosaicTools --visibility public --accept-visibility-change-consequences)",
       "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" repo view erichter2018/MosaicTools --json visibility)",
       "Bash(\"c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe\" clean \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\MosaicTools.csproj\")",
-      "Bash(\"c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe\" publish:*)"
+      "Bash(\"c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe\" publish:*)",
+      "Bash(git push)",
+      "Bash(git branch:*)",
+      "Bash(powershell -Command:*)"
     ]
   }
 }

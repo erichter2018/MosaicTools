@@ -178,7 +178,7 @@ public class MainForm : Form
                 var success = await _updateService.DownloadUpdateAsync();
                 if (success)
                 {
-                    Invoke(() => ShowUpdateToast($"Update v{_updateService.LatestVersion} ready!", 20000));
+                    Invoke(() => ShowUpdateToast($"MosaicTools v{_updateService.LatestVersion} ready!"));
                 }
             }
         }
@@ -202,7 +202,7 @@ public class MainForm : Form
             var success = await _updateService.DownloadUpdateAsync();
             if (success)
             {
-                Invoke(() => ShowUpdateToast($"Update v{_updateService.LatestVersion} ready!", 20000));
+                Invoke(() => ShowUpdateToast($"MosaicTools v{_updateService.LatestVersion} ready!"));
             }
             else
             {
@@ -311,12 +311,13 @@ public class MainForm : Form
 
     /// <summary>
     /// Show a toast with a "Restart Now" button for updates.
+    /// Persists until user clicks a button (no auto-dismiss).
     /// </summary>
-    public void ShowUpdateToast(string message, int durationMs = 20000)
+    public void ShowUpdateToast(string message)
     {
         if (InvokeRequired)
         {
-            Invoke(() => ShowUpdateToast(message, durationMs));
+            Invoke(() => ShowUpdateToast(message));
             return;
         }
 
@@ -398,19 +399,7 @@ public class MainForm : Form
         RepositionToasts();
 
         toast.Show();
-
-        // Auto-dismiss after duration
-        var timer = new System.Windows.Forms.Timer { Interval = durationMs };
-        timer.Tick += (_, _) =>
-        {
-            timer.Stop();
-            timer.Dispose();
-            _activeToasts.Remove(toast);
-            if (!toast.IsDisposed)
-                toast.Close();
-            RepositionToasts();
-        };
-        timer.Start();
+        // No auto-dismiss - user must click "Restart Now" or "Later"
     }
 
     private void RepositionToasts()
