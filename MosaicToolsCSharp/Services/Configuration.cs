@@ -163,7 +163,17 @@ public class Configuration
 
     [JsonPropertyName("settings_y")]
     public int SettingsY { get; set; } = 200;
-    
+
+    // Macros
+    [JsonPropertyName("macros_enabled")]
+    public bool MacrosEnabled { get; set; } = false;
+
+    [JsonPropertyName("macros_blank_lines_before")]
+    public bool MacrosBlankLinesBefore { get; set; } = false;
+
+    [JsonPropertyName("macros")]
+    public List<MacroConfig> Macros { get; set; } = new();
+
     // Action Mappings (action name -> {hotkey, mic_button})
     [JsonPropertyName("action_mappings")]
     public Dictionary<string, ActionMapping> ActionMappings { get; set; } = new();
@@ -296,6 +306,125 @@ public class ActionMapping
     
     [JsonPropertyName("mic_button")]
     public string MicButton { get; set; } = "";
+}
+
+/// <summary>
+/// Configuration for a single macro - text snippet to insert for matching studies.
+/// </summary>
+public class MacroConfig
+{
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
+    /// <summary>
+    /// Comma-separated required terms. ALL must match the study description.
+    /// Empty = matches all studies (global macro).
+    /// </summary>
+    [JsonPropertyName("criteria_required")]
+    public string CriteriaRequired { get; set; } = "";
+
+    /// <summary>
+    /// Comma-separated optional terms. At least ONE must match (if specified).
+    /// Empty = no additional OR requirement.
+    /// </summary>
+    [JsonPropertyName("criteria_any_of")]
+    public string CriteriaAnyOf { get; set; } = "";
+
+    /// <summary>
+    /// Comma-separated exclusion terms. NONE must match (if specified).
+    /// Empty = no exclusion filter.
+    /// </summary>
+    [JsonPropertyName("criteria_exclude")]
+    public string CriteriaExclude { get; set; } = "";
+
+    [JsonPropertyName("text")]
+    public string Text { get; set; } = "";
+
+    /// <summary>
+    /// Check if this macro matches the given study description.
+    /// Logic: (all Required match) AND (at least one AnyOf, if specified) AND (none of Exclude match)
+    /// All empty = global macro (matches all).
+    /// </summary>
+    public bool MatchesStudy(string? studyDescription)
+    {
+        bool hasRequired = !string.IsNullOrWhiteSpace(CriteriaRequired);
+        bool hasAnyOf = !string.IsNullOrWhiteSpace(CriteriaAnyOf);
+        bool hasExclude = !string.IsNullOrWhiteSpace(CriteriaExclude);
+
+        // Global macro - matches all (but still check exclusions)
+        if (!hasRequired && !hasAnyOf && !hasExclude)
+            return true;
+
+        if (string.IsNullOrWhiteSpace(studyDescription))
+            return false;
+
+        var description = studyDescription.ToUpperInvariant();
+
+        // Check Exclude terms first - if any match, reject
+        if (hasExclude)
+        {
+            var excludeTerms = CriteriaExclude.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var term in excludeTerms)
+            {
+                if (description.Contains(term.ToUpperInvariant()))
+                    return false;
+            }
+        }
+
+        // Check Required terms (AND logic) - all must match
+        if (hasRequired)
+        {
+            var requiredTerms = CriteriaRequired.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var term in requiredTerms)
+            {
+                if (!description.Contains(term.ToUpperInvariant()))
+                    return false;
+            }
+        }
+
+        // Check AnyOf terms (OR logic) - at least one must match
+        if (hasAnyOf)
+        {
+            var anyOfTerms = CriteriaAnyOf.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            bool anyMatch = false;
+            foreach (var term in anyOfTerms)
+            {
+                if (description.Contains(term.ToUpperInvariant()))
+                {
+                    anyMatch = true;
+                    break;
+                }
+            }
+            if (!anyMatch)
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Returns a display string for the criteria (for list preview).
+    /// </summary>
+    public string GetCriteriaDisplayString()
+    {
+        if (string.IsNullOrWhiteSpace(CriteriaRequired) &&
+            string.IsNullOrWhiteSpace(CriteriaAnyOf) &&
+            string.IsNullOrWhiteSpace(CriteriaExclude))
+            return "All studies";
+
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(CriteriaRequired))
+            parts.Add(CriteriaRequired.Trim());
+        if (!string.IsNullOrWhiteSpace(CriteriaAnyOf))
+            parts.Add($"({CriteriaAnyOf.Trim()})");
+        if (!string.IsNullOrWhiteSpace(CriteriaExclude))
+            parts.Add($"-{CriteriaExclude.Trim()}");
+
+        return string.Join(" + ", parts);
+    }
 }
 
 public class FloatingButtonsConfig

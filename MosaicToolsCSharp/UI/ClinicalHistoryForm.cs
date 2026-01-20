@@ -37,8 +37,8 @@ public class ClinicalHistoryForm : Form
     private string? _lastTemplateName;
     private bool _templateMismatch = false;
 
-    // Auto-fix tracking - stores the cleaned text we've already auto-fixed to prevent loops
-    private string? _lastAutoFixedCleanedText;
+    // Auto-fix tracking - stores the accession we've already auto-fixed to prevent loops
+    private string? _lastAutoFixedAccession;
     private DateTime _lastAutoFixTime = DateTime.MinValue;
 
     // Track displayed text and whether it was "fixed" from original
@@ -207,11 +207,11 @@ public class ClinicalHistoryForm : Form
     /// Set clinical history with auto-fix support.
     /// If auto-fix is enabled and the text was modified (malformed), automatically paste to Mosaic.
     /// </summary>
-    public void SetClinicalHistoryWithAutoFix(string? preCleaned, string? cleaned)
+    public void SetClinicalHistoryWithAutoFix(string? preCleaned, string? cleaned, string? accession = null)
     {
         if (InvokeRequired)
         {
-            Invoke(() => SetClinicalHistoryWithAutoFix(preCleaned, cleaned));
+            Invoke(() => SetClinicalHistoryWithAutoFix(preCleaned, cleaned, accession));
             return;
         }
 
@@ -236,29 +236,21 @@ public class ClinicalHistoryForm : Form
             return;
         }
 
-        Logger.Trace($"Auto-fix check: wasFixed={wasFixed}, preCleaned='{preCleaned?.Substring(0, Math.Min(50, preCleaned?.Length ?? 0))}...', cleaned='{cleaned?.Substring(0, Math.Min(50, cleaned?.Length ?? 0))}...'");
+        Logger.Trace($"Auto-fix check: wasFixed={wasFixed}, accession='{accession}', preCleaned='{preCleaned?.Substring(0, Math.Min(50, preCleaned?.Length ?? 0))}...'");
 
         if (!wasFixed)
             return;
 
-        // Prevent loops: don't re-fix the same content
-        if (string.Equals(_lastAutoFixedCleanedText, cleaned, StringComparison.Ordinal))
+        // Prevent loops: don't re-fix the same accession
+        if (!string.IsNullOrEmpty(accession) && string.Equals(_lastAutoFixedAccession, accession, StringComparison.Ordinal))
         {
-            Logger.Trace("Auto-fix: already fixed this content");
-            return;
-        }
-
-        // Prevent rapid re-firing (e.g., during report transitions)
-        var secondsSinceLastFix = (DateTime.Now - _lastAutoFixTime).TotalSeconds;
-        if (secondsSinceLastFix < 5)
-        {
-            Logger.Trace($"Auto-fix: cooldown ({secondsSinceLastFix:F1}s < 5s)");
+            Logger.Trace($"Auto-fix: already fixed accession {accession}");
             return;
         }
 
         // All conditions met - trigger auto-fix
-        Logger.Trace($"Auto-fix triggered: preCleaned='{preCleaned}' -> cleaned='{cleaned}'");
-        _lastAutoFixedCleanedText = cleaned;
+        Logger.Trace($"Auto-fix triggered for accession '{accession}': preCleaned='{preCleaned}' -> cleaned='{cleaned}'");
+        _lastAutoFixedAccession = accession;
         _lastAutoFixTime = DateTime.Now;
 
         // Trigger the paste (this runs on background thread)
@@ -270,7 +262,7 @@ public class ClinicalHistoryForm : Form
     /// </summary>
     public void ResetAutoFixTracking()
     {
-        _lastAutoFixedCleanedText = null;
+        _lastAutoFixedAccession = null;
     }
 
     /// <summary>
@@ -288,7 +280,7 @@ public class ClinicalHistoryForm : Form
         Logger.Trace($"ClinicalHistoryForm: Study changed (isNewStudy={isNewStudy}) - resetting state");
 
         // Reset auto-fix tracking
-        _lastAutoFixedCleanedText = null;
+        _lastAutoFixedAccession = null;
         _lastAutoFixTime = DateTime.MinValue;
 
         // Reset template mismatch
@@ -467,41 +459,48 @@ public class ClinicalHistoryForm : Form
             return;
         }
 
-        // Format the text
-        var formatted = $"Clinical history: {text}.";
+        // Format the text with leading newline for cleaner paste
+        var formatted = $"\nClinical history: {text}.";
 
-        // Save current focus before we do anything (likely IntelliViewer)
-        NativeWindows.SavePreviousFocus();
-
-        // Set clipboard on UI thread (STA required for clipboard)
-        Clipboard.SetText(formatted);
-
-        // Run the rest on background thread to avoid blocking UI
+        // Run on background thread to avoid blocking UI
         System.Threading.Tasks.Task.Run(() =>
         {
-            try
+            // Use paste lock to prevent race conditions with macro insertion
+            // Both will execute in order - no skipping
+            lock (ActionController.PasteLock)
             {
-                System.Threading.Thread.Sleep(50);
-
-                if (!NativeWindows.ActivateMosaicForcefully())
+                try
                 {
-                    Invoke(() => ShowToast("Mosaic not found"));
-                    return;
+                    // Save current focus before we do anything (likely IntelliViewer)
+                    NativeWindows.SavePreviousFocus();
+
+                    // Set clipboard on UI thread (STA required for clipboard operations)
+                    Logger.Trace($"Clinical history paste: setting clipboard to '{formatted.Substring(0, Math.Min(50, formatted.Length))}...'");
+                    Invoke(() => Clipboard.SetText(formatted));
+                    System.Threading.Thread.Sleep(50);
+
+                    if (!NativeWindows.ActivateMosaicForcefully())
+                    {
+                        Invoke(() => ShowToast("Mosaic not found"));
+                        return;
+                    }
+
+                    System.Threading.Thread.Sleep(200);
+                    NativeWindows.SendHotkey("ctrl+v");
+                    System.Threading.Thread.Sleep(100);
+
+                    ActionController.LastPasteTime = DateTime.Now;
+
+                    // Restore focus to previous window
+                    NativeWindows.RestorePreviousFocus();
+
+                    Invoke(() => ShowToast("Pasted to Mosaic"));
                 }
-
-                System.Threading.Thread.Sleep(200);
-                NativeWindows.SendHotkey("ctrl+v");
-                System.Threading.Thread.Sleep(100);
-
-                // Restore focus to previous window
-                NativeWindows.RestorePreviousFocus();
-
-                Invoke(() => ShowToast("Pasted to Mosaic"));
-            }
-            catch (Exception ex)
-            {
-                Logger.Trace($"PasteClinicalHistoryToMosaic error: {ex.Message}");
-                Invoke(() => ShowToast("Paste failed"));
+                catch (Exception ex)
+                {
+                    Logger.Trace($"PasteClinicalHistoryToMosaic error: {ex.Message}");
+                    Invoke(() => ShowToast("Paste failed"));
+                }
             }
         });
     }

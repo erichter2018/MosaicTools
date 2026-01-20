@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
@@ -86,26 +87,30 @@ public class SettingsForm : Form
         // General tab
         var generalTab = CreateGeneralTab();
         _tabControl.TabPages.Add(generalTab);
-        
-        // Control Map tab
-        var controlMapTab = CreateControlMapTab();
-        _tabControl.TabPages.Add(controlMapTab);
-        
-        // Button Studio tab
-        var buttonStudioTab = CreateButtonStudioTab();
-        _tabControl.TabPages.Add(buttonStudioTab);
+
+        // Keys tab (was Control Map)
+        var keysTab = CreateControlMapTab();
+        _tabControl.TabPages.Add(keysTab);
+
+        // IV Buttons tab (was Button Studio)
+        var ivButtonsTab = CreateButtonStudioTab();
+        _tabControl.TabPages.Add(ivButtonsTab);
 
         // Templates tab
         var templatesTab = CreateTemplatesTab();
         _tabControl.TabPages.Add(templatesTab);
-        
-        // AHK tab
-        var ahkTab = CreateAhkTab();
-        _tabControl.TabPages.Add(ahkTab);
 
-        // Advanced tab (empty for now)
+        // Macros tab
+        var macrosTab = CreateMacrosTab();
+        _tabControl.TabPages.Add(macrosTab);
+
+        // Advanced tab
         var advancedTab = CreateAdvancedTab();
         _tabControl.TabPages.Add(advancedTab);
+
+        // AHK tab (last)
+        var ahkTab = CreateAhkTab();
+        _tabControl.TabPages.Add(ahkTab);
         
         // Save/Cancel/Help buttons
         var buttonPanel = new Panel
@@ -381,7 +386,7 @@ public class SettingsForm : Form
     
     private TabPage CreateControlMapTab()
     {
-        var tab = new TabPage("Control Map")
+        var tab = new TabPage("Keys")
         {
             BackColor = Color.FromArgb(40, 40, 40),
             AutoScroll = true
@@ -488,7 +493,7 @@ public class SettingsForm : Form
     
     private TabPage CreateButtonStudioTab()
     {
-        var tab = new TabPage("Button Studio")
+        var tab = new TabPage("IV Buttons")
         {
             BackColor = Color.FromArgb(40, 40, 40)
         };
@@ -1171,6 +1176,14 @@ Settings stored in: MosaicToolsSettings.json
             ForeColor = Color.White,
             AutoSize = true
         };
+        _scrapeMosaicCheck.CheckedChanged += (s, e) =>
+        {
+            // If scraping is disabled, also disable macros (they depend on scraping)
+            if (!_scrapeMosaicCheck.Checked && _macrosEnabledCheck != null && _macrosEnabledCheck.Checked)
+            {
+                _macrosEnabledCheck.Checked = false;
+            }
+        };
         tab.Controls.Add(_scrapeMosaicCheck);
 
         _scrapeIntervalUpDown = new NumericUpDown
@@ -1576,6 +1589,392 @@ Settings stored in: MosaicToolsSettings.json
         return tab;
     }
 
+    // Macros tab state
+    private CheckBox _macrosEnabledCheck = null!;
+    private CheckBox _macrosBlankLinesCheck = null!;
+    private Panel _macroListPanel = null!;
+    private TextBox _macroNameBox = null!;
+    private TextBox _macroCriteriaRequiredBox = null!;
+    private TextBox _macroCriteriaAnyOfBox = null!;
+    private TextBox _macroCriteriaExcludeBox = null!;
+    private TextBox _macroTextBox = null!;
+    private List<MacroConfig> _macros = new();
+    private int _selectedMacroIdx = -1;
+    private bool _updatingMacroEditor = false;
+
+    private TabPage CreateMacrosTab()
+    {
+        var tab = new TabPage("Macros")
+        {
+            BackColor = Color.FromArgb(40, 40, 40)
+        };
+
+        int y = 12;
+
+        // Top row: Enable + blank lines
+        _macrosEnabledCheck = new CheckBox
+        {
+            Text = "Enable Macros",
+            Location = new Point(15, y),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Checked = _config.MacrosEnabled
+        };
+        _macrosEnabledCheck.CheckedChanged += (s, e) =>
+        {
+            UpdateMacroStates();
+            // Auto-enable Scrape Mosaic when macros are enabled (required for study change detection)
+            if (_macrosEnabledCheck.Checked && !_scrapeMosaicCheck.Checked)
+            {
+                _scrapeMosaicCheck.Checked = true;
+            }
+        };
+        tab.Controls.Add(_macrosEnabledCheck);
+
+        _macrosBlankLinesCheck = new CheckBox
+        {
+            Text = "Add blank lines before (dictation space)",
+            Location = new Point(140, y),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Checked = _config.MacrosBlankLinesBefore
+        };
+        tab.Controls.Add(_macrosBlankLinesCheck);
+        y += 28;
+
+        // Left column: Macro list
+        var listLabel = new Label
+        {
+            Text = "Macros",
+            Location = new Point(15, y),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(180, 180, 180),
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(listLabel);
+
+        var addBtn = new Button
+        {
+            Text = "+",
+            Location = new Point(100, y - 2),
+            Size = new Size(24, 20),
+            BackColor = Color.FromArgb(60, 100, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand,
+            Font = new Font("Segoe UI", 8, FontStyle.Bold)
+        };
+        addBtn.FlatAppearance.BorderSize = 0;
+        addBtn.Click += (s, e) => AddMacro();
+        tab.Controls.Add(addBtn);
+
+        var removeBtn = new Button
+        {
+            Text = "-",
+            Location = new Point(126, y - 2),
+            Size = new Size(24, 20),
+            BackColor = Color.FromArgb(100, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand,
+            Font = new Font("Segoe UI", 8, FontStyle.Bold)
+        };
+        removeBtn.FlatAppearance.BorderSize = 0;
+        removeBtn.Click += (s, e) => RemoveMacro();
+        tab.Controls.Add(removeBtn);
+        y += 20;
+
+        _macroListPanel = new Panel
+        {
+            Location = new Point(15, y),
+            Size = new Size(135, 230),
+            BackColor = Color.FromArgb(30, 30, 30),
+            AutoScroll = true,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+        tab.Controls.Add(_macroListPanel);
+
+        // Right column: Editor (full height)
+        var editorX = 165;
+        var editorY = 40;
+
+        var nameLabel = new Label { Text = "Name", Location = new Point(editorX, editorY), AutoSize = true, ForeColor = Color.FromArgb(180, 180, 180), Font = new Font("Segoe UI", 8) };
+        tab.Controls.Add(nameLabel);
+        editorY += 16;
+
+        _macroNameBox = new TextBox
+        {
+            Location = new Point(editorX, editorY),
+            Width = 275,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+        _macroNameBox.TextChanged += (s, e) => ApplyMacroEditorChanges();
+        tab.Controls.Add(_macroNameBox);
+        editorY += 26;
+
+        var requiredLabel = new Label { Text = "Required (all must match)", Location = new Point(editorX, editorY), AutoSize = true, ForeColor = Color.FromArgb(180, 180, 180), Font = new Font("Segoe UI", 8) };
+        tab.Controls.Add(requiredLabel);
+        editorY += 16;
+
+        _macroCriteriaRequiredBox = new TextBox
+        {
+            Location = new Point(editorX, editorY),
+            Width = 275,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+        _macroCriteriaRequiredBox.TextChanged += (s, e) => ApplyMacroEditorChanges();
+        tab.Controls.Add(_macroCriteriaRequiredBox);
+        editorY += 26;
+
+        var anyOfLabel = new Label { Text = "Any of (optional, at least one)", Location = new Point(editorX, editorY), AutoSize = true, ForeColor = Color.FromArgb(180, 180, 180), Font = new Font("Segoe UI", 8) };
+        tab.Controls.Add(anyOfLabel);
+        editorY += 16;
+
+        _macroCriteriaAnyOfBox = new TextBox
+        {
+            Location = new Point(editorX, editorY),
+            Width = 275,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+        _macroCriteriaAnyOfBox.TextChanged += (s, e) => ApplyMacroEditorChanges();
+        tab.Controls.Add(_macroCriteriaAnyOfBox);
+        editorY += 26;
+
+        var excludeLabel = new Label { Text = "Exclude (none must match)", Location = new Point(editorX, editorY), AutoSize = true, ForeColor = Color.FromArgb(180, 180, 180), Font = new Font("Segoe UI", 8) };
+        tab.Controls.Add(excludeLabel);
+        editorY += 16;
+
+        _macroCriteriaExcludeBox = new TextBox
+        {
+            Location = new Point(editorX, editorY),
+            Width = 275,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+        _macroCriteriaExcludeBox.TextChanged += (s, e) => ApplyMacroEditorChanges();
+        tab.Controls.Add(_macroCriteriaExcludeBox);
+        editorY += 26;
+
+        var textLabel = new Label { Text = "Macro Text", Location = new Point(editorX, editorY), AutoSize = true, ForeColor = Color.FromArgb(180, 180, 180), Font = new Font("Segoe UI", 8) };
+        tab.Controls.Add(textLabel);
+        editorY += 16;
+
+        _macroTextBox = new TextBox
+        {
+            Location = new Point(editorX, editorY),
+            Size = new Size(275, 100),
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            Multiline = true,
+            ScrollBars = ScrollBars.Vertical,
+            Font = new Font("Consolas", 9)
+        };
+        _macroTextBox.TextChanged += (s, e) => ApplyMacroEditorChanges();
+        tab.Controls.Add(_macroTextBox);
+        editorY += 104;
+
+        // Note about case insensitivity
+        var noteLabel = new Label
+        {
+            Text = "Separate criteria with commas. Not case sensitive.",
+            Location = new Point(editorX, editorY),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(120, 120, 120),
+            Font = new Font("Segoe UI", 7.5f)
+        };
+        tab.Controls.Add(noteLabel);
+
+        // Load macros
+        _macros = _config.Macros.Select(m => new MacroConfig
+        {
+            Enabled = m.Enabled,
+            Name = m.Name,
+            CriteriaRequired = m.CriteriaRequired,
+            CriteriaAnyOf = m.CriteriaAnyOf,
+            CriteriaExclude = m.CriteriaExclude,
+            Text = m.Text
+        }).ToList();
+
+        RenderMacroList();
+        UpdateMacroStates();
+
+        return tab;
+    }
+
+    private void RenderMacroList()
+    {
+        _macroListPanel.Controls.Clear();
+        int y = 1;
+
+        for (int i = 0; i < _macros.Count; i++)
+        {
+            var macro = _macros[i];
+            var idx = i;
+            bool isSelected = (i == _selectedMacroIdx);
+            bool isGlobal = string.IsNullOrWhiteSpace(macro.CriteriaRequired) && string.IsNullOrWhiteSpace(macro.CriteriaAnyOf);
+
+            var itemPanel = new Panel
+            {
+                Location = new Point(1, y),
+                Size = new Size(115, 32),
+                BackColor = isSelected ? Color.FromArgb(50, 60, 80) : Color.FromArgb(40, 40, 40),
+                Cursor = Cursors.Hand
+            };
+
+            var cb = new CheckBox
+            {
+                Location = new Point(2, 8),
+                Size = new Size(16, 16),
+                Checked = macro.Enabled,
+                FlatStyle = FlatStyle.Flat
+            };
+            cb.CheckedChanged += (s, e) => { _macros[idx].Enabled = cb.Checked; };
+            itemPanel.Controls.Add(cb);
+
+            var nameStr = string.IsNullOrWhiteSpace(macro.Name) ? "(unnamed)" : macro.Name;
+            if (nameStr.Length > 12) nameStr = nameStr.Substring(0, 10) + "..";
+
+            var nameLabel = new Label
+            {
+                Text = (isGlobal ? "● " : "◆ ") + nameStr,
+                Location = new Point(18, 2),
+                Size = new Size(95, 15),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 7.5f, FontStyle.Bold)
+            };
+            nameLabel.ForeColor = isGlobal ? Color.FromArgb(140, 200, 140) : Color.White;
+            itemPanel.Controls.Add(nameLabel);
+
+            var criteriaStr = macro.GetCriteriaDisplayString();
+            if (criteriaStr.Length > 14) criteriaStr = criteriaStr.Substring(0, 12) + "..";
+
+            var criteriaLabel = new Label
+            {
+                Text = criteriaStr,
+                Location = new Point(18, 16),
+                Size = new Size(95, 14),
+                ForeColor = Color.FromArgb(130, 130, 130),
+                Font = new Font("Segoe UI", 7)
+            };
+            itemPanel.Controls.Add(criteriaLabel);
+
+            void SelectThis(object? s, EventArgs e) => SelectMacro(idx);
+            itemPanel.Click += SelectThis;
+            nameLabel.Click += SelectThis;
+            criteriaLabel.Click += SelectThis;
+
+            _macroListPanel.Controls.Add(itemPanel);
+            y += 33;
+        }
+    }
+
+    private void SelectMacro(int idx)
+    {
+        _selectedMacroIdx = idx;
+        RenderMacroList();
+        UpdateMacroEditorFromSelection();
+    }
+
+    private void UpdateMacroEditorFromSelection()
+    {
+        _updatingMacroEditor = true;
+        try
+        {
+            if (_selectedMacroIdx < 0 || _selectedMacroIdx >= _macros.Count)
+            {
+                _macroNameBox.Text = "";
+                _macroCriteriaRequiredBox.Text = "";
+                _macroCriteriaAnyOfBox.Text = "";
+                _macroCriteriaExcludeBox.Text = "";
+                _macroTextBox.Text = "";
+                _macroNameBox.Enabled = false;
+                _macroCriteriaRequiredBox.Enabled = false;
+                _macroCriteriaAnyOfBox.Enabled = false;
+                _macroCriteriaExcludeBox.Enabled = false;
+                _macroTextBox.Enabled = false;
+                return;
+            }
+
+            var macro = _macros[_selectedMacroIdx];
+            _macroNameBox.Text = macro.Name;
+            _macroCriteriaRequiredBox.Text = macro.CriteriaRequired;
+            _macroCriteriaAnyOfBox.Text = macro.CriteriaAnyOf;
+            _macroCriteriaExcludeBox.Text = macro.CriteriaExclude;
+            _macroTextBox.Text = macro.Text;
+            _macroNameBox.Enabled = true;
+            _macroCriteriaRequiredBox.Enabled = true;
+            _macroCriteriaAnyOfBox.Enabled = true;
+            _macroCriteriaExcludeBox.Enabled = true;
+            _macroTextBox.Enabled = true;
+        }
+        finally
+        {
+            _updatingMacroEditor = false;
+        }
+    }
+
+    private void ApplyMacroEditorChanges()
+    {
+        if (_updatingMacroEditor) return;
+        if (_selectedMacroIdx < 0 || _selectedMacroIdx >= _macros.Count) return;
+
+        var macro = _macros[_selectedMacroIdx];
+        macro.Name = _macroNameBox.Text;
+        macro.CriteriaRequired = _macroCriteriaRequiredBox.Text;
+        macro.CriteriaAnyOf = _macroCriteriaAnyOfBox.Text;
+        macro.CriteriaExclude = _macroCriteriaExcludeBox.Text;
+        macro.Text = _macroTextBox.Text;
+
+        RenderMacroList();
+    }
+
+    private void AddMacro()
+    {
+        _macros.Add(new MacroConfig
+        {
+            Enabled = true,
+            Name = "New Macro",
+            CriteriaRequired = "",
+            CriteriaExclude = "",
+            CriteriaAnyOf = "",
+            Text = ""
+        });
+        _selectedMacroIdx = _macros.Count - 1;
+        RenderMacroList();
+        UpdateMacroEditorFromSelection();
+    }
+
+    private void RemoveMacro()
+    {
+        if (_selectedMacroIdx < 0 || _selectedMacroIdx >= _macros.Count) return;
+
+        _macros.RemoveAt(_selectedMacroIdx);
+        if (_selectedMacroIdx >= _macros.Count)
+            _selectedMacroIdx = _macros.Count - 1;
+
+        RenderMacroList();
+        UpdateMacroEditorFromSelection();
+    }
+
+    private void UpdateMacroStates()
+    {
+        bool enabled = _macrosEnabledCheck.Checked;
+        _macrosBlankLinesCheck.Enabled = enabled;
+        _macroListPanel.Enabled = enabled;
+        _macroNameBox.Enabled = enabled && _selectedMacroIdx >= 0;
+        _macroCriteriaRequiredBox.Enabled = enabled && _selectedMacroIdx >= 0;
+        _macroCriteriaAnyOfBox.Enabled = enabled && _selectedMacroIdx >= 0;
+        _macroTextBox.Enabled = enabled && _selectedMacroIdx >= 0;
+    }
+
     private static Label CreateLabel(string text, int x, int y, int width)
     {
         return new Label
@@ -1742,7 +2141,7 @@ IV REPORT HOTKEY
 The keyboard shortcut used to open a report in InteleViewer. This is used by the ""Get Prior"" action. Default is ""v"" (the standard InteleViewer shortcut).
 
 FLOATING TOOLBAR
-When enabled, shows a small toolbar with customizable buttons that can send keystrokes to InteleViewer (for window/level presets, zoom, etc.). Configure the buttons in the ""Button Studio"" tab.
+When enabled, shows a small toolbar with customizable buttons that can send keystrokes to InteleViewer (for window/level presets, zoom, etc.). Configure the buttons in the ""IV Buttons"" tab.
 
 RECORDING INDICATOR
 When enabled, shows a small colored dot on screen that indicates whether dictation is currently active (recording) or not.
@@ -1757,9 +2156,9 @@ AUTO-UPDATE
 When enabled, the app automatically checks for updates on startup. If a newer version is available, it downloads in the background and prompts you to restart. Click ""Check for Updates"" to manually check at any time.";
                 break;
 
-            case 1: // Control Map
-                title = "Control Map Help";
-                content = @"CONTROL MAP
+            case 1: // Keys
+                title = "Keys Help";
+                content = @"KEYS
 ═══════════════════════════════════════
 
 This tab lets you assign keyboard shortcuts (hotkeys) and PowerMic buttons to various actions.
@@ -1789,9 +2188,9 @@ MIC BUTTON COLUMN
 Select which PowerMic II button triggers this action. Note: Some buttons have hardcoded Mosaic functions (Skip Back = Process, Checkmark = Sign) - the tool works alongside these.";
                 break;
 
-            case 2: // Button Studio
-                title = "Button Studio Help";
-                content = @"BUTTON STUDIO
+            case 2: // IV Buttons
+                title = "IV Buttons Help";
+                content = @"IV BUTTONS
 ═══════════════════════════════════════
 
 Create custom buttons for the floating toolbar. These buttons send keystrokes to InteleViewer for quick access to window/level presets, zoom controls, and other shortcuts.
@@ -1881,42 +2280,40 @@ TIPS
 • The OCR looks for patterns like ""S: 3"" or ""Series: 3"" and ""I: 142"" or ""Image: 142"".";
                 break;
 
-            case 4: // AHK
-                title = "AHK Integration Help";
-                content = @"AHK (AUTOHOTKEY) INTEGRATION
+            case 4: // Macros
+                title = "Macros Help";
+                content = @"MACROS
 ═══════════════════════════════════════
 
-This tab shows how to trigger Mosaic Tools actions from external programs like AutoHotkey scripts.
+Macros are text snippets that are automatically inserted when you open a new study. This saves time for common report sections you frequently type.
 
-HOW IT WORKS
-Mosaic Tools listens for Windows Messages. You can send these messages from any program to trigger actions without needing to set up hotkeys.
+ENABLE MACROS
+Turn macros on or off globally.
 
-WINDOWS MESSAGE CODES
-• 0x0401 - Critical Findings (hold Win key for debug mode)
-• 0x0403 - System Beep
-• 0x0404 - Show Report
-• 0x0405 - Capture Series/Image
-• 0x0406 - Get Prior
-• 0x0407 - Toggle Recording
-• 0x0408 - Process Report
-• 0x0409 - Sign Report
+ADD BLANK LINES BEFORE MACROS
+When enabled, inserts 10 blank lines before your macro text. This gives you space to dictate above the macro content.
 
-AUTOHOTKEY EXAMPLE
-To trigger Critical Findings from an AHK script:
+CREATING MACROS
+Click + to add a new macro. Each macro has:
 
-DetectHiddenWindows, On
-PostMessage, 0x0401, 0, 0,, ahk_class WindowsForms
+• Name: A label to identify the macro (e.g., ""CT Abdomen Template"")
 
-This can be useful if you want to:
-• Trigger actions from other applications
-• Create complex macros that combine multiple tools
-• Use foot pedals or other input devices that only support AHK
+• Required: Comma-separated terms that must ALL appear in the study description.
+  Example: ""CT, abdomen"" matches ""CT ABDOMEN PELVIS WITH CONTRAST""
 
-SETTINGS FILE LOCATION
-Your settings are saved to:
-%LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
+• Any of: Comma-separated terms where at least ONE must appear.
+  Example: ""head, brain"" matches studies with either term.
 
-You can back up this file or copy it to other workstations.";
+• Macro Text: The actual text to insert.
+
+MATCHING LOGIC
+• Both criteria blank = Global macro (applies to all studies)
+• Required only = All terms must match
+• Any of only = At least one term must match
+• Both = All Required terms AND at least one Any of term
+
+MULTIPLE MACROS
+Multiple macros can match the same study. All matching macros are inserted together. Blank lines (if enabled) are added only once.";
                 break;
 
             case 5: // Advanced
@@ -1993,6 +2390,44 @@ When enabled, after processing a report, the tool sends Page Down keys to scroll
   • Very long reports (> threshold 3): 3 Page Downs
 
   Adjust these thresholds based on your typical report lengths and screen size.";
+                break;
+
+            case 6: // AHK
+                title = "AHK Integration Help";
+                content = @"AHK (AUTOHOTKEY) INTEGRATION
+═══════════════════════════════════════
+
+This tab shows how to trigger Mosaic Tools actions from external programs like AutoHotkey scripts.
+
+HOW IT WORKS
+Mosaic Tools listens for Windows Messages. You can send these messages from any program to trigger actions without needing to set up hotkeys.
+
+WINDOWS MESSAGE CODES
+• 0x0401 - Critical Findings (hold Win key for debug mode)
+• 0x0403 - System Beep
+• 0x0404 - Show Report
+• 0x0405 - Capture Series/Image
+• 0x0406 - Get Prior
+• 0x0407 - Toggle Recording
+• 0x0408 - Process Report
+• 0x0409 - Sign Report
+
+AUTOHOTKEY EXAMPLE
+To trigger Critical Findings from an AHK script:
+
+DetectHiddenWindows, On
+PostMessage, 0x0401, 0, 0,, ahk_class WindowsForms
+
+This can be useful if you want to:
+• Trigger actions from other applications
+• Create complex macros that combine multiple tools
+• Use foot pedals or other input devices that only support AHK
+
+SETTINGS FILE LOCATION
+Your settings are saved to:
+%LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
+
+You can back up this file or copy it to other workstations.";
                 break;
 
             default:
@@ -2140,6 +2575,19 @@ When enabled, after processing a report, the tool sends Page Down keys to scroll
         _config.ScrollThreshold1 = (int)_scrollThreshold1.Value;
         _config.ScrollThreshold2 = (int)_scrollThreshold2.Value;
         _config.ScrollThreshold3 = (int)_scrollThreshold3.Value;
+
+        // Macros
+        _config.MacrosEnabled = _macrosEnabledCheck.Checked;
+        _config.MacrosBlankLinesBefore = _macrosBlankLinesCheck.Checked;
+        _config.Macros = _macros.Select(m => new MacroConfig
+        {
+            Enabled = m.Enabled,
+            Name = m.Name,
+            CriteriaRequired = m.CriteriaRequired,
+            CriteriaAnyOf = m.CriteriaAnyOf,
+            CriteriaExclude = m.CriteriaExclude,
+            Text = m.Text
+        }).ToList();
 
         // Position
         _config.SettingsX = this.Location.X;

@@ -56,8 +56,16 @@ public class ActionController : IDisposable
     private DateTime _lastManualToggleTime = DateTime.MinValue;
     private int _consecutiveInactiveCount = 0; // For indicator debounce
 
-    // Accession tracking
-    private string? _lastKnownAccession;
+    // Accession tracking - only track non-empty accessions
+    private string? _lastNonEmptyAccession;
+
+    // Pending macro insertion - wait for clinical history to be visible before inserting
+    private string? _pendingMacroAccession;
+    private string? _pendingMacroDescription;
+
+    // Shared paste lock to prevent concurrent clipboard operations
+    public static readonly object PasteLock = new();
+    public static DateTime LastPasteTime = DateTime.MinValue;
     
     public ActionController(Configuration config, MainForm mainForm)
     {
@@ -297,6 +305,9 @@ public class ActionController : IDisposable
                 {
                     PerformCreateImpression();
                 }
+                break;
+            case "__InsertMacros__":
+                PerformInsertMacros();
                 break;
         }
     }
@@ -684,6 +695,122 @@ public class ActionController : IDisposable
         }
     }
 
+    private void InsertMacrosForStudy(string? studyDescription)
+    {
+        // Find all matching enabled macros
+        var matchingMacros = _config.Macros
+            .Where(m => m.Enabled && m.MatchesStudy(studyDescription))
+            .ToList();
+
+        if (matchingMacros.Count == 0)
+        {
+            Logger.Trace($"Macros: No macros match study '{studyDescription}'");
+            return;
+        }
+
+        Logger.Trace($"Macros: {matchingMacros.Count} macro(s) match study '{studyDescription}'");
+
+        // Build the text to paste
+        var textBuilder = new System.Text.StringBuilder();
+
+        // Add blank lines ONCE if enabled (for dictation space)
+        // Use space character so Mosaic doesn't collapse empty lines
+        if (_config.MacrosBlankLinesBefore)
+        {
+            for (int i = 0; i < 10; i++)
+            {
+                textBuilder.AppendLine(" ");
+            }
+        }
+
+        // Append all matching macro texts
+        foreach (var macro in matchingMacros)
+        {
+            if (!string.IsNullOrWhiteSpace(macro.Text))
+            {
+                textBuilder.Append(macro.Text);
+                // Add a newline between macros if there are multiple
+                if (matchingMacros.IndexOf(macro) < matchingMacros.Count - 1)
+                {
+                    textBuilder.AppendLine();
+                }
+            }
+        }
+
+        var textToPaste = textBuilder.ToString();
+        if (string.IsNullOrWhiteSpace(textToPaste))
+        {
+            Logger.Trace("Macros: Matching macros have no text");
+            return;
+        }
+
+        // Store the text BEFORE queuing the action (avoid race condition)
+        _pendingMacroText = textToPaste;
+        _pendingMacroCount = matchingMacros.Count;
+
+        // Queue the paste action (needs to run on STA thread)
+        TriggerAction("__InsertMacros__", "Internal");
+    }
+
+    private string? _pendingMacroText = null;
+    private int _pendingMacroCount = 0;
+
+    private void PerformInsertMacros()
+    {
+        var text = _pendingMacroText;
+        var count = _pendingMacroCount;
+        _pendingMacroText = null;
+        _pendingMacroCount = 0;
+
+        if (string.IsNullOrEmpty(text)) return;
+
+        Logger.Trace($"InsertMacros: Pasting {count} macro(s)");
+
+        // Use paste lock to prevent race conditions with clinical history auto-fix
+        lock (PasteLock)
+        {
+            // Save focus
+            var previousWindow = IntPtr.Zero;
+            if (_config.RestoreFocusAfterAction)
+            {
+                previousWindow = NativeWindows.GetForegroundWindow();
+            }
+
+            try
+            {
+                // Copy macro text to clipboard
+                ClipboardService.SetText(text);
+                Thread.Sleep(50);
+
+                // Activate Mosaic and paste
+                NativeWindows.ActivateMosaicForcefully();
+                Thread.Sleep(100);
+
+                // Paste
+                NativeWindows.SendHotkey("ctrl+v");
+                Thread.Sleep(100); // Increased for reliability
+
+                _mainForm.Invoke(() => _mainForm.ShowStatusToast(
+                    count == 1 ? "Macro inserted" : $"{count} macros inserted", 2000));
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"InsertMacros error: {ex.Message}");
+            }
+            finally
+            {
+                LastPasteTime = DateTime.Now;
+
+                // Restore focus
+                if (_config.RestoreFocusAfterAction && previousWindow != IntPtr.Zero)
+                {
+                    Thread.Sleep(100);
+                    NativeWindows.SetForegroundWindow(previousWindow);
+                }
+            }
+        }
+    }
+
     private void PerformGetPrior()
     {
         _isUserActive = true;
@@ -762,13 +889,13 @@ public class ActionController : IDisposable
                 return;
             }
             
-            // Paste into Mosaic
-            ClipboardService.SetText(formatted);
+            // Paste into Mosaic (with leading newline for cleaner insertion)
+            ClipboardService.SetText("\n" + formatted);
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(200);
-            
+
             NativeWindows.SendHotkey("ctrl+v");
-            
+
             Logger.Trace($"Get Prior complete: {formatted}");
             _mainForm.Invoke(() => _mainForm.ShowStatusToast("Prior inserted"));
         }
@@ -1050,34 +1177,53 @@ public class ActionController : IDisposable
                 // Scrape Mosaic for report data
                 var reportText = _automationService.GetFinalReportFast(needDraftedCheck);
 
-                // Check for accession change and reset state
+                // Check for new study (non-empty accession different from last non-empty)
                 var currentAccession = _automationService.LastAccession;
-                if (currentAccession != _lastKnownAccession)
+
+                if (!string.IsNullOrEmpty(currentAccession))
                 {
-                    if (!string.IsNullOrEmpty(currentAccession))
+                    // We have a valid accession - check if it's different from last known
+                    if (currentAccession != _lastNonEmptyAccession)
                     {
-                        // New study detected
-                        if (_lastKnownAccession != null) // Don't toast on first detection
+                        Logger.Trace($"New study detected: '{_lastNonEmptyAccession}' -> '{currentAccession}'");
+
+                        // Show toast
+                        Logger.Trace($"Showing New Study toast for {currentAccession}");
+                        _mainForm.Invoke(() => _mainForm.ShowStatusToast($"New Study: {currentAccession}", 3000));
+
+                        // Queue macros for insertion - they'll be inserted when clinical history is visible
+                        // This handles the case where Mosaic auto-processes the report on open
+                        if (_config.MacrosEnabled && _config.Macros.Count > 0)
                         {
-                            _mainForm.Invoke(() => _mainForm.ShowStatusToast($"New Study: {currentAccession}", 3000));
+                            var studyDescription = _automationService.LastDescription;
+                            Logger.Trace($"Macros: Queuing for study '{studyDescription}' ({_config.Macros.Count} macros configured)");
+                            _pendingMacroAccession = currentAccession;
+                            _pendingMacroDescription = studyDescription;
                         }
+
                         // Reset clinical history state on study change
                         _mainForm.Invoke(() => _mainForm.OnClinicalHistoryStudyChanged());
                         // Hide impression window on new study
                         _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
                         _searchingForImpression = false;
                         _impressionFromProcessReport = false;
+
+                        // Update tracking
+                        _lastNonEmptyAccession = currentAccession;
                     }
-                    else if (_lastKnownAccession != null)
-                    {
-                        // Accession disappeared (e.g., switched to worklist)
-                        _mainForm.Invoke(() => _mainForm.OnClinicalHistoryStudyChanged(isNewStudy: false));
-                        // Hide impression window when no study
-                        _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
-                        _searchingForImpression = false;
-                        _impressionFromProcessReport = false;
-                    }
-                    _lastKnownAccession = currentAccession;
+                }
+
+                // Check for pending macros - insert when clinical history becomes visible
+                // This handles the case where Mosaic auto-processes the report on study open
+                if (!string.IsNullOrEmpty(_pendingMacroAccession) &&
+                    _pendingMacroAccession == currentAccession &&
+                    !string.IsNullOrWhiteSpace(reportText) &&
+                    reportText.Contains("CLINICAL HISTORY", StringComparison.OrdinalIgnoreCase))
+                {
+                    Logger.Trace($"Macros: Clinical history now visible, inserting for {_pendingMacroAccession}");
+                    InsertMacrosForStudy(_pendingMacroDescription);
+                    _pendingMacroAccession = null;
+                    _pendingMacroDescription = null;
                 }
 
                 // Update clinical history from Mosaic report (not Clario - Chrome needs focus)
@@ -1087,7 +1233,7 @@ public class ActionController : IDisposable
                     // (when report temporarily disappears but we're still on the same accession)
                     if (!string.IsNullOrWhiteSpace(reportText))
                     {
-                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(reportText));
+                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
 
                         // Update text color based on whether displayed history matches final report
                         // Yellow = our fixed version differs from report, White = they match

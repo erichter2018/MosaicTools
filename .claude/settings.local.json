@@ -83,7 +83,8 @@
       "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\extract_strings.ps1\")",
       "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\search_impression.ps1\")",
       "Bash(powershell:*)",
-      "Bash(/c/Users/erik.richter/Desktop/dotnet/dotnet.exe publish:*)"
+      "Bash(/c/Users/erik.richter/Desktop/dotnet/dotnet.exe publish:*)",
+      "Bash(/c/Users/erik.richter/Desktop/dotnet/dotnet.exe build)"
     ]
   }
 }

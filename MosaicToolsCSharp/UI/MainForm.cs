@@ -507,14 +507,14 @@ public class MainForm : Form
         }
     }
 
-    public void UpdateClinicalHistory(string? rawClarioText)
+    public void UpdateClinicalHistory(string? rawClarioText, string? accession = null)
     {
         if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
             return;
 
         // Use the version that returns both pre-cleaned and cleaned for auto-fix detection
         var (preCleaned, cleaned) = ClinicalHistoryForm.ExtractClinicalHistoryWithFixInfo(rawClarioText);
-        _clinicalHistoryWindow.SetClinicalHistoryWithAutoFix(preCleaned, cleaned);
+        _clinicalHistoryWindow.SetClinicalHistoryWithAutoFix(preCleaned, cleaned, accession);
     }
 
     public void UpdateClinicalHistoryDraftedState(bool isDrafted)
