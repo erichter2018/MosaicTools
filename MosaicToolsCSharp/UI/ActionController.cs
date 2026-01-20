@@ -290,6 +290,14 @@ public class ActionController : IDisposable
             case Actions.SignReport:
                 PerformSignReport(req.Source);
                 break;
+            case Actions.CreateImpression:
+                // Skip Forward is hardcoded in Mosaic to trigger Create Impression
+                // Only invoke via UI automation if triggered by other sources
+                if (req.Source != "Skip Forward")
+                {
+                    PerformCreateImpression();
+                }
+                break;
         }
     }
     
@@ -660,7 +668,22 @@ public class ActionController : IDisposable
             RestartScrapeTimer(NormalScrapeIntervalMs);
         }
     }
-    
+
+    private void PerformCreateImpression()
+    {
+        Logger.Trace("Create Impression (via UI Automation)");
+
+        var success = _automationService.ClickCreateImpression();
+        if (success)
+        {
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Create Impression", 1500));
+        }
+        else
+        {
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Create Impression button not found", 2500));
+        }
+    }
+
     private void PerformGetPrior()
     {
         _isUserActive = true;

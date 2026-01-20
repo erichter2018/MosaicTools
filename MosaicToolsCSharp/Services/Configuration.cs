@@ -349,9 +349,10 @@ public static class Actions
     public const string ToggleRecord = "Start/Stop Recording";
     public const string ProcessReport = "Process Report";
     public const string SignReport = "Sign Report";
+    public const string CreateImpression = "Create Impression";
 
     public static readonly string[] All = {
         None, SystemBeep, GetPrior, CriticalFindings,
-        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport
+        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression
     };
 }
