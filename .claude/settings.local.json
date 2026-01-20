@@ -65,7 +65,25 @@
       "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" release create:*)",
       "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" release delete v2.3.1 --yes)",
       "Bash(git tag:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(Get-Process -Name \"Mosaic*\" -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object ProcessId, CommandLine })",
+      "Bash(Format-List)",
+      "Bash(netstat:*)",
+      "Bash(Select-String \"922\")",
+      "Bash(wmic process where \"name like ''%Mosaic%''\" get ExecutablePath)",
+      "Bash(dir:*)",
+      "Bash(findstr:*)",
+      "Bash(curl:*)",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\find_apis.ps1\")",
+      "Bash(Select-Object -First 50)",
+      "Bash(powershell -ExecutionPolicy Bypass -Command \"& ''C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\find_apis.ps1'' | Select-Object -First 50\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\probe_api.ps1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\probe_more.ps1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\extract_strings.ps1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\search_impression.ps1\")",
+      "Bash(powershell:*)",
+      "Bash(/c/Users/erik.richter/Desktop/dotnet/dotnet.exe publish:*)"
     ]
   }
 }

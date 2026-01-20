@@ -299,7 +299,61 @@ public class AutomationService : IDisposable
         
         return null;
     }
-    
+
+    /// <summary>
+    /// Click the "CREATE IMPRESSION" button in Mosaic.
+    /// Returns true if successful.
+    /// </summary>
+    public bool ClickCreateImpression()
+    {
+        try
+        {
+            var window = FindMosaicWindow();
+            if (window == null)
+            {
+                Logger.Trace("ClickCreateImpression: Mosaic window not found");
+                return false;
+            }
+
+            // Find button by name "CREATE IMPRESSION"
+            var button = window.FindFirstDescendant(cf =>
+                cf.ByControlType(FlaUI.Core.Definitions.ControlType.Button)
+                  .And(cf.ByName("CREATE IMPRESSION")));
+
+            if (button == null)
+            {
+                Logger.Trace("ClickCreateImpression: Button not found");
+                return false;
+            }
+
+            // Try to invoke it (preferred for buttons)
+            var invokePattern = button.Patterns.Invoke.PatternOrDefault;
+            if (invokePattern != null)
+            {
+                invokePattern.Invoke();
+                Logger.Trace("ClickCreateImpression: Invoked via pattern");
+                return true;
+            }
+
+            // Fallback: click at center
+            var rect = button.BoundingRectangle;
+            if (rect.Width > 0 && rect.Height > 0)
+            {
+                button.Click();
+                Logger.Trace($"ClickCreateImpression: Clicked at {rect}");
+                return true;
+            }
+
+            Logger.Trace("ClickCreateImpression: Button has no valid bounds");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"ClickCreateImpression error: {ex.Message}");
+            return false;
+        }
+    }
+
     /// <summary>
     /// Find the Mosaic editor element for pasting.
     /// </summary>
