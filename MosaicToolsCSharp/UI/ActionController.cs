@@ -396,39 +396,46 @@ public class ActionController : IDisposable
     
     private void OnSyncTimerCallback(object? state)
     {
-        bool? registryActive = NativeWindows.IsMicrophoneActiveFromRegistry();
-        if (!registryActive.HasValue) return;
-
-        bool active = registryActive.Value;
-
-        // 1. Instant ON: If it's active, reset count and update UI immediately
-        if (active)
+        try
         {
-            _consecutiveInactiveCount = 0;
-            _mainForm.Invoke(() => _mainForm.UpdateIndicatorState(true));
-        }
-        else
-        {
-            // 2. Sticky OFF: Require 3 consecutive inactive checks (~750ms) to turn off
-            _consecutiveInactiveCount++;
-            if (_consecutiveInactiveCount >= 3)
+            bool? registryActive = NativeWindows.IsMicrophoneActiveFromRegistry();
+            if (!registryActive.HasValue) return;
+
+            bool active = registryActive.Value;
+
+            // 1. Instant ON: If it's active, reset count and update UI immediately
+            if (active)
             {
-                _mainForm.Invoke(() => _mainForm.UpdateIndicatorState(false));
+                _consecutiveInactiveCount = 0;
+                _mainForm.Invoke(() => _mainForm.UpdateIndicatorState(true));
             }
-        }
-
-        // 3. Update internal logical state (with 500ms lockout for manual toggles)
-        if ((DateTime.Now - _lastManualToggleTime).TotalMilliseconds > 500)
-        {
-            if (active != _dictationActive)
+            else
             {
-                // Only sync logical state once the debounce has settled for OFF
-                if (active || _consecutiveInactiveCount >= 3)
+                // 2. Sticky OFF: Require 3 consecutive inactive checks (~750ms) to turn off
+                _consecutiveInactiveCount++;
+                if (_consecutiveInactiveCount >= 3)
                 {
-                    Logger.Trace($"Registry Sync: Internal state updated to {active}");
-                    _dictationActive = active;
+                    _mainForm.Invoke(() => _mainForm.UpdateIndicatorState(false));
                 }
             }
+
+            // 3. Update internal logical state (with 500ms lockout for manual toggles)
+            if ((DateTime.Now - _lastManualToggleTime).TotalMilliseconds > 500)
+            {
+                if (active != _dictationActive)
+                {
+                    // Only sync logical state once the debounce has settled for OFF
+                    if (active || _consecutiveInactiveCount >= 3)
+                    {
+                        Logger.Trace($"Registry Sync: Internal state updated to {active}");
+                        _dictationActive = active;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"SyncTimer error: {ex.Message}");
         }
     }
 
@@ -1505,8 +1512,8 @@ public class ActionController : IDisposable
     }
     
     #endregion
-    
-    
+
+
     public void Dispose()
     {
         _stopThread = true;

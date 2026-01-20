@@ -12,10 +12,15 @@ namespace MosaicTools;
 static class Program
 {
     private static Mutex? _mutex;
-    
+
     [STAThread]
     static void Main(string[] args)
     {
+        // Install global exception handlers FIRST, before anything else
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += OnThreadException;
+        AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+
         // Parse command line arguments
         foreach (var arg in args)
         {
@@ -25,11 +30,11 @@ static class Program
                 App.IsHeadless = true;
             }
         }
-        
+
         // Single instance enforcement
         const string mutexName = "MosaicTools_SingleInstance_Mutex";
         _mutex = new Mutex(true, mutexName, out bool createdNew);
-        
+
         if (!createdNew)
         {
             // Another instance is running - could send message to activate it
@@ -48,9 +53,12 @@ static class Program
 
         try
         {
-            // Log startup
-            Logger.Trace("--- NEW SESSION ---");
-            Logger.Trace("App Init Started");
+            // Log startup with version info
+            var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+            Logger.Trace("========================================");
+            Logger.Trace($"=== NEW SESSION - v{version} ===");
+            Logger.Trace("========================================");
+            Logger.Trace($"App Init Started (Headless: {App.IsHeadless})");
             
             // Enable visual styles
             Application.EnableVisualStyles();
@@ -121,8 +129,17 @@ static class Program
             // Rename self to MosaicTools.exe
             File.Move(exePath, targetPath);
 
-            // Restart from the correct path
-            System.Diagnostics.Process.Start(targetPath);
+            // Restart from the correct path - preserve command line arguments (especially -headless)
+            var args = Environment.GetCommandLineArgs();
+            var argsToPass = args.Length > 1 ? string.Join(" ", args.Skip(1)) : "";
+
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = targetPath,
+                Arguments = argsToPass,
+                UseShellExecute = true
+            };
+            System.Diagnostics.Process.Start(startInfo);
             return true;
         }
         catch
@@ -154,6 +171,51 @@ static class Program
                 try { File.Delete(file); }
                 catch { /* ignore locked files */ }
             }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Handle exceptions on the UI thread.
+    /// </summary>
+    private static void OnThreadException(object sender, ThreadExceptionEventArgs e)
+    {
+        LogCrash("UI THREAD EXCEPTION", e.Exception);
+    }
+
+    /// <summary>
+    /// Handle exceptions on background threads.
+    /// </summary>
+    private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        var ex = e.ExceptionObject as Exception;
+        LogCrash($"UNHANDLED EXCEPTION (Terminating: {e.IsTerminating})", ex);
+    }
+
+    /// <summary>
+    /// Log crash details to both the trace log and a dedicated crash log.
+    /// </summary>
+    private static void LogCrash(string context, Exception? ex)
+    {
+        var message = $"{context}: {ex?.GetType().Name}: {ex?.Message}";
+        var fullDetails = $"{context}\n{ex}";
+
+        // Log to trace file
+        try
+        {
+            Logger.Trace("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+            Logger.Trace(message);
+            Logger.Trace(ex?.StackTrace ?? "(no stack trace)");
+            Logger.Trace("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+        }
+        catch { }
+
+        // Also write to dedicated crash log for easy finding
+        try
+        {
+            var crashPath = Path.Combine(AppContext.BaseDirectory, "mosaic_crash_log.txt");
+            var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+            File.AppendAllText(crashPath, $"\n\n=== CRASH AT {timestamp} ===\n{fullDetails}\n");
         }
         catch { }
     }

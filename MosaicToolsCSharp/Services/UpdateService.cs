@@ -249,13 +249,25 @@ public class UpdateService
 
     /// <summary>
     /// Restart the application to apply the update.
+    /// Preserves command line arguments (e.g., -headless).
     /// </summary>
     public static void RestartApp()
     {
         try
         {
-            Logger.Trace("Restarting app for update...");
-            Process.Start(Application.ExecutablePath);
+            // Preserve original command line arguments (especially -headless)
+            var args = Environment.GetCommandLineArgs();
+            var argsToPass = args.Length > 1 ? string.Join(" ", args.Skip(1)) : "";
+
+            Logger.Trace($"Restarting app for update (args: '{argsToPass}')...");
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = Application.ExecutablePath,
+                Arguments = argsToPass,
+                UseShellExecute = true
+            };
+            Process.Start(startInfo);
             Application.Exit();
         }
         catch (Exception ex)
@@ -266,8 +278,9 @@ public class UpdateService
 
     /// <summary>
     /// Clean up old exe from previous update (call on startup).
+    /// Returns true if cleanup happened (meaning we just updated).
     /// </summary>
-    public static void CleanupOldVersion()
+    public static bool CleanupOldVersion()
     {
         try
         {
@@ -277,13 +290,15 @@ public class UpdateService
             if (File.Exists(oldExePath))
             {
                 File.Delete(oldExePath);
-                Logger.Trace("Cleaned up old version");
+                Logger.Trace("Cleaned up old version - just updated");
+                return true;
             }
         }
         catch (Exception ex)
         {
             Logger.Trace($"Cleanup failed: {ex.Message}");
         }
+        return false;
     }
 
     /// <summary>

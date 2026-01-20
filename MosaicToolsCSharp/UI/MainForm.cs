@@ -201,14 +201,25 @@ public class MainForm : Form
         // Start controller (HID, hotkeys, etc.)
         _controller.Start();
 
-        // Clean up old version from previous update
-        UpdateService.CleanupOldVersion();
+        // Log window info for AHK debugging
+        Logger.Trace($"MainForm HWND: 0x{Handle:X} Title: '{Text}' Class: WindowsForms");
 
-        // Startup toast
+        // Clean up old version from previous update
+        var justUpdated = UpdateService.CleanupOldVersion();
+
+        // Startup toast - show "Updated" message if we just updated
         var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
         var versionStr = version != null ? $" v{version.Major}.{version.Minor}.{version.Build}" : "";
         string modeStr = App.IsHeadless ? " [Headless]" : "";
-        ShowStatusToast($"Mosaic Tools{versionStr} Started ({_config.DoctorName}){modeStr}", 2000);
+
+        if (justUpdated)
+        {
+            ShowStatusToast($"Mosaic Tools{versionStr} Updated!", 3000);
+        }
+        else
+        {
+            ShowStatusToast($"Mosaic Tools{versionStr} Started ({_config.DoctorName}){modeStr}", 2000);
+        }
 
         // Check for updates (async, non-blocking)
         if (_config.AutoUpdateEnabled)
@@ -216,8 +227,8 @@ public class MainForm : Form
             _ = CheckForUpdatesAsync();
         }
 
-        // Start RVU counter timer if enabled
-        if (_config.RvuCounterEnabled)
+        // Start RVU counter timer if enabled (skip in headless mode - no UI to display it)
+        if (_config.RvuCounterEnabled && !App.IsHeadless)
         {
             UpdateRvuDisplay(); // Initial update
             _rvuTimer = new System.Windows.Forms.Timer { Interval = 5000 }; // Update every 5 seconds
@@ -273,7 +284,8 @@ public class MainForm : Form
                 var success = await _updateService.DownloadUpdateAsync();
                 if (success)
                 {
-                    Invoke(() => ShowUpdateToast($"MosaicTools v{_updateService.LatestVersion} ready!"));
+                    // Auto-restart - user will see "Updated!" toast on next start
+                    UpdateService.RestartApp();
                 }
             }
         }
@@ -288,10 +300,10 @@ public class MainForm : Form
     /// </summary>
     public async System.Threading.Tasks.Task CheckForUpdatesManualAsync()
     {
-        // If update already downloaded and ready, just show the toast again
+        // If update already downloaded and ready, restart now
         if (_updateService.UpdateReady)
         {
-            ShowUpdateToast($"MosaicTools v{_updateService.LatestVersion} ready!");
+            UpdateService.RestartApp();
             return;
         }
 
@@ -304,7 +316,8 @@ public class MainForm : Form
             var success = await _updateService.DownloadUpdateAsync();
             if (success)
             {
-                Invoke(() => ShowUpdateToast($"MosaicTools v{_updateService.LatestVersion} ready!"));
+                // Auto-restart - user will see "Updated!" toast on next start
+                UpdateService.RestartApp();
             }
             else
             {
@@ -785,9 +798,18 @@ public class MainForm : Form
     {
         _controller.Stop();
         Close();
-        
-        // Relaunch
-        System.Diagnostics.Process.Start(Application.ExecutablePath);
+
+        // Relaunch - preserve command line arguments (especially -headless)
+        var args = Environment.GetCommandLineArgs();
+        var argsToPass = args.Length > 1 ? string.Join(" ", args.Skip(1)) : "";
+
+        var startInfo = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = Application.ExecutablePath,
+            Arguments = argsToPass,
+            UseShellExecute = true
+        };
+        System.Diagnostics.Process.Start(startInfo);
         Application.Exit();
     }
     
@@ -799,6 +821,8 @@ public class MainForm : Form
     
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        Logger.Trace($"App shutting down normally (CloseReason: {e.CloseReason})");
+
         _controller.Dispose();
         _toolbarWindow?.Close();
         _indicatorWindow?.Close();
@@ -820,7 +844,8 @@ public class MainForm : Form
             _trayIcon.Dispose();
             _trayIcon = null;
         }
-        
+
+        Logger.Trace("App shutdown complete");
         base.OnFormClosed(e);
     }
     
@@ -861,40 +886,55 @@ public class MainForm : Form
     #endregion
     
     #region Windows Message Handling (AHK Integration)
-    
+
     protected override void WndProc(ref Message m)
     {
+        // Log custom messages in our range (0x0400-0x040F)
+        if (m.Msg >= 0x0400 && m.Msg <= 0x040F)
+        {
+            Logger.Trace($"WndProc received message 0x{m.Msg:X4} from HWND {m.WParam}");
+        }
+
         switch (m.Msg)
         {
             case NativeWindows.WM_TRIGGER_SCRAPE:
+                Logger.Trace("WndProc: Triggering CriticalFindings");
                 BeginInvoke(() => _controller.TriggerAction(Actions.CriticalFindings));
                 break;
             case NativeWindows.WM_TRIGGER_BEEP:
+                Logger.Trace("WndProc: Triggering SystemBeep");
                 BeginInvoke(() => _controller.TriggerAction(Actions.SystemBeep));
                 break;
             case NativeWindows.WM_TRIGGER_SHOW_REPORT:
+                Logger.Trace("WndProc: Triggering ShowReport");
                 BeginInvoke(() => _controller.TriggerAction(Actions.ShowReport));
                 break;
             case NativeWindows.WM_TRIGGER_CAPTURE_SERIES:
+                Logger.Trace("WndProc: Triggering CaptureSeries");
                 BeginInvoke(() => _controller.TriggerAction(Actions.CaptureSeries));
                 break;
             case NativeWindows.WM_TRIGGER_GET_PRIOR:
+                Logger.Trace("WndProc: Triggering GetPrior");
                 BeginInvoke(() => _controller.TriggerAction(Actions.GetPrior));
                 break;
             case NativeWindows.WM_TRIGGER_TOGGLE_RECORD:
+                Logger.Trace("WndProc: Triggering ToggleRecord");
                 BeginInvoke(() => _controller.TriggerAction(Actions.ToggleRecord));
                 break;
             case NativeWindows.WM_TRIGGER_PROCESS_REPORT:
+                Logger.Trace("WndProc: Triggering ProcessReport");
                 BeginInvoke(() => _controller.TriggerAction(Actions.ProcessReport));
                 break;
             case NativeWindows.WM_TRIGGER_SIGN_REPORT:
+                Logger.Trace("WndProc: Triggering SignReport");
                 BeginInvoke(() => _controller.TriggerAction(Actions.SignReport));
                 break;
             case NativeWindows.WM_TRIGGER_OPEN_SETTINGS:
+                Logger.Trace("WndProc: Triggering OpenSettings");
                 BeginInvoke(() => OpenSettings());
                 break;
         }
-        
+
         base.WndProc(ref m);
     }
     
