@@ -100,15 +100,17 @@ When user says "create a release" or "publish release vX.X":
    Compress-Archive -Path "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe" -DestinationPath "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.zip" -Force
    ```
 
-5. **Create the GitHub release** with the ZIP file:
+5. **Create the GitHub release** with BOTH zip and exe (for backwards compatibility):
    ```bash
-   "C:\Users\erik.richter\Desktop\GH CLI\gh.exe" release create v2.5.1 "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.zip" --title "v2.5.1" --notes "Release notes here"
+   "C:\Users\erik.richter\Desktop\GH CLI\gh.exe" release create v2.5.1 "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.zip" "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe" --title "v2.5.1" --notes "Release notes here"
    ```
 
-### Direct Download Link
-The latest release ZIP can always be downloaded from:
+**Why both files?** Old versions (pre-2.5.1) only look for .exe, new versions prefer .zip but fall back to .exe.
+
+### Direct Download Links
 ```
 https://github.com/erichter2018/MosaicTools/releases/latest/download/MosaicTools.zip
+https://github.com/erichter2018/MosaicTools/releases/latest/download/MosaicTools.exe
 ```
 
 ### Settings
