@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Reflection;
@@ -12,6 +13,7 @@ namespace MosaicTools.Services;
 
 /// <summary>
 /// Handles auto-update via GitHub Releases.
+/// Downloads zip files to avoid corporate security blocking exe downloads.
 /// </summary>
 public class UpdateService
 {
@@ -27,6 +29,7 @@ public class UpdateService
     {
         _httpClient = new HttpClient();
         _httpClient.DefaultRequestHeaders.Add("User-Agent", "MosaicTools-AutoUpdater");
+        // Note: Timeout is set per-request in CheckForUpdateAsync and DownloadUpdateAsync
     }
 
     /// <summary>
@@ -47,7 +50,9 @@ public class UpdateService
         {
             Logger.Trace("Checking for updates...");
 
-            var response = await _httpClient.GetAsync(GitHubApiUrl);
+            // Use 15 second timeout for the API check
+            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var response = await _httpClient.GetAsync(GitHubApiUrl, cts.Token);
             if (!response.IsSuccessStatusCode)
             {
                 Logger.Trace($"GitHub API returned {response.StatusCode}");
@@ -77,19 +82,24 @@ public class UpdateService
 
             if (latestVersion > currentVersion)
             {
-                // Find the exe asset
+                // Find the zip asset (preferred) or exe asset (fallback for old releases)
+                var zipAsset = release.Assets?.Find(a =>
+                    a.Name?.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) == true);
+
                 var exeAsset = release.Assets?.Find(a =>
                     a.Name?.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) == true);
 
-                if (exeAsset != null)
+                var asset = zipAsset ?? exeAsset;
+
+                if (asset != null)
                 {
-                    DownloadUrl = exeAsset.BrowserDownloadUrl;
+                    DownloadUrl = asset.BrowserDownloadUrl;
                     Logger.Trace($"Update available: {DownloadUrl}");
                     return true;
                 }
                 else
                 {
-                    Logger.Trace("No exe asset found in release");
+                    Logger.Trace("No zip or exe asset found in release");
                 }
             }
 
@@ -104,6 +114,7 @@ public class UpdateService
 
     /// <summary>
     /// Download the update and prepare it for installation.
+    /// Supports both zip files (preferred) and exe files (legacy).
     /// Returns true if ready to restart.
     /// </summary>
     public async Task<bool> DownloadUpdateAsync(Action<int>? progressCallback = null)
@@ -120,18 +131,23 @@ public class UpdateService
             var exeDir = Path.GetDirectoryName(exePath) ?? ".";
             var newExePath = Path.Combine(exeDir, "MosaicTools_new.exe");
             var oldExePath = Path.Combine(exeDir, "MosaicTools_old.exe");
+            var isZipDownload = DownloadUrl.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+            var downloadPath = isZipDownload
+                ? Path.Combine(exeDir, "MosaicTools_update.zip")
+                : newExePath;
 
-            Logger.Trace($"Downloading update from {DownloadUrl}");
+            Logger.Trace($"Downloading update from {DownloadUrl} (zip={isZipDownload})");
 
-            // Download to _new file
-            using var response = await _httpClient.GetAsync(DownloadUrl, HttpCompletionOption.ResponseHeadersRead);
+            // Download file (5 minute timeout for large files)
+            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromMinutes(5));
+            using var response = await _httpClient.GetAsync(DownloadUrl, HttpCompletionOption.ResponseHeadersRead, cts.Token);
             response.EnsureSuccessStatusCode();
 
             var totalBytes = response.Content.Headers.ContentLength ?? -1;
             var downloadedBytes = 0L;
 
             await using var contentStream = await response.Content.ReadAsStreamAsync();
-            await using var fileStream = new FileStream(newExePath, FileMode.Create, FileAccess.Write, FileShare.None);
+            await using var fileStream = new FileStream(downloadPath, FileMode.Create, FileAccess.Write, FileShare.None);
 
             var buffer = new byte[81920];
             int bytesRead;
@@ -148,10 +164,40 @@ public class UpdateService
                 }
             }
 
+            fileStream.Close();
             Logger.Trace($"Download complete: {downloadedBytes} bytes");
 
+            // If it's a zip file, extract the exe from it
+            if (isZipDownload)
+            {
+                Logger.Trace("Extracting exe from zip...");
+
+                try
+                {
+                    using var archive = ZipFile.OpenRead(downloadPath);
+                    var exeEntry = archive.Entries.FirstOrDefault(e =>
+                        e.Name.Equals("MosaicTools.exe", StringComparison.OrdinalIgnoreCase));
+
+                    if (exeEntry == null)
+                    {
+                        Logger.Trace("No MosaicTools.exe found in zip");
+                        File.Delete(downloadPath);
+                        return false;
+                    }
+
+                    // Extract to _new.exe
+                    exeEntry.ExtractToFile(newExePath, overwrite: true);
+                    Logger.Trace($"Extracted {exeEntry.Name} ({exeEntry.Length} bytes)");
+                }
+                finally
+                {
+                    // Clean up the zip file
+                    try { File.Delete(downloadPath); }
+                    catch { /* ignore */ }
+                }
+            }
+
             // Verify the download is a valid exe (basic check)
-            fileStream.Close();
             var fileInfo = new FileInfo(newExePath);
             if (fileInfo.Length < 100000) // Expect at least 100KB
             {
@@ -184,9 +230,16 @@ public class UpdateService
             // Try to clean up
             var exeDir = Path.GetDirectoryName(Application.ExecutablePath) ?? ".";
             var newExePath = Path.Combine(exeDir, "MosaicTools_new.exe");
+            var zipPath = Path.Combine(exeDir, "MosaicTools_update.zip");
+
             if (File.Exists(newExePath))
             {
                 try { File.Delete(newExePath); }
+                catch { /* ignore */ }
+            }
+            if (File.Exists(zipPath))
+            {
+                try { File.Delete(zipPath); }
                 catch { /* ignore */ }
             }
 

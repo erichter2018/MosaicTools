@@ -62,48 +62,66 @@ c:\Users\erik.richter\Desktop\dotnet\dotnet.exe build MosaicTools.csproj
 
 The app auto-updates via GitHub Releases using a rename trick (no batch files, no installer, no admin required).
 
+**IMPORTANT: Releases use ZIP files** to avoid corporate security/antivirus blocking direct exe downloads.
+
 ### How it works
 1. On startup, checks `https://api.github.com/repos/erichter2018/MosaicTools/releases/latest`
-2. If newer version found, downloads exe to `MosaicTools_new.exe`
-3. Renames running exe to `MosaicTools_old.exe` (Windows allows renaming running files)
-4. Renames new exe to `MosaicTools.exe`
-5. Shows toast with "Restart Now" button
-6. On next startup, deletes `_old.exe`
+2. If newer version found, downloads `MosaicTools.zip` to temp location
+3. Extracts `MosaicTools.exe` from the zip to `MosaicTools_new.exe`
+4. Renames running exe to `MosaicTools_old.exe` (Windows allows renaming running files)
+5. Renames new exe to `MosaicTools.exe`
+6. Shows toast with "Restart Now" button
+7. On next startup, deletes `_old.exe` and any leftover zip files
 
 ### Publishing a new release
 
 When user says "create a release" or "publish release vX.X":
 
-1. **Update version** in `MosaicToolsCSharp/MosaicTools.csproj`:
+1. **Update version** in `MosaicToolsCSharp/MosaicTools.csproj` (ALL THREE fields!):
    ```xml
-   <Version>2.2.0</Version>
+   <Version>2.5.1</Version>
+   <AssemblyVersion>2.5.1.0</AssemblyVersion>
+   <FileVersion>2.5.1.0</FileVersion>
    ```
 
 2. **Commit and push** the version change:
    ```bash
-   git add -A && git commit -m "Bump version to 2.2.0" && git push
+   git add -A && git commit -m "v2.5.1: Release notes here" && git push
    ```
 
 3. **Build** the release exe:
-   ```bash
-   c:\Users\erik.richter\Desktop\dotnet\dotnet.exe publish MosaicTools.csproj -c Release -r win-x64 --self-contained
+   ```powershell
+   cd C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp
+   c:\Users\erik.richter\Desktop\dotnet\dotnet.exe publish -c Release -r win-x64 --self-contained
    ```
 
-4. **Create the GitHub release** using gh CLI:
-   ```bash
-   "C:\Users\erik.richter\Desktop\GH CLI\gh.exe" release create v2.2.0 "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe" --title "v2.2.0" --notes "Release notes here"
+4. **Create the ZIP file** containing MosaicTools.exe:
+   ```powershell
+   Compress-Archive -Path "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe" -DestinationPath "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.zip" -Force
    ```
+
+5. **Create the GitHub release** with the ZIP file:
+   ```bash
+   "C:\Users\erik.richter\Desktop\GH CLI\gh.exe" release create v2.5.1 "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.zip" --title "v2.5.1" --notes "Release notes here"
+   ```
+
+### Direct Download Link
+The latest release ZIP can always be downloaded from:
+```
+https://github.com/erichter2018/MosaicTools/releases/latest/download/MosaicTools.zip
+```
 
 ### Settings
 - **Auto-update** checkbox in General tab (ON by default)
 - **Check for Updates** button for manual checks
+- Update check has 15 second timeout to prevent hanging on blocked networks
 
 ### IMPORTANT: Version Numbers
 When releasing, you MUST update ALL THREE version fields in the csproj:
 ```xml
-<Version>2.3.1</Version>
-<AssemblyVersion>2.3.1.0</AssemblyVersion>
-<FileVersion>2.3.1.0</FileVersion>
+<Version>2.5.1</Version>
+<AssemblyVersion>2.5.1.0</AssemblyVersion>
+<FileVersion>2.5.1.0</FileVersion>
 ```
 The auto-update uses `AssemblyVersion` for comparison - if it doesn't match the release tag, users get stuck in an update loop!
 

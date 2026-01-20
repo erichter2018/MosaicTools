@@ -185,13 +185,15 @@ public class MainForm : Form
         }
         
         // Indicator: only show if NOT headless AND setting is enabled
-        if (!App.IsHeadless && _config.IndicatorEnabled)
+        // Don't show on startup if "hide when no study" is enabled - scrape will show it when study opens
+        if (!App.IsHeadless && _config.IndicatorEnabled && !_config.HideIndicatorWhenNoStudy)
         {
             ToggleIndicator(true);
         }
 
         // Clinical History window: show if enabled and scrape mosaic is on
-        if (_config.ShowClinicalHistory && _config.ScrapeMosaicEnabled)
+        // Don't show on startup if "hide when no study" is enabled - scrape will show it when study opens
+        if (_config.ShowClinicalHistory && _config.ScrapeMosaicEnabled && !_config.HideClinicalHistoryWhenNoStudy)
         {
             ToggleClinicalHistory(true);
         }
@@ -597,6 +599,57 @@ public class MainForm : Form
                 _clinicalHistoryWindow.Close();
             }
             _clinicalHistoryWindow = null;
+        }
+    }
+
+    /// <summary>
+    /// Returns true if a study is currently open.
+    /// </summary>
+    public bool IsStudyOpen => _controller.IsStudyOpen;
+
+    /// <summary>
+    /// Updates indicator visibility based on current settings and study state.
+    /// Call this when HideIndicatorWhenNoStudy setting changes.
+    /// </summary>
+    public void UpdateIndicatorVisibility()
+    {
+        if (!_config.IndicatorEnabled)
+        {
+            ToggleIndicator(false);
+            return;
+        }
+
+        // If "hide when no study" is enabled and no study is open, hide it
+        if (_config.HideIndicatorWhenNoStudy && !IsStudyOpen)
+        {
+            ToggleIndicator(false);
+        }
+        else
+        {
+            ToggleIndicator(true);
+        }
+    }
+
+    /// <summary>
+    /// Updates clinical history visibility based on current settings and study state.
+    /// Call this when HideClinicalHistoryWhenNoStudy setting changes.
+    /// </summary>
+    public void UpdateClinicalHistoryVisibility()
+    {
+        if (!_config.ShowClinicalHistory || !_config.ScrapeMosaicEnabled)
+        {
+            ToggleClinicalHistory(false);
+            return;
+        }
+
+        // If "hide when no study" is enabled and no study is open, hide it
+        if (_config.HideClinicalHistoryWhenNoStudy && !IsStudyOpen)
+        {
+            ToggleClinicalHistory(false);
+        }
+        else
+        {
+            ToggleClinicalHistory(true);
         }
     }
 

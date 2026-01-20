@@ -337,6 +337,11 @@ public class SettingsForm : Form
             ForeColor = Color.Gray,
             AutoSize = true
         };
+        _hideIndicatorWhenNoStudyCheck.CheckedChanged += (s, e) =>
+        {
+            _config.HideIndicatorWhenNoStudy = _hideIndicatorWhenNoStudyCheck.Checked;
+            _mainForm.UpdateIndicatorVisibility();
+        };
         if (!App.IsHeadless)
         {
             tab.Controls.Add(_hideIndicatorWhenNoStudyCheck);
@@ -1476,6 +1481,11 @@ Settings stored in: MosaicToolsSettings.json
             Location = new Point(60, y),
             ForeColor = Color.Gray,
             AutoSize = true
+        };
+        _hideClinicalHistoryWhenNoStudyCheck.CheckedChanged += (s, e) =>
+        {
+            _config.HideClinicalHistoryWhenNoStudy = _hideClinicalHistoryWhenNoStudyCheck.Checked;
+            _mainForm.UpdateClinicalHistoryVisibility();
         };
         tab.Controls.Add(_hideClinicalHistoryWhenNoStudyCheck);
         y += 25;

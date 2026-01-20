@@ -59,6 +59,11 @@ public class ActionController : IDisposable
     // Accession tracking - only track non-empty accessions
     private string? _lastNonEmptyAccession;
 
+    /// <summary>
+    /// Returns true if a study is currently open (has a non-empty accession).
+    /// </summary>
+    public bool IsStudyOpen => !string.IsNullOrEmpty(_lastNonEmptyAccession);
+
     // RVUCounter integration - track whether current accession was signed
     private bool _currentAccessionSigned = false;
 
