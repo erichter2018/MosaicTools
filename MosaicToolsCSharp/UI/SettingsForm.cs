@@ -2924,8 +2924,8 @@ You can back up this file or copy it to other workstations.";
         
         // Apply changes
         _mainForm.ToggleFloatingToolbar(_config.FloatingToolbarEnabled);
-        _mainForm.ToggleIndicator(_config.IndicatorEnabled);
-        _mainForm.ToggleClinicalHistory(_config.ShowClinicalHistory && _config.ScrapeMosaicEnabled);
+        _mainForm.UpdateIndicatorVisibility();  // Respects "hide when no study" setting
+        _mainForm.UpdateClinicalHistoryVisibility();  // Respects "hide when no study" setting
         _mainForm.RefreshFloatingToolbar(_config.FloatingButtons);
 
         Close();
