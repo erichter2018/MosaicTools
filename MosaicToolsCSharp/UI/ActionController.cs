@@ -59,6 +59,13 @@ public class ActionController : IDisposable
     // Accession tracking - only track non-empty accessions
     private string? _lastNonEmptyAccession;
 
+    // RVUCounter integration - track whether current accession was signed
+    private bool _currentAccessionSigned = false;
+
+    // RVUCounter integration - track if discard dialog was shown for current accession
+    // If dialog was shown while on accession X, and then X changes, X was discarded
+    private bool _discardDialogShownForCurrentAccession = false;
+
     // Pending macro insertion - wait for clinical history to be visible before inserting
     private string? _pendingMacroAccession;
     private string? _pendingMacroDescription;
@@ -305,6 +312,9 @@ public class ActionController : IDisposable
                 {
                     PerformCreateImpression();
                 }
+                break;
+            case Actions.DiscardStudy:
+                PerformDiscardStudy();
                 break;
             case "__InsertMacros__":
                 PerformInsertMacros();
@@ -648,6 +658,11 @@ public class ActionController : IDisposable
     {
         Logger.Trace($"Sign Report (Source: {source})");
 
+        // Mark current accession as signed for RVUCounter integration
+        // This flag will be used when accession changes to send the appropriate notification
+        _currentAccessionSigned = true;
+        Logger.Trace($"RVUCounter: Marked accession '{_lastNonEmptyAccession}' as signed");
+
         // Check if Checkmark button triggered this and is mapped to Sign Report
         // If so, Mosaic handles the actual signing - we only clean up impression state
         bool isCheckmarkTrigger = (source == "Checkmark");
@@ -676,6 +691,51 @@ public class ActionController : IDisposable
             _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
 
             // Restore normal scrape rate
+            RestartScrapeTimer(NormalScrapeIntervalMs);
+        }
+    }
+
+    private void PerformDiscardStudy()
+    {
+        Logger.Trace("Discard Study action triggered");
+
+        // Remember the accession we're discarding
+        var accessionToDiscard = _lastNonEmptyAccession;
+
+        // Mark that discard was explicitly requested via MosaicTools
+        // This ensures CLOSED_UNSIGNED is sent even if the scrape loop handles it
+        _discardDialogShownForCurrentAccession = true;
+
+        // Perform the UI automation to discard
+        bool success = _automationService.ClickDiscardStudy();
+
+        if (success)
+        {
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Study discarded", 2000));
+
+            // Send CLOSED_UNSIGNED immediately after successful discard
+            if (!string.IsNullOrEmpty(accessionToDiscard))
+            {
+                Logger.Trace($"RVUCounter: Sending CLOSED_UNSIGNED (discard action) for '{accessionToDiscard}'");
+                NativeWindows.SendToRvuCounter(NativeWindows.MSG_STUDY_CLOSED_UNSIGNED, accessionToDiscard);
+
+                // Clear state to prevent duplicate message from scrape loop
+                _lastNonEmptyAccession = null;
+                _discardDialogShownForCurrentAccession = false;
+                _currentAccessionSigned = false;
+            }
+        }
+        else
+        {
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Discard failed - try manually", 3000));
+        }
+
+        // Close impression window on discard (same as sign)
+        if (_config.ShowImpression)
+        {
+            _searchingForImpression = false;
+            _impressionFromProcessReport = false;
+            _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
             RestartScrapeTimer(NormalScrapeIntervalMs);
         }
     }
@@ -1180,16 +1240,88 @@ public class ActionController : IDisposable
                 // Check for new study (non-empty accession different from last non-empty)
                 var currentAccession = _automationService.LastAccession;
 
+                // Check for discard dialog (RVUCounter integration)
+                // Must check BEFORE accession change detection - dialog disappears when user clicks YES
+                if (_automationService.IsDiscardDialogVisible())
+                {
+                    _discardDialogShownForCurrentAccession = true;
+                    Logger.Trace("RVUCounter: Discard dialog detected for current accession");
+                }
+
+                // Detect study change: either new accession OR accession went empty (study closed)
+                bool accessionChanged = false;
+                bool studyClosed = false;
+
                 if (!string.IsNullOrEmpty(currentAccession))
                 {
-                    // We have a valid accession - check if it's different from last known
+                    // New non-empty accession
                     if (currentAccession != _lastNonEmptyAccession)
                     {
-                        Logger.Trace($"New study detected: '{_lastNonEmptyAccession}' -> '{currentAccession}'");
+                        accessionChanged = true;
+                    }
+                }
+                else if (!string.IsNullOrEmpty(_lastNonEmptyAccession))
+                {
+                    // Accession went from non-empty to empty (study closed without opening new one)
+                    accessionChanged = true;
+                    studyClosed = true;
+                }
+
+                if (accessionChanged)
+                {
+                    Logger.Trace($"Study change detected: '{_lastNonEmptyAccession}' -> '{currentAccession ?? "(empty)"}'");
+
+                    // RVUCounter integration: Notify about previous study
+                    // Logic:
+                    //   1. If _currentAccessionSigned → SIGNED (MosaicTools triggered sign)
+                    //   2. Else if discard dialog was shown for this accession → CLOSED_UNSIGNED
+                    //   3. Else → SIGNED (no dialog = manual sign via Alt+F or button click)
+                    if (!string.IsNullOrEmpty(_lastNonEmptyAccession))
+                    {
+                        if (_currentAccessionSigned)
+                        {
+                            // Explicitly signed via MosaicTools
+                            Logger.Trace($"RVUCounter: Sending SIGNED (MosaicTools) for '{_lastNonEmptyAccession}'");
+                            NativeWindows.SendToRvuCounter(NativeWindows.MSG_STUDY_SIGNED, _lastNonEmptyAccession);
+                        }
+                        else if (_discardDialogShownForCurrentAccession)
+                        {
+                            // Discard dialog was shown for this accession → study was discarded
+                            Logger.Trace($"RVUCounter: Sending CLOSED_UNSIGNED (dialog was shown) for '{_lastNonEmptyAccession}'");
+                            NativeWindows.SendToRvuCounter(NativeWindows.MSG_STUDY_CLOSED_UNSIGNED, _lastNonEmptyAccession);
+                        }
+                        else
+                        {
+                            // No dialog → user signed manually (Alt+F or clicked Sign button)
+                            Logger.Trace($"RVUCounter: Sending SIGNED (manual) for '{_lastNonEmptyAccession}'");
+                            NativeWindows.SendToRvuCounter(NativeWindows.MSG_STUDY_SIGNED, _lastNonEmptyAccession);
+                        }
+                    }
+
+                    // Reset state for new study
+                    _currentAccessionSigned = false;
+                    _discardDialogShownForCurrentAccession = false;
+
+                    // Update tracking - only update to new non-empty accession
+                    if (!studyClosed)
+                    {
+                        _lastNonEmptyAccession = currentAccession;
 
                         // Show toast
                         Logger.Trace($"Showing New Study toast for {currentAccession}");
                         _mainForm.Invoke(() => _mainForm.ShowStatusToast($"New Study: {currentAccession}", 3000));
+
+                        // Re-show clinical history window if it was hidden due to no study
+                        if (_config.HideClinicalHistoryWhenNoStudy && _config.ShowClinicalHistory)
+                        {
+                            _mainForm.Invoke(() => _mainForm.ToggleClinicalHistory(true));
+                        }
+
+                        // Re-show indicator window if it was hidden due to no study
+                        if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
+                        {
+                            _mainForm.Invoke(() => _mainForm.ToggleIndicator(true));
+                        }
 
                         // Queue macros for insertion - they'll be inserted when clinical history is visible
                         // This handles the case where Mosaic auto-processes the report on open
@@ -1207,9 +1339,24 @@ public class ActionController : IDisposable
                         _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
                         _searchingForImpression = false;
                         _impressionFromProcessReport = false;
+                    }
+                    else
+                    {
+                        // Study closed without new one opening - clear the tracked accession
+                        _lastNonEmptyAccession = null;
+                        Logger.Trace("Study closed, no new study opened");
 
-                        // Update tracking
-                        _lastNonEmptyAccession = currentAccession;
+                        // Hide clinical history window if configured to hide when no study
+                        if (_config.HideClinicalHistoryWhenNoStudy && _config.ShowClinicalHistory)
+                        {
+                            _mainForm.Invoke(() => _mainForm.ToggleClinicalHistory(false));
+                        }
+
+                        // Hide indicator window if configured to hide when no study
+                        if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
+                        {
+                            _mainForm.Invoke(() => _mainForm.ToggleIndicator(false));
+                        }
                     }
                 }
 

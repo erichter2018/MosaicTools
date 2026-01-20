@@ -11,9 +11,9 @@
     <RootNamespace>MosaicTools</RootNamespace>
 
     <!-- Version -->
-    <Version>2.4.1</Version>
-    <AssemblyVersion>2.4.1.0</AssemblyVersion>
-    <FileVersion>2.4.1.0</FileVersion>
+    <Version>2.5.0</Version>
+    <AssemblyVersion>2.5.0.0</AssemblyVersion>
+    <FileVersion>2.5.0.0</FileVersion>
     
     <!-- Single-file self-contained deployment (no admin required) -->
     <PublishSingleFile>true</PublishSingleFile>
@@ -34,6 +34,7 @@
 
     <!-- UI Automation (FlaUI is more modern than System.Windows.Automation) -->
     <PackageReference Include="FlaUI.UIA3" Version="4.0.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.2" />
 
     <!-- Global Keyboard Hooks -->
     <PackageReference Include="SharpHook" Version="5.3.8" />

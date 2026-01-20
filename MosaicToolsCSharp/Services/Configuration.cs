@@ -37,6 +37,15 @@ public class Configuration
     [JsonPropertyName("auto_update_enabled")]
     public bool AutoUpdateEnabled { get; set; } = true;
 
+    [JsonPropertyName("run_at_startup")]
+    public bool RunAtStartup { get; set; } = false;
+
+    [JsonPropertyName("hide_clinical_history_when_no_study")]
+    public bool HideClinicalHistoryWhenNoStudy { get; set; } = true;
+
+    [JsonPropertyName("hide_indicator_when_no_study")]
+    public bool HideIndicatorWhenNoStudy { get; set; } = true;
+
     // Beep Settings
     [JsonPropertyName("start_beep_enabled")]
     public bool StartBeepEnabled { get; set; } = true;
@@ -85,7 +94,7 @@ public class Configuration
     public bool ScrapeMosaicEnabled { get; set; } = false;
 
     [JsonPropertyName("scrape_interval_seconds")]
-    public int ScrapeIntervalSeconds { get; set; } = 3;
+    public int ScrapeIntervalSeconds { get; set; } = 1;
 
     [JsonPropertyName("show_clinical_history")]
     public bool ShowClinicalHistory { get; set; } = false;
@@ -173,6 +182,13 @@ public class Configuration
 
     [JsonPropertyName("macros")]
     public List<MacroConfig> Macros { get; set; } = new();
+
+    // RVUCounter Integration (Experimental)
+    [JsonPropertyName("rvucounter_enabled")]
+    public bool RvuCounterEnabled { get; set; } = false;
+
+    [JsonPropertyName("rvucounter_path")]
+    public string RvuCounterPath { get; set; } = "";
 
     // Action Mappings (action name -> {hotkey, mic_button})
     [JsonPropertyName("action_mappings")]
@@ -479,9 +495,10 @@ public static class Actions
     public const string ProcessReport = "Process Report";
     public const string SignReport = "Sign Report";
     public const string CreateImpression = "Create Impression";
+    public const string DiscardStudy = "Discard Study";
 
     public static readonly string[] All = {
         None, SystemBeep, GetPrior, CriticalFindings,
-        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression
+        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression, DiscardStudy
     };
 }

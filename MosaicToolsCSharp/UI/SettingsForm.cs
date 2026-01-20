@@ -35,6 +35,8 @@ public class SettingsForm : Form
     private TextBox _criticalTemplateBox = null!;
     private TextBox _seriesTemplateBox = null!;
     private CheckBox _autoUpdateCheck = null!;
+    private CheckBox _runAtStartupCheck = null!;
+    private CheckBox _hideIndicatorWhenNoStudyCheck = null!;
 
     // Advanced tab controls
     private CheckBox _restoreFocusCheck = null!;
@@ -42,6 +44,7 @@ public class SettingsForm : Form
     private CheckBox _scrapeMosaicCheck = null!;
     private NumericUpDown _scrapeIntervalUpDown = null!;
     private CheckBox _showClinicalHistoryCheck = null!;
+    private CheckBox _hideClinicalHistoryWhenNoStudyCheck = null!;
     private CheckBox _autoFixClinicalHistoryCheck = null!;
     private CheckBox _showDraftedIndicatorCheck = null!;
     private CheckBox _showTemplateMismatchCheck = null!;
@@ -51,7 +54,12 @@ public class SettingsForm : Form
     private NumericUpDown _scrollThreshold1 = null!;
     private NumericUpDown _scrollThreshold2 = null!;
     private NumericUpDown _scrollThreshold3 = null!;
-    
+
+    // Experimental tab controls
+    private CheckBox _rvuCounterEnabledCheck = null!;
+    private TextBox _rvuCounterPathBox = null!;
+    private Label _rvuCounterStatusLabel = null!;
+
     public SettingsForm(Configuration config, ActionController controller, MainForm mainForm)
     {
         _config = config;
@@ -107,6 +115,10 @@ public class SettingsForm : Form
         // Advanced tab
         var advancedTab = CreateAdvancedTab();
         _tabControl.TabPages.Add(advancedTab);
+
+        // Experimental tab
+        var experimentalTab = CreateExperimentalTab();
+        _tabControl.TabPages.Add(experimentalTab);
 
         // AHK tab (last)
         var ahkTab = CreateAhkTab();
@@ -316,7 +328,21 @@ public class SettingsForm : Form
             tab.Controls.Add(_indicatorCheck);
             y += 25;
         }
-        
+
+        // Hide indicator when no study
+        _hideIndicatorWhenNoStudyCheck = new CheckBox
+        {
+            Text = "Hide indicator when no study open",
+            Location = new Point(40, y),
+            ForeColor = Color.Gray,
+            AutoSize = true
+        };
+        if (!App.IsHeadless)
+        {
+            tab.Controls.Add(_hideIndicatorWhenNoStudyCheck);
+            y += 25;
+        }
+
         // Auto-Stop Dictation (hide in headless mode)
         _autoStopCheck = new CheckBox
         {
@@ -380,6 +406,17 @@ public class SettingsForm : Form
             }
         };
         tab.Controls.Add(checkUpdatesBtn);
+        y += 35;
+
+        // Run at Startup
+        _runAtStartupCheck = new CheckBox
+        {
+            Text = "Run at Windows startup",
+            Location = new Point(20, y),
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_runAtStartupCheck);
 
         return tab;
     }
@@ -1098,6 +1135,7 @@ WM_TRIGGER_GET_PRIOR = 0x0406     # Get Prior
 WM_TRIGGER_TOGGLE_RECORD = 0x0407 # Toggle Record
 WM_TRIGGER_PROCESS_REPORT = 0x0408 # Process Report
 WM_TRIGGER_SIGN_REPORT = 0x0409   # Sign Report
+WM_TRIGGER_OPEN_SETTINGS = 0x040A # Open Settings
 
 Example AHK:
 DetectHiddenWindows, On
@@ -1110,6 +1148,197 @@ Settings stored in: MosaicToolsSettings.json
         tab.Controls.Add(infoBox);
 
         return tab;
+    }
+
+    private TabPage CreateExperimentalTab()
+    {
+        var tab = new TabPage("Experimental")
+        {
+            BackColor = Color.FromArgb(40, 40, 40)
+        };
+
+        int y = 20;
+
+        // Warning label
+        var warningLabel = new Label
+        {
+            Text = "⚠ Experimental features - may change or be removed",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(255, 180, 50),
+            Font = new Font("Segoe UI", 9, FontStyle.Italic)
+        };
+        tab.Controls.Add(warningLabel);
+        y += 35;
+
+        // RVUCounter section header
+        var rvuHeader = new Label
+        {
+            Text = "RVUCounter Integration",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 10, FontStyle.Bold)
+        };
+        tab.Controls.Add(rvuHeader);
+        y += 25;
+
+        // RVUCounter enabled checkbox
+        _rvuCounterEnabledCheck = new CheckBox
+        {
+            Text = "Read RVUCounter shift total",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.White
+        };
+        tab.Controls.Add(_rvuCounterEnabledCheck);
+        y += 22;
+
+        // Warning about current version
+        var rvuWarningLabel = new Label
+        {
+            Text = "Don't use this with current version of RVUCounter, may lead to unexpected results.",
+            Location = new Point(40, y),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(200, 100, 100),
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        };
+        tab.Controls.Add(rvuWarningLabel);
+        y += 25;
+
+        // Path label
+        var pathLabel = new Label
+        {
+            Text = "Database path:",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.LightGray
+        };
+        tab.Controls.Add(pathLabel);
+        y += 22;
+
+        // Path textbox (read-only display)
+        _rvuCounterPathBox = new TextBox
+        {
+            Location = new Point(20, y),
+            Size = new Size(440, 23),
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.LightGray,
+            ReadOnly = true
+        };
+        tab.Controls.Add(_rvuCounterPathBox);
+        y += 30;
+
+        // Find button (auto-search)
+        var findBtn = new Button
+        {
+            Text = "Auto-Find",
+            Location = new Point(20, y),
+            Size = new Size(90, 27),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        findBtn.Click += OnFindRvuCounterClick;
+        tab.Controls.Add(findBtn);
+
+        // Browse button (manual select)
+        var browseBtn = new Button
+        {
+            Text = "Browse...",
+            Location = new Point(120, y),
+            Size = new Size(90, 27),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        browseBtn.Click += OnBrowseDatabaseClick;
+        tab.Controls.Add(browseBtn);
+        y += 35;
+
+        // Status label
+        _rvuCounterStatusLabel = new Label
+        {
+            Text = "",
+            Location = new Point(20, y),
+            Size = new Size(440, 20),
+            ForeColor = Color.Gray
+        };
+        tab.Controls.Add(_rvuCounterStatusLabel);
+
+        return tab;
+    }
+
+    private void OnFindRvuCounterClick(object? sender, EventArgs e)
+    {
+        string? foundDbPath = null;
+
+        // 1. Look in same directory as MosaicTools
+        var appDir = AppContext.BaseDirectory;
+        var parentDir = Path.GetDirectoryName(appDir.TrimEnd(Path.DirectorySeparatorChar));
+
+        if (!string.IsNullOrEmpty(parentDir))
+        {
+            // Check sibling folders
+            foreach (var dir in Directory.GetDirectories(parentDir))
+            {
+                var dbPath = Path.Combine(dir, "data", "rvu_records.db");
+                if (File.Exists(dbPath))
+                {
+                    foundDbPath = dbPath;
+                    break;
+                }
+            }
+        }
+
+        // 2. Try Desktop
+        if (foundDbPath == null)
+        {
+            var desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+            foreach (var dir in Directory.GetDirectories(desktop))
+            {
+                var dbPath = Path.Combine(dir, "data", "rvu_records.db");
+                if (File.Exists(dbPath))
+                {
+                    foundDbPath = dbPath;
+                    break;
+                }
+            }
+        }
+
+        if (foundDbPath != null)
+        {
+            _rvuCounterPathBox.Text = foundDbPath;
+            _config.RvuCounterPath = foundDbPath;
+            _rvuCounterStatusLabel.Text = "✓ Database found";
+            _rvuCounterStatusLabel.ForeColor = Color.LightGreen;
+        }
+        else
+        {
+            MessageBox.Show(
+                "Could not find RVUCounter automatically.\nUse 'Browse...' to select the database file manually.",
+                "RVUCounter Not Found",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+    }
+
+    private void OnBrowseDatabaseClick(object? sender, EventArgs e)
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Select RVUCounter Database",
+            Filter = "SQLite Database (*.db)|*.db|All Files (*.*)|*.*",
+            FileName = "rvu_records.db"
+        };
+
+        if (dialog.ShowDialog() == DialogResult.OK)
+        {
+            _rvuCounterPathBox.Text = dialog.FileName;
+            _config.RvuCounterPath = dialog.FileName;
+            _rvuCounterStatusLabel.Text = "✓ Database selected";
+            _rvuCounterStatusLabel.ForeColor = Color.LightGreen;
+        }
     }
 
     private TabPage CreateAdvancedTab()
@@ -1238,6 +1467,17 @@ Settings stored in: MosaicToolsSettings.json
             AutoSize = true
         };
         tab.Controls.Add(_autoFixClinicalHistoryCheck);
+        y += 25;
+
+        // Hide when no study checkbox
+        _hideClinicalHistoryWhenNoStudyCheck = new CheckBox
+        {
+            Text = "Hide when no study open",
+            Location = new Point(60, y),
+            ForeColor = Color.Gray,
+            AutoSize = true
+        };
+        tab.Controls.Add(_hideClinicalHistoryWhenNoStudyCheck);
         y += 25;
 
         var clinicalHint = new Label
@@ -2069,6 +2309,8 @@ Settings stored in: MosaicToolsSettings.json
         _autoStopCheck.Checked = _config.AutoStopDictation;
         _deadManCheck.Checked = _config.DeadManSwitch;
         _autoUpdateCheck.Checked = _config.AutoUpdateEnabled;
+        _runAtStartupCheck.Checked = NativeWindows.GetRunAtStartup(); // Read from registry, not config
+        _hideIndicatorWhenNoStudyCheck.Checked = _config.HideIndicatorWhenNoStudy;
         _criticalTemplateBox.Text = _config.CriticalFindingsTemplate;
         _seriesTemplateBox.Text = _config.SeriesImageTemplate;
         
@@ -2079,6 +2321,7 @@ Settings stored in: MosaicToolsSettings.json
         _scrapeMosaicCheck.Checked = _config.ScrapeMosaicEnabled;
         _scrapeIntervalUpDown.Value = Math.Clamp(_config.ScrapeIntervalSeconds, 1, 30);
         _showClinicalHistoryCheck.Checked = _config.ShowClinicalHistory;
+        _hideClinicalHistoryWhenNoStudyCheck.Checked = _config.HideClinicalHistoryWhenNoStudy;
         _autoFixClinicalHistoryCheck.Checked = _config.AutoFixClinicalHistory;
         _showDraftedIndicatorCheck.Checked = _config.ShowDraftedIndicator;
         _showTemplateMismatchCheck.Checked = _config.ShowTemplateMismatch;
@@ -2088,8 +2331,25 @@ Settings stored in: MosaicToolsSettings.json
         _scrollThreshold2.Value = _config.ScrollThreshold2;
         _scrollThreshold3.Value = _config.ScrollThreshold3;
 
+        // Experimental tab
+        _rvuCounterEnabledCheck.Checked = _config.RvuCounterEnabled;
+        _rvuCounterPathBox.Text = _config.RvuCounterPath;
+        if (!string.IsNullOrEmpty(_config.RvuCounterPath))
+        {
+            if (File.Exists(_config.RvuCounterPath))
+            {
+                _rvuCounterStatusLabel.Text = "✓ Database found";
+                _rvuCounterStatusLabel.ForeColor = Color.LightGreen;
+            }
+            else
+            {
+                _rvuCounterStatusLabel.Text = "✗ Database not found at configured path";
+                _rvuCounterStatusLabel.ForeColor = Color.Salmon;
+            }
+        }
+
         UpdateThresholdStates();
-        
+
         UpdateVolumeLabels();
     }
     
@@ -2392,7 +2652,26 @@ When enabled, after processing a report, the tool sends Page Down keys to scroll
   Adjust these thresholds based on your typical report lengths and screen size.";
                 break;
 
-            case 6: // AHK
+            case 6: // Experimental
+                title = "Experimental Features Help";
+                content = @"EXPERIMENTAL FEATURES
+═══════════════════════════════════════
+
+Features in this tab are experimental and may change or be removed in future versions.
+
+RVUCOUNTER INTEGRATION
+Reads the current shift RVU total from a local RVUCounter installation.
+
+To set up:
+1. Click 'Find RVUCounter' to locate your RVUCounter installation
+2. The tool will search common locations (Desktop, same folder as MosaicTools)
+3. If not found automatically, browse to select the RVUCounter folder
+4. Enable 'Read RVUCounter shift total' to activate the feature
+
+The RVUCounter database is read in read-only mode, so it won't interfere with RVUCounter's normal operation.";
+                break;
+
+            case 7: // AHK
                 title = "AHK Integration Help";
                 content = @"AHK (AUTOHOTKEY) INTEGRATION
 ═══════════════════════════════════════
@@ -2411,6 +2690,7 @@ WINDOWS MESSAGE CODES
 • 0x0407 - Toggle Recording
 • 0x0408 - Process Report
 • 0x0409 - Sign Report
+• 0x040A - Open Settings
 
 AUTOHOTKEY EXAMPLE
 To trigger Critical Findings from an AHK script:
@@ -2557,6 +2837,8 @@ You can back up this file or copy it to other workstations.";
         _config.AutoStopDictation = _autoStopCheck.Checked;
         _config.DeadManSwitch = _deadManCheck.Checked;
         _config.AutoUpdateEnabled = _autoUpdateCheck.Checked;
+        _config.HideIndicatorWhenNoStudy = _hideIndicatorWhenNoStudyCheck.Checked;
+        NativeWindows.SetRunAtStartup(_runAtStartupCheck.Checked); // Write to registry
         _config.CriticalFindingsTemplate = _criticalTemplateBox.Text.Trim();
         _config.SeriesImageTemplate = _seriesTemplateBox.Text.Trim();
         
@@ -2567,6 +2849,7 @@ You can back up this file or copy it to other workstations.";
         _config.ScrapeMosaicEnabled = _scrapeMosaicCheck.Checked;
         _config.ScrapeIntervalSeconds = (int)_scrapeIntervalUpDown.Value;
         _config.ShowClinicalHistory = _showClinicalHistoryCheck.Checked;
+        _config.HideClinicalHistoryWhenNoStudy = _hideClinicalHistoryWhenNoStudyCheck.Checked;
         _config.AutoFixClinicalHistory = _autoFixClinicalHistoryCheck.Checked;
         _config.ShowDraftedIndicator = _showDraftedIndicatorCheck.Checked;
         _config.ShowTemplateMismatch = _showTemplateMismatchCheck.Checked;
@@ -2588,6 +2871,10 @@ You can back up this file or copy it to other workstations.";
             CriteriaExclude = m.CriteriaExclude,
             Text = m.Text
         }).ToList();
+
+        // Experimental
+        _config.RvuCounterEnabled = _rvuCounterEnabledCheck.Checked;
+        _config.RvuCounterPath = _rvuCounterPathBox.Text;
 
         // Position
         _config.SettingsX = this.Location.X;

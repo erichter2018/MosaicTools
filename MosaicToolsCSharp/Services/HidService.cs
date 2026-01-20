@@ -29,11 +29,11 @@ public class HidService : IDisposable
         ["Checkmark"] = new byte[] { 0x00, 0x00, 0x01 }
     };
     
-    public static readonly string[] AllButtons = 
+    public static readonly string[] AllButtons =
     {
         "Left Button", "Right Button", "Record Button", "T Button",
-        "Skip Back", "Skip Forward", "Rewind", "Fast Forward", 
-        "Stop/Play", "Checkmark", "Scan Button", "F1", "F2", "F3"
+        "Skip Back", "Skip Forward", "Rewind", "Fast Forward",
+        "Stop/Play", "Checkmark", "Scan Button"
     };
     
     private HidDevice? _device;
@@ -154,11 +154,8 @@ public class HidService : IDisposable
                 else if ((btnData[2] & 0x01) != 0) matchedButton = "T Button";
                 else if ((btnData[2] & 0x40) != 0) matchedButton = "Stop/Play";
                 
-                // Byte 1: Support Tab and Function keys
+                // Byte 1: Support Tab key (alternate mapping)
                 else if ((btnData[1] & 0x01) != 0) matchedButton = "T Button";
-                else if ((btnData[1] & 0x10) != 0) matchedButton = "F1";
-                else if ((btnData[1] & 0x20) != 0) matchedButton = "F2";
-                else if ((btnData[1] & 0x40) != 0) matchedButton = "F3";
                 
                 if (matchedButton != null)
                 {

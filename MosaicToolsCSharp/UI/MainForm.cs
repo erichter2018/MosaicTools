@@ -18,6 +18,13 @@ public class MainForm : Form
     private readonly Label _titleLabel;
     private readonly Label _dragHandle;
     private readonly Panel _innerFrame;
+    private readonly Panel _rvuPanel;
+    private readonly Label _rvuValueLabel;
+    private readonly Label _rvuSuffixLabel;
+
+    // RVU Counter
+    private readonly RvuCounterService _rvuCounterService;
+    private System.Windows.Forms.Timer? _rvuTimer;
     
     // Child Windows
     private FloatingToolbarForm? _toolbarWindow;
@@ -42,13 +49,19 @@ public class MainForm : Form
     {
         _config = config;
         _controller = new ActionController(config, this);
-        
+        _rvuCounterService = new RvuCounterService(config);
+
         // Form properties (borderless, topmost, small)
+        // Width extends when RVU counter is enabled
+        int baseWidth = 160;
+        int rvuWidth = _config.RvuCounterEnabled ? 80 : 0;
+
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
+        Text = "MosaicToolsMainWindow";  // Hidden title for AHK targeting
         BackColor = Color.FromArgb(51, 51, 51); // #333333
-        Size = new Size(160, 40);
+        Size = new Size(baseWidth + rvuWidth, 40);
         StartPosition = FormStartPosition.Manual;
         Location = new Point(_config.WindowX, _config.WindowY);
         
@@ -94,7 +107,42 @@ public class MainForm : Form
         _titleLabel.MouseLeave += (_, _) => _titleLabel.ForeColor = Color.FromArgb(204, 204, 204);
         _titleLabel.Click += (_, _) => OpenSettings();
         _innerFrame.Controls.Add(_titleLabel);
-        
+
+        // RVU panel with two labels (shown when RVU counter is enabled)
+        _rvuPanel = new Panel
+        {
+            BackColor = Color.Black,
+            Width = rvuWidth,
+            Dock = DockStyle.Right,
+            Visible = _config.RvuCounterEnabled
+        };
+
+        // RVU value label (Carolina blue)
+        _rvuValueLabel = new Label
+        {
+            Text = "",
+            Font = new Font("Segoe UI", 8, FontStyle.Bold),
+            ForeColor = Color.FromArgb(75, 156, 211), // Carolina blue
+            BackColor = Color.Black,
+            AutoSize = true,
+            Location = new Point(2, 12)
+        };
+        _rvuPanel.Controls.Add(_rvuValueLabel);
+
+        // RVU suffix label (grey)
+        _rvuSuffixLabel = new Label
+        {
+            Text = "RVU",
+            Font = new Font("Segoe UI", 8),
+            ForeColor = Color.FromArgb(100, 100, 100), // Grey
+            BackColor = Color.Black,
+            AutoSize = true,
+            Location = new Point(40, 12) // Will be repositioned dynamically
+        };
+        _rvuPanel.Controls.Add(_rvuSuffixLabel);
+
+        _innerFrame.Controls.Add(_rvuPanel);
+
         // Context menu (for normal mode right-click)
         var contextMenu = new ContextMenuStrip();
         contextMenu.Items.Add("Reload", null, (_, _) => ReloadApp());
@@ -165,6 +213,51 @@ public class MainForm : Form
         {
             _ = CheckForUpdatesAsync();
         }
+
+        // Start RVU counter timer if enabled
+        if (_config.RvuCounterEnabled)
+        {
+            UpdateRvuDisplay(); // Initial update
+            _rvuTimer = new System.Windows.Forms.Timer { Interval = 5000 }; // Update every 5 seconds
+            _rvuTimer.Tick += (_, _) => UpdateRvuDisplay();
+            _rvuTimer.Start();
+        }
+    }
+
+    private void UpdateRvuDisplay()
+    {
+        Logger.Trace("UpdateRvuDisplay called");
+        if (!_config.RvuCounterEnabled)
+        {
+            _rvuPanel.Visible = false;
+            Logger.Trace("UpdateRvuDisplay: RVU counter not enabled");
+            return;
+        }
+
+        var rvuTotal = _rvuCounterService.GetCurrentShiftRvuTotal();
+        Logger.Trace($"UpdateRvuDisplay: Got RVU total = {rvuTotal?.ToString() ?? "null"}");
+        if (rvuTotal.HasValue)
+        {
+            // Show value in Carolina blue, "RVU" suffix in grey
+            _rvuValueLabel.Text = $"{rvuTotal.Value:F1}";
+            _rvuValueLabel.ForeColor = Color.FromArgb(75, 156, 211); // Carolina blue
+            _rvuValueLabel.Font = new Font("Segoe UI", 8, FontStyle.Bold);
+            _rvuValueLabel.Visible = true;
+
+            // Position RVU suffix after the value
+            _rvuSuffixLabel.Location = new Point(_rvuValueLabel.Right + 1, _rvuValueLabel.Top + 1);
+            _rvuSuffixLabel.Visible = true;
+        }
+        else
+        {
+            // Show "no shift" in grey, hide RVU suffix
+            _rvuValueLabel.Text = "no shift";
+            _rvuValueLabel.ForeColor = Color.FromArgb(120, 120, 120); // Gray
+            _rvuValueLabel.Font = new Font("Segoe UI", 7);
+            _rvuValueLabel.Visible = true;
+            _rvuSuffixLabel.Visible = false;
+        }
+        _rvuPanel.Visible = true;
     }
 
     private async System.Threading.Tasks.Task CheckForUpdatesAsync()
@@ -658,6 +751,14 @@ public class MainForm : Form
         _indicatorWindow?.Close();
         _clinicalHistoryWindow?.Close();
         _impressionWindow?.Close();
+
+        // Cleanup RVU timer
+        if (_rvuTimer != null)
+        {
+            _rvuTimer.Stop();
+            _rvuTimer.Dispose();
+            _rvuTimer = null;
+        }
 
         // Cleanup tray icon
         if (_trayIcon != null)

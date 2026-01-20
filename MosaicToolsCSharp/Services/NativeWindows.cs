@@ -494,7 +494,7 @@ public static class NativeWindows
     #endregion
     
     #region Custom Windows Messages
-    
+
     public const int WM_TRIGGER_SCRAPE = 0x0401;
     public const int WM_TRIGGER_DEBUG = 0x0402;
     public const int WM_TRIGGER_BEEP = 0x0403;
@@ -505,7 +505,82 @@ public static class NativeWindows
     public const int WM_TRIGGER_PROCESS_REPORT = 0x0408;
     public const int WM_TRIGGER_SIGN_REPORT = 0x0409;
     public const int WM_TRIGGER_OPEN_SETTINGS = 0x040A;
-    
+
+    #endregion
+
+    #region WM_COPYDATA IPC (for RVUCounter integration)
+
+    public const int WM_COPYDATA = 0x004A;
+
+    // Message types for RVUCounter
+    public const int MSG_STUDY_SIGNED = 1;           // Study was signed via MosaicTools
+    public const int MSG_STUDY_CLOSED_UNSIGNED = 2;  // Study closed without being signed
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct COPYDATASTRUCT
+    {
+        public IntPtr dwData;    // Message type ID
+        public int cbData;       // Data length in bytes
+        public IntPtr lpData;    // Pointer to data
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern IntPtr FindWindow(string? lpClassName, string lpWindowName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    public static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, ref COPYDATASTRUCT lParam);
+
+    /// <summary>
+    /// Send a string message to RVUCounter via WM_COPYDATA.
+    /// </summary>
+    /// <param name="messageType">MSG_STUDY_SIGNED or MSG_STUDY_CLOSED_UNSIGNED</param>
+    /// <param name="accession">The accession number</param>
+    /// <returns>True if message was sent successfully</returns>
+    public static bool SendToRvuCounter(int messageType, string accession)
+    {
+        try
+        {
+            // Find the RVUCounter window by title
+            var rvuHandle = FindWindow(null, "RVUCounter");
+            if (rvuHandle == IntPtr.Zero)
+            {
+                Logger.Trace($"SendToRvuCounter: RVUCounter window not found");
+                return false;
+            }
+
+            // Prepare the string data
+            var bytes = System.Text.Encoding.Unicode.GetBytes(accession + '\0');
+            var dataPtr = Marshal.AllocHGlobal(bytes.Length);
+
+            try
+            {
+                Marshal.Copy(bytes, 0, dataPtr, bytes.Length);
+
+                var copyData = new COPYDATASTRUCT
+                {
+                    dwData = new IntPtr(messageType),
+                    cbData = bytes.Length,
+                    lpData = dataPtr
+                };
+
+                SendMessage(rvuHandle, WM_COPYDATA, IntPtr.Zero, ref copyData);
+
+                var msgName = messageType == MSG_STUDY_SIGNED ? "SIGNED" : "CLOSED_UNSIGNED";
+                Logger.Trace($"SendToRvuCounter: Sent {msgName} for '{accession}'");
+                return true;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(dataPtr);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"SendToRvuCounter error: {ex.Message}");
+            return false;
+        }
+    }
+
     #endregion
 
     #region Window Utilities
@@ -525,6 +600,68 @@ public static class NativeWindows
     public static void ForceTopMost(IntPtr hWnd)
     {
         SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    }
+
+    #endregion
+
+    #region Windows Startup
+
+    private const string StartupRegistryKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    private const string AppName = "MosaicTools";
+
+    /// <summary>
+    /// Set or remove the app from Windows startup.
+    /// </summary>
+    public static void SetRunAtStartup(bool enable)
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(StartupRegistryKey, true);
+            if (key == null)
+            {
+                Logger.Trace("SetRunAtStartup: Could not open registry key");
+                return;
+            }
+
+            if (enable)
+            {
+                var exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
+                if (!string.IsNullOrEmpty(exePath))
+                {
+                    key.SetValue(AppName, $"\"{exePath}\"");
+                    Logger.Trace($"SetRunAtStartup: Enabled - {exePath}");
+                }
+            }
+            else
+            {
+                key.DeleteValue(AppName, false);
+                Logger.Trace("SetRunAtStartup: Disabled");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"SetRunAtStartup error: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Check if the app is set to run at Windows startup.
+    /// </summary>
+    public static bool GetRunAtStartup()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(StartupRegistryKey, false);
+            if (key == null) return false;
+
+            var value = key.GetValue(AppName);
+            return value != null;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"GetRunAtStartup error: {ex.Message}");
+            return false;
+        }
     }
 
     #endregion

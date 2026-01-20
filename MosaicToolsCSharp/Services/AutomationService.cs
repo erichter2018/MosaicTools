@@ -804,6 +804,160 @@ public class AutomationService : IDisposable
     
     #endregion
 
+    #region Discard Study Action
+
+    /// <summary>
+    /// Perform the full discard study flow:
+    /// 1. Click ACTIONS button
+    /// 2. Click "Discard Changes" menu item
+    /// 3. Click "YES, DISCARD" button
+    /// Returns true if successful.
+    /// </summary>
+    public bool ClickDiscardStudy()
+    {
+        try
+        {
+            var window = _cachedSlimHubWindow ?? FindMosaicWindow();
+            if (window == null)
+            {
+                Logger.Trace("ClickDiscardStudy: Mosaic window not found");
+                return false;
+            }
+
+            // Step 1: Click ACTIONS button
+            var actionsButton = window.FindFirstDescendant(cf =>
+                cf.ByControlType(FlaUI.Core.Definitions.ControlType.Button)
+                  .And(cf.ByName("ACTIONS")));
+
+            if (actionsButton == null)
+            {
+                Logger.Trace("ClickDiscardStudy: ACTIONS button not found");
+                return false;
+            }
+
+            var invokePattern = actionsButton.Patterns.Invoke.PatternOrDefault;
+            if (invokePattern != null)
+            {
+                invokePattern.Invoke();
+                Logger.Trace("ClickDiscardStudy: Clicked ACTIONS button");
+            }
+            else
+            {
+                actionsButton.Click();
+                Logger.Trace("ClickDiscardStudy: Clicked ACTIONS button (fallback)");
+            }
+
+            // Wait for menu to appear
+            Thread.Sleep(400);
+
+            // Step 2: Click "Discard Changes" menu item
+            var discardMenuItem = window.FindFirstDescendant(cf =>
+                cf.ByControlType(FlaUI.Core.Definitions.ControlType.MenuItem)
+                  .And(cf.ByName("Discard Changes")));
+
+            if (discardMenuItem == null)
+            {
+                Logger.Trace("ClickDiscardStudy: Discard Changes menu item not found");
+                return false;
+            }
+
+            invokePattern = discardMenuItem.Patterns.Invoke.PatternOrDefault;
+            if (invokePattern != null)
+            {
+                invokePattern.Invoke();
+                Logger.Trace("ClickDiscardStudy: Clicked Discard Changes menu item");
+            }
+            else
+            {
+                discardMenuItem.Click();
+                Logger.Trace("ClickDiscardStudy: Clicked Discard Changes menu item (fallback)");
+            }
+
+            // Wait for dialog to appear
+            Thread.Sleep(500);
+
+            // Step 3: Click "YES, DISCARD" button
+            var yesDiscardButton = window.FindFirstDescendant(cf =>
+                cf.ByControlType(FlaUI.Core.Definitions.ControlType.Button)
+                  .And(cf.ByName("YES, DISCARD")));
+
+            if (yesDiscardButton == null)
+            {
+                Logger.Trace("ClickDiscardStudy: YES, DISCARD button not found");
+                return false;
+            }
+
+            invokePattern = yesDiscardButton.Patterns.Invoke.PatternOrDefault;
+            if (invokePattern != null)
+            {
+                invokePattern.Invoke();
+                Logger.Trace("ClickDiscardStudy: Clicked YES, DISCARD button");
+            }
+            else
+            {
+                yesDiscardButton.Click();
+                Logger.Trace("ClickDiscardStudy: Clicked YES, DISCARD button (fallback)");
+            }
+
+            Logger.Trace("ClickDiscardStudy: SUCCESS - study discarded");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"ClickDiscardStudy error: {ex.Message}");
+            return false;
+        }
+    }
+
+    #endregion
+
+    #region Discard Dialog Detection
+
+    /// <summary>
+    /// Check if the "Confirm Discard Action?" dialog is currently visible.
+    /// Used to detect when a study is being discarded (not signed).
+    /// </summary>
+    public bool IsDiscardDialogVisible()
+    {
+        try
+        {
+            // Use cached window if available, otherwise find it
+            var window = _cachedSlimHubWindow ?? FindMosaicWindow();
+            if (window == null) return false;
+
+            // Look for the dialog window with name "Confirm Discard Action?"
+            var discardDialog = window.FindFirstDescendant(cf =>
+                cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window)
+                  .And(cf.ByName("Confirm Discard Action?")));
+
+            if (discardDialog != null)
+            {
+                Logger.Trace("Discard dialog detected (by Window name)");
+                return true;
+            }
+
+            // Fallback: look for the "YES, DISCARD" button
+            var discardButton = window.FindFirstDescendant(cf =>
+                cf.ByControlType(FlaUI.Core.Definitions.ControlType.Button)
+                  .And(cf.ByName("YES, DISCARD")));
+
+            if (discardButton != null)
+            {
+                Logger.Trace("Discard dialog detected (by YES, DISCARD button)");
+                return true;
+            }
+
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"IsDiscardDialogVisible error: {ex.Message}");
+            return false;
+        }
+    }
+
+    #endregion
+
     #region Template Matching
 
     /// <summary>
