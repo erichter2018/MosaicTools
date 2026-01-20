@@ -11,9 +11,9 @@
     <RootNamespace>MosaicTools</RootNamespace>
 
     <!-- Version -->
-    <Version>2.4.0</Version>
-    <AssemblyVersion>2.4.0.0</AssemblyVersion>
-    <FileVersion>2.4.0.0</FileVersion>
+    <Version>2.4.1</Version>
+    <AssemblyVersion>2.4.1.0</AssemblyVersion>
+    <FileVersion>2.4.1.0</FileVersion>
     
     <!-- Single-file self-contained deployment (no admin required) -->
     <PublishSingleFile>true</PublishSingleFile>
@@ -31,15 +31,18 @@
   <ItemGroup>
     <!-- HID Device Communication -->
     <PackageReference Include="HidSharp" Version="2.1.0" />
-    
+
     <!-- UI Automation (FlaUI is more modern than System.Windows.Automation) -->
     <PackageReference Include="FlaUI.UIA3" Version="4.0.0" />
-    
+
     <!-- Global Keyboard Hooks -->
     <PackageReference Include="SharpHook" Version="5.3.8" />
-    
+
     <!-- JSON Configuration -->
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
+
+    <!-- Process management (needed for restart after update) -->
+    <PackageReference Include="System.Diagnostics.Process" Version="4.3.0" />
   </ItemGroup>
 
 </Project>

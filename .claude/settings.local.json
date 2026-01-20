@@ -84,7 +84,8 @@
       "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\search_impression.ps1\")",
       "Bash(powershell:*)",
       "Bash(/c/Users/erik.richter/Desktop/dotnet/dotnet.exe publish:*)",
-      "Bash(/c/Users/erik.richter/Desktop/dotnet/dotnet.exe build)"
+      "Bash(/c/Users/erik.richter/Desktop/dotnet/dotnet.exe build)",
+      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" release create v2.4.0 \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.exe\" --title \"v2.4.0\" --notes \"$\\(cat <<''EOF''\n## What''s New\n\n### Macros Feature\n- Auto-insert text snippets when new studies open in Mosaic\n- Configure criteria: Required \\(all must match\\), Any of \\(at least one\\), Exclude \\(none must match\\)\n- Waits for clinical history to be visible before inserting \\(handles Mosaic auto-process edge case\\)\n\n### Clinical History Improvements\n- Fixed double-paste issue by tracking auto-fix by accession number\n- Fixed manual paste \\(click\\) using wrong clipboard content \\(STA thread fix\\)\n\n### Other\n- Get Prior now adds line break before comparison paste\n- Settings: Enabling Macros automatically enables Scrape Mosaic\nEOF\n\\)\")"
     ]
   }
 }
