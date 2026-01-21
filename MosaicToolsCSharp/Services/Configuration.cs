@@ -190,6 +190,16 @@ public class Configuration
     [JsonPropertyName("rvucounter_path")]
     public string RvuCounterPath { get; set; } = "";
 
+    // Report Changes Highlighting (Experimental)
+    [JsonPropertyName("show_report_changes")]
+    public bool ShowReportChanges { get; set; } = false;
+
+    [JsonPropertyName("report_changes_color")]
+    public string ReportChangesColor { get; set; } = "#90EE90"; // Light green
+
+    [JsonPropertyName("report_changes_alpha")]
+    public int ReportChangesAlpha { get; set; } = 25; // 0-100 percent opacity
+
     // Action Mappings (action name -> {hotkey, mic_button})
     [JsonPropertyName("action_mappings")]
     public Dictionary<string, ActionMapping> ActionMappings { get; set; } = new();

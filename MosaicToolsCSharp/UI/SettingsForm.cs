@@ -59,6 +59,11 @@ public class SettingsForm : Form
     private CheckBox _rvuCounterEnabledCheck = null!;
     private TextBox _rvuCounterPathBox = null!;
     private Label _rvuCounterStatusLabel = null!;
+    private CheckBox _showReportChangesCheck = null!;
+    private Panel _reportChangesColorPanel = null!;
+    private TrackBar _reportChangesAlphaSlider = null!;
+    private Label _reportChangesAlphaLabel = null!;
+    private RichTextBox _reportChangesPreview = null!;
 
     public SettingsForm(Configuration config, ActionController controller, MainForm mainForm)
     {
@@ -1162,6 +1167,15 @@ Settings stored in: MosaicToolsSettings.json
             BackColor = Color.FromArgb(40, 40, 40)
         };
 
+        // Create scrollable container
+        var scrollPanel = new Panel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            BackColor = Color.FromArgb(40, 40, 40)
+        };
+        tab.Controls.Add(scrollPanel);
+
         int y = 20;
 
         // Warning label
@@ -1173,7 +1187,7 @@ Settings stored in: MosaicToolsSettings.json
             ForeColor = Color.FromArgb(255, 180, 50),
             Font = new Font("Segoe UI", 9, FontStyle.Italic)
         };
-        tab.Controls.Add(warningLabel);
+        scrollPanel.Controls.Add(warningLabel);
         y += 35;
 
         // RVUCounter section header
@@ -1185,7 +1199,7 @@ Settings stored in: MosaicToolsSettings.json
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 10, FontStyle.Bold)
         };
-        tab.Controls.Add(rvuHeader);
+        scrollPanel.Controls.Add(rvuHeader);
         y += 25;
 
         // RVUCounter enabled checkbox
@@ -1196,7 +1210,7 @@ Settings stored in: MosaicToolsSettings.json
             AutoSize = true,
             ForeColor = Color.White
         };
-        tab.Controls.Add(_rvuCounterEnabledCheck);
+        scrollPanel.Controls.Add(_rvuCounterEnabledCheck);
         y += 22;
 
         // Warning about current version
@@ -1208,7 +1222,7 @@ Settings stored in: MosaicToolsSettings.json
             ForeColor = Color.FromArgb(200, 100, 100),
             Font = new Font("Segoe UI", 8, FontStyle.Italic)
         };
-        tab.Controls.Add(rvuWarningLabel);
+        scrollPanel.Controls.Add(rvuWarningLabel);
         y += 25;
 
         // Path label
@@ -1219,19 +1233,19 @@ Settings stored in: MosaicToolsSettings.json
             AutoSize = true,
             ForeColor = Color.LightGray
         };
-        tab.Controls.Add(pathLabel);
+        scrollPanel.Controls.Add(pathLabel);
         y += 22;
 
         // Path textbox (read-only display)
         _rvuCounterPathBox = new TextBox
         {
             Location = new Point(20, y),
-            Size = new Size(440, 23),
+            Size = new Size(410, 23),
             BackColor = Color.FromArgb(50, 50, 50),
             ForeColor = Color.LightGray,
             ReadOnly = true
         };
-        tab.Controls.Add(_rvuCounterPathBox);
+        scrollPanel.Controls.Add(_rvuCounterPathBox);
         y += 30;
 
         // Find button (auto-search)
@@ -1245,7 +1259,7 @@ Settings stored in: MosaicToolsSettings.json
             FlatStyle = FlatStyle.Flat
         };
         findBtn.Click += OnFindRvuCounterClick;
-        tab.Controls.Add(findBtn);
+        scrollPanel.Controls.Add(findBtn);
 
         // Browse button (manual select)
         var browseBtn = new Button
@@ -1258,7 +1272,7 @@ Settings stored in: MosaicToolsSettings.json
             FlatStyle = FlatStyle.Flat
         };
         browseBtn.Click += OnBrowseDatabaseClick;
-        tab.Controls.Add(browseBtn);
+        scrollPanel.Controls.Add(browseBtn);
         y += 35;
 
         // Status label
@@ -1266,12 +1280,213 @@ Settings stored in: MosaicToolsSettings.json
         {
             Text = "",
             Location = new Point(20, y),
-            Size = new Size(440, 20),
+            Size = new Size(410, 20),
             ForeColor = Color.Gray
         };
-        tab.Controls.Add(_rvuCounterStatusLabel);
+        scrollPanel.Controls.Add(_rvuCounterStatusLabel);
+        y += 40;
+
+        // Report Changes section header
+        var changesHeader = new Label
+        {
+            Text = "Report Changes Highlighting",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 10, FontStyle.Bold)
+        };
+        scrollPanel.Controls.Add(changesHeader);
+        y += 25;
+
+        // Show report changes checkbox
+        _showReportChangesCheck = new CheckBox
+        {
+            Text = "Highlight changes when viewing report after Process",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Checked = _config.ShowReportChanges
+        };
+        scrollPanel.Controls.Add(_showReportChangesCheck);
+        y += 25;
+
+        // Explanation label
+        var changesHintLabel = new Label
+        {
+            Text = "Shows what you dictated by highlighting differences from the original template.",
+            Location = new Point(40, y),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        };
+        scrollPanel.Controls.Add(changesHintLabel);
+        y += 25;
+
+        // Color picker row
+        var colorLabel = new Label
+        {
+            Text = "Highlight color:",
+            Location = new Point(20, y + 3),
+            AutoSize = true,
+            ForeColor = Color.LightGray
+        };
+        scrollPanel.Controls.Add(colorLabel);
+
+        // Color preview panel (clickable)
+        _reportChangesColorPanel = new Panel
+        {
+            Location = new Point(120, y),
+            Size = new Size(60, 24),
+            BorderStyle = BorderStyle.FixedSingle,
+            Cursor = Cursors.Hand
+        };
+        try
+        {
+            _reportChangesColorPanel.BackColor = ColorTranslator.FromHtml(_config.ReportChangesColor);
+        }
+        catch
+        {
+            _reportChangesColorPanel.BackColor = Color.FromArgb(144, 238, 144); // Light green
+        }
+        _reportChangesColorPanel.Click += OnReportChangesColorClick;
+        scrollPanel.Controls.Add(_reportChangesColorPanel);
+
+        // Color hex label
+        var colorHexLabel = new Label
+        {
+            Text = _config.ReportChangesColor,
+            Location = new Point(190, y + 3),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Tag = "colorHex"
+        };
+        scrollPanel.Controls.Add(colorHexLabel);
+        y += 35;
+
+        // Opacity slider row
+        var opacityLabel = new Label
+        {
+            Text = "Opacity:",
+            Location = new Point(20, y + 3),
+            AutoSize = true,
+            ForeColor = Color.LightGray
+        };
+        scrollPanel.Controls.Add(opacityLabel);
+
+        _reportChangesAlphaSlider = new TrackBar
+        {
+            Location = new Point(90, y),
+            Size = new Size(150, 30),
+            Minimum = 5,
+            Maximum = 100,
+            TickFrequency = 10,
+            Value = Math.Clamp(_config.ReportChangesAlpha, 5, 100),
+            BackColor = Color.FromArgb(45, 45, 48)
+        };
+        _reportChangesAlphaSlider.ValueChanged += (s, e) =>
+        {
+            _reportChangesAlphaLabel.Text = $"{_reportChangesAlphaSlider.Value}%";
+            UpdateReportChangesPreview();
+        };
+        scrollPanel.Controls.Add(_reportChangesAlphaSlider);
+
+        _reportChangesAlphaLabel = new Label
+        {
+            Text = $"{_reportChangesAlphaSlider.Value}%",
+            Location = new Point(245, y + 3),
+            AutoSize = true,
+            ForeColor = Color.Gray
+        };
+        scrollPanel.Controls.Add(_reportChangesAlphaLabel);
+        y += 40;
+
+        // Live preview
+        var previewLabel = new Label
+        {
+            Text = "Preview:",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.LightGray
+        };
+        scrollPanel.Controls.Add(previewLabel);
+        y += 20;
+
+        _reportChangesPreview = new RichTextBox
+        {
+            Location = new Point(20, y),
+            Size = new Size(340, 60),
+            BackColor = Color.FromArgb(30, 30, 30),
+            ForeColor = Color.Gainsboro,
+            Font = new Font("Consolas", 10),
+            ReadOnly = true,
+            BorderStyle = BorderStyle.FixedSingle,
+            Text = "Normal text. This text was dictated. More normal text."
+        };
+        scrollPanel.Controls.Add(_reportChangesPreview);
+
+        // Apply initial preview highlighting
+        UpdateReportChangesPreview();
 
         return tab;
+    }
+
+    private void OnReportChangesColorClick(object? sender, EventArgs e)
+    {
+        using var colorDialog = new ColorDialog
+        {
+            Color = _reportChangesColorPanel.BackColor,
+            FullOpen = true
+        };
+
+        if (colorDialog.ShowDialog(this) == DialogResult.OK)
+        {
+            _reportChangesColorPanel.BackColor = colorDialog.Color;
+            _config.ReportChangesColor = ColorTranslator.ToHtml(colorDialog.Color);
+
+            // Update hex label
+            foreach (Control c in _reportChangesColorPanel.Parent!.Controls)
+            {
+                if (c is Label lbl && lbl.Tag?.ToString() == "colorHex")
+                {
+                    lbl.Text = _config.ReportChangesColor;
+                    break;
+                }
+            }
+
+            // Update preview
+            UpdateReportChangesPreview();
+        }
+    }
+
+    private void UpdateReportChangesPreview()
+    {
+        if (_reportChangesPreview == null) return;
+
+        // Reset text and formatting
+        _reportChangesPreview.Text = "Normal text. This text was dictated. More normal text.";
+        _reportChangesPreview.SelectAll();
+        _reportChangesPreview.SelectionBackColor = _reportChangesPreview.BackColor;
+        _reportChangesPreview.Select(0, 0);
+
+        // Calculate blended highlight color
+        var baseColor = _reportChangesColorPanel.BackColor;
+        var bg = _reportChangesPreview.BackColor;
+        float alpha = _reportChangesAlphaSlider.Value / 100f;
+        var highlightColor = Color.FromArgb(
+            (int)(bg.R + (baseColor.R - bg.R) * alpha),
+            (int)(bg.G + (baseColor.G - bg.G) * alpha),
+            (int)(bg.B + (baseColor.B - bg.B) * alpha)
+        );
+
+        // Highlight the "dictated" portion
+        const string highlightText = "This text was dictated.";
+        int idx = _reportChangesPreview.Text.IndexOf(highlightText);
+        if (idx >= 0)
+        {
+            _reportChangesPreview.Select(idx, highlightText.Length);
+            _reportChangesPreview.SelectionBackColor = highlightColor;
+            _reportChangesPreview.Select(0, 0);
+        }
     }
 
     private void OnFindRvuCounterClick(object? sender, EventArgs e)
@@ -2344,6 +2559,17 @@ Settings stored in: MosaicToolsSettings.json
         // Experimental tab
         _rvuCounterEnabledCheck.Checked = _config.RvuCounterEnabled;
         _rvuCounterPathBox.Text = _config.RvuCounterPath;
+        _showReportChangesCheck.Checked = _config.ShowReportChanges;
+        try
+        {
+            _reportChangesColorPanel.BackColor = ColorTranslator.FromHtml(_config.ReportChangesColor);
+        }
+        catch
+        {
+            _reportChangesColorPanel.BackColor = Color.FromArgb(144, 238, 144);
+        }
+        _reportChangesAlphaSlider.Value = Math.Clamp(_config.ReportChangesAlpha, 5, 100);
+        _reportChangesAlphaLabel.Text = $"{_reportChangesAlphaSlider.Value}%";
         if (!string.IsNullOrEmpty(_config.RvuCounterPath))
         {
             if (File.Exists(_config.RvuCounterPath))
@@ -2885,6 +3111,9 @@ You can back up this file or copy it to other workstations.";
         // Experimental
         _config.RvuCounterEnabled = _rvuCounterEnabledCheck.Checked;
         _config.RvuCounterPath = _rvuCounterPathBox.Text;
+        _config.ShowReportChanges = _showReportChangesCheck.Checked;
+        _config.ReportChangesColor = ColorTranslator.ToHtml(_reportChangesColorPanel.BackColor);
+        _config.ReportChangesAlpha = _reportChangesAlphaSlider.Value;
 
         // Position
         _config.SettingsX = this.Location.X;

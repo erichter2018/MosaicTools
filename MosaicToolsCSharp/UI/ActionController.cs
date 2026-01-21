@@ -67,6 +67,12 @@ public class ActionController : IDisposable
     // RVUCounter integration - track whether current accession was signed
     private bool _currentAccessionSigned = false;
 
+    // Report changes tracking - baseline report for diff highlighting
+    private string? _baselineReport;
+    private bool _processReportPressedForCurrentAccession = false;
+    private bool _needsBaselineCapture = false; // Set true on new study, cleared when baseline captured
+    private bool _needsPopupUpdate = false; // Set true when Process Report pressed with popup open
+
     // RVUCounter integration - track if discard dialog was shown for current accession
     // If dialog was shown while on accession X, and then X changes, X was discarded
     private bool _discardDialogShownForCurrentAccession = false;
@@ -531,6 +537,9 @@ public class ActionController : IDisposable
     {
         Logger.Trace($"Process Report (Source: {source})");
 
+        // Mark that Process Report was pressed for this accession (for diff highlighting)
+        _processReportPressedForCurrentAccession = true;
+
         // Safety: Release all modifiers before starting automated sequence
         NativeWindows.KeyUpModifiers();
         Thread.Sleep(50);
@@ -632,6 +641,13 @@ public class ActionController : IDisposable
         {
             StartImpressionSearch();
         }
+
+        // Mark that popup needs update when impression appears (if popup is open)
+        if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
+        {
+            _needsPopupUpdate = true;
+            Logger.Trace("ProcessReport: Will update popup when impression appears");
+        }
     }
 
     private void StartImpressionSearch()
@@ -669,6 +685,16 @@ public class ActionController : IDisposable
     private void PerformSignReport(string source = "Manual")
     {
         Logger.Trace($"Sign Report (Source: {source})");
+
+        // Close report popup if open
+        if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
+        {
+            _mainForm.Invoke(() =>
+            {
+                try { _currentReportPopup?.Close(); } catch { }
+                _currentReportPopup = null;
+            });
+        }
 
         // Mark current accession as signed for RVUCounter integration
         // This flag will be used when accession changes to send the appropriate notification
@@ -711,6 +737,16 @@ public class ActionController : IDisposable
     {
         Logger.Trace("Discard Study action triggered");
 
+        // Close report popup if open
+        if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
+        {
+            _mainForm.Invoke(() =>
+            {
+                try { _currentReportPopup?.Close(); } catch { }
+                _currentReportPopup = null;
+            });
+        }
+
         // Remember the accession we're discarding
         var accessionToDiscard = _lastNonEmptyAccession;
 
@@ -735,6 +771,18 @@ public class ActionController : IDisposable
                 _lastNonEmptyAccession = null;
                 _discardDialogShownForCurrentAccession = false;
                 _currentAccessionSigned = false;
+            }
+
+            // Hide clinical history window if configured to hide when no study
+            if (_config.HideClinicalHistoryWhenNoStudy && _config.ShowClinicalHistory)
+            {
+                _mainForm.Invoke(() => _mainForm.ToggleClinicalHistory(false));
+            }
+
+            // Hide indicator window if configured to hide when no study
+            if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
+            {
+                _mainForm.Invoke(() => _mainForm.ToggleIndicator(false));
             }
         }
         else
@@ -1056,85 +1104,55 @@ public class ActionController : IDisposable
 
     private void PerformShowReport()
     {
-        _isUserActive = true;
-        Logger.Trace("Show Report (Alt-C method)");
-        
+        Logger.Trace("Show Report (scrape method)");
+
         // Toggle Logic: If open, close it and return
         if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
         {
-            _mainForm.Invoke(() => 
+            _mainForm.Invoke(() =>
             {
                try { _currentReportPopup.Close(); } catch {}
                _currentReportPopup = null;
             });
-            _isUserActive = false;
             return;
         }
 
-        _mainForm.Invoke(() => _mainForm.ShowStatusToast("Getting report..."));
-        
         try
         {
-            // 1. Activate Mosaic
-            NativeWindows.ActivateMosaicForcefully();
-            Thread.Sleep(50); 
-            
-            // 2. Capture OLD content (Diff Strategy)
-            // Clearing the clipboard can cause contention if Mosaic is trying to write.
-            // Instead, we just watch for the content to *change*.
-            string oldText = ClipboardService.GetText() ?? "";
-            
-            // 3. Send Alt-C
-            NativeWindows.SendAltKey('C');
-            
-            // 4. Wait for clipboard change
-            string? reportText = null;
-            for (int i = 0; i < 50; i++) // 500ms max
-            {
-                Thread.Sleep(10);
-                string? current = ClipboardService.GetText();
-                
-                // Success if we got text AND it's different (or we just accept it if old was empty)
-                if (!string.IsNullOrEmpty(current) && (current != oldText || string.IsNullOrEmpty(oldText)))
-                {
-                    reportText = current;
-                    break;
-                }
-            }
-            
-            // Edge case: If text didn't change (e.g. same report copied again), 
-            // fallback to just using what we have after the wait, 
-            // assuming the command worked but the content was identical.
-            if (string.IsNullOrEmpty(reportText))
-            {
-                // Give it one last check
-                reportText = ClipboardService.GetText();
-            }
+            // Use the scraped report text (much faster than Alt+C)
+            string? reportText = _automationService.LastFinalReport;
 
             if (string.IsNullOrEmpty(reportText))
             {
-                 _mainForm.Invoke(() => _mainForm.ShowStatusToast("No report copied (timed out)"));
+                 _mainForm.Invoke(() => _mainForm.ShowStatusToast("No report available (scraping may be disabled)"));
                  return;
+            }
+
+            // Pass baseline for diff highlighting if: feature enabled AND process report was pressed
+            string? baselineForDiff = (_config.ShowReportChanges && _processReportPressedForCurrentAccession)
+                ? _baselineReport
+                : null;
+
+            Logger.Trace($"ShowReport: {reportText.Length} chars, ShowReportChanges={_config.ShowReportChanges}, ProcessPressed={_processReportPressedForCurrentAccession}, BaselineLen={_baselineReport?.Length ?? 0}");
+            if (baselineForDiff != null)
+            {
+                Logger.Trace($"ShowReport: Passing baseline for diff ({baselineForDiff.Length} chars)");
             }
 
             _mainForm.Invoke(() =>
             {
-                _currentReportPopup = new ReportPopupForm(_config, reportText);
-                
+                _currentReportPopup = new ReportPopupForm(_config, reportText, baselineForDiff);
+
                 // Handle closure to clear reference
                 _currentReportPopup.FormClosed += (s, e) => _currentReportPopup = null;
-                
+
                 _currentReportPopup.Show();
             });
         }
         catch (Exception ex)
         {
              Logger.Trace($"ShowReport error: {ex.Message}");
-             _mainForm.Invoke(() => _mainForm.ShowStatusToast("Error getting report"));
-        }
-        finally
-        {
-            _isUserActive = false;
+             _mainForm.Invoke(() => _mainForm.ShowStatusToast("Error showing report"));
         }
     }
     
@@ -1313,11 +1331,22 @@ public class ActionController : IDisposable
                     // Reset state for new study
                     _currentAccessionSigned = false;
                     _discardDialogShownForCurrentAccession = false;
+                    _processReportPressedForCurrentAccession = false;
+                    _baselineReport = null;
+                    _needsBaselineCapture = _config.ShowReportChanges; // Will capture on next scrape with report text
 
                     // Update tracking - only update to new non-empty accession
                     if (!studyClosed)
                     {
                         _lastNonEmptyAccession = currentAccession;
+
+                        // Capture baseline report for diff highlighting (if enabled)
+                        Logger.Trace($"New study - ShowReportChanges={_config.ShowReportChanges}, reportText null={string.IsNullOrEmpty(reportText)}");
+                        if (_config.ShowReportChanges && !string.IsNullOrEmpty(reportText))
+                        {
+                            _baselineReport = reportText;
+                            Logger.Trace($"Captured baseline report ({reportText.Length} chars) for changes tracking");
+                        }
 
                         // Show toast
                         Logger.Trace($"Showing New Study toast for {currentAccession}");
@@ -1369,6 +1398,31 @@ public class ActionController : IDisposable
                         {
                             _mainForm.Invoke(() => _mainForm.ToggleIndicator(false));
                         }
+                    }
+                }
+
+                // Capture baseline if needed (deferred from study change detection)
+                // Wait for impression to appear before capturing - that's when report is fully generated
+                if (_needsBaselineCapture && !string.IsNullOrEmpty(reportText) && !_processReportPressedForCurrentAccession)
+                {
+                    var impression = ImpressionForm.ExtractImpression(reportText);
+                    if (!string.IsNullOrEmpty(impression))
+                    {
+                        _needsBaselineCapture = false;
+                        _baselineReport = reportText;
+                        Logger.Trace($"Captured baseline from scrape ({reportText.Length} chars)");
+                    }
+                }
+
+                // Update popup if needed (after Process Report, when impression appears)
+                if (_needsPopupUpdate && !string.IsNullOrEmpty(reportText))
+                {
+                    var impression = ImpressionForm.ExtractImpression(reportText);
+                    if (!string.IsNullOrEmpty(impression) && _currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
+                    {
+                        _needsPopupUpdate = false;
+                        Logger.Trace($"Updating popup from scrape ({reportText.Length} chars), baseline={_baselineReport?.Length ?? 0} chars");
+                        _mainForm.Invoke(() => _currentReportPopup?.UpdateReport(reportText, _baselineReport));
                     }
                 }
 

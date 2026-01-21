@@ -64,7 +64,14 @@ public class MainForm : Form
         Size = new Size(baseWidth + rvuWidth, 40);
         StartPosition = FormStartPosition.Manual;
         Location = new Point(_config.WindowX, _config.WindowY);
-        
+
+        // Set application icon (embedded in exe)
+        try
+        {
+            Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+        }
+        catch { /* Use default if extraction fails */ }
+
         // Inner frame (black)
         _innerFrame = new Panel
         {
@@ -165,7 +172,7 @@ public class MainForm : Form
             _trayIcon = new NotifyIcon
             {
                 Text = "Mosaic Tools (Headless)",
-                Icon = SystemIcons.Application,
+                Icon = Icon ?? SystemIcons.Application,
                 ContextMenuStrip = trayMenu,
                 Visible = true
             };
