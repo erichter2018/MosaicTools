@@ -19,7 +19,20 @@
       "Bash(claude /plugin install csharp-lsp@claude-plugins-official)",
       "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" release view v2.5.4 --repo erichter2018/MosaicTools)",
       "Bash(Test-Path \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.zip\")",
-      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" release upload v2.5.4 \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.zip\" --repo erichter2018/MosaicTools)"
+      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" release upload v2.5.4 \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.zip\" --repo erichter2018/MosaicTools)",
+      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\" release create v2.6.0 \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.zip\" \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.exe\" --title \"v2.6.0\" --notes \"$\\(cat <<''EOF''\n## Pick Lists Feature\n\nCreate reusable text snippets for quick insertion into reports.\n\n### Tree Mode\n- Hierarchical pick lists for drilling down to specific text\n- Navigate through categories to find the exact phrase you need\n\n### Builder Mode\n- Construct sentences by selecting options from multiple categories\n- Terminal options to complete sentences early when appropriate\n- Great for common findings with variable severity/location\n\n### Other Improvements\n- Dynamic shortcut visibility based on feature enablement\n- Fixed macro description extraction \\(resolves study filter issues\\)\n- Headless mode now disables auto-update \\(manual check still works\\)\n- What''s New popup shows changes after updates\n- Settings version display now shows full version number\nEOF\n\\)\")",
+      "Bash(c:Userserik.richterDesktopdotnetdotnet.exe build MosaicTools.csproj)",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp && taskkill /IM MosaicTools.exe /F 2>nul & timeout /t 1 >nul & c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe publish -c Release -r win-x64 --self-contained\")",
+      "Bash(cmd.exe /c \"taskkill /IM MosaicTools.exe /F\")",
+      "Bash(cmd.exe /c \"del /F /Q \"\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.exe\"\"\")",
+      "Bash(cmd.exe /c \"wmic process where \"\"name=''MosaicTools.exe''\"\" get processid\")",
+      "Bash(cmd.exe /c \"handle64.exe -nobanner \"\"MosaicTools.exe\"\" 2>nul || echo No handle tool - attempting forceful clean\")",
+      "Bash(cmd.exe /c \"rd /s /q \"\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\"\" 2>nul & echo Deleted\")",
+      "Bash(cmd.exe /c \"dir \"\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\"\"\")",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp && rd /s /q bin 2>nul && rd /s /q obj 2>nul && echo Cleaned\")",
+      "Bash(cmd.exe /c \"start \"\"\"\" \"\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.exe\"\"\")",
+      "Bash(cmd.exe /c \"type \"\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\mosaic_tools_log.txt\"\" | findstr /i \"\"critical\"\"\")",
+      "Bash(cmd.exe:*)"
     ]
   }
 }

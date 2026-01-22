@@ -37,9 +37,6 @@ public class Configuration
     [JsonPropertyName("auto_update_enabled")]
     public bool AutoUpdateEnabled { get; set; } = true;
 
-    [JsonPropertyName("run_at_startup")]
-    public bool RunAtStartup { get; set; } = false;
-
     [JsonPropertyName("hide_clinical_history_when_no_study")]
     public bool HideClinicalHistoryWhenNoStudy { get; set; } = true;
 
@@ -99,6 +96,9 @@ public class Configuration
     [JsonPropertyName("show_clinical_history")]
     public bool ShowClinicalHistory { get; set; } = false;
 
+    [JsonPropertyName("always_show_clinical_history")]
+    public bool AlwaysShowClinicalHistory { get; set; } = true;
+
     [JsonPropertyName("auto_fix_clinical_history")]
     public bool AutoFixClinicalHistory { get; set; } = false;
 
@@ -110,6 +110,18 @@ public class Configuration
 
     [JsonPropertyName("gender_check_enabled")]
     public bool GenderCheckEnabled { get; set; } = false;
+
+    [JsonPropertyName("stroke_detection_enabled")]
+    public bool StrokeDetectionEnabled { get; set; } = false;
+
+    [JsonPropertyName("stroke_detection_use_clinical_history")]
+    public bool StrokeDetectionUseClinicalHistory { get; set; } = false;
+
+    [JsonPropertyName("stroke_click_to_create_note")]
+    public bool StrokeClickToCreateNote { get; set; } = false;
+
+    [JsonPropertyName("stroke_auto_create_note")]
+    public bool StrokeAutoCreateNote { get; set; } = false;
 
     [JsonPropertyName("clinical_history_x")]
     public int ClinicalHistoryX { get; set; } = 100;

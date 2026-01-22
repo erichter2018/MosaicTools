@@ -200,7 +200,9 @@ public class MainForm : Form
 
         // Clinical History window: show if enabled and scrape mosaic is on
         // Don't show on startup if "hide when no study" is enabled - scrape will show it when study opens
-        if (_config.ShowClinicalHistory && _config.ScrapeMosaicEnabled && !_config.HideClinicalHistoryWhenNoStudy)
+        // Also don't show in alerts-only mode - window only appears when alerts trigger
+        if (_config.ShowClinicalHistory && _config.ScrapeMosaicEnabled &&
+            _config.AlwaysShowClinicalHistory && !_config.HideClinicalHistoryWhenNoStudy)
         {
             ToggleClinicalHistory(true);
         }
@@ -619,6 +621,12 @@ public class MainForm : Form
             if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
             {
                 _clinicalHistoryWindow = new ClinicalHistoryForm(_config);
+                // Wire up stroke note click callback
+                _clinicalHistoryWindow.SetStrokeNoteClickCallback(() =>
+                {
+                    var accession = _controller.GetCurrentAccession();
+                    return _controller.CreateStrokeCriticalNote(accession);
+                });
                 _clinicalHistoryWindow.Show();
             }
         }
@@ -662,7 +670,7 @@ public class MainForm : Form
 
     /// <summary>
     /// Updates clinical history visibility based on current settings and study state.
-    /// Call this when HideClinicalHistoryWhenNoStudy setting changes.
+    /// Call this when HideClinicalHistoryWhenNoStudy or AlwaysShowClinicalHistory setting changes.
     /// </summary>
     public void UpdateClinicalHistoryVisibility()
     {
@@ -672,7 +680,21 @@ public class MainForm : Form
             return;
         }
 
-        // If "hide when no study" is enabled and no study is open, hide it
+        // In alerts-only mode, don't automatically show the window
+        // The ActionController will show it when an alert triggers
+        if (!_config.AlwaysShowClinicalHistory)
+        {
+            // Don't hide if already showing an alert
+            if (_clinicalHistoryWindow != null && !_clinicalHistoryWindow.IsDisposed &&
+                _clinicalHistoryWindow.Visible && _clinicalHistoryWindow.IsShowingAlert)
+            {
+                return;
+            }
+            ToggleClinicalHistory(false);
+            return;
+        }
+
+        // In always-show mode: If "hide when no study" is enabled and no study is open, hide it
         if (_config.HideClinicalHistoryWhenNoStudy && !IsStudyOpen)
         {
             ToggleClinicalHistory(false);
@@ -732,6 +754,30 @@ public class MainForm : Form
 
         var mismatches = ClinicalHistoryForm.CheckGenderMismatch(reportText, patientGender);
         _clinicalHistoryWindow.SetGenderWarning(mismatches.Count > 0, patientGender, mismatches);
+    }
+
+    public void SetStrokeState(bool isStroke)
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        _clinicalHistoryWindow.SetStrokeState(isStroke);
+    }
+
+    public void ShowAlertOnly(AlertType type, string details)
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        _clinicalHistoryWindow.ShowAlertOnly(type, details);
+    }
+
+    public void ClearAlert()
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        _clinicalHistoryWindow.ClearAlert();
     }
 
     public void ShowImpressionWindow()

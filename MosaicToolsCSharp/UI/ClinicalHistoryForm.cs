@@ -8,7 +8,18 @@ using MosaicTools.Services;
 namespace MosaicTools.UI;
 
 /// <summary>
+/// Alert types for the notification box (alerts-only mode).
+/// </summary>
+public enum AlertType
+{
+    TemplateMismatch,
+    GenderMismatch,
+    StrokeDetected
+}
+
+/// <summary>
 /// Floating window displaying clinical history from Clario scrape.
+/// Can also operate in "alerts only" mode where it only appears when alerts trigger.
 /// </summary>
 public class ClinicalHistoryForm : Form
 {
@@ -22,10 +33,11 @@ public class ClinicalHistoryForm : Form
     // For center-based positioning
     private bool _initialPositionSet = false;
 
-    // Border colors
+    // Border colors - Priority order: Green (drafted) < Purple (stroke) < Flashing Red (gender) < Solid Red (template mismatch)
     private static readonly Color NormalBorderColor = Color.FromArgb(60, 60, 60);
-    private static readonly Color DraftedBorderColor = Color.FromArgb(0, 180, 0); // Green
-    private static readonly Color TemplateMismatchBorderColor = Color.FromArgb(220, 50, 50); // Red
+    private static readonly Color DraftedBorderColor = Color.FromArgb(0, 180, 0); // Green - drafted status
+    private static readonly Color StrokeBorderColor = Color.FromArgb(140, 80, 200); // Purple - stroke case
+    private static readonly Color TemplateMismatchBorderColor = Color.FromArgb(220, 50, 50); // Red - template mismatch
 
     // Text colors
     private static readonly Color NormalTextColor = Color.FromArgb(200, 200, 200); // White-ish
@@ -67,8 +79,21 @@ public class ClinicalHistoryForm : Form
     private bool _genderWarningActive = false;
     private string? _genderWarningText;
     private string? _savedClinicalHistoryText;
+
+    // Stroke detection state
+    private bool _strokeDetected = false;
     private System.Windows.Forms.Timer? _blinkTimer;
     private bool _blinkState = false;
+
+    // Alert-only mode state (when AlwaysShowClinicalHistory is false)
+    private bool _showingAlert = false;
+    private AlertType? _currentAlertType = null;
+
+    // Tooltip for border color explanation
+    private readonly ToolTip _borderTooltip;
+
+    // Callback for stroke note creation (set by MainForm)
+    private Func<bool>? _onStrokeNoteClick;
 
     public ClinicalHistoryForm(Configuration config)
     {
@@ -144,6 +169,15 @@ public class ClinicalHistoryForm : Form
         // Position from center after form sizes itself
         Shown += (_, _) => PositionFromCenter();
         SizeChanged += (_, _) => { if (_initialPositionSet) RepositionToCenter(); };
+
+        // Tooltip for border color explanation
+        _borderTooltip = new ToolTip
+        {
+            InitialDelay = 500,
+            AutoPopDelay = 10000,
+            ReshowDelay = 200
+        };
+        UpdateBorderTooltip();
     }
 
     /// <summary>
@@ -283,11 +317,13 @@ public class ClinicalHistoryForm : Form
         _lastAutoFixedAccession = null;
         _lastAutoFixTime = DateTime.MinValue;
 
-        // Reset template mismatch
+        // Reset template mismatch and stroke state
         _templateMismatch = false;
+        _strokeDetected = false;
         _lastDescription = null;
         _lastTemplateName = null;
         BackColor = NormalBorderColor;
+        UpdateBorderTooltip();
 
         // Clear displayed text immediately so old study's history doesn't persist
         _contentLabel.Text = isNewStudy ? "(Loading...)" : "(No clinical history)";
@@ -395,15 +431,24 @@ public class ClinicalHistoryForm : Form
             return;
         }
 
-        // Template mismatch (red) overrides drafted (green)
+        // Priority order: Green (drafted) < Purple (stroke) < Flashing Red (gender) < Solid Red (template mismatch)
+        // Note: Flashing red (gender warning) is handled by UpdateBlinkDisplay and overrides this
         if (_templateMismatch)
         {
+            // Solid red - highest priority (except gender which handles itself)
             BackColor = TemplateMismatchBorderColor;
+        }
+        else if (_strokeDetected)
+        {
+            // Purple - stroke case
+            BackColor = StrokeBorderColor;
         }
         else
         {
+            // Green (drafted) or normal
             BackColor = isDrafted ? DraftedBorderColor : NormalBorderColor;
         }
+        UpdateBorderTooltip();
     }
 
     /// <summary>
@@ -426,25 +471,229 @@ public class ClinicalHistoryForm : Form
         if (isMismatch)
         {
             BackColor = TemplateMismatchBorderColor;
+            UpdateBorderTooltip();
         }
         // If not mismatch, the border will be set by SetDraftedState
     }
 
     /// <summary>
+    /// Set the stroke detection state - shows purple border when true.
+    /// Overrides green (drafted) but is overridden by red (template mismatch) and flashing red (gender).
+    /// </summary>
+    public void SetStrokeState(bool isStroke)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(() => SetStrokeState(isStroke));
+            return;
+        }
+
+        _strokeDetected = isStroke;
+
+        // Update border color immediately if stroke detected and no higher priority state
+        if (isStroke && !_templateMismatch && !_genderWarningActive)
+        {
+            BackColor = StrokeBorderColor;
+        }
+        UpdateBorderTooltip();
+    }
+
+    /// <summary>
+    /// Returns whether stroke is currently detected.
+    /// </summary>
+    public bool IsStrokeDetected => _strokeDetected;
+
+    /// <summary>
+    /// Set the callback for creating a stroke critical note.
+    /// Called when user clicks the notification box during stroke case.
+    /// </summary>
+    public void SetStrokeNoteClickCallback(Func<bool> callback)
+    {
+        _onStrokeNoteClick = callback;
+    }
+
+    /// <summary>
+    /// Returns whether currently showing an alert (as opposed to clinical history).
+    /// </summary>
+    public bool IsShowingAlert => _showingAlert;
+
+    /// <summary>
+    /// Show an alert in the notification box (for alerts-only mode).
+    /// This replaces the clinical history text with alert content.
+    /// </summary>
+    public void ShowAlertOnly(AlertType type, string details)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(() => ShowAlertOnly(type, details));
+            return;
+        }
+
+        _showingAlert = true;
+        _currentAlertType = type;
+
+        // Set appropriate border color and text based on alert type
+        switch (type)
+        {
+            case AlertType.TemplateMismatch:
+                BackColor = TemplateMismatchBorderColor;
+                _contentLabel.BackColor = Color.Black;
+                _contentLabel.ForeColor = Color.FromArgb(255, 150, 150); // Light red
+                _contentLabel.Text = $"TEMPLATE MISMATCH\n{details}";
+                break;
+
+            case AlertType.GenderMismatch:
+                // Gender mismatch uses the blinking red (handled by SetGenderWarning)
+                // This is called for completeness but SetGenderWarning handles the display
+                break;
+
+            case AlertType.StrokeDetected:
+                BackColor = StrokeBorderColor;
+                _contentLabel.BackColor = Color.Black;
+                _contentLabel.ForeColor = Color.FromArgb(200, 150, 255); // Light purple
+                _contentLabel.Text = $"STROKE PROTOCOL\n{details}";
+                break;
+        }
+
+        UpdateBorderTooltip();
+    }
+
+    /// <summary>
+    /// Clear alert display and return to clinical history mode.
+    /// </summary>
+    public void ClearAlert()
+    {
+        if (InvokeRequired)
+        {
+            Invoke(ClearAlert);
+            return;
+        }
+
+        _showingAlert = false;
+        _currentAlertType = null;
+
+        // Restore clinical history display
+        if (!string.IsNullOrEmpty(_currentDisplayedText))
+        {
+            _contentLabel.Text = _currentDisplayedText;
+            _contentLabel.ForeColor = _currentTextWasFixed ? FixedTextColor : NormalTextColor;
+            _contentLabel.BackColor = Color.Black;
+        }
+        else
+        {
+            _contentLabel.Text = "(No clinical history)";
+            _contentLabel.ForeColor = EmptyTextColor;
+            _contentLabel.BackColor = Color.Black;
+        }
+
+        BackColor = NormalBorderColor;
+        UpdateBorderTooltip();
+    }
+
+    /// <summary>
+    /// Get alert text for the given alert type and current state.
+    /// Used by ActionController to get alert details for display.
+    /// </summary>
+    public string GetAlertText(AlertType type)
+    {
+        switch (type)
+        {
+            case AlertType.TemplateMismatch:
+                if (_lastDescription != null && _lastTemplateName != null)
+                    return $"Study: {_lastDescription}\nTemplate: {_lastTemplateName}";
+                return "Study/template mismatch detected";
+
+            case AlertType.StrokeDetected:
+                return "Study flagged as stroke protocol";
+
+            case AlertType.GenderMismatch:
+                return _genderWarningText ?? "Gender mismatch detected";
+
+            default:
+                return "";
+        }
+    }
+
+    /// <summary>
+    /// Update the tooltip to explain the current border color.
+    /// </summary>
+    private void UpdateBorderTooltip()
+    {
+        string tooltip;
+
+        if (_genderWarningActive)
+        {
+            tooltip = "Red (flashing): Gender mismatch - report contains terms that don't match patient gender";
+        }
+        else if (_templateMismatch)
+        {
+            tooltip = "Red: Template mismatch - study description doesn't match the report template";
+        }
+        else if (_strokeDetected)
+        {
+            if (_config.StrokeClickToCreateNote)
+            {
+                tooltip = "Purple: Stroke protocol - click to create critical note";
+            }
+            else
+            {
+                tooltip = "Purple: Stroke protocol detected";
+            }
+        }
+        else if (BackColor == DraftedBorderColor)
+        {
+            tooltip = "Green: Report is drafted";
+        }
+        else
+        {
+            tooltip = "Gray: Normal - no alerts";
+        }
+
+        _borderTooltip.SetToolTip(this, tooltip);
+        _borderTooltip.SetToolTip(_contentLabel, tooltip);
+    }
+
+    /// <summary>
     /// Handle mouse clicks on content label.
-    /// Left-click: paste clinical history to Mosaic
+    /// Left-click: paste clinical history to Mosaic (or create stroke note if enabled)
     /// Right-click: copy debug info to clipboard
     /// </summary>
     private void OnContentLabelMouseDown(object? sender, MouseEventArgs e)
     {
         if (e.Button == MouseButtons.Left)
         {
+            Services.Logger.Trace($"ClinicalHistory click: strokeDetected={_strokeDetected}, clickToCreate={_config.StrokeClickToCreateNote}, callbackSet={_onStrokeNoteClick != null}");
+
+            // If stroke detected and click-to-create enabled, create note instead of paste
+            if (_strokeDetected && _config.StrokeClickToCreateNote && _onStrokeNoteClick != null)
+            {
+                Services.Logger.Trace("ClinicalHistory: Invoking stroke note callback");
+                bool created = _onStrokeNoteClick.Invoke();
+                Services.Logger.Trace($"ClinicalHistory: Callback returned created={created}");
+                if (!created)
+                {
+                    // Note already exists - show tooltip briefly
+                    ShowAlreadyCreatedTooltip();
+                }
+                return;
+            }
+
+            // Default behavior: paste clinical history
             PasteClinicalHistoryToMosaic();
         }
         else if (e.Button == MouseButtons.Right)
         {
             CopyDebugInfoToClipboard();
         }
+    }
+
+    /// <summary>
+    /// Show a tooltip indicating the critical note was already created.
+    /// </summary>
+    private void ShowAlreadyCreatedTooltip()
+    {
+        _borderTooltip.Show("Critical note already created for this study", this,
+            Width / 2, Height / 2, 2000);
     }
 
     /// <summary>
@@ -950,6 +1199,7 @@ public class ClinicalHistoryForm : Form
 
             // Start blinking
             StartBlinking();
+            UpdateBorderTooltip();
         }
         else
         {
@@ -981,6 +1231,7 @@ public class ClinicalHistoryForm : Form
                 {
                     BackColor = NormalBorderColor;
                 }
+                UpdateBorderTooltip();
 
                 _savedClinicalHistoryText = null;
             }

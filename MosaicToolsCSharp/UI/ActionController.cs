@@ -81,6 +81,15 @@ public class ActionController : IDisposable
     private string? _pendingMacroAccession;
     private string? _pendingMacroDescription;
 
+    // Alert state tracking for alerts-only mode
+    private bool _templateMismatchActive = false;
+    private bool _genderMismatchActive = false;
+    private bool _strokeDetectedActive = false;
+    private bool _clinicalHistoryVisible = false;
+
+    // Critical note tracking - which accession already has a critical note created
+    private string? _criticalNoteCreatedForAccession = null;
+
     // Shared paste lock to prevent concurrent clipboard operations
     public static readonly object PasteLock = new();
     public static DateTime LastPasteTime = DateTime.MinValue;
@@ -646,6 +655,17 @@ public class ActionController : IDisposable
         if (_config.ShowImpression)
         {
             StartImpressionSearch();
+        }
+
+        // Auto-create critical note for stroke cases if enabled
+        if (_config.StrokeAutoCreateNote && _strokeDetectedActive)
+        {
+            var accession = _automationService.LastAccession;
+            if (!HasCriticalNoteForAccession(accession))
+            {
+                Logger.Trace($"Process Report: Auto-creating critical note for stroke case {accession}");
+                CreateStrokeCriticalNote(accession);
+            }
         }
 
         // Popup will auto-update via scrape timer when report changes
@@ -1465,9 +1485,15 @@ public class ActionController : IDisposable
                     _currentAccessionSigned = false;
                     _discardDialogShownForCurrentAccession = false;
                     _processReportPressedForCurrentAccession = false;
+                    _criticalNoteCreatedForAccession = null;
                     _baselineReport = null;
                     _lastPopupReportText = null;
                     _needsBaselineCapture = _config.ShowReportChanges; // Will capture on next scrape with report text
+
+                    // Reset alert state tracking
+                    _templateMismatchActive = false;
+                    _genderMismatchActive = false;
+                    _strokeDetectedActive = false;
 
                     // Update tracking - only update to new non-empty accession
                     if (!studyClosed)
@@ -1487,9 +1513,11 @@ public class ActionController : IDisposable
                         _mainForm.Invoke(() => _mainForm.ShowStatusToast($"New Study: {currentAccession}", 3000));
 
                         // Re-show clinical history window if it was hidden due to no study
-                        if (_config.HideClinicalHistoryWhenNoStudy && _config.ShowClinicalHistory)
+                        // (only in always-show mode; alerts-only mode will show when alert triggers)
+                        if (_config.HideClinicalHistoryWhenNoStudy && _config.ShowClinicalHistory && _config.AlwaysShowClinicalHistory)
                         {
                             _mainForm.Invoke(() => _mainForm.ToggleClinicalHistory(true));
+                            _clinicalHistoryVisible = true;
                         }
 
                         // Re-show indicator window if it was hidden due to no study
@@ -1514,6 +1542,12 @@ public class ActionController : IDisposable
                         _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
                         _searchingForImpression = false;
                         _impressionFromProcessReport = false;
+
+                        // Stroke detection - check Clario Priority/Class for stroke protocol
+                        if (_config.StrokeDetectionEnabled)
+                        {
+                            PerformStrokeDetection(currentAccession, reportText);
+                        }
                     }
                     else
                     {
@@ -1522,9 +1556,11 @@ public class ActionController : IDisposable
                         Logger.Trace("Study closed, no new study opened");
 
                         // Hide clinical history window if configured to hide when no study
-                        if (_config.HideClinicalHistoryWhenNoStudy && _config.ShowClinicalHistory)
+                        // (or always hide in alerts-only mode when no alerts)
+                        if (_config.ShowClinicalHistory && (_config.HideClinicalHistoryWhenNoStudy || !_config.AlwaysShowClinicalHistory))
                         {
                             _mainForm.Invoke(() => _mainForm.ToggleClinicalHistory(false));
+                            _clinicalHistoryVisible = false;
                         }
 
                         // Hide indicator window if configured to hide when no study
@@ -1570,53 +1606,138 @@ public class ActionController : IDisposable
                     _pendingMacroDescription = null;
                 }
 
-                // Update clinical history from Mosaic report (not Clario - Chrome needs focus)
+                // Update clinical history / notification box from Mosaic report
                 if (_config.ShowClinicalHistory)
                 {
-                    // Only update if we have content - don't clear during brief processing gaps
-                    // (when report temporarily disappears but we're still on the same accession)
-                    if (!string.IsNullOrWhiteSpace(reportText))
-                    {
-                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
-
-                        // Update text color based on whether displayed history matches final report
-                        // Yellow = our fixed version differs from report, White = they match
-                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryTextColor(reportText));
-                    }
+                    // First, evaluate all alert conditions
+                    bool newTemplateMismatch = false;
+                    bool newGenderMismatch = false;
+                    string? templateDescription = null;
+                    string? templateName = null;
+                    string? patientGender = null;
+                    List<string>? genderMismatches = null;
 
                     // Check template matching (red border when mismatch) if enabled
                     if (_config.ShowTemplateMismatch)
                     {
-                        var description = _automationService.LastDescription;
-                        var templateName = _automationService.LastTemplateName;
-                        bool bodyPartsMatch = AutomationService.DoBodyPartsMatch(description, templateName);
-                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(!bodyPartsMatch, description, templateName));
+                        templateDescription = _automationService.LastDescription;
+                        templateName = _automationService.LastTemplateName;
+                        bool bodyPartsMatch = AutomationService.DoBodyPartsMatch(templateDescription, templateName);
+                        newTemplateMismatch = !bodyPartsMatch;
+                    }
+
+                    // Check for gender mismatch
+                    if (_config.GenderCheckEnabled && !string.IsNullOrWhiteSpace(reportText))
+                    {
+                        patientGender = _automationService.LastPatientGender;
+                        genderMismatches = ClinicalHistoryForm.CheckGenderMismatch(reportText, patientGender);
+                        newGenderMismatch = genderMismatches.Count > 0;
+                    }
+
+                    // Note: Stroke detection is handled elsewhere (on study change) and sets _strokeDetectedActive
+
+                    // Determine if any alerts are active
+                    bool anyAlertActive = newTemplateMismatch || newGenderMismatch || _strokeDetectedActive;
+
+                    // Handle visibility based on always-show vs alerts-only mode
+                    if (_config.AlwaysShowClinicalHistory)
+                    {
+                        // ALWAYS-SHOW MODE: Current behavior - window always visible, show clinical history + border colors
+
+                        // Only update if we have content - don't clear during brief processing gaps
+                        if (!string.IsNullOrWhiteSpace(reportText))
+                        {
+                            _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
+                            _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryTextColor(reportText));
+                        }
+
+                        // Update template mismatch state
+                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
+
+                        // Update drafted state (green border when drafted) if enabled
+                        if (_config.ShowDraftedIndicator)
+                        {
+                            bool isDrafted = _automationService.LastDraftedState;
+                            _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryDraftedState(isDrafted));
+                        }
+
+                        // Update gender check
+                        if (_config.GenderCheckEnabled)
+                        {
+                            _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
+                        }
+                        else
+                        {
+                            _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(null, null));
+                        }
                     }
                     else
                     {
-                        // Clear any existing mismatch state when disabled
-                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(false, null, null));
+                        // ALERTS-ONLY MODE: Window only appears when an alert triggers
+
+                        // Determine highest priority alert to show
+                        AlertType? alertToShow = null;
+                        string alertDetails = "";
+
+                        if (newGenderMismatch && genderMismatches != null)
+                        {
+                            alertToShow = AlertType.GenderMismatch;
+                            alertDetails = string.Join(", ", genderMismatches);
+                        }
+                        else if (newTemplateMismatch)
+                        {
+                            alertToShow = AlertType.TemplateMismatch;
+                            if (templateDescription != null && templateName != null)
+                                alertDetails = $"Study: {templateDescription}\nTemplate: {templateName}";
+                        }
+                        else if (_strokeDetectedActive)
+                        {
+                            alertToShow = AlertType.StrokeDetected;
+                            alertDetails = "Study flagged as stroke protocol";
+                        }
+
+                        if (anyAlertActive)
+                        {
+                            // Show notification box with alert
+                            if (!_clinicalHistoryVisible)
+                            {
+                                _mainForm.Invoke(() => _mainForm.ToggleClinicalHistory(true));
+                                _clinicalHistoryVisible = true;
+                            }
+
+                            // Display alert content
+                            if (alertToShow == AlertType.GenderMismatch)
+                            {
+                                // Gender mismatch uses the blinking display
+                                _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
+                            }
+                            else if (alertToShow.HasValue)
+                            {
+                                // Clear gender warning if not active
+                                _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(null, null));
+                                // Show the alert
+                                _mainForm.Invoke(() => _mainForm.ShowAlertOnly(alertToShow.Value, alertDetails));
+                            }
+
+                            // Also update template mismatch border (for non-gender alerts)
+                            if (alertToShow != AlertType.GenderMismatch)
+                            {
+                                _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
+                            }
+                        }
+                        else if (_clinicalHistoryVisible)
+                        {
+                            // No alerts active - hide the notification box
+                            _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(null, null));
+                            _mainForm.Invoke(() => _mainForm.ClearAlert());
+                            _mainForm.Invoke(() => _mainForm.ToggleClinicalHistory(false));
+                            _clinicalHistoryVisible = false;
+                        }
                     }
 
-                    // Update drafted state (green border when drafted) if enabled
-                    // Note: Template mismatch (red) overrides drafted (green)
-                    if (_config.ShowDraftedIndicator)
-                    {
-                        bool isDrafted = _automationService.LastDraftedState;
-                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryDraftedState(isDrafted));
-                    }
-
-                    // Check for gender mismatch (terms in report that don't match patient gender)
-                    if (_config.GenderCheckEnabled && !string.IsNullOrWhiteSpace(reportText))
-                    {
-                        var patientGender = _automationService.LastPatientGender;
-                        _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
-                    }
-                    else if (!_config.GenderCheckEnabled)
-                    {
-                        // Clear any existing warning when disabled
-                        _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(null, null));
-                    }
+                    // Update tracking for next iteration
+                    _templateMismatchActive = newTemplateMismatch;
+                    _genderMismatchActive = newGenderMismatch;
                 }
 
                 // Handle impression display
@@ -1696,6 +1817,139 @@ public class ActionController : IDisposable
         }
     }
     
+    #endregion
+
+    #region Stroke Detection
+
+    // Keywords for stroke detection in clinical history
+    private static readonly string[] StrokeKeywords = new[]
+    {
+        "stroke", "CVA", "TIA", "hemiparesis", "hemiplegia", "aphasia",
+        "dysarthria", "facial droop", "weakness", "numbness", "code stroke",
+        "NIH stroke scale", "NIHSS"
+    };
+
+    private void PerformStrokeDetection(string? accession, string? reportText)
+    {
+        bool isStroke = false;
+
+        // Check Clario Priority/Class for stroke protocol
+        try
+        {
+            var priorityData = _automationService.ExtractClarioPriorityAndClass(accession);
+            if (priorityData != null)
+            {
+                Logger.Trace($"Stroke detection: Priority='{priorityData.Priority}', Class='{priorityData.Class}'");
+                isStroke = _automationService.IsStrokeStudy;
+            }
+            else
+            {
+                Logger.Trace("Stroke detection: Could not extract Clario Priority/Class");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Stroke detection Clario error: {ex.Message}");
+        }
+
+        // Also check clinical history for stroke keywords if enabled
+        if (!isStroke && _config.StrokeDetectionUseClinicalHistory && !string.IsNullOrEmpty(reportText))
+        {
+            // Extract clinical history from report text
+            var (_, clinicalHistory) = ClinicalHistoryForm.ExtractClinicalHistoryWithFixInfo(reportText);
+            if (!string.IsNullOrEmpty(clinicalHistory))
+            {
+                isStroke = ContainsStrokeKeywords(clinicalHistory);
+                if (isStroke)
+                {
+                    Logger.Trace("Stroke detection: Found stroke keywords in clinical history");
+                }
+            }
+        }
+
+        // Update tracking and the clinical history form
+        _strokeDetectedActive = isStroke;
+
+        if (isStroke)
+        {
+            Logger.Trace($"Stroke study detected for accession {accession}");
+
+            // Auto-show clinical history if stroke detected (even if setting is off)
+            _mainForm.Invoke(() =>
+            {
+                _mainForm.ToggleClinicalHistory(true);
+                _clinicalHistoryVisible = true;
+                _mainForm.SetStrokeState(true);
+            });
+
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Stroke Protocol Detected", 4000));
+        }
+        else
+        {
+            _mainForm.Invoke(() => _mainForm.SetStrokeState(false));
+        }
+    }
+
+    private static bool ContainsStrokeKeywords(string text)
+    {
+        var lowerText = text.ToLowerInvariant();
+        foreach (var keyword in StrokeKeywords)
+        {
+            if (lowerText.Contains(keyword.ToLowerInvariant()))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    #endregion
+
+    #region Critical Communication Note
+
+    /// <summary>
+    /// Get the current accession number.
+    /// </summary>
+    public string? GetCurrentAccession()
+    {
+        return _automationService.LastAccession;
+    }
+
+    /// <summary>
+    /// Create critical communication note for stroke case.
+    /// Returns true if created, false if already exists or failed.
+    /// </summary>
+    public bool CreateStrokeCriticalNote(string? accession)
+    {
+        if (string.IsNullOrEmpty(accession))
+        {
+            Logger.Trace("CreateStrokeCriticalNote: No accession provided");
+            return false;
+        }
+
+        if (_criticalNoteCreatedForAccession == accession)
+        {
+            Logger.Trace($"CreateStrokeCriticalNote: Note already created for {accession}");
+            return false; // Already created
+        }
+
+        var success = _automationService.CreateCriticalCommunicationNote();
+        if (success)
+        {
+            _criticalNoteCreatedForAccession = accession;
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Critical note created", 3000));
+        }
+        return success;
+    }
+
+    /// <summary>
+    /// Check if a critical note has already been created for the given accession.
+    /// </summary>
+    public bool HasCriticalNoteForAccession(string? accession)
+    {
+        return accession != null && _criticalNoteCreatedForAccession == accession;
+    }
+
     #endregion
 
 

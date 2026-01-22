@@ -1,3 +1,9 @@
+2.7.0
+- Critical Results Communication Note: Auto-create notes for stroke cases in Clario
+- Click notification box to create note (when stroke detected)
+- Auto-create on Process Report option
+- One note per accession tracking prevents duplicates
+
 2.6.0
 - Pick Lists: Create reusable text snippets for quick insertion
 - Tree mode: Hierarchical pick lists for drilling down to specific text

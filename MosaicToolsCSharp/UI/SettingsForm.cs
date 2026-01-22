@@ -35,7 +35,6 @@ public class SettingsForm : Form
     private TextBox _criticalTemplateBox = null!;
     private TextBox _seriesTemplateBox = null!;
     private CheckBox _autoUpdateCheck = null!;
-    private CheckBox _runAtStartupCheck = null!;
     private CheckBox _hideIndicatorWhenNoStudyCheck = null!;
 
     // Advanced tab controls
@@ -44,11 +43,16 @@ public class SettingsForm : Form
     private CheckBox _scrapeMosaicCheck = null!;
     private NumericUpDown _scrapeIntervalUpDown = null!;
     private CheckBox _showClinicalHistoryCheck = null!;
+    private CheckBox _alwaysShowClinicalHistoryCheck = null!;
     private CheckBox _hideClinicalHistoryWhenNoStudyCheck = null!;
     private CheckBox _autoFixClinicalHistoryCheck = null!;
     private CheckBox _showDraftedIndicatorCheck = null!;
     private CheckBox _showTemplateMismatchCheck = null!;
     private CheckBox _genderCheckEnabledCheck = null!;
+    private CheckBox _strokeDetectionEnabledCheck = null!;
+    private CheckBox _strokeDetectionUseClinicalHistoryCheck = null!;
+    private CheckBox _strokeClickToCreateNoteCheck = null!;
+    private CheckBox _strokeAutoCreateNoteCheck = null!;
     private CheckBox _showImpressionCheck = null!;
     private CheckBox _showLineCountToastCheck = null!;
     private NumericUpDown _scrollThreshold1 = null!;
@@ -216,7 +220,7 @@ public class SettingsForm : Form
         tab.Controls.Add(_doctorNameBox);
         y += 35;
         
-        // Start Beep
+        // Start/Stop Beep options (hide in headless mode - no audio feedback needed)
         _startBeepCheck = new CheckBox
         {
             Text = "Start Beep Enabled",
@@ -224,67 +228,55 @@ public class SettingsForm : Form
             ForeColor = Color.White,
             AutoSize = true
         };
-        tab.Controls.Add(_startBeepCheck);
-        y += 25;
-        
-        tab.Controls.Add(CreateLabel("Start Volume:", 40, y, labelWidth));
+
+        var startVolLabel = CreateLabel("Start Volume:", 40, y + 25, labelWidth);
         _startVolumeSlider = new TrackBar
         {
-            Location = new Point(200, y - 5),
+            Location = new Point(200, y + 20),
             Width = 200,
             Minimum = 0,
             Maximum = 100,
             TickFrequency = 10
         };
         _startVolumeSlider.ValueChanged += (s, e) => UpdateVolumeLabels();
-        tab.Controls.Add(_startVolumeSlider);
-        
+
         _startVolLabel = new Label
         {
-            Location = new Point(410, y + 2),
+            Location = new Point(410, y + 27),
             AutoSize = true,
             ForeColor = Color.White
         };
-        tab.Controls.Add(_startVolLabel);
-        y += 40;
-        
-        // Stop Beep
+
         _stopBeepCheck = new CheckBox
         {
             Text = "Stop Beep Enabled",
-            Location = new Point(20, y),
+            Location = new Point(20, y + 65),
             ForeColor = Color.White,
             AutoSize = true
         };
-        tab.Controls.Add(_stopBeepCheck);
-        y += 25;
-        
-        tab.Controls.Add(CreateLabel("Stop Volume:", 40, y, labelWidth));
+
+        var stopVolLabel = CreateLabel("Stop Volume:", 40, y + 90, labelWidth);
         _stopVolumeSlider = new TrackBar
         {
-            Location = new Point(200, y - 5),
+            Location = new Point(200, y + 85),
             Width = 200,
             Minimum = 0,
             Maximum = 100,
             TickFrequency = 10
         };
         _stopVolumeSlider.ValueChanged += (s, e) => UpdateVolumeLabels();
-        tab.Controls.Add(_stopVolumeSlider);
-        
+
         _stopVolLabel = new Label
         {
-            Location = new Point(410, y + 2),
+            Location = new Point(410, y + 92),
             AutoSize = true,
             ForeColor = Color.White
         };
-        tab.Controls.Add(_stopVolLabel);
-        y += 45;
-        
-        // Dictation Pause
-        tab.Controls.Add(CreateLabel("Start Beep Pause (ms):", 20, y, labelWidth));
+
+        var dictPauseLabel = CreateLabel("Start Beep Pause (ms):", 20, y + 135, labelWidth);
         _dictationPauseNum = new NumericUpDown
         {
-            Location = new Point(200, y),
+            Location = new Point(200, y + 135),
             Width = 100,
             Minimum = 100,
             Maximum = 5000,
@@ -292,8 +284,22 @@ public class SettingsForm : Form
             BackColor = Color.FromArgb(60, 60, 60),
             ForeColor = Color.White
         };
-        tab.Controls.Add(_dictationPauseNum);
-        y += 35;
+
+        // Only show beep options in non-headless mode
+        if (!App.IsHeadless)
+        {
+            tab.Controls.Add(_startBeepCheck);
+            tab.Controls.Add(startVolLabel);
+            tab.Controls.Add(_startVolumeSlider);
+            tab.Controls.Add(_startVolLabel);
+            tab.Controls.Add(_stopBeepCheck);
+            tab.Controls.Add(stopVolLabel);
+            tab.Controls.Add(_stopVolumeSlider);
+            tab.Controls.Add(_stopVolLabel);
+            tab.Controls.Add(dictPauseLabel);
+            tab.Controls.Add(_dictationPauseNum);
+            y += 170;
+        }
         
         // IV Report Hotkey (hide in headless mode)
         var ivHotkeyLabel = CreateLabel("IV Report Hotkey:", 20, y, labelWidth);
@@ -388,8 +394,9 @@ public class SettingsForm : Form
         {
             Text = "Auto-update",
             Location = new Point(20, y),
-            ForeColor = Color.White,
-            AutoSize = true
+            ForeColor = App.IsHeadless ? Color.Gray : Color.White,
+            AutoSize = true,
+            Enabled = !App.IsHeadless // Disable auto-update in headless mode
         };
         tab.Controls.Add(_autoUpdateCheck);
 
@@ -422,17 +429,6 @@ public class SettingsForm : Form
             }
         };
         tab.Controls.Add(checkUpdatesBtn);
-        y += 35;
-
-        // Run at Startup
-        _runAtStartupCheck = new CheckBox
-        {
-            Text = "Run at Windows startup",
-            Location = new Point(20, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_runAtStartupCheck);
 
         return tab;
     }
@@ -1807,33 +1803,57 @@ Settings stored in: MosaicToolsSettings.json
         tab.Controls.Add(scrapeHint);
         y += 30;
 
-        // Show Clinical History checkbox (subset of Scrape Mosaic)
+        // Notification Box checkbox (master toggle, formerly "Show Clinical History")
         _showClinicalHistoryCheck = new CheckBox
         {
-            Text = "Show Clinical History",
+            Text = "Notification Box",
             Location = new Point(40, y), // Indented under Scrape Mosaic
             ForeColor = Color.White,
             AutoSize = true
         };
         tab.Controls.Add(_showClinicalHistoryCheck);
+        y += 25;
 
-        // Auto-fix checkbox on same line
-        _autoFixClinicalHistoryCheck = new CheckBox
+        var notificationHint = new Label
         {
-            Text = "auto-fix",
-            Location = new Point(_showClinicalHistoryCheck.Right + 20, y),
+            Text = "Floating window for clinical history and alerts (template/gender/stroke).",
+            Location = new Point(60, y),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(notificationHint);
+        y += 25;
+
+        // Always show clinical history checkbox (child of Notification Box)
+        _alwaysShowClinicalHistoryCheck = new CheckBox
+        {
+            Text = "Always show clinical history",
+            Location = new Point(60, y),
             ForeColor = Color.White,
             AutoSize = true
         };
-        tab.Controls.Add(_autoFixClinicalHistoryCheck);
+        _alwaysShowClinicalHistoryCheck.CheckedChanged += (s, e) => UpdateNotificationBoxStates();
+        tab.Controls.Add(_alwaysShowClinicalHistoryCheck);
         y += 25;
 
-        // Hide when no study checkbox
+        var alwaysShowHint = new Label
+        {
+            Text = "Unchecked = alerts-only mode (box hidden until alert).",
+            Location = new Point(80, y),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(alwaysShowHint);
+        y += 25;
+
+        // Hide when no study checkbox (child of Always show)
         _hideClinicalHistoryWhenNoStudyCheck = new CheckBox
         {
             Text = "Hide when no study open",
-            Location = new Point(60, y),
-            ForeColor = Color.Gray,
+            Location = new Point(80, y),
+            ForeColor = Color.White,
             AutoSize = true
         };
         _hideClinicalHistoryWhenNoStudyCheck.CheckedChanged += (s, e) =>
@@ -1844,22 +1864,33 @@ Settings stored in: MosaicToolsSettings.json
         tab.Controls.Add(_hideClinicalHistoryWhenNoStudyCheck);
         y += 25;
 
-        var clinicalHint = new Label
+        // Auto-paste checkbox (child of Always show)
+        _autoFixClinicalHistoryCheck = new CheckBox
         {
-            Text = "Click to paste into Mosaic. Auto-fix pastes automatically when malformed.\nYellow text = fixed version not yet in final report. White = matches report.",
-            Location = new Point(60, y),
-            Size = new Size(380, 28),
+            Text = "Auto-paste fixed history",
+            Location = new Point(80, y),
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_autoFixClinicalHistoryCheck);
+        y += 25;
+
+        var autoFixHint = new Label
+        {
+            Text = "Auto-pastes cleaned history when malformed.\nClick box to paste manually.",
+            Location = new Point(100, y),
+            AutoSize = true,
             ForeColor = Color.Gray,
             Font = new Font("Segoe UI", 8)
         };
-        tab.Controls.Add(clinicalHint);
+        tab.Controls.Add(autoFixHint);
         y += 35;
 
-        // Show Drafted Indicator checkbox (subset of Show Clinical History)
+        // Show Drafted Indicator checkbox (child of Always show)
         _showDraftedIndicatorCheck = new CheckBox
         {
             Text = "Indicate Drafted Status",
-            Location = new Point(60, y), // Indented further under Show Clinical History
+            Location = new Point(80, y),
             ForeColor = Color.White,
             AutoSize = true
         };
@@ -1868,57 +1899,132 @@ Settings stored in: MosaicToolsSettings.json
 
         var draftedHint = new Label
         {
-            Text = "Green border on clinical history when study is drafted.",
-            Location = new Point(80, y),
+            Text = "Green border when study is drafted.",
+            Location = new Point(100, y),
             AutoSize = true,
             ForeColor = Color.Gray,
             Font = new Font("Segoe UI", 8)
         };
         tab.Controls.Add(draftedHint);
+        y += 30;
+
+        // Alerts section header
+        var alertsLabel = new Label
+        {
+            Text = "Alerts (appear even in alerts-only mode):",
+            Location = new Point(60, y),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(200, 200, 200),
+            Font = new Font("Segoe UI", 9, FontStyle.Italic)
+        };
+        tab.Controls.Add(alertsLabel);
         y += 25;
 
-        // Show Template Mismatch checkbox (subset of Show Clinical History)
+        // Show Template Mismatch checkbox (alert)
         _showTemplateMismatchCheck = new CheckBox
         {
-            Text = "Warn on Template Mismatch",
-            Location = new Point(60, y), // Indented further under Show Clinical History
+            Text = "Template mismatch",
+            Location = new Point(80, y),
             ForeColor = Color.White,
             AutoSize = true
         };
         tab.Controls.Add(_showTemplateMismatchCheck);
-        y += 25;
 
-        var templateHint = new Label
+        var templateColorLabel = new Label
         {
-            Text = "Red border when study description doesn't match the report template.",
-            Location = new Point(80, y),
+            Text = "(red border)",
+            Location = new Point(_showTemplateMismatchCheck.Right + 5, y + 2),
             AutoSize = true,
-            ForeColor = Color.Gray,
+            ForeColor = Color.FromArgb(220, 100, 100),
             Font = new Font("Segoe UI", 8)
         };
-        tab.Controls.Add(templateHint);
-        y += 30;
+        tab.Controls.Add(templateColorLabel);
+        y += 25;
 
-        // Gender Check checkbox (subset of Show Clinical History)
+        // Gender Check checkbox (alert)
         _genderCheckEnabledCheck = new CheckBox
         {
-            Text = "Gender Check",
-            Location = new Point(60, y), // Indented further under Show Clinical History
+            Text = "Gender check",
+            Location = new Point(80, y),
             ForeColor = Color.White,
             AutoSize = true
         };
         tab.Controls.Add(_genderCheckEnabledCheck);
+
+        var genderColorLabel = new Label
+        {
+            Text = "(flashing red)",
+            Location = new Point(_genderCheckEnabledCheck.Right + 5, y + 2),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(255, 100, 100),
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(genderColorLabel);
         y += 25;
 
-        var genderCheckHint = new Label
+        // Stroke Detection checkbox (alert)
+        _strokeDetectionEnabledCheck = new CheckBox
         {
-            Text = "Warn if report has terms that don't match patient gender.",
+            Text = "Stroke detection",
             Location = new Point(80, y),
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_strokeDetectionEnabledCheck);
+
+        var strokeColorLabel = new Label
+        {
+            Text = "(purple border)",
+            Location = new Point(_strokeDetectionEnabledCheck.Right + 5, y + 2),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(180, 130, 220),
+            Font = new Font("Segoe UI", 8)
+        };
+        tab.Controls.Add(strokeColorLabel);
+        y += 25;
+
+        // Also use clinical history checkbox (subset of Stroke Detection)
+        _strokeDetectionUseClinicalHistoryCheck = new CheckBox
+        {
+            Text = "Also use clinical history keywords",
+            Location = new Point(100, y),
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_strokeDetectionUseClinicalHistoryCheck);
+        y += 25;
+
+        var strokeHistoryHint = new Label
+        {
+            Text = "Keywords: stroke, CVA, TIA, etc.",
+            Location = new Point(120, y),
             AutoSize = true,
             ForeColor = Color.Gray,
             Font = new Font("Segoe UI", 8)
         };
-        tab.Controls.Add(genderCheckHint);
+        tab.Controls.Add(strokeHistoryHint);
+        y += 25;
+
+        // Click to create critical note checkbox (subset of Stroke Detection)
+        _strokeClickToCreateNoteCheck = new CheckBox
+        {
+            Text = "Click to create critical note",
+            Location = new Point(100, y),
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_strokeClickToCreateNoteCheck);
+        y += 25;
+
+        // Auto-create on Process Report checkbox (subset of Stroke Detection)
+        _strokeAutoCreateNoteCheck = new CheckBox
+        {
+            Text = "Auto-create on Process Report",
+            Location = new Point(100, y),
+            ForeColor = Color.White,
+            AutoSize = true
+        };
+        tab.Controls.Add(_strokeAutoCreateNoteCheck);
         y += 30;
 
         // Show Impression checkbox (subset of Scrape Mosaic)
@@ -2033,6 +2139,7 @@ Settings stored in: MosaicToolsSettings.json
         _scrollToBottomCheck.CheckedChanged += (_, _) => UpdateThresholdStates();
         _scrapeMosaicCheck.CheckedChanged += (_, _) => UpdateThresholdStates();
         _showClinicalHistoryCheck.CheckedChanged += (_, _) => UpdateThresholdStates();
+        _strokeDetectionEnabledCheck.CheckedChanged += (_, _) => UpdateNotificationBoxStates();
 
         // Enforce logical constraints (T1 < T2 < T3)
         // Using explicit updates to ensure propagation
@@ -2100,12 +2207,28 @@ Settings stored in: MosaicToolsSettings.json
         _showClinicalHistoryCheck.Enabled = _scrapeMosaicCheck.Checked;
         _showImpressionCheck.Enabled = _scrapeMosaicCheck.Checked;
 
-        // Drafted indicator, template mismatch, gender check, and auto-fix depend on show clinical history being enabled
-        bool clinicalHistoryEnabled = _scrapeMosaicCheck.Checked && _showClinicalHistoryCheck.Checked;
-        _autoFixClinicalHistoryCheck.Enabled = clinicalHistoryEnabled;
-        _showDraftedIndicatorCheck.Enabled = clinicalHistoryEnabled;
-        _showTemplateMismatchCheck.Enabled = clinicalHistoryEnabled;
-        _genderCheckEnabledCheck.Enabled = clinicalHistoryEnabled;
+        // Update notification box states
+        UpdateNotificationBoxStates();
+    }
+
+    private void UpdateNotificationBoxStates()
+    {
+        bool notificationBoxEnabled = _scrapeMosaicCheck.Checked && _showClinicalHistoryCheck.Checked;
+        bool alwaysShowEnabled = notificationBoxEnabled && _alwaysShowClinicalHistoryCheck.Checked;
+
+        // "Always show" and its children depend on notification box being enabled
+        _alwaysShowClinicalHistoryCheck.Enabled = notificationBoxEnabled;
+
+        // These settings only make sense in "always show" mode
+        _hideClinicalHistoryWhenNoStudyCheck.Enabled = alwaysShowEnabled;
+        _autoFixClinicalHistoryCheck.Enabled = alwaysShowEnabled;
+        _showDraftedIndicatorCheck.Enabled = alwaysShowEnabled;
+
+        // Alerts are enabled when notification box is enabled (regardless of always-show)
+        _showTemplateMismatchCheck.Enabled = notificationBoxEnabled;
+        _genderCheckEnabledCheck.Enabled = notificationBoxEnabled;
+        _strokeDetectionEnabledCheck.Enabled = notificationBoxEnabled;
+        _strokeDetectionUseClinicalHistoryCheck.Enabled = notificationBoxEnabled && _strokeDetectionEnabledCheck.Checked;
     }
 
     private TabPage CreateTemplatesTab()
@@ -2672,8 +2795,7 @@ Settings stored in: MosaicToolsSettings.json
         _indicatorCheck.Checked = _config.IndicatorEnabled;
         _autoStopCheck.Checked = _config.AutoStopDictation;
         _deadManCheck.Checked = _config.DeadManSwitch;
-        _autoUpdateCheck.Checked = _config.AutoUpdateEnabled;
-        _runAtStartupCheck.Checked = NativeWindows.GetRunAtStartup(); // Read from registry, not config
+        _autoUpdateCheck.Checked = App.IsHeadless ? false : _config.AutoUpdateEnabled;
         _hideIndicatorWhenNoStudyCheck.Checked = _config.HideIndicatorWhenNoStudy;
         _criticalTemplateBox.Text = _config.CriticalFindingsTemplate;
         _seriesTemplateBox.Text = _config.SeriesImageTemplate;
@@ -2685,11 +2807,16 @@ Settings stored in: MosaicToolsSettings.json
         _scrapeMosaicCheck.Checked = _config.ScrapeMosaicEnabled;
         _scrapeIntervalUpDown.Value = Math.Clamp(_config.ScrapeIntervalSeconds, 1, 30);
         _showClinicalHistoryCheck.Checked = _config.ShowClinicalHistory;
+        _alwaysShowClinicalHistoryCheck.Checked = _config.AlwaysShowClinicalHistory;
         _hideClinicalHistoryWhenNoStudyCheck.Checked = _config.HideClinicalHistoryWhenNoStudy;
         _autoFixClinicalHistoryCheck.Checked = _config.AutoFixClinicalHistory;
         _showDraftedIndicatorCheck.Checked = _config.ShowDraftedIndicator;
         _showTemplateMismatchCheck.Checked = _config.ShowTemplateMismatch;
         _genderCheckEnabledCheck.Checked = _config.GenderCheckEnabled;
+        _strokeDetectionEnabledCheck.Checked = _config.StrokeDetectionEnabled;
+        _strokeDetectionUseClinicalHistoryCheck.Checked = _config.StrokeDetectionUseClinicalHistory;
+        _strokeClickToCreateNoteCheck.Checked = _config.StrokeClickToCreateNote;
+        _strokeAutoCreateNoteCheck.Checked = _config.StrokeAutoCreateNote;
         _showImpressionCheck.Checked = _config.ShowImpression;
         _scrollThreshold1.Value = _config.ScrollThreshold1;
         _scrollThreshold2.Value = _config.ScrollThreshold2;
@@ -3215,9 +3342,8 @@ You can back up this file or copy it to other workstations.";
         _config.IndicatorEnabled = _indicatorCheck.Checked;
         _config.AutoStopDictation = _autoStopCheck.Checked;
         _config.DeadManSwitch = _deadManCheck.Checked;
-        _config.AutoUpdateEnabled = _autoUpdateCheck.Checked;
+        _config.AutoUpdateEnabled = App.IsHeadless ? false : _autoUpdateCheck.Checked;
         _config.HideIndicatorWhenNoStudy = _hideIndicatorWhenNoStudyCheck.Checked;
-        NativeWindows.SetRunAtStartup(_runAtStartupCheck.Checked); // Write to registry
         _config.CriticalFindingsTemplate = _criticalTemplateBox.Text.Trim();
         _config.SeriesImageTemplate = _seriesTemplateBox.Text.Trim();
         
@@ -3228,11 +3354,16 @@ You can back up this file or copy it to other workstations.";
         _config.ScrapeMosaicEnabled = _scrapeMosaicCheck.Checked;
         _config.ScrapeIntervalSeconds = (int)_scrapeIntervalUpDown.Value;
         _config.ShowClinicalHistory = _showClinicalHistoryCheck.Checked;
+        _config.AlwaysShowClinicalHistory = _alwaysShowClinicalHistoryCheck.Checked;
         _config.HideClinicalHistoryWhenNoStudy = _hideClinicalHistoryWhenNoStudyCheck.Checked;
         _config.AutoFixClinicalHistory = _autoFixClinicalHistoryCheck.Checked;
         _config.ShowDraftedIndicator = _showDraftedIndicatorCheck.Checked;
         _config.ShowTemplateMismatch = _showTemplateMismatchCheck.Checked;
         _config.GenderCheckEnabled = _genderCheckEnabledCheck.Checked;
+        _config.StrokeDetectionEnabled = _strokeDetectionEnabledCheck.Checked;
+        _config.StrokeDetectionUseClinicalHistory = _strokeDetectionUseClinicalHistoryCheck.Checked;
+        _config.StrokeClickToCreateNote = _strokeClickToCreateNoteCheck.Checked;
+        _config.StrokeAutoCreateNote = _strokeAutoCreateNoteCheck.Checked;
         _config.ShowImpression = _showImpressionCheck.Checked;
         _config.ScrollThreshold1 = (int)_scrollThreshold1.Value;
         _config.ScrollThreshold2 = (int)_scrollThreshold2.Value;

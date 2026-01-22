@@ -37,6 +37,15 @@ public class AutomationService : IDisposable
     // Last scraped patient gender ("Male", "Female", or null if unknown)
     public string? LastPatientGender { get; private set; }
 
+    // Last extracted Clario Priority (e.g., "STAT", "Stroke", "Routine")
+    public string? LastClarioPriority { get; private set; }
+
+    // Last extracted Clario Class (e.g., "Emergency", "Inpatient", "Outpatient")
+    public string? LastClarioClass { get; private set; }
+
+    // Whether the current study is detected as a Stroke study
+    public bool IsStrokeStudy { get; private set; }
+
     // Debug flag
     private bool _hasLoggedDebugInfo = false;
     
@@ -261,9 +270,448 @@ public class AutomationService : IDisposable
         catch { }
         return DateTime.MinValue;
     }
-    
+
+    #region Clario Priority/Class Extraction (Stroke Detection)
+
+    /// <summary>
+    /// Data extracted from a single UI element during tree traversal.
+    /// </summary>
+    private class ClarioElementData
+    {
+        public int Depth { get; set; }
+        public string AutomationId { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string Text { get; set; } = "";
+    }
+
+    /// <summary>
+    /// Extracted Priority and Class data from Clario.
+    /// </summary>
+    public class ClarioPriorityData
+    {
+        public string Priority { get; set; } = "";
+        public string Class { get; set; } = "";
+        public string Accession { get; set; } = "";
+    }
+
+    /// <summary>
+    /// Recursively collect UI elements from the Clario window up to a max depth.
+    /// </summary>
+    private List<ClarioElementData> GetClarioElementsRecursive(AutomationElement element, int maxDepth)
+    {
+        var elements = new List<ClarioElementData>();
+        CollectClarioElements(element, 0, maxDepth, elements);
+        return elements;
+    }
+
+    private void CollectClarioElements(AutomationElement element, int depth, int maxDepth, List<ClarioElementData> elements)
+    {
+        if (depth > maxDepth) return;
+
+        try
+        {
+            string automationId = element.Properties.AutomationId.ValueOrDefault ?? "";
+            string name = element.Name ?? "";
+            string text = "";
+
+            // Try to get text from Value pattern (for input fields)
+            if (element.Patterns.Value.IsSupported)
+            {
+                text = element.Patterns.Value.Pattern.Value.ValueOrDefault ?? "";
+            }
+
+            if (!string.IsNullOrEmpty(automationId) ||
+                !string.IsNullOrEmpty(name) ||
+                !string.IsNullOrEmpty(text))
+            {
+                elements.Add(new ClarioElementData
+                {
+                    Depth = depth,
+                    AutomationId = automationId.Trim(),
+                    Name = name.Trim(),
+                    Text = text.Trim()
+                });
+            }
+
+            // Recurse into children
+            foreach (var child in element.FindAllChildren())
+            {
+                CollectClarioElements(child, depth + 1, maxDepth, elements);
+            }
+        }
+        catch { /* Element may become stale */ }
+    }
+
+    /// <summary>
+    /// Extract Priority, Class, and Accession from collected elements.
+    /// </summary>
+    private ClarioPriorityData ExtractPriorityDataFromElements(List<ClarioElementData> elements)
+    {
+        var data = new ClarioPriorityData();
+
+        for (int i = 0; i < elements.Count; i++)
+        {
+            var elem = elements[i];
+
+            // PRIORITY: Look for automation ID or name containing "priority"
+            if (string.IsNullOrEmpty(data.Priority))
+            {
+                if (elem.AutomationId.Contains("priority", StringComparison.OrdinalIgnoreCase) ||
+                    (elem.Name.Contains("priority", StringComparison.OrdinalIgnoreCase) &&
+                     elem.Name.Contains(":")))
+                {
+                    data.Priority = FindNextClarioValue(elements, i);
+                }
+            }
+
+            // CLASS: Look for "class" but NOT "priority" (avoid "priority class")
+            if (string.IsNullOrEmpty(data.Class))
+            {
+                if ((elem.AutomationId.Contains("class", StringComparison.OrdinalIgnoreCase) &&
+                     !elem.AutomationId.Contains("priority", StringComparison.OrdinalIgnoreCase)) ||
+                    (elem.Name.Contains("class", StringComparison.OrdinalIgnoreCase) &&
+                     elem.Name.Contains(":") &&
+                     !elem.Name.Contains("priority", StringComparison.OrdinalIgnoreCase)))
+                {
+                    data.Class = FindNextClarioValue(elements, i);
+                }
+            }
+
+            // ACCESSION
+            if (string.IsNullOrEmpty(data.Accession))
+            {
+                if (elem.AutomationId.Contains("accession", StringComparison.OrdinalIgnoreCase) ||
+                    (elem.Name.Contains("accession", StringComparison.OrdinalIgnoreCase) &&
+                     elem.Name.Contains(":")))
+                {
+                    data.Accession = FindNextClarioValue(elements, i);
+                }
+            }
+
+            // Stop early if we found all three
+            if (!string.IsNullOrEmpty(data.Priority) &&
+                !string.IsNullOrEmpty(data.Class) &&
+                !string.IsNullOrEmpty(data.Accession))
+                break;
+        }
+
+        return data;
+    }
+
+    /// <summary>
+    /// Find the next non-label value after a label element.
+    /// </summary>
+    private string FindNextClarioValue(List<ClarioElementData> elements, int startIndex)
+    {
+        string[] skipValues = { "priority", "class", "accession" };
+
+        for (int j = startIndex + 1; j < Math.Min(startIndex + 10, elements.Count); j++)
+        {
+            var next = elements[j];
+
+            // Check Name property first
+            if (!string.IsNullOrEmpty(next.Name) &&
+                !next.Name.Contains(":") &&
+                !skipValues.Any(s => next.Name.Equals(s, StringComparison.OrdinalIgnoreCase)))
+            {
+                return next.Name;
+            }
+
+            // Fallback to Text property
+            if (!string.IsNullOrEmpty(next.Text) &&
+                !next.Text.Contains(":") &&
+                !skipValues.Any(s => next.Text.Equals(s, StringComparison.OrdinalIgnoreCase)))
+            {
+                return next.Text;
+            }
+        }
+        return "";
+    }
+
+    /// <summary>
+    /// Extract Priority and Class from Clario window.
+    /// Uses staggered depth search (12, 18, 25) to find data without over-traversing.
+    /// </summary>
+    /// <param name="targetAccession">Optional accession to verify match</param>
+    /// <returns>Extracted data or null if not found</returns>
+    public ClarioPriorityData? ExtractClarioPriorityAndClass(string? targetAccession = null)
+    {
+        var chromeWindow = FindClarioWindow();
+        if (chromeWindow == null)
+        {
+            Logger.Trace("ExtractClarioPriorityAndClass: Clario window not found");
+            return null;
+        }
+
+        var data = new ClarioPriorityData();
+        int[] searchDepths = { 12, 18, 25 };  // Staggered search
+
+        foreach (var maxDepth in searchDepths)
+        {
+            try
+            {
+                var elements = GetClarioElementsRecursive(chromeWindow, maxDepth);
+                var extracted = ExtractPriorityDataFromElements(elements);
+
+                // Merge newly found values
+                if (string.IsNullOrEmpty(data.Priority)) data.Priority = extracted.Priority;
+                if (string.IsNullOrEmpty(data.Class)) data.Class = extracted.Class;
+                if (string.IsNullOrEmpty(data.Accession)) data.Accession = extracted.Accession;
+
+                // Stop if we have Priority (minimum needed for stroke detection)
+                if (!string.IsNullOrEmpty(data.Priority))
+                {
+                    Logger.Trace($"ExtractClarioPriorityAndClass: Found Priority='{data.Priority}', Class='{data.Class}', Accession='{data.Accession}' at depth {maxDepth}");
+                    break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"ExtractClarioPriorityAndClass: Error at depth {maxDepth}: {ex.Message}");
+            }
+        }
+
+        // Verify accession if provided
+        if (targetAccession != null &&
+            !string.IsNullOrEmpty(data.Accession) &&
+            !data.Accession.Equals(targetAccession, StringComparison.OrdinalIgnoreCase))
+        {
+            Logger.Trace($"ExtractClarioPriorityAndClass: Accession mismatch - expected '{targetAccession}', got '{data.Accession}'");
+            return null;
+        }
+
+        // Update stored values
+        LastClarioPriority = data.Priority;
+        LastClarioClass = data.Class;
+
+        // Check for stroke
+        IsStrokeStudy = CheckIfStrokeStudy(data.Priority, data.Class);
+
+        if (string.IsNullOrEmpty(data.Priority) && string.IsNullOrEmpty(data.Class))
+        {
+            Logger.Trace("ExtractClarioPriorityAndClass: No Priority or Class found");
+            return null;
+        }
+
+        return data;
+    }
+
+    /// <summary>
+    /// Check if the study is a Stroke study based on Priority and Class.
+    /// </summary>
+    private bool CheckIfStrokeStudy(string? priority, string? patientClass)
+    {
+        // Check Priority field for "Stroke"
+        if (!string.IsNullOrEmpty(priority) &&
+            priority.Contains("Stroke", StringComparison.OrdinalIgnoreCase))
+        {
+            Logger.Trace($"CheckIfStrokeStudy: Detected STROKE in Priority field: '{priority}'");
+            return true;
+        }
+
+        // Check Class field for "Stroke" (less common but possible)
+        if (!string.IsNullOrEmpty(patientClass) &&
+            patientClass.Contains("Stroke", StringComparison.OrdinalIgnoreCase))
+        {
+            Logger.Trace($"CheckIfStrokeStudy: Detected STROKE in Class field: '{patientClass}'");
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Clear the stroke detection state (call when study changes).
+    /// </summary>
+    public void ClearStrokeState()
+    {
+        LastClarioPriority = null;
+        LastClarioClass = null;
+        IsStrokeStudy = false;
+    }
+
+    /// <summary>
+    /// Creates a Critical Results Communication Note in Clario.
+    /// Steps: Click "Create" button → Click "Communication Note" → Click "Submit"
+    /// </summary>
+    public bool CreateCriticalCommunicationNote()
+    {
+        var clarioWindow = FindClarioWindow();
+        if (clarioWindow == null)
+        {
+            Logger.Trace("CreateCriticalCommunicationNote: Clario window not found");
+            return false;
+        }
+
+        try
+        {
+            // Step 1: Find and click "Create" button
+            FlaUI.Core.AutomationElements.AutomationElement? createBtn = null;
+
+            // Try finding "Create" element (any control type)
+            createBtn = clarioWindow.FindFirstDescendant(cf =>
+                cf.ByName("Create", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+
+            if (createBtn != null)
+            {
+                Logger.Trace($"CreateCriticalCommunicationNote: Found Create - Type={createBtn.ControlType}, Name='{createBtn.Name}'");
+            }
+            else
+            {
+                // Log elements to help debug
+                Logger.Trace("CreateCriticalCommunicationNote: Create button not found. Logging elements...");
+                var allElements = clarioWindow.FindAllDescendants();
+                var namedElements = new System.Collections.Generic.List<string>();
+                foreach (var elem in allElements)
+                {
+                    try
+                    {
+                        var name = elem.Name;
+                        if (!string.IsNullOrEmpty(name) && name.Length < 50)
+                            namedElements.Add($"'{name}'({elem.ControlType})");
+                    }
+                    catch { }
+                }
+                Logger.Trace($"CreateCriticalCommunicationNote: Elements ({namedElements.Count}): {string.Join(", ", namedElements.Take(50))}");
+                return false;
+            }
+
+            // Click Create button
+            ClickElement(createBtn, "Create");
+            Thread.Sleep(200); // Wait for menu/dialog to appear
+
+            // Step 2: Find and click "Communication Note" option from the menu
+            // The menu shows as a Group containing items like "Communication Note", "Patient Note", etc.
+            // We need to find the specific item, not the container Group
+            FlaUI.Core.AutomationElements.AutomationElement? commNoteBtn = null;
+
+            // Re-search the window for the menu items
+            var menuElements = clarioWindow.FindAllDescendants();
+
+            // Look for exact match "Communication Note" (not a group containing multiple items)
+            foreach (var elem in menuElements)
+            {
+                try
+                {
+                    var name = elem.Name?.Trim();
+                    if (name == "Communication Note")
+                    {
+                        commNoteBtn = elem;
+                        Logger.Trace($"CreateCriticalCommunicationNote: Found exact match - Type={elem.ControlType}, Name='{elem.Name}'");
+                        break;
+                    }
+                }
+                catch { }
+            }
+
+            // If not found, try desktop (popup might be separate window)
+            if (commNoteBtn == null)
+            {
+                var desktop = _automation.GetDesktop();
+                var desktopElements = desktop.FindAllDescendants();
+                foreach (var elem in desktopElements)
+                {
+                    try
+                    {
+                        var name = elem.Name?.Trim();
+                        if (name == "Communication Note")
+                        {
+                            commNoteBtn = elem;
+                            Logger.Trace($"CreateCriticalCommunicationNote: Found on desktop - Type={elem.ControlType}, Name='{elem.Name}'");
+                            break;
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            // If still not found, log what we see for debugging
+            if (commNoteBtn == null)
+            {
+                Logger.Trace("CreateCriticalCommunicationNote: Logging menu items after Create click...");
+                var menuItems = new System.Collections.Generic.List<string>();
+                foreach (var elem in menuElements)
+                {
+                    try
+                    {
+                        var name = elem.Name;
+                        if (!string.IsNullOrEmpty(name) &&
+                            (name.Contains("Note", StringComparison.OrdinalIgnoreCase) ||
+                             name.Contains("Communication", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            menuItems.Add($"'{name}'({elem.ControlType})");
+                        }
+                    }
+                    catch { }
+                }
+                Logger.Trace($"CreateCriticalCommunicationNote: Note-related elements: {string.Join("; ", menuItems.Take(20))}");
+                Logger.Trace("CreateCriticalCommunicationNote: Communication Note option not found after clicking Create");
+                return false;
+            }
+
+            // Click Communication Note
+            ClickElement(commNoteBtn, "Communication Note");
+            Thread.Sleep(300); // Wait for dialog to appear
+
+            // Step 3: Find and click "Submit" button
+            FlaUI.Core.AutomationElements.AutomationElement? submitBtn = null;
+
+            submitBtn = clarioWindow.FindFirstDescendant(cf =>
+                cf.ByName("Submit", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+
+            if (submitBtn == null)
+            {
+                // Search desktop for popup dialogs
+                var desktop = _automation.GetDesktop();
+                submitBtn = desktop.FindFirstDescendant(cf =>
+                    cf.ByName("Submit", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+            }
+
+            if (submitBtn != null)
+            {
+                Logger.Trace($"CreateCriticalCommunicationNote: Found Submit - Type={submitBtn.ControlType}, Name='{submitBtn.Name}'");
+            }
+            else
+            {
+                Logger.Trace("CreateCriticalCommunicationNote: Submit button not found");
+                return false;
+            }
+
+            // Click Submit
+            ClickElement(submitBtn, "Submit");
+
+            Logger.Trace("CreateCriticalCommunicationNote: SUCCESS - note created");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CreateCriticalCommunicationNote error: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Helper to click an element using Invoke pattern or Click().
+    /// </summary>
+    private void ClickElement(FlaUI.Core.AutomationElements.AutomationElement element, string name)
+    {
+        var invokePattern = element.Patterns.Invoke.PatternOrDefault;
+        if (invokePattern != null)
+        {
+            invokePattern.Invoke();
+            Logger.Trace($"CreateCriticalCommunicationNote: Clicked {name} via Invoke");
+        }
+        else
+        {
+            element.Click();
+            Logger.Trace($"CreateCriticalCommunicationNote: Clicked {name} via Click()");
+        }
+    }
+
     #endregion
-    
+
+    #endregion
+
     #region Mosaic Methods
     
     /// <summary>
