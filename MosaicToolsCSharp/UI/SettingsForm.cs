@@ -60,6 +60,12 @@ public class SettingsForm : Form
     private TextBox _rvuCounterPathBox = null!;
     private Label _rvuCounterStatusLabel = null!;
     private CheckBox _showReportChangesCheck = null!;
+    private CheckBox _pickListsEnabledCheck = null!;
+    private CheckBox _pickListSkipSingleMatchCheck = null!;
+    private Label _pickListsCountLabel = null!;
+    private Label? _pickListsActionLabel;
+    private TextBox? _pickListsActionHotkey;
+    private ComboBox? _pickListsActionMic;
     private Panel _reportChangesColorPanel = null!;
     private TrackBar _reportChangesAlphaSlider = null!;
     private Label _reportChangesAlphaLabel = null!;
@@ -78,7 +84,7 @@ public class SettingsForm : Form
     private void InitializeUI()
     {
         var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
-        var versionStr = version != null ? $" v{version.Major}.{version.Minor}" : "";
+        var versionStr = version != null ? $" v{version.Major}.{version.Minor}.{version.Build}" : "";
         Text = $"Mosaic Tools Settings{versionStr}";
         Size = new Size(500, 550);
         StartPosition = FormStartPosition.Manual;
@@ -452,45 +458,59 @@ public class SettingsForm : Form
         foreach (var action in Actions.All)
         {
             if (action == Actions.None) continue;
-            
+
+            // Check if this is the Pick Lists action (we'll create but maybe hide it)
+            var isPickListAction = action == Actions.ShowPickLists;
+            var hidePickList = isPickListAction && !_config.PickListsEnabled;
+
             var lbl = CreateLabel(action, 20, y, 150);
+            lbl.Visible = !hidePickList;
             tab.Controls.Add(lbl);
-            
+
             var hotkeyBox = new TextBox
             {
-                Name = $"hotkey_{action}",
                 Location = new Point(180, y),
                 Width = 120,
                 BackColor = Color.FromArgb(60, 60, 60),
                 ForeColor = Color.White,
                 Tag = action,
                 ReadOnly = true,
-                Cursor = Cursors.Hand
+                Cursor = Cursors.Hand,
+                Visible = !hidePickList
             };
             hotkeyBox.Text = _config.ActionMappings.GetValueOrDefault(action)?.Hotkey ?? "";
             SetupHotkeyCapture(hotkeyBox);
-            
+
             // Hide hotkey in headless mode
             if (!App.IsHeadless)
             {
                 tab.Controls.Add(hotkeyBox);
             }
-            
+
             var micCombo = new ComboBox
             {
-                Name = $"mic_{action}",
                 Location = new Point(App.IsHeadless ? 180 : 310, y),
                 Width = 140,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(60, 60, 60),
                 ForeColor = Color.White,
-                Tag = action
+                Tag = action,
+                Visible = !hidePickList
             };
             micCombo.Items.Add("");
             micCombo.Items.AddRange(HidService.AllButtons);
             var currentMic = _config.ActionMappings.GetValueOrDefault(action)?.MicButton ?? "";
             micCombo.SelectedItem = micCombo.Items.Contains(currentMic) ? currentMic : "";
             tab.Controls.Add(micCombo);
+
+            // Store references to Pick Lists action controls for dynamic show/hide
+            if (isPickListAction)
+            {
+                _pickListsActionLabel = lbl;
+                _pickListsActionHotkey = hotkeyBox;
+                _pickListsActionMic = micCombo;
+            }
+
             y += 30;
         }
         
@@ -1190,7 +1210,85 @@ Settings stored in: MosaicToolsSettings.json
         scrollPanel.Controls.Add(warningLabel);
         y += 35;
 
-        // RVUCounter section header
+        // ========== PICK LISTS SECTION (first for easier testing) ==========
+        var pickListsHeader = new Label
+        {
+            Text = "Pick Lists",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 10, FontStyle.Bold)
+        };
+        scrollPanel.Controls.Add(pickListsHeader);
+        y += 25;
+
+        // Enable Pick Lists checkbox
+        _pickListsEnabledCheck = new CheckBox
+        {
+            Text = "Enable Pick Lists",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Checked = _config.PickListsEnabled
+        };
+        _pickListsEnabledCheck.CheckedChanged += (s, e) => UpdatePickListStates();
+        scrollPanel.Controls.Add(_pickListsEnabledCheck);
+        y += 25;
+
+        // Skip single match checkbox
+        _pickListSkipSingleMatchCheck = new CheckBox
+        {
+            Text = "Skip list selector when only one matches",
+            Location = new Point(40, y),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Checked = _config.PickListSkipSingleMatch
+        };
+        scrollPanel.Controls.Add(_pickListSkipSingleMatchCheck);
+        y += 25;
+
+        // Edit Pick Lists button
+        var editPickListsBtn = new Button
+        {
+            Text = "Edit Pick Lists...",
+            Location = new Point(20, y),
+            Size = new Size(130, 27),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        editPickListsBtn.FlatAppearance.BorderColor = Color.Gray;
+        editPickListsBtn.Click += OnEditPickListsClick;
+        scrollPanel.Controls.Add(editPickListsBtn);
+
+        // Pick lists count label
+        _pickListsCountLabel = new Label
+        {
+            Text = GetPickListsCountText(),
+            Location = new Point(160, y + 5),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        scrollPanel.Controls.Add(_pickListsCountLabel);
+        y += 35;
+
+        // Hint about assigning hotkey
+        var pickListsHint = new Label
+        {
+            Text = "Assign \"Show Pick Lists\" action to a hotkey or mic button in the Keys tab.",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(120, 120, 120),
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        };
+        scrollPanel.Controls.Add(pickListsHint);
+        y += 35;
+
+        UpdatePickListStates();
+
+        // ========== RVUCOUNTER SECTION ==========
         var rvuHeader = new Label
         {
             Text = "RVUCounter Integration",
@@ -1487,6 +1585,47 @@ Settings stored in: MosaicToolsSettings.json
             _reportChangesPreview.SelectionBackColor = highlightColor;
             _reportChangesPreview.Select(0, 0);
         }
+    }
+
+    private void OnEditPickListsClick(object? sender, EventArgs e)
+    {
+        try
+        {
+            var editor = new PickListEditorForm(_config);
+            var result = editor.ShowDialog(this);
+            if (result == DialogResult.OK)
+            {
+                // Config was saved in the editor form
+                _pickListsCountLabel.Text = GetPickListsCountText();
+            }
+            editor.Dispose();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Error opening Pick List Editor:\n{ex.Message}\n\n{ex.StackTrace}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void UpdatePickListStates()
+    {
+        bool enabled = _pickListsEnabledCheck.Checked;
+        _pickListSkipSingleMatchCheck.Enabled = enabled;
+
+        // Toggle visibility of Pick Lists action controls in the Keys tab
+        if (_pickListsActionLabel != null) _pickListsActionLabel.Visible = enabled;
+        if (_pickListsActionHotkey != null) _pickListsActionHotkey.Visible = enabled;
+        if (_pickListsActionMic != null) _pickListsActionMic.Visible = enabled;
+    }
+
+    private string GetPickListsCountText()
+    {
+        var count = _config.PickLists.Count;
+        var enabledCount = _config.PickLists.Count(pl => pl.Enabled);
+        if (count == 0)
+            return "No pick lists configured";
+        if (enabledCount == count)
+            return $"{count} pick list{(count == 1 ? "" : "s")} configured";
+        return $"{enabledCount} of {count} pick list{(count == 1 ? "" : "s")} enabled";
     }
 
     private void OnFindRvuCounterClick(object? sender, EventArgs e)
@@ -2570,6 +2709,10 @@ Settings stored in: MosaicToolsSettings.json
         }
         _reportChangesAlphaSlider.Value = Math.Clamp(_config.ReportChangesAlpha, 5, 100);
         _reportChangesAlphaLabel.Text = $"{_reportChangesAlphaSlider.Value}%";
+        _pickListsEnabledCheck.Checked = _config.PickListsEnabled;
+        _pickListSkipSingleMatchCheck.Checked = _config.PickListSkipSingleMatch;
+        _pickListsCountLabel.Text = GetPickListsCountText();
+        UpdatePickListStates();
         if (!string.IsNullOrEmpty(_config.RvuCounterPath))
         {
             if (File.Exists(_config.RvuCounterPath))
@@ -3114,6 +3257,8 @@ You can back up this file or copy it to other workstations.";
         _config.ShowReportChanges = _showReportChangesCheck.Checked;
         _config.ReportChangesColor = ColorTranslator.ToHtml(_reportChangesColorPanel.BackColor);
         _config.ReportChangesAlpha = _reportChangesAlphaSlider.Value;
+        _config.PickListsEnabled = _pickListsEnabledCheck.Checked;
+        _config.PickListSkipSingleMatch = _pickListSkipSingleMatchCheck.Checked;
 
         // Position
         _config.SettingsX = this.Location.X;

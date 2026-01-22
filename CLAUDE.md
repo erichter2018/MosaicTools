@@ -13,6 +13,50 @@ If making significant changes to the codebase structure, update the Architecture
 
 ---
 
+## PENDING: Albert Song Macro Issue (2026-01-21)
+
+**User:** Albert Song (albert.song) on RPMXWRS130RR
+**Mosaic Version:** 2.0.2.0
+**Issue:** Macros only partially triggering - only 1 of 4 macros matches each study
+
+### Root Cause Identified
+The **study description is always empty** (`''`). From his trace log:
+```
+Macros: Queuing for study '' (4 macros configured)
+Macros: 1 macro(s) match study ''
+```
+
+- Accession IS found (e.g., `25826626CHS`) ✓
+- Gender IS found (`Female`) ✓
+- ProseMirror/report content IS found ✓
+- **Description is NOT found** ✗
+
+The code in `AutomationService.cs:624-628` looks for a Text element starting with `"Description:"` but it's not being found on his system. Only macros with empty study filter work.
+
+### Diagnostic Tool Created
+Created `MosaicDiagnostic` project in `MosaicTools/MosaicDiagnostic/` to investigate.
+
+**Problem:** Diagnostic tool found 0 elements inside Mosaic window, even though MosaicTools scraping works on his machine. Likely cause was missing `[STAThread]` attribute (required for COM-based UI Automation in console apps).
+
+**v3 diagnostic ready:** `C:\Users\erik.richter\Desktop\MosaicDiagnostic.zip`
+- Added `[STAThread]`
+- Brings Mosaic to foreground
+- Shows raw element count by type
+- Lists all Text elements with flags for Description/Study/Exam keywords
+
+### Next Steps (when Albert tests)
+1. Have him run v3 diagnostic with a study loaded
+2. Check if elements are now visible
+3. Look for how Description is labeled in his Mosaic (might be "Study Description:", "Exam Type:", etc.)
+4. Update `AutomationService.cs` to handle alternate labeling
+
+### Files
+- Trace log: `C:\Users\erik.richter\Downloads\mosaic_setup_trace (1).txt`
+- Diagnostic v1: `C:\Users\erik.richter\Downloads\mosaic_diagnostic_20260121_160148.txt` (showed 0 elements)
+- Diagnostic v3 (pending test): `C:\Users\erik.richter\Desktop\MosaicDiagnostic.zip`
+
+---
+
 ## Build Instructions
 
 **IMPORTANT: When user says "build" or "rebuild", OR when you finish making code changes, just run the full build command immediately without asking for confirmation. This includes taskkill, compile, and starting the app - do it all automatically.**
@@ -84,23 +128,35 @@ When user says "create a release" or "publish release vX.X":
    <FileVersion>2.5.1.0</FileVersion>
    ```
 
-2. **Commit and push** the version change:
+2. **Update WhatsNew.txt** - Prepend new version section:
+   - Run: `git log v{previous}..HEAD --oneline` to see changes since last release
+   - Summarize commits into brief bullet points (1 line per feature)
+   - Group minor fixes as "Bug fixes"
+   - Add version header and bullets to top of `MosaicToolsCSharp/WhatsNew.txt`
+   - Example format:
+     ```
+     2.5.5
+     - What's New popup shows new features after updates
+     - Bug fixes
+     ```
+
+3. **Commit and push** the version change:
    ```bash
    git add -A && git commit -m "v2.5.1: Release notes here" && git push
    ```
 
-3. **Build** the release exe:
+4. **Build** the release exe:
    ```powershell
    cd C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp
    c:\Users\erik.richter\Desktop\dotnet\dotnet.exe publish -c Release -r win-x64 --self-contained
    ```
 
-4. **Create the ZIP file** containing MosaicTools.exe:
+5. **Create the ZIP file** containing MosaicTools.exe:
    ```powershell
    Compress-Archive -Path "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe" -DestinationPath "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.zip" -Force
    ```
 
-5. **Create the GitHub release** with BOTH zip and exe (for backwards compatibility):
+6. **Create the GitHub release** with BOTH zip and exe (for backwards compatibility):
    ```bash
    "C:\Users\erik.richter\Desktop\GH CLI\gh.exe" release create v2.5.1 "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.zip" "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe" --title "v2.5.1" --notes "Release notes here"
    ```
@@ -152,6 +208,7 @@ MosaicToolsCSharp/
 │   ├── AudioService.cs     # Beep sounds for dictation feedback
 │   ├── Logger.cs           # File logging to mosaic_tools_log.txt
 │   └── InputBox.cs         # Simple text input dialog
+├── WhatsNew.txt            # Embedded changelog for What's New popup
 └── UI/                     # WinForms presentation layer
     ├── MainForm.cs         # Main widget bar + toast system
     ├── SettingsForm.cs     # Configuration dialog (tabbed)
@@ -159,7 +216,8 @@ MosaicToolsCSharp/
     ├── IndicatorForm.cs    # Recording state indicator light
     ├── ClinicalHistoryForm.cs  # Clinical history display window
     ├── ImpressionForm.cs   # Auto-show impression during drafting
-    └── ReportPopupForm.cs  # Full report viewer popup
+    ├── ReportPopupForm.cs  # Full report viewer popup
+    └── WhatsNewForm.cs     # Post-update changelog popup
 ```
 
 ### Key Data Flow

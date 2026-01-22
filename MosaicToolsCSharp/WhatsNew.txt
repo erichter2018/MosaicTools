@@ -1,0 +1,26 @@
+2.6.0
+- Pick Lists: Create reusable text snippets for quick insertion
+- Tree mode: Hierarchical pick lists for drilling down to specific text
+- Builder mode: Construct sentences by selecting options from categories
+- Terminal options: Mark options that complete a sentence early
+- Dynamic shortcut visibility based on feature enablement
+- Fixed macro description extraction when macros enabled
+- Headless mode now disables auto-update (manual still works)
+- What's New popup shows new features after updates
+
+2.5.4
+- Faster report popup using direct scraping instead of Alt+C
+- Live popup updates when Process Report is pressed
+
+2.5.3
+- Fixed headless mode restart issue
+- Added crash logging for troubleshooting
+
+2.5.2
+- Fixed settings save showing hidden windows
+- Improved settings panel stability
+
+2.5.1
+- Zip-based updates to avoid antivirus blocking
+- Settings now refresh live without restart
+- Fixed various timeout issues

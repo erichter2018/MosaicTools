@@ -1,0 +1,950 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Linq;
+using System.Windows.Forms;
+using MosaicTools.Services;
+
+namespace MosaicTools.UI;
+
+/// <summary>
+/// Runtime popup for selecting pick list items.
+/// Supports Tree mode (hierarchical navigation) and Builder mode (sentence construction).
+/// </summary>
+public class PickListPopupForm : Form
+{
+    private readonly Configuration _config;
+    private readonly List<PickListConfig> _matchingLists;
+    private readonly string? _studyDescription;
+    private readonly Action<string> _onItemSelected;
+
+    // Navigation state (shared)
+    private PickListConfig? _currentList;
+    private bool _showingLists = true;
+
+    // Tree mode state
+    private Stack<List<PickListNode>> _navigationStack = new();
+    private Stack<string> _breadcrumbStack = new();
+    private List<PickListNode> _currentNodes = new();
+
+    // Builder mode state
+    private int _builderCategoryIndex = 0;
+    private string _builderAccumulatedText = "";
+    private List<string> _builderSelections = new(); // Track selections for undo
+
+    private TextBox _searchBox = null!;
+    private ListBox _listBox = null!;
+    private Label _headerLabel = null!;
+    private Button _backBtn = null!;
+    private Button _cancelBtn = null!;
+    private Panel _navPanel = null!;
+    private Label _previewLabel = null!;
+    private Panel _previewPanel = null!;
+
+    private int _hoveredIndex = -1;
+    private bool _allowDeactivateClose = false;
+
+    public PickListPopupForm(Configuration config, List<PickListConfig> matchingLists, string? studyDescription, Action<string> onItemSelected)
+    {
+        _config = config;
+        _matchingLists = matchingLists;
+        _studyDescription = studyDescription;
+        _onItemSelected = onItemSelected;
+
+        InitializeUI();
+
+        // If only one list matches and skip option is enabled, go straight to it
+        if (_matchingLists.Count == 1 && _config.PickListSkipSingleMatch)
+        {
+            _currentList = _matchingLists[0];
+            _showingLists = false;
+
+            if (_currentList.Mode == PickListMode.Builder)
+            {
+                _builderCategoryIndex = 0;
+                _builderAccumulatedText = "";
+                _builderSelections.Clear();
+            }
+            else
+            {
+                _currentNodes = _currentList.Nodes;
+            }
+        }
+
+        RefreshList();
+    }
+
+    private void InitializeUI()
+    {
+        Text = "Pick Lists";
+        Size = new Size(380, 500);
+        StartPosition = FormStartPosition.Manual;
+        Location = new Point(_config.PickListPopupX, _config.PickListPopupY);
+        FormBorderStyle = FormBorderStyle.None;
+        BackColor = Color.FromArgb(35, 35, 35);
+        ShowInTaskbar = false;
+        TopMost = true;
+
+        // Dark border
+        var borderPanel = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(1),
+            BackColor = Color.FromArgb(80, 80, 80)
+        };
+        Controls.Add(borderPanel);
+
+        var innerPanel = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.FromArgb(35, 35, 35)
+        };
+        borderPanel.Controls.Add(innerPanel);
+
+        var padding = 10;
+        var y = padding;
+
+        // Header (draggable)
+        _headerLabel = new Label
+        {
+            Text = GetHeaderText(),
+            Location = new Point(padding, y),
+            Size = new Size(Width - padding * 2 - 30, 22),
+            Font = new Font("Segoe UI", 10, FontStyle.Bold),
+            ForeColor = Color.White,
+            Cursor = Cursors.SizeAll
+        };
+        _headerLabel.MouseDown += Header_MouseDown;
+        _headerLabel.MouseMove += Header_MouseMove;
+        innerPanel.Controls.Add(_headerLabel);
+
+        // Close button
+        var closeBtn = new Label
+        {
+            Text = "X",
+            Location = new Point(Width - 30, y),
+            Size = new Size(20, 20),
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            ForeColor = Color.Gray,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Cursor = Cursors.Hand
+        };
+        closeBtn.Click += (s, e) => Close();
+        closeBtn.MouseEnter += (s, e) => closeBtn.ForeColor = Color.White;
+        closeBtn.MouseLeave += (s, e) => closeBtn.ForeColor = Color.Gray;
+        innerPanel.Controls.Add(closeBtn);
+        y += 26;
+
+        // Navigation buttons panel
+        _navPanel = new Panel
+        {
+            Location = new Point(padding, y),
+            Size = new Size(Width - padding * 2, 26),
+            BackColor = Color.Transparent,
+            Visible = false
+        };
+        innerPanel.Controls.Add(_navPanel);
+
+        _backBtn = new Button
+        {
+            Text = "< Back",
+            Location = new Point(0, 0),
+            Size = new Size(70, 24),
+            BackColor = Color.FromArgb(50, 70, 90),
+            ForeColor = Color.FromArgb(150, 200, 255),
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand,
+            Font = new Font("Segoe UI", 8)
+        };
+        _backBtn.FlatAppearance.BorderColor = Color.FromArgb(70, 90, 110);
+        _backBtn.Click += (s, e) => GoBack();
+        _navPanel.Controls.Add(_backBtn);
+
+        _cancelBtn = new Button
+        {
+            Text = "Cancel",
+            Location = new Point(75, 0),
+            Size = new Size(60, 24),
+            BackColor = Color.FromArgb(80, 50, 50),
+            ForeColor = Color.FromArgb(255, 180, 180),
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand,
+            Font = new Font("Segoe UI", 8)
+        };
+        _cancelBtn.FlatAppearance.BorderColor = Color.FromArgb(100, 60, 60);
+        _cancelBtn.Click += (s, e) => CancelAndReset();
+        _navPanel.Controls.Add(_cancelBtn);
+
+        // Search box
+        _searchBox = new TextBox
+        {
+            Location = new Point(padding, y),
+            Size = new Size(Width - padding * 2 - 2, 24),
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Segoe UI", 10)
+        };
+        _searchBox.TextChanged += (s, e) => RefreshList();
+        _searchBox.KeyDown += SearchBox_KeyDown;
+        innerPanel.Controls.Add(_searchBox);
+        y += 30;
+
+        // Preview panel for Builder mode (at bottom)
+        _previewPanel = new Panel
+        {
+            Location = new Point(padding, Height - 70),
+            Size = new Size(Width - padding * 2 - 2, 55),
+            BackColor = Color.FromArgb(25, 50, 40),
+            Visible = false
+        };
+        innerPanel.Controls.Add(_previewPanel);
+
+        var previewTitle = new Label
+        {
+            Text = "Building:",
+            Location = new Point(5, 5),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 8),
+            ForeColor = Color.FromArgb(100, 180, 150)
+        };
+        _previewPanel.Controls.Add(previewTitle);
+
+        _previewLabel = new Label
+        {
+            Text = "",
+            Location = new Point(5, 22),
+            Size = new Size(_previewPanel.Width - 10, 30),
+            Font = new Font("Segoe UI", 9),
+            ForeColor = Color.FromArgb(150, 255, 200)
+        };
+        _previewPanel.Controls.Add(_previewLabel);
+
+        // List box
+        _listBox = new ListBox
+        {
+            Location = new Point(padding, y),
+            Size = new Size(Width - padding * 2 - 2, Height - y - padding - 2),
+            BackColor = Color.FromArgb(45, 45, 45),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.None,
+            DrawMode = DrawMode.OwnerDrawFixed,
+            ItemHeight = 30
+        };
+        _listBox.DrawItem += ListBox_DrawItem;
+        _listBox.Click += (s, e) => SelectCurrentItem();
+        _listBox.KeyDown += ListBox_KeyDown;
+        _listBox.MouseMove += ListBox_MouseMove;
+        _listBox.MouseLeave += (s, e) => { _hoveredIndex = -1; _listBox.Invalidate(); };
+        innerPanel.Controls.Add(_listBox);
+
+        // Handle clicking outside (with delay to prevent immediate close on hotkey activation)
+        Deactivate += (s, e) =>
+        {
+            if (_allowDeactivateClose)
+                Close();
+        };
+
+        // Focus search on show, and enable deactivate-close after a short delay
+        Shown += (s, e) =>
+        {
+            Activate();
+            _searchBox.Focus();
+            var timer = new System.Windows.Forms.Timer { Interval = 200 };
+            timer.Tick += (ts, te) =>
+            {
+                timer.Stop();
+                timer.Dispose();
+                _allowDeactivateClose = true;
+            };
+            timer.Start();
+        };
+    }
+
+    private string GetHeaderText()
+    {
+        if (_showingLists)
+        {
+            var study = string.IsNullOrEmpty(_studyDescription) ? "" : $" ({TruncateString(_studyDescription, 20)})";
+            return $"Pick Lists{study}";
+        }
+
+        if (_currentList?.Mode == PickListMode.Builder)
+        {
+            var totalCats = _currentList.Categories.Count;
+            var currentStep = _builderCategoryIndex + 1;
+            if (_builderCategoryIndex < totalCats)
+            {
+                var catName = _currentList.Categories[_builderCategoryIndex].Name;
+                return $"Step {currentStep}/{totalCats}: {catName}";
+            }
+            return _currentList.Name;
+        }
+
+        if (_breadcrumbStack.Count > 0)
+        {
+            return _breadcrumbStack.Peek();
+        }
+
+        return _currentList?.Name ?? "Pick List";
+    }
+
+    private string GetBreadcrumbText()
+    {
+        if (_showingLists)
+            return "";
+
+        if (_currentList?.Mode == PickListMode.Builder)
+        {
+            if (_builderCategoryIndex > 0 || _builderSelections.Count > 0)
+                return "< Back (Backspace) | Esc = Cancel";
+            if (_matchingLists.Count > 1)
+                return "< Back to list selection";
+            return "";
+        }
+
+        // Tree mode
+        if (_navigationStack.Count == 0)
+        {
+            if (_matchingLists.Count > 1)
+                return "< Back to list selection";
+            return "";
+        }
+
+        var parts = new List<string>();
+        if (_currentList != null)
+            parts.Add(_currentList.Name);
+        parts.AddRange(_breadcrumbStack.Reverse().SkipLast(1));
+
+        return "< " + string.Join(" > ", parts);
+    }
+
+    private string TruncateString(string s, int maxLen)
+    {
+        if (s.Length <= maxLen) return s;
+        return s.Substring(0, maxLen - 3) + "...";
+    }
+
+    private void RefreshList()
+    {
+        _listBox.Items.Clear();
+        var searchTerm = _searchBox.Text.Trim().ToUpperInvariant();
+
+        _headerLabel.Text = GetHeaderText();
+
+        // Determine if we should show navigation buttons
+        var showNav = ShouldShowNavigation();
+        _navPanel.Visible = showNav;
+
+        // Update button states
+        if (showNav)
+        {
+            var canGoBack = CanGoBack();
+            _backBtn.Visible = canGoBack;
+            _cancelBtn.Visible = true;
+        }
+
+        // Show preview panel only in Builder mode when building
+        var isBuilderMode = !_showingLists && _currentList?.Mode == PickListMode.Builder;
+        _previewPanel.Visible = isBuilderMode;
+
+        if (isBuilderMode)
+        {
+            var displayText = string.IsNullOrEmpty(_builderAccumulatedText) ? "(empty)" : $"\"{_builderAccumulatedText}\"";
+            _previewLabel.Text = displayText;
+        }
+
+        AdjustListPosition(showNav, isBuilderMode);
+
+        if (_showingLists)
+        {
+            // Show list selector
+            foreach (var list in _matchingLists)
+            {
+                if (string.IsNullOrEmpty(searchTerm) || list.Name.ToUpperInvariant().Contains(searchTerm))
+                {
+                    _listBox.Items.Add(new ListEntry { List = list });
+                }
+            }
+        }
+        else if (_currentList?.Mode == PickListMode.Builder)
+        {
+            // Show current category options
+            if (_builderCategoryIndex < _currentList.Categories.Count)
+            {
+                var category = _currentList.Categories[_builderCategoryIndex];
+                for (int i = 0; i < category.Options.Count && i < 9; i++)
+                {
+                    var opt = category.Options[i];
+                    if (string.IsNullOrEmpty(searchTerm) || opt.ToUpperInvariant().Contains(searchTerm))
+                    {
+                        _listBox.Items.Add(new BuilderOptionEntry { Index = i, Text = opt });
+                    }
+                }
+            }
+        }
+        else
+        {
+            // Show current nodes (Tree mode)
+            for (int i = 0; i < _currentNodes.Count && i < 9; i++)
+            {
+                var node = _currentNodes[i];
+                if (string.IsNullOrEmpty(searchTerm) ||
+                    node.Label.ToUpperInvariant().Contains(searchTerm) ||
+                    node.Text.ToUpperInvariant().Contains(searchTerm))
+                {
+                    _listBox.Items.Add(new NodeEntry { Index = i, Node = node });
+                }
+            }
+        }
+
+        if (_listBox.Items.Count > 0)
+            _listBox.SelectedIndex = 0;
+    }
+
+    private void AdjustListPosition(bool showNav, bool showPreview)
+    {
+        _searchBox.Top = showNav ? _navPanel.Bottom + 5 : 36;
+        _listBox.Top = _searchBox.Bottom + 6;
+
+        var bottomMargin = showPreview ? 75 : 12;
+        _listBox.Height = Height - _listBox.Top - bottomMargin;
+
+        if (showPreview)
+        {
+            _previewPanel.Location = new Point(10, Height - 70);
+            _previewPanel.Size = new Size(Width - 22, 55);
+            _previewLabel.Width = _previewPanel.Width - 10;
+        }
+    }
+
+    // Entry classes
+    private class ListEntry
+    {
+        public PickListConfig List { get; set; } = null!;
+    }
+
+    private class NodeEntry
+    {
+        public int Index { get; set; }
+        public PickListNode Node { get; set; } = null!;
+    }
+
+    private class BuilderOptionEntry
+    {
+        public int Index { get; set; }
+        public string Text { get; set; } = "";
+    }
+
+    private void ListBox_DrawItem(object? sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0 || e.Index >= _listBox.Items.Count) return;
+
+        e.DrawBackground();
+
+        var isSelected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+        var isHovered = e.Index == _hoveredIndex;
+        var bgColor = isSelected ? Color.FromArgb(50, 90, 130) :
+                      isHovered ? Color.FromArgb(55, 55, 55) :
+                      Color.FromArgb(45, 45, 45);
+
+        using var bgBrush = new SolidBrush(bgColor);
+        e.Graphics.FillRectangle(bgBrush, e.Bounds);
+
+        var obj = _listBox.Items[e.Index];
+
+        if (obj is ListEntry listEntry)
+        {
+            // Drawing a pick list
+            var modeIndicator = listEntry.List.Mode == PickListMode.Builder ? "[B] " : "[T] ";
+            var modeColor = listEntry.List.Mode == PickListMode.Builder ? Color.FromArgb(255, 180, 100) : Color.FromArgb(100, 180, 255);
+
+            using var arrowBrush = new SolidBrush(Color.FromArgb(120, 120, 120));
+            using var arrowFont = new Font("Segoe UI", 10, FontStyle.Bold);
+            e.Graphics.DrawString(">", arrowFont, arrowBrush, e.Bounds.X + 8, e.Bounds.Y + 5);
+
+            using var textBrush = new SolidBrush(modeColor);
+            e.Graphics.DrawString(modeIndicator + listEntry.List.Name, e.Font!, textBrush, e.Bounds.X + 28, e.Bounds.Y + 6);
+
+            // Item count
+            var count = listEntry.List.Mode == PickListMode.Builder
+                ? listEntry.List.Categories.Count
+                : listEntry.List.Nodes.Count + listEntry.List.Nodes.Sum(n => n.CountDescendants());
+            var countText = $"({count})";
+            var countSize = e.Graphics.MeasureString(countText, e.Font!);
+            using var countBrush = new SolidBrush(Color.FromArgb(100, 100, 100));
+            e.Graphics.DrawString(countText, e.Font!, countBrush, e.Bounds.Right - countSize.Width - 10, e.Bounds.Y + 6);
+        }
+        else if (obj is NodeEntry nodeEntry)
+        {
+            var node = nodeEntry.Node;
+
+            // Number
+            var numText = $"{nodeEntry.Index + 1}";
+            using var numBrush = new SolidBrush(node.HasChildren ? Color.FromArgb(100, 180, 255) : Color.FromArgb(100, 220, 150));
+            using var numFont = new Font("Consolas", 11, FontStyle.Bold);
+            e.Graphics.DrawString(numText, numFont, numBrush, e.Bounds.X + 8, e.Bounds.Y + 5);
+
+            // Label
+            using var textBrush = new SolidBrush(Color.White);
+            e.Graphics.DrawString(node.Label, e.Font!, textBrush, e.Bounds.X + 32, e.Bounds.Y + 6);
+
+            // Indicator: arrow if has children
+            if (node.HasChildren)
+            {
+                var childText = $"({node.Children.Count})";
+                var childSize = e.Graphics.MeasureString(childText, e.Font!);
+                using var childBrush = new SolidBrush(Color.FromArgb(100, 100, 100));
+                e.Graphics.DrawString(childText, e.Font!, childBrush, e.Bounds.Right - childSize.Width - 30, e.Bounds.Y + 6);
+
+                using var arrowBrush = new SolidBrush(Color.FromArgb(100, 180, 255));
+                using var arrowFont = new Font("Segoe UI", 10, FontStyle.Bold);
+                e.Graphics.DrawString(">", arrowFont, arrowBrush, e.Bounds.Right - 20, e.Bounds.Y + 5);
+            }
+            else if (!string.IsNullOrEmpty(node.Text))
+            {
+                using var checkBrush = new SolidBrush(Color.FromArgb(100, 220, 150));
+                using var checkFont = new Font("Segoe UI", 9);
+                e.Graphics.DrawString("*", checkFont, checkBrush, e.Bounds.Right - 18, e.Bounds.Y + 4);
+            }
+        }
+        else if (obj is BuilderOptionEntry optEntry)
+        {
+            // Check if terminal
+            var isTerminal = _currentList != null &&
+                             _builderCategoryIndex < _currentList.Categories.Count &&
+                             _currentList.Categories[_builderCategoryIndex].IsTerminal(optEntry.Index);
+
+            // Number (different color for terminal)
+            var numText = $"{optEntry.Index + 1}";
+            var numColor = isTerminal ? Color.FromArgb(255, 200, 100) : Color.FromArgb(100, 220, 150);
+            using var numBrush = new SolidBrush(numColor);
+            using var numFont = new Font("Consolas", 11, FontStyle.Bold);
+            e.Graphics.DrawString(numText, numFont, numBrush, e.Bounds.X + 8, e.Bounds.Y + 5);
+
+            // Option text
+            using var textBrush = new SolidBrush(Color.White);
+            var text = string.IsNullOrEmpty(optEntry.Text) ? "(empty)" : optEntry.Text;
+            e.Graphics.DrawString(text, e.Font!, textBrush, e.Bounds.X + 32, e.Bounds.Y + 6);
+
+            // Terminal indicator
+            if (isTerminal)
+            {
+                using var endBrush = new SolidBrush(Color.FromArgb(255, 180, 100));
+                using var endFont = new Font("Segoe UI", 7);
+                e.Graphics.DrawString("[END]", endFont, endBrush, e.Bounds.Right - 40, e.Bounds.Y + 8);
+            }
+        }
+    }
+
+    private void SelectCurrentItem()
+    {
+        if (_listBox.SelectedIndex < 0) return;
+
+        var obj = _listBox.SelectedItem;
+
+        if (obj is ListEntry listEntry)
+        {
+            // Select a list
+            _currentList = listEntry.List;
+            _showingLists = false;
+
+            if (_currentList.Mode == PickListMode.Builder)
+            {
+                _builderCategoryIndex = 0;
+                _builderAccumulatedText = "";
+                _builderSelections.Clear();
+            }
+            else
+            {
+                _currentNodes = _currentList.Nodes;
+                _navigationStack.Clear();
+                _breadcrumbStack.Clear();
+            }
+
+            _searchBox.Clear();
+            RefreshList();
+        }
+        else if (obj is NodeEntry nodeEntry)
+        {
+            var node = nodeEntry.Node;
+
+            if (node.HasChildren)
+            {
+                // Drill down into children
+                _navigationStack.Push(_currentNodes);
+                _breadcrumbStack.Push(node.Label);
+                _currentNodes = node.Children;
+                _searchBox.Clear();
+                RefreshList();
+            }
+            else if (!string.IsNullOrEmpty(node.Text))
+            {
+                // Leaf node - insert text and return to root level
+                SavePosition();
+                _onItemSelected(node.Text);
+
+                // Go back to root level of this pick list
+                _navigationStack.Clear();
+                _breadcrumbStack.Clear();
+                _currentNodes = _currentList?.Nodes ?? new();
+                _searchBox.Clear();
+                RefreshList();
+            }
+        }
+        else if (obj is BuilderOptionEntry optEntry)
+        {
+            if (_currentList == null || _builderCategoryIndex >= _currentList.Categories.Count) return;
+
+            var category = _currentList.Categories[_builderCategoryIndex];
+            var isTerminal = category.IsTerminal(optEntry.Index);
+
+            // Add selection to accumulated text
+            _builderSelections.Add(optEntry.Text);
+
+            if (isTerminal)
+            {
+                // Terminal option - complete sentence immediately without separator
+                _builderAccumulatedText += optEntry.Text;
+
+                // Paste the result
+                SavePosition();
+                _onItemSelected(_builderAccumulatedText);
+
+                // Reset for next sentence
+                _builderCategoryIndex = 0;
+                _builderAccumulatedText = "";
+                _builderSelections.Clear();
+            }
+            else
+            {
+                // Normal option - add separator and continue
+                _builderAccumulatedText += optEntry.Text + category.Separator;
+                _builderCategoryIndex++;
+
+                // Check if we've completed all categories
+                if (_builderCategoryIndex >= _currentList.Categories.Count)
+                {
+                    // Trim trailing separator from last category
+                    var lastSep = _currentList.Categories.Last().Separator;
+                    if (_builderAccumulatedText.EndsWith(lastSep))
+                    {
+                        _builderAccumulatedText = _builderAccumulatedText.Substring(0, _builderAccumulatedText.Length - lastSep.Length);
+                    }
+
+                    // Paste the result
+                    SavePosition();
+                    _onItemSelected(_builderAccumulatedText);
+
+                    // Reset for next sentence
+                    _builderCategoryIndex = 0;
+                    _builderAccumulatedText = "";
+                    _builderSelections.Clear();
+                }
+            }
+
+            _searchBox.Clear();
+            RefreshList();
+        }
+    }
+
+    private void GoBack()
+    {
+        if (_currentList?.Mode == PickListMode.Builder)
+        {
+            // Builder mode: undo last selection
+            if (_builderSelections.Count > 0)
+            {
+                var lastSelection = _builderSelections[_builderSelections.Count - 1];
+                _builderSelections.RemoveAt(_builderSelections.Count - 1);
+                _builderCategoryIndex--;
+
+                // Remove the last selection and its separator from accumulated text
+                if (_builderCategoryIndex >= 0 && _builderCategoryIndex < _currentList.Categories.Count)
+                {
+                    var prevCategory = _currentList.Categories[_builderCategoryIndex];
+                    var toRemove = lastSelection + prevCategory.Separator;
+                    if (_builderAccumulatedText.EndsWith(toRemove))
+                    {
+                        _builderAccumulatedText = _builderAccumulatedText.Substring(0, _builderAccumulatedText.Length - toRemove.Length);
+                    }
+                }
+
+                _searchBox.Clear();
+                RefreshList();
+            }
+            else if (_matchingLists.Count > 1)
+            {
+                // Go back to list selector
+                _showingLists = true;
+                _currentList = null;
+                _searchBox.Clear();
+                RefreshList();
+            }
+        }
+        else
+        {
+            // Tree mode
+            if (_navigationStack.Count > 0)
+            {
+                _currentNodes = _navigationStack.Pop();
+                _breadcrumbStack.Pop();
+                _searchBox.Clear();
+                RefreshList();
+            }
+            else if (!_showingLists && _matchingLists.Count > 1)
+            {
+                _showingLists = true;
+                _currentList = null;
+                _currentNodes = new();
+                _searchBox.Clear();
+                RefreshList();
+            }
+        }
+    }
+
+    private void CancelBuilder()
+    {
+        // Scrap current sentence and start over
+        _builderCategoryIndex = 0;
+        _builderAccumulatedText = "";
+        _builderSelections.Clear();
+        _searchBox.Clear();
+        RefreshList();
+    }
+
+    private void CancelAndReset()
+    {
+        // Full reset - go back to list selection or close
+        if (_matchingLists.Count > 1)
+        {
+            _showingLists = true;
+            _currentList = null;
+            _currentNodes = new();
+            _navigationStack.Clear();
+            _breadcrumbStack.Clear();
+            _builderCategoryIndex = 0;
+            _builderAccumulatedText = "";
+            _builderSelections.Clear();
+            _searchBox.Clear();
+            RefreshList();
+        }
+        else
+        {
+            // Only one list - reset to beginning of that list
+            if (_currentList?.Mode == PickListMode.Builder)
+            {
+                CancelBuilder();
+            }
+            else
+            {
+                _navigationStack.Clear();
+                _breadcrumbStack.Clear();
+                _currentNodes = _currentList?.Nodes ?? new();
+                _searchBox.Clear();
+                RefreshList();
+            }
+        }
+    }
+
+    private bool ShouldShowNavigation()
+    {
+        // Show nav when we're inside a list (not at list selection)
+        if (_showingLists) return false;
+
+        // In Builder mode, show when we have selections or multiple lists
+        if (_currentList?.Mode == PickListMode.Builder)
+            return _builderSelections.Count > 0 || _matchingLists.Count > 1;
+
+        // In Tree mode, show when we're drilled down or have multiple lists
+        return _navigationStack.Count > 0 || _matchingLists.Count > 1;
+    }
+
+    private bool CanGoBack()
+    {
+        // Can go back one step (not full cancel)
+        if (_currentList?.Mode == PickListMode.Builder)
+            return _builderSelections.Count > 0 || _matchingLists.Count > 1;
+
+        return _navigationStack.Count > 0 || _matchingLists.Count > 1;
+    }
+
+    private void SelectByNumber(int num)
+    {
+        // Find item with matching index
+        for (int i = 0; i < _listBox.Items.Count; i++)
+        {
+            var item = _listBox.Items[i];
+            if ((item is NodeEntry nodeEntry && nodeEntry.Index == num) ||
+                (item is BuilderOptionEntry optEntry && optEntry.Index == num))
+            {
+                _listBox.SelectedIndex = i;
+                SelectCurrentItem();
+                return;
+            }
+        }
+    }
+
+    private void ListBox_KeyDown(object? sender, KeyEventArgs e)
+    {
+        // Handle number keys 1-9
+        if (e.KeyCode >= Keys.D1 && e.KeyCode <= Keys.D9)
+        {
+            SelectByNumber(e.KeyCode - Keys.D1);
+            e.Handled = true;
+            return;
+        }
+        if (e.KeyCode >= Keys.NumPad1 && e.KeyCode <= Keys.NumPad9)
+        {
+            SelectByNumber(e.KeyCode - Keys.NumPad1);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.KeyCode == Keys.Enter)
+        {
+            SelectCurrentItem();
+            e.Handled = true;
+        }
+        else if (e.KeyCode == Keys.Back)
+        {
+            GoBack();
+            e.Handled = true;
+        }
+        else if (e.KeyCode == Keys.Escape)
+        {
+            HandleEscape();
+            e.Handled = true;
+        }
+    }
+
+    private void SearchBox_KeyDown(object? sender, KeyEventArgs e)
+    {
+        // Handle number keys when search is empty
+        if (string.IsNullOrEmpty(_searchBox.Text))
+        {
+            if (e.KeyCode >= Keys.D1 && e.KeyCode <= Keys.D9)
+            {
+                SelectByNumber(e.KeyCode - Keys.D1);
+                e.Handled = true;
+                return;
+            }
+            if (e.KeyCode >= Keys.NumPad1 && e.KeyCode <= Keys.NumPad9)
+            {
+                SelectByNumber(e.KeyCode - Keys.NumPad1);
+                e.Handled = true;
+                return;
+            }
+        }
+
+        if (e.KeyCode == Keys.Down)
+        {
+            _listBox.Focus();
+            if (_listBox.Items.Count > 0 && _listBox.SelectedIndex < 0)
+                _listBox.SelectedIndex = 0;
+            e.Handled = true;
+        }
+        else if (e.KeyCode == Keys.Up)
+        {
+            _listBox.Focus();
+            if (_listBox.Items.Count > 0)
+                _listBox.SelectedIndex = _listBox.Items.Count - 1;
+            e.Handled = true;
+        }
+        else if (e.KeyCode == Keys.Enter)
+        {
+            if (_listBox.Items.Count > 0)
+            {
+                if (_listBox.SelectedIndex < 0)
+                    _listBox.SelectedIndex = 0;
+                SelectCurrentItem();
+            }
+            e.Handled = true;
+        }
+        else if (e.KeyCode == Keys.Back && string.IsNullOrEmpty(_searchBox.Text))
+        {
+            GoBack();
+            e.Handled = true;
+        }
+        else if (e.KeyCode == Keys.Escape)
+        {
+            HandleEscape();
+            e.Handled = true;
+        }
+    }
+
+    private void HandleEscape()
+    {
+        // Escape always does a full cancel/reset (not step-by-step like Backspace)
+        if (!_showingLists)
+        {
+            CancelAndReset();
+        }
+        else
+        {
+            // Already at list selection - close the popup
+            SavePosition();
+            Close();
+        }
+    }
+
+    private void ListBox_MouseMove(object? sender, MouseEventArgs e)
+    {
+        var index = _listBox.IndexFromPoint(e.Location);
+        if (index != _hoveredIndex)
+        {
+            _hoveredIndex = index;
+            _listBox.Invalidate();
+        }
+    }
+
+    // Dragging support
+    private Point _dragOffset;
+    private bool _dragging;
+
+    private void Header_MouseDown(object? sender, MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left)
+        {
+            _dragging = true;
+            _dragOffset = e.Location;
+        }
+    }
+
+    private void Header_MouseMove(object? sender, MouseEventArgs e)
+    {
+        if (_dragging)
+        {
+            var newLocation = PointToScreen(e.Location);
+            Location = new Point(newLocation.X - _dragOffset.X, newLocation.Y - _dragOffset.Y);
+        }
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        _dragging = false;
+    }
+
+    private void SavePosition()
+    {
+        _config.PickListPopupX = Location.X;
+        _config.PickListPopupY = Location.Y;
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        base.OnFormClosing(e);
+        SavePosition();
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == Keys.Escape)
+        {
+            HandleEscape();
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+}

@@ -71,7 +71,7 @@ public class ActionController : IDisposable
     private string? _baselineReport;
     private bool _processReportPressedForCurrentAccession = false;
     private bool _needsBaselineCapture = false; // Set true on new study, cleared when baseline captured
-    private bool _needsPopupUpdate = false; // Set true when Process Report pressed with popup open
+    private string? _lastPopupReportText; // Track what's currently displayed in popup for change detection
 
     // RVUCounter integration - track if discard dialog was shown for current accession
     // If dialog was shown while on accession X, and then X changes, X was discarded
@@ -327,8 +327,14 @@ public class ActionController : IDisposable
             case Actions.DiscardStudy:
                 PerformDiscardStudy();
                 break;
+            case Actions.ShowPickLists:
+                PerformShowPickLists();
+                break;
             case "__InsertMacros__":
                 PerformInsertMacros();
+                break;
+            case "__InsertPickListText__":
+                PerformInsertPickListText();
                 break;
         }
     }
@@ -642,12 +648,7 @@ public class ActionController : IDisposable
             StartImpressionSearch();
         }
 
-        // Mark that popup needs update when impression appears (if popup is open)
-        if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
-        {
-            _needsPopupUpdate = true;
-            Logger.Trace("ProcessReport: Will update popup when impression appears");
-        }
+        // Popup will auto-update via scrape timer when report changes
     }
 
     private void StartImpressionSearch()
@@ -693,6 +694,7 @@ public class ActionController : IDisposable
             {
                 try { _currentReportPopup?.Close(); } catch { }
                 _currentReportPopup = null;
+                _lastPopupReportText = null;
             });
         }
 
@@ -744,6 +746,7 @@ public class ActionController : IDisposable
             {
                 try { _currentReportPopup?.Close(); } catch { }
                 _currentReportPopup = null;
+                _lastPopupReportText = null;
             });
         }
 
@@ -916,6 +919,127 @@ public class ActionController : IDisposable
             catch (Exception ex)
             {
                 Logger.Trace($"InsertMacros error: {ex.Message}");
+            }
+            finally
+            {
+                LastPasteTime = DateTime.Now;
+
+                // Restore focus
+                if (_config.RestoreFocusAfterAction && previousWindow != IntPtr.Zero)
+                {
+                    Thread.Sleep(100);
+                    NativeWindows.SetForegroundWindow(previousWindow);
+                }
+            }
+        }
+    }
+
+    // Pick list popup reference
+    private PickListPopupForm? _currentPickListPopup;
+    private string? _pendingPickListText;
+
+    private void PerformShowPickLists()
+    {
+        Logger.Trace("Show Pick Lists");
+
+        // Check if pick lists are enabled
+        if (!_config.PickListsEnabled)
+        {
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Pick lists are disabled", 2000));
+            return;
+        }
+
+        // Check if there are any pick lists
+        if (_config.PickLists.Count == 0)
+        {
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("No pick lists configured", 2000));
+            return;
+        }
+
+        // Get current study description
+        var studyDescription = _automationService.LastDescription;
+
+        // Filter pick lists by study criteria
+        var matchingLists = _config.PickLists
+            .Where(pl => pl.Enabled && pl.MatchesStudy(studyDescription))
+            .ToList();
+
+        if (matchingLists.Count == 0)
+        {
+            var studyInfo = string.IsNullOrEmpty(studyDescription) ? "no study" : $"'{studyDescription}'";
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast($"No pick lists match {studyInfo}", 2500));
+            return;
+        }
+
+        Logger.Trace($"Pick Lists: {matchingLists.Count} list(s) match study '{studyDescription}'");
+
+        // Close existing popup if open
+        if (_currentPickListPopup != null && !_currentPickListPopup.IsDisposed)
+        {
+            _mainForm.Invoke(() =>
+            {
+                try { _currentPickListPopup?.Close(); } catch { }
+                _currentPickListPopup = null;
+            });
+        }
+
+        // Show popup on UI thread
+        _mainForm.Invoke(() =>
+        {
+            _currentPickListPopup = new PickListPopupForm(_config, matchingLists, studyDescription, OnPickListItemSelected);
+            _currentPickListPopup.FormClosed += (s, e) => _currentPickListPopup = null;
+            _currentPickListPopup.Show();
+        });
+    }
+
+    private void OnPickListItemSelected(string text)
+    {
+        Logger.Trace($"Pick list item selected: {text.Substring(0, Math.Min(50, text.Length))}...");
+
+        // Store the text and queue the internal action for STA thread
+        _pendingPickListText = text;
+        TriggerAction("__InsertPickListText__", "Internal");
+    }
+
+    private void PerformInsertPickListText()
+    {
+        var text = _pendingPickListText;
+        _pendingPickListText = null;
+
+        if (string.IsNullOrEmpty(text)) return;
+
+        Logger.Trace($"InsertPickListText: Pasting {text.Length} chars");
+
+        // Use paste lock to prevent race conditions
+        lock (PasteLock)
+        {
+            // Save focus
+            var previousWindow = IntPtr.Zero;
+            if (_config.RestoreFocusAfterAction)
+            {
+                previousWindow = NativeWindows.GetForegroundWindow();
+            }
+
+            try
+            {
+                // Copy text to clipboard
+                ClipboardService.SetText(text);
+                Thread.Sleep(50);
+
+                // Activate Mosaic and paste
+                NativeWindows.ActivateMosaicForcefully();
+                Thread.Sleep(100);
+
+                // Paste
+                NativeWindows.SendHotkey("ctrl+v");
+                Thread.Sleep(100);
+
+                _mainForm.Invoke(() => _mainForm.ShowStatusToast("Pick list item inserted", 1500));
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"InsertPickListText error: {ex.Message}");
+                _mainForm.Invoke(() => _mainForm.ShowStatusToast($"Error: {ex.Message}", 2500));
             }
             finally
             {
@@ -1113,6 +1237,7 @@ public class ActionController : IDisposable
             {
                try { _currentReportPopup.Close(); } catch {}
                _currentReportPopup = null;
+               _lastPopupReportText = null;
             });
             return;
         }
@@ -1142,9 +1267,14 @@ public class ActionController : IDisposable
             _mainForm.Invoke(() =>
             {
                 _currentReportPopup = new ReportPopupForm(_config, reportText, baselineForDiff);
+                _lastPopupReportText = reportText;
 
-                // Handle closure to clear reference
-                _currentReportPopup.FormClosed += (s, e) => _currentReportPopup = null;
+                // Handle closure to clear references
+                _currentReportPopup.FormClosed += (s, e) =>
+                {
+                    _currentReportPopup = null;
+                    _lastPopupReportText = null;
+                };
 
                 _currentReportPopup.Show();
             });
@@ -1262,7 +1392,10 @@ public class ActionController : IDisposable
             try
             {
                 // Only check drafted status if we need it for features
-                bool needDraftedCheck = _config.ShowDraftedIndicator || _config.ShowImpression;
+                // Also need it for macros since Description extraction happens during drafted check
+                bool needDraftedCheck = _config.ShowDraftedIndicator ||
+                                        _config.ShowImpression ||
+                                        (_config.MacrosEnabled && _config.Macros.Count > 0);
 
                 // Scrape Mosaic for report data
                 var reportText = _automationService.GetFinalReportFast(needDraftedCheck);
@@ -1333,6 +1466,7 @@ public class ActionController : IDisposable
                     _discardDialogShownForCurrentAccession = false;
                     _processReportPressedForCurrentAccession = false;
                     _baselineReport = null;
+                    _lastPopupReportText = null;
                     _needsBaselineCapture = _config.ShowReportChanges; // Will capture on next scrape with report text
 
                     // Update tracking - only update to new non-empty accession
@@ -1414,16 +1548,13 @@ public class ActionController : IDisposable
                     }
                 }
 
-                // Update popup if needed (after Process Report, when impression appears)
-                if (_needsPopupUpdate && !string.IsNullOrEmpty(reportText))
+                // Auto-update popup when report text changes (continuous updates with diff highlighting)
+                if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible &&
+                    !string.IsNullOrEmpty(reportText) && reportText != _lastPopupReportText)
                 {
-                    var impression = ImpressionForm.ExtractImpression(reportText);
-                    if (!string.IsNullOrEmpty(impression) && _currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
-                    {
-                        _needsPopupUpdate = false;
-                        Logger.Trace($"Updating popup from scrape ({reportText.Length} chars), baseline={_baselineReport?.Length ?? 0} chars");
-                        _mainForm.Invoke(() => _currentReportPopup?.UpdateReport(reportText, _baselineReport));
-                    }
+                    Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
+                    _lastPopupReportText = reportText;
+                    _mainForm.Invoke(() => _currentReportPopup?.UpdateReport(reportText, _baselineReport));
                 }
 
                 // Check for pending macros - insert when clinical history becomes visible

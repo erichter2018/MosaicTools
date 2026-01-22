@@ -1,0 +1,211 @@
+Mosaic Diagnostic Tool v3
+Generated: 2026-01-22 06:23:57
+Computer: RPMXWRS130RR
+User: albert.song
+=============================================================
+
+ALL WINDOWS:
+-----------------------------------------
+  MosaicToolsMainWindow
+  RVU Counter
+  Mosaic Reporting - 2.0.2.0
+  C:\Users\albert.song\Desktop\MosaicDiagnostic.exe
+  MosaicDiagnostic 1 - File Explorer
+  HUMMITZSCH^RANDALL^S - RP Cloud Enterprise Mid West - albert.song - InteleViewer 5-4-1-P519 (64-bit)
+  Search Tool - RP Cloud Enterprise Mid West - albert.song - InteleViewer 5-4-1-P519 (64-bit)
+  Clario - Worklist - Google Chrome
+  Teams and Channels | General | Microsoft Teams
+
+MOSAIC WINDOW: Mosaic Reporting - 2.0.2.0
+=============================================================
+
+RAW ELEMENT SCAN (no filtering):
+  Total descendants (any type): 278
+  Elements by type:
+    Text: 93
+    Button: 83
+    Group: 59
+    Pane: 20
+    Separator: 10
+    Document: 2
+    Image: 2
+    ComboBox: 2
+    List: 2
+    Edit: 1
+    ListItem: 1
+    TitleBar: 1
+    MenuBar: 1
+    MenuItem: 1
+
+TEST 1: Looking for 'Current Study' text element...
+  FOUND 'Current Study' element!
+  Parent has 14 Text children:
+    - "HUMMITZSCH RANDALL S"
+    - "MALE, AGE 67, DOB: 08/15/1958"
+    - "Study Date: 01/21/2026"
+    - "Body Part: CHEST"
+    - "MRN: ST00185993STNWS"
+    - "Ordering: Zahnke Kim MD"
+    - "Site Group:"
+    - "Site Code: COCEAP"
+    - "Description: XR CHEST 1 VIEW"
+    - "Reason for visit: PELVIC FX;rehab admission"
+    - ""
+    - "Current Study"
+    - "001492304STNWS"
+    - "DRAFTED"
+
+TEST 2: Looking for 'Description:' text element...
+  Found 1 elements matching 'Description:'
+    - "Description: XR CHEST 1 VIEW"
+
+TEST 3: Looking for gender text (MALE/FEMALE, AGE)...
+  Found 93 total Text elements
+  FOUND GENDER: "MALE, AGE 67, DOB: 08/15/1958"
+
+TEST 4: Looking for 'DRAFTED' text element...
+  FOUND 'DRAFTED' - report is in drafted state
+
+TEST 5: Looking for Report Document element...
+  FOUND Report Document: "Report 17957870 | RADPAIR"
+
+=============================================================
+ALL TEXT ELEMENTS IN MOSAIC:
+-----------------------------------------
+Total: 93 Text elements
+
+1. "Untitled"
+2. ""
+3. "HUMMITZSCH RANDALL S"
+4. "MALE, AGE 67, DOB: 08/15/1958"
+5. "Study Date: 01/21/2026" [study]
+6. "Body Part: CHEST" [body part?]
+7. "MRN: ST00185993STNWS"
+8. "Ordering: Zahnke Kim MD"
+9. "Site Group:"
+10. "Site Code: COCEAP"
+11. "Description: XR CHEST 1 VIEW" *** DESCRIPTION ***
+12. "Reason for visit: PELVIC FX;rehab admission"
+13. ""
+14. "Current Study" [study]
+15. "001492304STNWS"
+16. "DRAFTED"
+17. "Study" [study]
+18. "​"
+19. "Template"
+20. "​"
+21. "Transcript"
+22. "COMPARISON 06/23/2025"
+23. "Calcified thoracic aortic plaque."
+24. "Remote right rib deformities."
+25. "##"
+26. "."
+27. "- Please summarize clinical history beginning with patient age (leaving out months if patient is older than 3 years) and sex and remove redundant statements.  "
+28. "."
+29. "- Please retain ICD-10 codes. "
+30. "."
+31. "- Please correct spelling, capitalization, punctuation using sentence capitalization, and grammatical errors in the clinical history section. " [modality?]
+32. "."
+33. "- Please concisely summarize impression with top differential when applicable. "
+34. "."
+35. "- Please leave out specific details from the findings section. "
+36. "."
+37. "- Please describe the features of pulmonary edema if they are present on this study using descriptive terms, only if suspecting pulmonary edema. Please do not use interpretive statements in the findin..." [study]
+38. "."
+39. "- Please remove the phrase "pulmonary edema" or "edema" in the findings section. "
+40. "."
+41. "###"
+42. ". "
+43. "##"
+44. "."
+45. "- Please summarize clinical history beginning with patient age (leaving out months if patient is older than 3 years) and sex and remove redundant statements.  "
+46. "."
+47. "- Please retain ICD-10 codes. "
+48. "."
+49. "- Please correct spelling, capitalization, punctuation using sentence capitalization, and grammatical errors in the clinical history section. " [modality?]
+50. "."
+51. "- Please concisely summarize impression with top differential when applicable. "
+52. "."
+53. "- Please leave out specific details from the findings section. "
+54. "."
+55. "- Please describe the features of pulmonary edema if they are present on this study using descriptive terms, only if suspecting pulmonary edema. Please do not use interpretive statements in the findin..." [study]
+56. "."
+57. "- Please remove the phrase "pulmonary edema" or "edema" in the findings section. "
+58. "."
+59. "###"
+60. "Final Report"
+61. "EXAM:" [exam]
+62. "1 VIEW XRAY OF THE CHEST" [body part?]
+63. "01/21/2026 06:50:00 PM"
+64. "COMPARISON:"
+65. "06/23/2025"
+66. "CLINICAL HISTORY:"
+67. "Pelvic fracture; rehabilitation admission."
+68. "FINDINGS:"
+69. "LUNGS AND PLEURA:"
+70. "No focal pulmonary opacity."
+71. "No pleural effusion."
+72. "No pneumothorax."
+73. "HEART AND MEDIASTINUM:"
+74. "Calcified thoracic aortic plaque."
+75. "No acute abnormality of the cardiac and mediastinal silhouettes."
+76. "BONES AND SOFT TISSUES:"
+77. "Remote right rib deformities."
+78. "No acute osseous abnormality." [modality?]
+79. "IMPRESSION:"
+80. "No acute cardiopulmonary pathology."
+81. "RADPAIR"
+
+=============================================================
+FIRST 50 ELEMENTS (any type) with names:
+-----------------------------------------
+1. [Pane] "SlimHub"
+2. [Pane] "SlimHub - Microphone recording - Web content"
+3. [Text] "Untitled"
+4. [Button] "Minimize"
+5. [Button] "Maximize"
+6. [Button] "Close"
+7. [Button] "This page is accessing your microphone."
+8. [Document] "SlimHub"
+9. [Text] ""
+10. [Text] "HUMMITZSCH RANDALL S"
+11. [Text] "MALE, AGE 67, DOB: 08/15/1958"
+12. [Text] "Study Date: 01/21/2026"
+13. [Text] "Body Part: CHEST"
+14. [Text] "MRN: ST00185993STNWS"
+15. [Text] "Ordering: Zahnke Kim MD"
+16. [Text] "Site Group:"
+17. [Text] "Site Code: COCEAP"
+18. [Text] "Description: XR CHEST 1 VIEW"
+19. [Text] "Reason for visit: PELVIC FX;rehab admission"
+20. [Text] ""
+21. [Text] "Current Study"
+22. [Text] "001492304STNWS"
+23. [Text] "DRAFTED"
+24. [Button] ""
+25. [Button] ""
+26. [Document] "Report 17957870 | RADPAIR"
+27. [Button] "ACTIONS"
+28. [Button] "SIGN FINAL"
+29. [Text] "Study"
+30. [Text] "​"
+31. [ComboBox] "Study"
+32. [Button] "Open"
+33. [Text] "Template"
+34. [Text] "​"
+35. [ComboBox] "Template"
+36. [Button] "Open"
+37. [Button] "ACTIONS"
+38. [Group] "Macros"
+39. [Group] "Templates"
+40. [Group] "Studies"
+41. [Group] "User Profile"
+42. [Group] "Keyboard Shortcuts"
+43. [Group] "Reporting Feedback"
+44. [Group] "Toggle View Orientation"
+45. [Text] "Transcript"
+46. [Button] "PROCESS REPORT"
+47. [Edit] "Search Radiopaedia.org"
+48. [Text] "COMPARISON 06/23/2025"
+49. [Text] "Calcified thoracic aortic plaque."
+50. [Text] "Remote right rib deformities."

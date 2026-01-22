@@ -156,27 +156,27 @@ public class MainForm : Form
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Exit", null, (_, _) => ExitApp());
         ContextMenuStrip = contextMenu;
-        
-        // Headless mode: hide the widget bar, show tray icon
+
+        // Always create system tray icon
+        var trayMenu = new ContextMenuStrip();
+        trayMenu.Items.Add("Settings", null, (_, _) => OpenSettings());
+        trayMenu.Items.Add(new ToolStripSeparator());
+        trayMenu.Items.Add("Exit", null, (_, _) => ExitApp());
+
+        _trayIcon = new NotifyIcon
+        {
+            Text = App.IsHeadless ? "Mosaic Tools (Headless)" : "Mosaic Tools",
+            Icon = Icon ?? SystemIcons.Application,
+            ContextMenuStrip = trayMenu,
+            Visible = true
+        };
+        _trayIcon.DoubleClick += (_, _) => OpenSettings();
+
+        // Headless mode: hide the widget bar
         if (App.IsHeadless)
         {
             Opacity = 0;
             ShowInTaskbar = false;
-            
-            // Create system tray icon
-            var trayMenu = new ContextMenuStrip();
-            trayMenu.Items.Add("Settings", null, (_, _) => OpenSettings());
-            trayMenu.Items.Add(new ToolStripSeparator());
-            trayMenu.Items.Add("Exit", null, (_, _) => ExitApp());
-            
-            _trayIcon = new NotifyIcon
-            {
-                Text = "Mosaic Tools (Headless)",
-                Icon = Icon ?? SystemIcons.Application,
-                ContextMenuStrip = trayMenu,
-                Visible = true
-            };
-            _trayIcon.DoubleClick += (_, _) => OpenSettings();
         }
         
         // Defer initialization until form is shown (handle exists)
@@ -212,24 +212,34 @@ public class MainForm : Form
         Logger.Trace($"MainForm HWND: 0x{Handle:X} Title: '{Text}' Class: WindowsForms");
 
         // Clean up old version from previous update
-        var justUpdated = UpdateService.CleanupOldVersion();
+        UpdateService.CleanupOldVersion();
 
-        // Startup toast - show "Updated" message if we just updated
+        // Check if version changed (for What's New popup)
         var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
         var versionStr = version != null ? $" v{version.Major}.{version.Minor}.{version.Build}" : "";
+        var currentVersionStr = version != null ? $"{version.Major}.{version.Minor}.{version.Build}" : "1.0.0";
         string modeStr = App.IsHeadless ? " [Headless]" : "";
 
-        if (justUpdated)
+        var lastSeenVersion = _config.LastSeenVersion;
+        var versionChanged = lastSeenVersion != currentVersionStr;
+
+        if (versionChanged)
         {
-            ShowStatusToast($"Mosaic Tools{versionStr} Updated!", 3000);
+            // Show What's New popup
+            var whatsNew = new WhatsNewForm(lastSeenVersion, currentVersionStr);
+            whatsNew.Show();
+
+            // Update last seen version
+            _config.LastSeenVersion = currentVersionStr;
+            _config.Save();
         }
         else
         {
             ShowStatusToast($"Mosaic Tools{versionStr} Started ({_config.DoctorName}){modeStr}", 2000);
         }
 
-        // Check for updates (async, non-blocking)
-        if (_config.AutoUpdateEnabled)
+        // Check for updates (async, non-blocking) - skip in headless mode
+        if (_config.AutoUpdateEnabled && !App.IsHeadless)
         {
             _ = CheckForUpdatesAsync();
         }

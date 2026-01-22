@@ -1,0 +1,1707 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Linq;
+using System.Windows.Forms;
+using MosaicTools.Services;
+
+namespace MosaicTools.UI;
+
+/// <summary>
+/// Editor form for managing pick lists with Tree mode (hierarchical) or Builder mode (sentence construction).
+/// </summary>
+public class PickListEditorForm : Form
+{
+    private readonly Configuration _config;
+    private List<PickListConfig> _pickLists;
+    private PickListConfig? _selectedList;
+    private PickListNode? _selectedNode;
+    private PickListCategory? _selectedCategory;
+    private int _selectedOptionIndex = -1;
+    private bool _suppressEvents;
+
+    // Left panel
+    private ListBox _listBox = null!;
+    private TextBox _listNameBox = null!;
+    private ComboBox _modeCombo = null!;
+    private TextBox _listCriteriaRequiredBox = null!;
+    private TextBox _listCriteriaAnyOfBox = null!;
+    private TextBox _listCriteriaExcludeBox = null!;
+    private CheckBox _listEnabledCheck = null!;
+
+    // Tree mode panel (right side)
+    private Panel _treeModePanel = null!;
+    private TreeView _treeView = null!;
+    private Button _addNodeBtn = null!;
+    private Button _addChildBtn = null!;
+    private Button _cloneNodeBtn = null!;
+    private Button _removeNodeBtn = null!;
+    private Button _moveUpBtn = null!;
+    private Button _moveDownBtn = null!;
+    private TextBox _nodeLabelBox = null!;
+    private TextBox _nodeTextBox = null!;
+    private Label _breadcrumbLabel = null!;
+    private Label _selectedNodeHeader = null!;
+    private Label _labelLabel = null!;
+    private Label _textToInsertLabel = null!;
+
+    // Builder mode panel (right side)
+    private Panel _builderModePanel = null!;
+    private ListBox _categoryListBox = null!;
+    private ListBox _optionsListBox = null!;
+    private Button _addCategoryBtn = null!;
+    private Button _removeCategoryBtn = null!;
+    private Button _moveCategoryUpBtn = null!;
+    private Button _moveCategoryDownBtn = null!;
+    private Button _addOptionBtn = null!;
+    private Button _removeOptionBtn = null!;
+    private Button _moveOptionUpBtn = null!;
+    private Button _moveOptionDownBtn = null!;
+    private TextBox _categoryNameBox = null!;
+    private TextBox _separatorBox = null!;
+    private TextBox _optionTextBox = null!;
+    private CheckBox _terminalCheckBox = null!;
+    private Label _optionsHeader = null!;
+    private Button _importBtn = null!;
+
+    public PickListEditorForm(Configuration config)
+    {
+        _config = config;
+        _pickLists = config.PickLists.Select(ClonePickList).ToList();
+        InitializeUI();
+        RefreshListBox();
+    }
+
+    private PickListConfig ClonePickList(PickListConfig pl)
+    {
+        return new PickListConfig
+        {
+            Id = pl.Id,
+            Enabled = pl.Enabled,
+            Name = pl.Name,
+            Mode = pl.Mode,
+            CriteriaRequired = pl.CriteriaRequired,
+            CriteriaAnyOf = pl.CriteriaAnyOf,
+            CriteriaExclude = pl.CriteriaExclude,
+            Nodes = pl.Nodes.Select(n => n.Clone()).ToList(),
+            Categories = pl.Categories.Select(c => new PickListCategory
+            {
+                Name = c.Name,
+                Options = new List<string>(c.Options),
+                Separator = c.Separator,
+                TerminalOptions = new List<int>(c.TerminalOptions)
+            }).ToList()
+        };
+    }
+
+    private void InitializeUI()
+    {
+        Text = "Pick List Editor";
+        Size = new Size(1000, 650);
+        MinimumSize = new Size(900, 550);
+        StartPosition = FormStartPosition.CenterParent;
+        BackColor = Color.FromArgb(30, 30, 30);
+        ForeColor = Color.White;
+        Padding = new Padding(15);
+
+        // Bottom buttons
+        var saveBtn = new Button
+        {
+            Text = "Save && Close",
+            Size = new Size(100, 32),
+            Anchor = AnchorStyles.Bottom | AnchorStyles.Right,
+            BackColor = Color.FromArgb(51, 102, 0),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        saveBtn.FlatAppearance.BorderSize = 0;
+        saveBtn.Click += (s, e) => SaveAndClose();
+        Controls.Add(saveBtn);
+
+        var cancelBtn = new Button
+        {
+            Text = "Cancel",
+            Size = new Size(80, 32),
+            Anchor = AnchorStyles.Bottom | AnchorStyles.Right,
+            BackColor = Color.FromArgb(102, 51, 0),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        cancelBtn.FlatAppearance.BorderSize = 0;
+        cancelBtn.Click += (s, e) => Close();
+        Controls.Add(cancelBtn);
+
+        // Example buttons (bottom left)
+        var treeExampleBtn = new Button
+        {
+            Text = "Tree Example",
+            Size = new Size(95, 32),
+            Anchor = AnchorStyles.Bottom | AnchorStyles.Left,
+            BackColor = Color.FromArgb(50, 70, 90),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        treeExampleBtn.FlatAppearance.BorderSize = 0;
+        treeExampleBtn.Click += (s, e) => AddExampleTreeList();
+        Controls.Add(treeExampleBtn);
+
+        var builderExampleBtn = new Button
+        {
+            Text = "Builder Example",
+            Size = new Size(110, 32),
+            Anchor = AnchorStyles.Bottom | AnchorStyles.Left,
+            BackColor = Color.FromArgb(70, 50, 90),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        builderExampleBtn.FlatAppearance.BorderSize = 0;
+        builderExampleBtn.Click += (s, e) => AddExampleBuilderList();
+        Controls.Add(builderExampleBtn);
+
+        // Position buttons
+        Resize += (s, e) =>
+        {
+            cancelBtn.Location = new Point(ClientSize.Width - cancelBtn.Width - 15, ClientSize.Height - cancelBtn.Height - 15);
+            saveBtn.Location = new Point(cancelBtn.Left - saveBtn.Width - 10, cancelBtn.Top);
+            treeExampleBtn.Location = new Point(15, ClientSize.Height - treeExampleBtn.Height - 15);
+            builderExampleBtn.Location = new Point(treeExampleBtn.Right + 10, treeExampleBtn.Top);
+        };
+        cancelBtn.Location = new Point(ClientSize.Width - cancelBtn.Width - 15, ClientSize.Height - cancelBtn.Height - 15);
+        saveBtn.Location = new Point(cancelBtn.Left - saveBtn.Width - 10, cancelBtn.Top);
+        treeExampleBtn.Location = new Point(15, ClientSize.Height - treeExampleBtn.Height - 15);
+        builderExampleBtn.Location = new Point(treeExampleBtn.Right + 10, treeExampleBtn.Top);
+
+        // Create layout
+        CreateLeftPanel();
+        CreateTreeModePanel();
+        CreateBuilderModePanel();
+
+        // Handle resize
+        Resize += (s, e) => UpdateLayout();
+        UpdateLayout();
+    }
+
+    private void CreateLeftPanel()
+    {
+        int x = 15, y = 15;
+
+        // Header
+        var header = CreateLabel("PICK LISTS", x, y, true);
+        Controls.Add(header);
+
+        // Buttons
+        var addBtn = CreateButton("+", x + 95, y - 3, 26);
+        addBtn.Click += (s, e) => AddList();
+        Controls.Add(addBtn);
+
+        var removeBtn = CreateButton("-", x + 125, y - 3, 26);
+        removeBtn.Click += (s, e) => RemoveList();
+        Controls.Add(removeBtn);
+
+        var cloneBtn = CreateButton("Clone", x + 155, y - 3, 50);
+        cloneBtn.Click += (s, e) => CloneList();
+        Controls.Add(cloneBtn);
+        y += 25;
+
+        // List box
+        _listBox = new ListBox
+        {
+            Location = new Point(x, y),
+            Size = new Size(260, 140),
+            BackColor = Color.FromArgb(45, 45, 45),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            DrawMode = DrawMode.OwnerDrawFixed,
+            ItemHeight = 24
+        };
+        _listBox.DrawItem += ListBox_DrawItem;
+        _listBox.SelectedIndexChanged += ListBox_SelectedIndexChanged;
+        Controls.Add(_listBox);
+        y += 150;
+
+        // Properties header
+        Controls.Add(CreateLabel("LIST PROPERTIES", x, y, true, 8));
+        y += 22;
+
+        // Enabled
+        _listEnabledCheck = new CheckBox
+        {
+            Text = "Enabled",
+            Location = new Point(x, y),
+            AutoSize = true,
+            ForeColor = Color.White
+        };
+        _listEnabledCheck.CheckedChanged += (s, e) =>
+        {
+            if (_suppressEvents || _selectedList == null) return;
+            _selectedList.Enabled = _listEnabledCheck.Checked;
+            RefreshListBox();
+        };
+        Controls.Add(_listEnabledCheck);
+        y += 26;
+
+        // Name
+        Controls.Add(CreateLabel("Name:", x, y + 2));
+        _listNameBox = CreateTextBox(x + 60, y, 200);
+        _listNameBox.TextChanged += (s, e) =>
+        {
+            if (_suppressEvents || _selectedList == null) return;
+            _selectedList.Name = _listNameBox.Text;
+            RefreshListBox();
+        };
+        Controls.Add(_listNameBox);
+        y += 28;
+
+        // Mode
+        Controls.Add(CreateLabel("Mode:", x, y + 2));
+        _modeCombo = new ComboBox
+        {
+            Location = new Point(x + 60, y),
+            Width = 100,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            DropDownStyle = ComboBoxStyle.DropDownList
+        };
+        _modeCombo.Items.AddRange(new object[] { "Tree", "Builder" });
+        _modeCombo.SelectedIndex = 0;
+        _modeCombo.SelectedIndexChanged += ModeCombo_SelectedIndexChanged;
+        Controls.Add(_modeCombo);
+        y += 28;
+
+        // Required
+        Controls.Add(CreateLabel("Required:", x, y + 2));
+        _listCriteriaRequiredBox = CreateTextBox(x + 60, y, 200);
+        _listCriteriaRequiredBox.TextChanged += (s, e) =>
+        {
+            if (_suppressEvents || _selectedList == null) return;
+            _selectedList.CriteriaRequired = _listCriteriaRequiredBox.Text;
+        };
+        Controls.Add(_listCriteriaRequiredBox);
+        y += 28;
+
+        // Any of
+        Controls.Add(CreateLabel("Any of:", x, y + 2));
+        _listCriteriaAnyOfBox = CreateTextBox(x + 60, y, 200);
+        _listCriteriaAnyOfBox.TextChanged += (s, e) =>
+        {
+            if (_suppressEvents || _selectedList == null) return;
+            _selectedList.CriteriaAnyOf = _listCriteriaAnyOfBox.Text;
+        };
+        Controls.Add(_listCriteriaAnyOfBox);
+        y += 28;
+
+        // Exclude
+        Controls.Add(CreateLabel("Exclude:", x, y + 2));
+        _listCriteriaExcludeBox = CreateTextBox(x + 60, y, 200);
+        _listCriteriaExcludeBox.TextChanged += (s, e) =>
+        {
+            if (_suppressEvents || _selectedList == null) return;
+            _selectedList.CriteriaExclude = _listCriteriaExcludeBox.Text;
+        };
+        Controls.Add(_listCriteriaExcludeBox);
+    }
+
+    private void CreateTreeModePanel()
+    {
+        int x = 0, y = 0;
+
+        _treeModePanel = new Panel
+        {
+            Location = new Point(295, 15),
+            Size = new Size(680, 550),
+            BackColor = Color.FromArgb(30, 30, 30)
+        };
+        Controls.Add(_treeModePanel);
+
+        // Header
+        var header = CreateLabel("NODES", x, y, true);
+        _treeModePanel.Controls.Add(header);
+
+        // Buttons
+        _addNodeBtn = CreateButton("+ Add", x + 70, y - 3, 50);
+        _addNodeBtn.Click += (s, e) => AddNode(false);
+        _treeModePanel.Controls.Add(_addNodeBtn);
+
+        _addChildBtn = CreateButton("+ Child", x + 125, y - 3, 55);
+        _addChildBtn.Click += (s, e) => AddNode(true);
+        _treeModePanel.Controls.Add(_addChildBtn);
+
+        _cloneNodeBtn = CreateButton("Clone", x + 185, y - 3, 45);
+        _cloneNodeBtn.Click += (s, e) => CloneNode();
+        _treeModePanel.Controls.Add(_cloneNodeBtn);
+
+        _moveUpBtn = CreateButton("^", x + 235, y - 3, 26);
+        _moveUpBtn.Click += (s, e) => MoveNode(-1);
+        _treeModePanel.Controls.Add(_moveUpBtn);
+
+        _moveDownBtn = CreateButton("v", x + 265, y - 3, 26);
+        _moveDownBtn.Click += (s, e) => MoveNode(1);
+        _treeModePanel.Controls.Add(_moveDownBtn);
+
+        _removeNodeBtn = CreateButton("- Del", x + 296, y - 3, 45);
+        _removeNodeBtn.Click += (s, e) => RemoveNode();
+        _treeModePanel.Controls.Add(_removeNodeBtn);
+        y += 25;
+
+        // Tree view
+        _treeView = new TreeView
+        {
+            Location = new Point(x, y),
+            Size = new Size(400, 280),
+            BackColor = Color.FromArgb(45, 45, 45),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            FullRowSelect = true,
+            HideSelection = false,
+            ShowLines = true,
+            ShowPlusMinus = true,
+            Indent = 20,
+            ItemHeight = 22
+        };
+        _treeView.AfterSelect += TreeView_AfterSelect;
+        _treeModePanel.Controls.Add(_treeView);
+
+        // Node properties header (position updated in UpdateLayout)
+        _selectedNodeHeader = CreateLabel("SELECTED NODE", x, 0, true, 8);
+        _treeModePanel.Controls.Add(_selectedNodeHeader);
+
+        // Breadcrumb (position updated in UpdateLayout)
+        _breadcrumbLabel = new Label
+        {
+            Location = new Point(x, 0),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(100, 160, 200),
+            Font = new Font("Segoe UI", 8)
+        };
+        _treeModePanel.Controls.Add(_breadcrumbLabel);
+
+        // Label (position updated in UpdateLayout)
+        _labelLabel = CreateLabel("Label:", x, 0);
+        _treeModePanel.Controls.Add(_labelLabel);
+        _nodeLabelBox = CreateTextBox(x + 50, 0, 300);
+        _nodeLabelBox.TextChanged += NodeLabelBox_TextChanged;
+        _treeModePanel.Controls.Add(_nodeLabelBox);
+
+        // Text to insert (position updated in UpdateLayout)
+        _textToInsertLabel = CreateLabel("Text to insert:", x, 0);
+        _treeModePanel.Controls.Add(_textToInsertLabel);
+
+        _nodeTextBox = new TextBox
+        {
+            Location = new Point(x, 0),
+            Size = new Size(400, 100),
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            Multiline = true,
+            ScrollBars = ScrollBars.Vertical
+        };
+        _nodeTextBox.TextChanged += NodeTextBox_TextChanged;
+        _treeModePanel.Controls.Add(_nodeTextBox);
+    }
+
+    private void CreateBuilderModePanel()
+    {
+        int x = 0, y = 0;
+
+        _builderModePanel = new Panel
+        {
+            Location = new Point(295, 15),
+            Size = new Size(680, 550),
+            BackColor = Color.FromArgb(30, 30, 30),
+            Visible = false
+        };
+        Controls.Add(_builderModePanel);
+
+        // Categories section
+        var catHeader = CreateLabel("CATEGORIES", x, y, true);
+        _builderModePanel.Controls.Add(catHeader);
+
+        _addCategoryBtn = CreateButton("+", x + 100, y - 3, 26);
+        _addCategoryBtn.Click += (s, e) => AddCategory();
+        _builderModePanel.Controls.Add(_addCategoryBtn);
+
+        _removeCategoryBtn = CreateButton("-", x + 130, y - 3, 26);
+        _removeCategoryBtn.Click += (s, e) => RemoveCategory();
+        _builderModePanel.Controls.Add(_removeCategoryBtn);
+
+        _moveCategoryUpBtn = CreateButton("^", x + 160, y - 3, 26);
+        _moveCategoryUpBtn.Click += (s, e) => MoveCategory(-1);
+        _builderModePanel.Controls.Add(_moveCategoryUpBtn);
+
+        _moveCategoryDownBtn = CreateButton("v", x + 190, y - 3, 26);
+        _moveCategoryDownBtn.Click += (s, e) => MoveCategory(1);
+        _builderModePanel.Controls.Add(_moveCategoryDownBtn);
+
+        _importBtn = CreateButton("Import...", x + 225, y - 3, 60);
+        _importBtn.Click += (s, e) => ImportCategories();
+        _builderModePanel.Controls.Add(_importBtn);
+        y += 25;
+
+        _categoryListBox = new ListBox
+        {
+            Location = new Point(x, y),
+            Size = new Size(280, 200),
+            BackColor = Color.FromArgb(45, 45, 45),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            DrawMode = DrawMode.OwnerDrawFixed,
+            ItemHeight = 24
+        };
+        _categoryListBox.DrawItem += CategoryListBox_DrawItem;
+        _categoryListBox.SelectedIndexChanged += CategoryListBox_SelectedIndexChanged;
+        _builderModePanel.Controls.Add(_categoryListBox);
+
+        // Category properties
+        var catPropY = y + 210;
+        _builderModePanel.Controls.Add(CreateLabel("Name:", x, catPropY + 2));
+        _categoryNameBox = CreateTextBox(x + 60, catPropY, 220);
+        _categoryNameBox.TextChanged += CategoryNameBox_TextChanged;
+        _builderModePanel.Controls.Add(_categoryNameBox);
+        catPropY += 28;
+
+        _builderModePanel.Controls.Add(CreateLabel("Separator:", x, catPropY + 2));
+        _separatorBox = CreateTextBox(x + 60, catPropY, 60);
+        _separatorBox.TextChanged += SeparatorBox_TextChanged;
+        _builderModePanel.Controls.Add(_separatorBox);
+
+        var sepHint = CreateLabel("(text after selection, default: space)", x + 130, catPropY + 2);
+        sepHint.ForeColor = Color.FromArgb(100, 100, 100);
+        _builderModePanel.Controls.Add(sepHint);
+
+        // Options section (right side of builder panel)
+        var optX = 310;
+        _optionsHeader = CreateLabel("OPTIONS IN: (select category)", optX, 0, true);
+        _builderModePanel.Controls.Add(_optionsHeader);
+
+        _addOptionBtn = CreateButton("+", optX + 200, -3, 26);
+        _addOptionBtn.Click += (s, e) => AddOption();
+        _builderModePanel.Controls.Add(_addOptionBtn);
+
+        _removeOptionBtn = CreateButton("-", optX + 230, -3, 26);
+        _removeOptionBtn.Click += (s, e) => RemoveOption();
+        _builderModePanel.Controls.Add(_removeOptionBtn);
+
+        _moveOptionUpBtn = CreateButton("^", optX + 260, -3, 26);
+        _moveOptionUpBtn.Click += (s, e) => MoveOption(-1);
+        _builderModePanel.Controls.Add(_moveOptionUpBtn);
+
+        _moveOptionDownBtn = CreateButton("v", optX + 290, -3, 26);
+        _moveOptionDownBtn.Click += (s, e) => MoveOption(1);
+        _builderModePanel.Controls.Add(_moveOptionDownBtn);
+
+        _optionsListBox = new ListBox
+        {
+            Location = new Point(optX, y),
+            Size = new Size(340, 200),
+            BackColor = Color.FromArgb(45, 45, 45),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            DrawMode = DrawMode.OwnerDrawFixed,
+            ItemHeight = 24
+        };
+        _optionsListBox.DrawItem += OptionsListBox_DrawItem;
+        _optionsListBox.SelectedIndexChanged += OptionsListBox_SelectedIndexChanged;
+        _builderModePanel.Controls.Add(_optionsListBox);
+
+        // Option text box (multiline for longer text)
+        var optPropY = y + 210;
+        _builderModePanel.Controls.Add(CreateLabel("Option text:", optX, optPropY + 2));
+        _optionTextBox = new TextBox
+        {
+            Location = new Point(optX, optPropY + 20),
+            Size = new Size(340, 60),
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            Multiline = true,
+            ScrollBars = ScrollBars.Vertical
+        };
+        _optionTextBox.TextChanged += OptionTextBox_TextChanged;
+        _builderModePanel.Controls.Add(_optionTextBox);
+
+        // Terminal checkbox
+        _terminalCheckBox = new CheckBox
+        {
+            Text = "Completes sentence (skip remaining categories)",
+            Location = new Point(optX, optPropY + 85),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(255, 200, 150)
+        };
+        _terminalCheckBox.CheckedChanged += TerminalCheckBox_CheckedChanged;
+        _builderModePanel.Controls.Add(_terminalCheckBox);
+
+        // 9-option limit hint
+        var limitHint = CreateLabel("(max 9 options per category)", optX, optPropY + 108);
+        limitHint.ForeColor = Color.FromArgb(100, 100, 100);
+        _builderModePanel.Controls.Add(limitHint);
+    }
+
+    private void UpdateLayout()
+    {
+        var w = ClientSize.Width;
+        var h = ClientSize.Height;
+        var rightX = 295;
+        var rightW = w - rightX - 20;
+        var bottomMargin = 60;
+
+        // Update panel sizes
+        _treeModePanel.Size = new Size(rightW, h - 30 - bottomMargin);
+        _builderModePanel.Size = new Size(rightW, h - 30 - bottomMargin);
+
+        if (_selectedList?.Mode == PickListMode.Tree)
+        {
+            UpdateTreeModeLayout(rightW, h - 30 - bottomMargin);
+        }
+        else
+        {
+            UpdateBuilderModeLayout(rightW, h - 30 - bottomMargin);
+        }
+    }
+
+    private void UpdateTreeModeLayout(int panelW, int panelH)
+    {
+        // Tree view - takes upper portion
+        var treeH = Math.Max(150, (panelH - 200) / 2 + 100);
+        _treeView.Size = new Size(Math.Max(300, panelW - 10), treeH);
+
+        // Position node properties section below tree view
+        var y = _treeView.Bottom + 10;
+
+        _selectedNodeHeader.Location = new Point(0, y);
+        y += 20;
+
+        _breadcrumbLabel.Location = new Point(0, y);
+        y += 18;
+
+        _labelLabel.Location = new Point(0, y + 2);
+        _nodeLabelBox.Location = new Point(50, y);
+        _nodeLabelBox.Width = Math.Max(200, panelW - 60);
+        y += 28;
+
+        _textToInsertLabel.Location = new Point(0, y);
+        y += 20;
+
+        var textBoxH = Math.Max(60, panelH - y - 10);
+        _nodeTextBox.Location = new Point(0, y);
+        _nodeTextBox.Size = new Size(Math.Max(300, panelW - 10), textBoxH);
+    }
+
+    private void UpdateBuilderModeLayout(int panelW, int panelH)
+    {
+        // Reserve space for option editing area at bottom (label + textbox + checkbox + hint = ~130px)
+        var editAreaHeight = 130;
+        var listH = Math.Max(120, panelH - editAreaHeight - 30);
+
+        // Categories list - left half
+        var catW = Math.Max(200, (panelW - 30) / 2);
+        _categoryListBox.Size = new Size(catW, listH);
+
+        // Options list - right half
+        var optX = catW + 30;
+        var optW = panelW - optX - 10;
+        _optionsHeader.Location = new Point(optX, 0);
+        _addOptionBtn.Location = new Point(optX + optW - 120, -3);
+        _removeOptionBtn.Location = new Point(optX + optW - 90, -3);
+        _moveOptionUpBtn.Location = new Point(optX + optW - 60, -3);
+        _moveOptionDownBtn.Location = new Point(optX + optW - 30, -3);
+        _optionsListBox.Location = new Point(optX, 25);
+        _optionsListBox.Size = new Size(optW, listH);
+
+        // Option editing area below options list
+        var optPropY = _optionsListBox.Bottom + 10;
+
+        // "Option text:" label
+        foreach (Control c in _builderModePanel.Controls)
+        {
+            if (c is Label lbl && lbl.Text == "Option text:")
+                lbl.Location = new Point(optX, optPropY);
+        }
+
+        // Option text box
+        _optionTextBox.Location = new Point(optX, optPropY + 18);
+        _optionTextBox.Size = new Size(optW, 50);
+
+        // Terminal checkbox
+        _terminalCheckBox.Location = new Point(optX, optPropY + 72);
+
+        // Hint label
+        foreach (Control c in _builderModePanel.Controls)
+        {
+            if (c is Label lbl && lbl.Text.StartsWith("(max 9"))
+                lbl.Location = new Point(optX, optPropY + 95);
+        }
+    }
+
+    private void ModeCombo_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedList == null) return;
+
+        _selectedList.Mode = _modeCombo.SelectedIndex == 0 ? PickListMode.Tree : PickListMode.Builder;
+        ShowModePanel();
+        RefreshListBox();
+    }
+
+    private void ShowModePanel()
+    {
+        var isTreeMode = _selectedList?.Mode != PickListMode.Builder;
+        _treeModePanel.Visible = isTreeMode;
+        _builderModePanel.Visible = !isTreeMode;
+
+        if (isTreeMode)
+        {
+            RefreshTreeView();
+        }
+        else
+        {
+            RefreshCategoryList();
+        }
+
+        UpdateLayout();
+    }
+
+    private Label CreateLabel(string text, int x, int y, bool bold = false, int size = 9)
+    {
+        return new Label
+        {
+            Text = text,
+            Location = new Point(x, y),
+            AutoSize = true,
+            ForeColor = bold ? Color.FromArgb(180, 180, 180) : Color.FromArgb(150, 150, 150),
+            Font = new Font("Segoe UI", size, bold ? FontStyle.Bold : FontStyle.Regular)
+        };
+    }
+
+    private TextBox CreateTextBox(int x, int y, int width)
+    {
+        return new TextBox
+        {
+            Location = new Point(x, y),
+            Width = width,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+    }
+
+    private Button CreateButton(string text, int x, int y, int width)
+    {
+        var btn = new Button
+        {
+            Text = text,
+            Location = new Point(x, y),
+            Size = new Size(width, 22),
+            BackColor = Color.FromArgb(55, 55, 55),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand,
+            Font = new Font("Segoe UI", 8)
+        };
+        btn.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 70);
+        return btn;
+    }
+
+    #region List Box (Pick Lists)
+
+    private void ListBox_DrawItem(object? sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0 || e.Index >= _pickLists.Count) return;
+
+        var list = _pickLists[e.Index];
+        e.DrawBackground();
+
+        var isSelected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+        using var bgBrush = new SolidBrush(isSelected ? Color.FromArgb(50, 80, 110) : Color.FromArgb(45, 45, 45));
+        e.Graphics.FillRectangle(bgBrush, e.Bounds);
+
+        // Checkbox
+        var checkRect = new Rectangle(e.Bounds.X + 6, e.Bounds.Y + 5, 14, 14);
+        using var checkBrush = new SolidBrush(list.Enabled ? Color.FromArgb(50, 120, 50) : Color.FromArgb(70, 70, 70));
+        e.Graphics.FillRectangle(checkBrush, checkRect);
+        if (list.Enabled)
+        {
+            using var pen = new Pen(Color.White, 2);
+            e.Graphics.DrawLine(pen, checkRect.X + 3, checkRect.Y + 7, checkRect.X + 6, checkRect.Y + 10);
+            e.Graphics.DrawLine(pen, checkRect.X + 6, checkRect.Y + 10, checkRect.X + 11, checkRect.Y + 4);
+        }
+
+        // Mode indicator
+        var modeText = list.Mode == PickListMode.Builder ? "[B] " : "[T] ";
+        var modeColor = list.Mode == PickListMode.Builder ? Color.FromArgb(255, 180, 100) : Color.FromArgb(100, 180, 255);
+
+        // Name
+        using var textBrush = new SolidBrush(list.Enabled ? modeColor : Color.Gray);
+        var name = string.IsNullOrEmpty(list.Name) ? "(unnamed)" : list.Name;
+        e.Graphics.DrawString(modeText + name, e.Font!, textBrush, e.Bounds.X + 26, e.Bounds.Y + 3);
+
+        // Count
+        var count = list.Mode == PickListMode.Builder
+            ? list.Categories.Count
+            : list.Nodes.Count + list.Nodes.Sum(n => n.CountDescendants());
+        using var countBrush = new SolidBrush(Color.FromArgb(110, 110, 110));
+        var countText = $"({count})";
+        var countSize = e.Graphics.MeasureString(countText, e.Font!);
+        e.Graphics.DrawString(countText, e.Font!, countBrush, e.Bounds.Right - countSize.Width - 8, e.Bounds.Y + 3);
+    }
+
+    private void ListBox_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        if (_listBox.SelectedIndex >= 0 && _listBox.SelectedIndex < _pickLists.Count)
+        {
+            _selectedList = _pickLists[_listBox.SelectedIndex];
+            LoadListProperties();
+            ShowModePanel();
+        }
+        else
+        {
+            _selectedList = null;
+            ClearListProperties();
+            _treeView.Nodes.Clear();
+            _categoryListBox.Items.Clear();
+            _optionsListBox.Items.Clear();
+        }
+        UpdateButtonStates();
+    }
+
+    private void RefreshListBox()
+    {
+        var idx = _listBox.SelectedIndex;
+        _listBox.Items.Clear();
+        foreach (var list in _pickLists)
+            _listBox.Items.Add(list);
+        if (idx >= 0 && idx < _listBox.Items.Count)
+            _listBox.SelectedIndex = idx;
+        else if (_listBox.Items.Count > 0)
+            _listBox.SelectedIndex = 0;
+    }
+
+    private void LoadListProperties()
+    {
+        if (_selectedList == null) return;
+        _suppressEvents = true;
+        _listEnabledCheck.Checked = _selectedList.Enabled;
+        _listNameBox.Text = _selectedList.Name;
+        _modeCombo.SelectedIndex = _selectedList.Mode == PickListMode.Builder ? 1 : 0;
+        _listCriteriaRequiredBox.Text = _selectedList.CriteriaRequired;
+        _listCriteriaAnyOfBox.Text = _selectedList.CriteriaAnyOf;
+        _listCriteriaExcludeBox.Text = _selectedList.CriteriaExclude;
+        _suppressEvents = false;
+    }
+
+    private void ClearListProperties()
+    {
+        _suppressEvents = true;
+        _listEnabledCheck.Checked = false;
+        _listNameBox.Text = "";
+        _modeCombo.SelectedIndex = 0;
+        _listCriteriaRequiredBox.Text = "";
+        _listCriteriaAnyOfBox.Text = "";
+        _listCriteriaExcludeBox.Text = "";
+        _suppressEvents = false;
+    }
+
+    #endregion
+
+    #region Tree View (Tree Mode)
+
+    private void RefreshTreeView()
+    {
+        _treeView.Nodes.Clear();
+        _selectedNode = null;
+        ClearNodeProperties();
+
+        if (_selectedList == null) return;
+
+        for (int i = 0; i < _selectedList.Nodes.Count; i++)
+        {
+            var node = _selectedList.Nodes[i];
+            _treeView.Nodes.Add(CreateTreeNode(node, i + 1));
+        }
+
+        _treeView.ExpandAll();
+        if (_treeView.Nodes.Count > 0)
+            _treeView.SelectedNode = _treeView.Nodes[0];
+
+        UpdateButtonStates();
+    }
+
+    private TreeNode CreateTreeNode(PickListNode node, int num)
+    {
+        var label = string.IsNullOrEmpty(node.Label) ? "(unnamed)" : node.Label;
+        var suffix = node.HasChildren ? $" [{node.Children.Count}]" : (!string.IsNullOrEmpty(node.Text) ? " *" : "");
+
+        var treeNode = new TreeNode
+        {
+            Text = $"{num}. {label}{suffix}",
+            Tag = node,
+            ForeColor = node.HasChildren ? Color.FromArgb(100, 180, 255) : Color.White
+        };
+
+        for (int i = 0; i < node.Children.Count; i++)
+            treeNode.Nodes.Add(CreateTreeNode(node.Children[i], i + 1));
+
+        return treeNode;
+    }
+
+    private void TreeView_AfterSelect(object? sender, TreeViewEventArgs e)
+    {
+        _selectedNode = e.Node?.Tag as PickListNode;
+        if (_selectedNode != null)
+            LoadNodeProperties();
+        else
+            ClearNodeProperties();
+        UpdateButtonStates();
+    }
+
+    private void LoadNodeProperties()
+    {
+        if (_selectedNode == null) return;
+        _suppressEvents = true;
+        _nodeLabelBox.Text = _selectedNode.Label;
+        _nodeTextBox.Text = _selectedNode.Text;
+        _breadcrumbLabel.Text = GetBreadcrumb();
+        _suppressEvents = false;
+    }
+
+    private void ClearNodeProperties()
+    {
+        _suppressEvents = true;
+        _nodeLabelBox.Text = "";
+        _nodeTextBox.Text = "";
+        _breadcrumbLabel.Text = "";
+        _suppressEvents = false;
+    }
+
+    private string GetBreadcrumb()
+    {
+        if (_treeView.SelectedNode == null) return "";
+        var parts = new List<string>();
+        var node = _treeView.SelectedNode;
+        while (node != null)
+        {
+            var pickNode = node.Tag as PickListNode;
+            parts.Insert(0, pickNode?.Label ?? "?");
+            node = node.Parent;
+        }
+        return string.Join(" > ", parts);
+    }
+
+    private void NodeLabelBox_TextChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedNode == null) return;
+        _selectedNode.Label = _nodeLabelBox.Text;
+        UpdateSelectedTreeNode();
+        _breadcrumbLabel.Text = GetBreadcrumb();
+    }
+
+    private void NodeTextBox_TextChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedNode == null) return;
+        _selectedNode.Text = _nodeTextBox.Text;
+        UpdateSelectedTreeNode();
+    }
+
+    private void UpdateSelectedTreeNode()
+    {
+        if (_treeView.SelectedNode == null || _selectedNode == null) return;
+        var idx = _treeView.SelectedNode.Parent?.Nodes.IndexOf(_treeView.SelectedNode) ?? _treeView.Nodes.IndexOf(_treeView.SelectedNode);
+        var label = string.IsNullOrEmpty(_selectedNode.Label) ? "(unnamed)" : _selectedNode.Label;
+        var suffix = _selectedNode.HasChildren ? $" [{_selectedNode.Children.Count}]" : (!string.IsNullOrEmpty(_selectedNode.Text) ? " *" : "");
+        _treeView.SelectedNode.Text = $"{idx + 1}. {label}{suffix}";
+        _treeView.SelectedNode.ForeColor = _selectedNode.HasChildren ? Color.FromArgb(100, 180, 255) : Color.White;
+    }
+
+    #endregion
+
+    #region Builder Mode
+
+    private void RefreshCategoryList()
+    {
+        _categoryListBox.Items.Clear();
+        _selectedCategory = null;
+        ClearCategoryProperties();
+
+        if (_selectedList == null) return;
+
+        foreach (var cat in _selectedList.Categories)
+            _categoryListBox.Items.Add(cat);
+
+        if (_categoryListBox.Items.Count > 0)
+            _categoryListBox.SelectedIndex = 0;
+
+        UpdateBuilderButtonStates();
+    }
+
+    private void CategoryListBox_DrawItem(object? sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0 || _selectedList == null || e.Index >= _selectedList.Categories.Count) return;
+
+        var cat = _selectedList.Categories[e.Index];
+        e.DrawBackground();
+
+        var isSelected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+        using var bgBrush = new SolidBrush(isSelected ? Color.FromArgb(50, 80, 110) : Color.FromArgb(45, 45, 45));
+        e.Graphics.FillRectangle(bgBrush, e.Bounds);
+
+        // Number
+        using var numBrush = new SolidBrush(Color.FromArgb(100, 180, 255));
+        using var numFont = new Font("Consolas", 10, FontStyle.Bold);
+        e.Graphics.DrawString($"{e.Index + 1}.", numFont, numBrush, e.Bounds.X + 6, e.Bounds.Y + 3);
+
+        // Name
+        using var textBrush = new SolidBrush(Color.White);
+        var name = string.IsNullOrEmpty(cat.Name) ? "(unnamed)" : cat.Name;
+        e.Graphics.DrawString(name, e.Font!, textBrush, e.Bounds.X + 30, e.Bounds.Y + 3);
+
+        // Option count
+        using var countBrush = new SolidBrush(Color.FromArgb(110, 110, 110));
+        var countText = $"({cat.Options.Count})";
+        var countSize = e.Graphics.MeasureString(countText, e.Font!);
+        e.Graphics.DrawString(countText, e.Font!, countBrush, e.Bounds.Right - countSize.Width - 8, e.Bounds.Y + 3);
+    }
+
+    private void CategoryListBox_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        if (_categoryListBox.SelectedIndex >= 0 && _selectedList != null && _categoryListBox.SelectedIndex < _selectedList.Categories.Count)
+        {
+            _selectedCategory = _selectedList.Categories[_categoryListBox.SelectedIndex];
+            LoadCategoryProperties();
+            RefreshOptionsList();
+        }
+        else
+        {
+            _selectedCategory = null;
+            ClearCategoryProperties();
+            _optionsListBox.Items.Clear();
+        }
+        UpdateBuilderButtonStates();
+    }
+
+    private void LoadCategoryProperties()
+    {
+        if (_selectedCategory == null) return;
+        _suppressEvents = true;
+        _categoryNameBox.Text = _selectedCategory.Name;
+        _separatorBox.Text = _selectedCategory.Separator;
+        _optionsHeader.Text = $"OPTIONS IN: \"{_selectedCategory.Name}\"";
+        _suppressEvents = false;
+    }
+
+    private void ClearCategoryProperties()
+    {
+        _suppressEvents = true;
+        _categoryNameBox.Text = "";
+        _separatorBox.Text = " ";
+        _optionsHeader.Text = "OPTIONS IN: (select category)";
+        _suppressEvents = false;
+    }
+
+    private void CategoryNameBox_TextChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedCategory == null) return;
+        _selectedCategory.Name = _categoryNameBox.Text;
+        _optionsHeader.Text = $"OPTIONS IN: \"{_selectedCategory.Name}\"";
+        _categoryListBox.Invalidate();
+    }
+
+    private void SeparatorBox_TextChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedCategory == null) return;
+        _selectedCategory.Separator = _separatorBox.Text;
+    }
+
+    private void RefreshOptionsList()
+    {
+        _optionsListBox.Items.Clear();
+        _selectedOptionIndex = -1;
+        ClearOptionProperties();
+
+        if (_selectedCategory == null) return;
+
+        foreach (var opt in _selectedCategory.Options)
+            _optionsListBox.Items.Add(opt);
+
+        if (_optionsListBox.Items.Count > 0)
+            _optionsListBox.SelectedIndex = 0;
+
+        UpdateBuilderButtonStates();
+    }
+
+    private void OptionsListBox_DrawItem(object? sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0 || _selectedCategory == null || e.Index >= _selectedCategory.Options.Count) return;
+
+        var opt = _selectedCategory.Options[e.Index];
+        var isTerminal = _selectedCategory.IsTerminal(e.Index);
+        e.DrawBackground();
+
+        var isSelected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+        var bgColor = isTerminal
+            ? (isSelected ? Color.FromArgb(70, 60, 40) : Color.FromArgb(55, 50, 35))
+            : (isSelected ? Color.FromArgb(50, 80, 110) : Color.FromArgb(45, 45, 45));
+        using var bgBrush = new SolidBrush(bgColor);
+        e.Graphics.FillRectangle(bgBrush, e.Bounds);
+
+        // Number
+        var numColor = isTerminal ? Color.FromArgb(255, 200, 100) : Color.FromArgb(100, 220, 150);
+        using var numBrush = new SolidBrush(numColor);
+        using var numFont = new Font("Consolas", 10, FontStyle.Bold);
+        e.Graphics.DrawString($"{e.Index + 1}", numFont, numBrush, e.Bounds.X + 6, e.Bounds.Y + 3);
+
+        // Option text
+        using var textBrush = new SolidBrush(Color.White);
+        var text = string.IsNullOrEmpty(opt) ? "(empty)" : opt;
+        e.Graphics.DrawString(text, e.Font!, textBrush, e.Bounds.X + 30, e.Bounds.Y + 3);
+
+        // Terminal indicator
+        if (isTerminal)
+        {
+            using var endBrush = new SolidBrush(Color.FromArgb(255, 180, 100));
+            e.Graphics.DrawString("[END]", e.Font!, endBrush, e.Bounds.Right - 45, e.Bounds.Y + 3);
+        }
+    }
+
+    private void OptionsListBox_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        if (_optionsListBox.SelectedIndex >= 0 && _selectedCategory != null && _optionsListBox.SelectedIndex < _selectedCategory.Options.Count)
+        {
+            _selectedOptionIndex = _optionsListBox.SelectedIndex;
+            LoadOptionProperties();
+        }
+        else
+        {
+            _selectedOptionIndex = -1;
+            ClearOptionProperties();
+        }
+        UpdateBuilderButtonStates();
+    }
+
+    private void LoadOptionProperties()
+    {
+        if (_selectedCategory == null || _selectedOptionIndex < 0) return;
+        _suppressEvents = true;
+        _optionTextBox.Text = _selectedCategory.Options[_selectedOptionIndex];
+        _terminalCheckBox.Checked = _selectedCategory.IsTerminal(_selectedOptionIndex);
+        _suppressEvents = false;
+    }
+
+    private void ClearOptionProperties()
+    {
+        _suppressEvents = true;
+        _optionTextBox.Text = "";
+        _terminalCheckBox.Checked = false;
+        _suppressEvents = false;
+    }
+
+    private void OptionTextBox_TextChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedCategory == null || _selectedOptionIndex < 0) return;
+        _selectedCategory.Options[_selectedOptionIndex] = _optionTextBox.Text;
+        _optionsListBox.Invalidate();
+    }
+
+    private void TerminalCheckBox_CheckedChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedCategory == null || _selectedOptionIndex < 0) return;
+
+        if (_terminalCheckBox.Checked)
+        {
+            if (!_selectedCategory.TerminalOptions.Contains(_selectedOptionIndex))
+                _selectedCategory.TerminalOptions.Add(_selectedOptionIndex);
+        }
+        else
+        {
+            _selectedCategory.TerminalOptions.Remove(_selectedOptionIndex);
+        }
+        _optionsListBox.Invalidate();
+    }
+
+    private void UpdateBuilderButtonStates()
+    {
+        var hasList = _selectedList != null;
+        var hasCat = _selectedCategory != null;
+        var hasOpt = _selectedOptionIndex >= 0;
+
+        _categoryNameBox.Enabled = hasCat;
+        _separatorBox.Enabled = hasCat;
+        _optionTextBox.Enabled = hasOpt;
+        _terminalCheckBox.Enabled = hasOpt;
+
+        _addCategoryBtn.Enabled = hasList;
+        _removeCategoryBtn.Enabled = hasCat;
+        _moveCategoryUpBtn.Enabled = hasCat && _categoryListBox.SelectedIndex > 0;
+        _moveCategoryDownBtn.Enabled = hasCat && _selectedList != null && _categoryListBox.SelectedIndex < _selectedList.Categories.Count - 1;
+
+        // 9-option limit
+        var canAddOption = hasCat && _selectedCategory!.Options.Count < 9;
+        _addOptionBtn.Enabled = canAddOption;
+        _removeOptionBtn.Enabled = hasOpt;
+        _moveOptionUpBtn.Enabled = hasOpt && _selectedOptionIndex > 0;
+        _moveOptionDownBtn.Enabled = hasOpt && _selectedCategory != null && _selectedOptionIndex < _selectedCategory.Options.Count - 1;
+    }
+
+    private void AddCategory()
+    {
+        if (_selectedList == null) return;
+
+        var newCat = new PickListCategory { Name = "New Category", Separator = " " };
+        _selectedList.Categories.Add(newCat);
+        RefreshCategoryList();
+        _categoryListBox.SelectedIndex = _selectedList.Categories.Count - 1;
+        _categoryNameBox.Focus();
+        _categoryNameBox.SelectAll();
+        RefreshListBox();
+    }
+
+    private void RemoveCategory()
+    {
+        if (_selectedList == null || _selectedCategory == null) return;
+
+        var idx = _selectedList.Categories.IndexOf(_selectedCategory);
+        _selectedList.Categories.Remove(_selectedCategory);
+        RefreshCategoryList();
+        if (_selectedList.Categories.Count > 0)
+            _categoryListBox.SelectedIndex = Math.Min(idx, _selectedList.Categories.Count - 1);
+        RefreshListBox();
+    }
+
+    private void MoveCategory(int dir)
+    {
+        if (_selectedList == null || _selectedCategory == null) return;
+
+        var idx = _selectedList.Categories.IndexOf(_selectedCategory);
+        var newIdx = idx + dir;
+        if (newIdx < 0 || newIdx >= _selectedList.Categories.Count) return;
+
+        _selectedList.Categories.RemoveAt(idx);
+        _selectedList.Categories.Insert(newIdx, _selectedCategory);
+        RefreshCategoryList();
+        _categoryListBox.SelectedIndex = newIdx;
+    }
+
+    private void AddOption()
+    {
+        if (_selectedCategory == null || _selectedCategory.Options.Count >= 9) return;
+
+        _selectedCategory.Options.Add("New option");
+        RefreshOptionsList();
+        _optionsListBox.SelectedIndex = _selectedCategory.Options.Count - 1;
+        _optionTextBox.Focus();
+        _optionTextBox.SelectAll();
+        _categoryListBox.Invalidate();
+    }
+
+    private void RemoveOption()
+    {
+        if (_selectedCategory == null || _selectedOptionIndex < 0) return;
+
+        var idx = _selectedOptionIndex;
+        _selectedCategory.Options.RemoveAt(idx);
+
+        // Update terminal indices: remove this index and shift higher indices down
+        _selectedCategory.TerminalOptions.Remove(idx);
+        for (int i = 0; i < _selectedCategory.TerminalOptions.Count; i++)
+        {
+            if (_selectedCategory.TerminalOptions[i] > idx)
+                _selectedCategory.TerminalOptions[i]--;
+        }
+
+        RefreshOptionsList();
+        if (_selectedCategory.Options.Count > 0)
+            _optionsListBox.SelectedIndex = Math.Min(idx, _selectedCategory.Options.Count - 1);
+        _categoryListBox.Invalidate();
+    }
+
+    private void MoveOption(int dir)
+    {
+        if (_selectedCategory == null || _selectedOptionIndex < 0) return;
+
+        var idx = _selectedOptionIndex;
+        var newIdx = idx + dir;
+        if (newIdx < 0 || newIdx >= _selectedCategory.Options.Count) return;
+
+        // Move the option
+        var opt = _selectedCategory.Options[idx];
+        _selectedCategory.Options.RemoveAt(idx);
+        _selectedCategory.Options.Insert(newIdx, opt);
+
+        // Update terminal indices: swap the indices if needed
+        var wasTerminal = _selectedCategory.TerminalOptions.Remove(idx);
+        var otherWasTerminal = _selectedCategory.TerminalOptions.Remove(newIdx);
+
+        if (wasTerminal)
+            _selectedCategory.TerminalOptions.Add(newIdx);
+        if (otherWasTerminal)
+            _selectedCategory.TerminalOptions.Add(idx);
+
+        RefreshOptionsList();
+        _optionsListBox.SelectedIndex = newIdx;
+    }
+
+    private void ImportCategories()
+    {
+        if (_selectedList == null) return;
+
+        var input = InputBox.Show(
+            "Paste categories in format:\nCategory:opt1/opt2/opt3\nCategory2:opt1/opt2\n\nExample:\nSeverity:Mild/Moderate/Severe\nLocation:aortic arch/cavernous segments",
+            "Import Categories",
+            "",
+            true);
+
+        if (string.IsNullOrWhiteSpace(input)) return;
+
+        var lines = input.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        var imported = 0;
+
+        foreach (var line in lines)
+        {
+            var colonIdx = line.IndexOf(':');
+            if (colonIdx <= 0) continue;
+
+            var name = line.Substring(0, colonIdx).Trim();
+            var optionsStr = line.Substring(colonIdx + 1).Trim();
+            var options = optionsStr.Split('/').Select(o => o.Trim()).Where(o => !string.IsNullOrEmpty(o)).Take(9).ToList();
+
+            if (options.Count == 0) continue;
+
+            _selectedList.Categories.Add(new PickListCategory
+            {
+                Name = name,
+                Options = options,
+                Separator = " "
+            });
+            imported++;
+        }
+
+        if (imported > 0)
+        {
+            RefreshCategoryList();
+            RefreshListBox();
+            MessageBox.Show($"Imported {imported} categories.", "Import Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        else
+        {
+            MessageBox.Show("No valid categories found in the input.\n\nExpected format: Category:opt1/opt2/opt3", "Import Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    #endregion
+
+    #region Button States
+
+    private void UpdateButtonStates()
+    {
+        var hasList = _selectedList != null;
+        var hasNode = _selectedNode != null;
+
+        _listNameBox.Enabled = hasList;
+        _modeCombo.Enabled = hasList;
+        _listCriteriaRequiredBox.Enabled = hasList;
+        _listCriteriaAnyOfBox.Enabled = hasList;
+        _listCriteriaExcludeBox.Enabled = hasList;
+        _listEnabledCheck.Enabled = hasList;
+
+        if (_selectedList?.Mode == PickListMode.Builder)
+        {
+            UpdateBuilderButtonStates();
+            return;
+        }
+
+        // Tree mode button states
+        var siblingCount = GetSiblingCount();
+        var childCount = _selectedNode?.Children.Count ?? 0;
+        var canAddSibling = hasList && siblingCount < 9;
+        var canAddChild = hasNode && childCount < 9;
+
+        _addNodeBtn.Enabled = canAddSibling;
+        _addChildBtn.Enabled = canAddChild;
+        _cloneNodeBtn.Enabled = hasNode && canAddSibling;
+        _removeNodeBtn.Enabled = hasNode;
+        _nodeLabelBox.Enabled = hasNode;
+
+        // Text box only enabled for leaf nodes (no children)
+        var isLeaf = hasNode && !_selectedNode!.HasChildren;
+        _nodeTextBox.Enabled = isLeaf;
+        _textToInsertLabel.ForeColor = isLeaf ? Color.FromArgb(150, 150, 150) : Color.FromArgb(80, 80, 80);
+        if (hasNode && !isLeaf)
+        {
+            _suppressEvents = true;
+            _nodeTextBox.Text = "(Branch nodes don't have text - select a leaf node)";
+            _suppressEvents = false;
+        }
+
+        _moveUpBtn.Enabled = hasNode && CanMove(-1);
+        _moveDownBtn.Enabled = hasNode && CanMove(1);
+    }
+
+    private int GetSiblingCount()
+    {
+        if (_selectedList == null) return 0;
+        if (_treeView.SelectedNode == null) return _selectedList.Nodes.Count;
+
+        var tn = _treeView.SelectedNode;
+        if (tn.Parent == null)
+            return _selectedList.Nodes.Count;
+
+        var parent = tn.Parent.Tag as PickListNode;
+        return parent?.Children.Count ?? 0;
+    }
+
+    private bool CanMove(int dir)
+    {
+        var tn = _treeView.SelectedNode;
+        if (tn == null) return false;
+        var siblings = tn.Parent?.Nodes ?? _treeView.Nodes;
+        var idx = siblings.IndexOf(tn);
+        return idx + dir >= 0 && idx + dir < siblings.Count;
+    }
+
+    #endregion
+
+    #region List Operations
+
+    private void AddList()
+    {
+        var newList = new PickListConfig { Name = "New Pick List", Enabled = true };
+        _pickLists.Add(newList);
+        RefreshListBox();
+        _listBox.SelectedIndex = _pickLists.Count - 1;
+        _listNameBox.Focus();
+        _listNameBox.SelectAll();
+    }
+
+    private void RemoveList()
+    {
+        if (_selectedList == null) return;
+        var idx = _pickLists.IndexOf(_selectedList);
+        _pickLists.Remove(_selectedList);
+        RefreshListBox();
+        if (_pickLists.Count > 0)
+            _listBox.SelectedIndex = Math.Min(idx, _pickLists.Count - 1);
+    }
+
+    private void CloneList()
+    {
+        if (_selectedList == null) return;
+        var clone = ClonePickList(_selectedList);
+        clone.Name += " (Copy)";
+        clone.Id = Guid.NewGuid().ToString("N")[..8];
+        _pickLists.Add(clone);
+        RefreshListBox();
+        _listBox.SelectedIndex = _pickLists.Count - 1;
+    }
+
+    private void AddExampleBuilderList()
+    {
+        var example = new PickListConfig
+        {
+            Name = "Atherosclerosis (Example)",
+            Mode = PickListMode.Builder,
+            Enabled = true,
+            CriteriaRequired = "",
+            Categories = new List<PickListCategory>
+            {
+                new PickListCategory
+                {
+                    Name = "Severity",
+                    Separator = " ",
+                    Options = new List<string>
+                    {
+                        "No significant atherosclerosis.",  // Terminal - ends sentence immediately
+                        "Trace", "Very minimal", "Minimal", "Mild",
+                        "Mild to moderate", "Moderate", "Moderate to severe", "Severe"
+                    },
+                    TerminalOptions = new List<int> { 0 }  // First option is terminal
+                },
+                new PickListCategory
+                {
+                    Name = "Type",
+                    Separator = " ",
+                    Options = new List<string>
+                    {
+                        "atherosclerotic calcifications are noted in",
+                        "mixed soft/hard atherosclerotic plaque is noted in",
+                        "predominantly hard atherosclerotic plaque is noted in",
+                        "predominantly soft atherosclerotic plaque is noted in"
+                    }
+                },
+                new PickListCategory
+                {
+                    Name = "Location",
+                    Separator = ", producing ",
+                    Options = new List<string>
+                    {
+                        "the cavernous segments of both ICAs",
+                        "the supraclinoid segments of both ICAs",
+                        "the distal petrous/cavernous/supraclinoid segments of both ICAs",
+                        "both common carotid arterial bifurcations",
+                        "the proximal internal carotid arteries",
+                        "the left common carotid bifurcation/proximal left ICA",
+                        "the right common carotid bifurcation/proximal right ICA",
+                        "No significant stenosis.",  // Terminal - ends sentence immediately
+                        "the aortic arch and its proximal major branches"
+                    },
+                    TerminalOptions = new List<int> { 7 }  // "No significant stenosis" is terminal
+                },
+                new PickListCategory
+                {
+                    Name = "Result",
+                    Separator = "",
+                    Options = new List<string>
+                    {
+                        "trace endoluminal surface irregularity.",
+                        "minimal endoluminal surface irregularity.",
+                        "mild endoluminal surface irregularity.",
+                        "moderate endoluminal surface irregularity.",
+                        "severe endoluminal surface irregularity.",
+                        "equivalent endoluminal surface irregularity, without hemodynamically-significant stenosis."
+                    }
+                }
+            }
+        };
+
+        _pickLists.Add(example);
+        RefreshListBox();
+        _listBox.SelectedIndex = _pickLists.Count - 1;
+    }
+
+    private void AddExampleTreeList()
+    {
+        var example = new PickListConfig
+        {
+            Name = "Chest X-Ray (Example)",
+            Mode = PickListMode.Tree,
+            Enabled = true,
+            CriteriaRequired = "",
+            Nodes = new List<PickListNode>
+            {
+                new PickListNode
+                {
+                    Label = "Lungs",
+                    Children = new List<PickListNode>
+                    {
+                        new PickListNode { Label = "Clear", Text = "The lungs are clear without focal consolidation, pleural effusion, or pneumothorax." },
+                        new PickListNode
+                        {
+                            Label = "Opacity",
+                            Children = new List<PickListNode>
+                            {
+                                new PickListNode { Label = "RLL opacity", Text = "There is an opacity in the right lower lobe, which may represent pneumonia or atelectasis." },
+                                new PickListNode { Label = "LLL opacity", Text = "There is an opacity in the left lower lobe, which may represent pneumonia or atelectasis." },
+                                new PickListNode { Label = "RUL opacity", Text = "There is an opacity in the right upper lobe, which may represent pneumonia or mass lesion." },
+                                new PickListNode { Label = "Bilateral opacities", Text = "There are bilateral pulmonary opacities, which may represent multifocal pneumonia or edema." }
+                            }
+                        },
+                        new PickListNode
+                        {
+                            Label = "Nodule",
+                            Children = new List<PickListNode>
+                            {
+                                new PickListNode { Label = "Small nodule", Text = "There is a small pulmonary nodule measuring less than 6 mm. Follow-up per Fleischner guidelines may be considered." },
+                                new PickListNode { Label = "Nodule >6mm", Text = "There is a pulmonary nodule measuring greater than 6 mm. CT chest is recommended for further evaluation." }
+                            }
+                        }
+                    }
+                },
+                new PickListNode
+                {
+                    Label = "Heart",
+                    Children = new List<PickListNode>
+                    {
+                        new PickListNode { Label = "Normal size", Text = "The cardiac silhouette is normal in size." },
+                        new PickListNode { Label = "Mildly enlarged", Text = "The cardiac silhouette is mildly enlarged." },
+                        new PickListNode { Label = "Moderately enlarged", Text = "The cardiac silhouette is moderately enlarged." },
+                        new PickListNode { Label = "Cardiomegaly", Text = "There is cardiomegaly." }
+                    }
+                },
+                new PickListNode
+                {
+                    Label = "Pleura",
+                    Children = new List<PickListNode>
+                    {
+                        new PickListNode { Label = "No effusion", Text = "There is no pleural effusion." },
+                        new PickListNode { Label = "Small right effusion", Text = "There is a small right pleural effusion." },
+                        new PickListNode { Label = "Small left effusion", Text = "There is a small left pleural effusion." },
+                        new PickListNode { Label = "Bilateral effusions", Text = "There are small bilateral pleural effusions." },
+                        new PickListNode { Label = "Large right effusion", Text = "There is a large right pleural effusion with associated compressive atelectasis." }
+                    }
+                },
+                new PickListNode
+                {
+                    Label = "Mediastinum",
+                    Children = new List<PickListNode>
+                    {
+                        new PickListNode { Label = "Normal", Text = "The mediastinal contours are normal." },
+                        new PickListNode { Label = "Widened", Text = "The mediastinum is widened. Clinical correlation is recommended." }
+                    }
+                },
+                new PickListNode
+                {
+                    Label = "Bones",
+                    Children = new List<PickListNode>
+                    {
+                        new PickListNode { Label = "No fracture", Text = "No acute osseous abnormality is identified." },
+                        new PickListNode { Label = "Rib fracture", Text = "There is a rib fracture. Clinical correlation is recommended." },
+                        new PickListNode { Label = "Degenerative changes", Text = "Degenerative changes of the thoracic spine are noted." }
+                    }
+                },
+                new PickListNode
+                {
+                    Label = "Lines/Tubes",
+                    Children = new List<PickListNode>
+                    {
+                        new PickListNode { Label = "ETT good position", Text = "The endotracheal tube tip is approximately 4 cm above the carina, in good position." },
+                        new PickListNode { Label = "NG tube good position", Text = "The nasogastric tube tip is in the stomach, in good position." },
+                        new PickListNode { Label = "Central line good position", Text = "The central venous catheter tip is in the SVC, in good position." }
+                    }
+                }
+            }
+        };
+
+        _pickLists.Add(example);
+        RefreshListBox();
+        _listBox.SelectedIndex = _pickLists.Count - 1;
+    }
+
+    #endregion
+
+    #region Node Operations (Tree Mode)
+
+    private void AddNode(bool asChild)
+    {
+        if (_selectedList == null) return;
+
+        var newNode = new PickListNode { Label = "New Item" };
+
+        if (asChild && _selectedNode != null)
+        {
+            if (_selectedNode.Children.Count >= 9) return;
+            _selectedNode.Children.Add(newNode);
+        }
+        else if (_selectedNode != null && _treeView.SelectedNode != null)
+        {
+            var tn = _treeView.SelectedNode;
+            if (tn.Parent == null)
+            {
+                if (_selectedList.Nodes.Count >= 9) return;
+                var idx = _selectedList.Nodes.IndexOf(_selectedNode);
+                _selectedList.Nodes.Insert(idx + 1, newNode);
+            }
+            else
+            {
+                var parent = tn.Parent.Tag as PickListNode;
+                if (parent != null)
+                {
+                    if (parent.Children.Count >= 9) return;
+                    var idx = parent.Children.IndexOf(_selectedNode);
+                    parent.Children.Insert(idx + 1, newNode);
+                }
+            }
+        }
+        else
+        {
+            if (_selectedList.Nodes.Count >= 9) return;
+            _selectedList.Nodes.Add(newNode);
+        }
+
+        RefreshTreeView();
+        SelectNodeInTree(newNode);
+        RefreshListBox();
+        _nodeLabelBox.Focus();
+        _nodeLabelBox.SelectAll();
+    }
+
+    private void RemoveNode()
+    {
+        if (_selectedList == null || _selectedNode == null) return;
+
+        var tn = _treeView.SelectedNode;
+        if (tn == null) return;
+
+        if (tn.Parent == null)
+            _selectedList.Nodes.Remove(_selectedNode);
+        else
+            (tn.Parent.Tag as PickListNode)?.Children.Remove(_selectedNode);
+
+        RefreshTreeView();
+        RefreshListBox();
+    }
+
+    private void MoveNode(int dir)
+    {
+        if (_selectedNode == null || _treeView.SelectedNode == null) return;
+
+        var tn = _treeView.SelectedNode;
+        var siblings = tn.Parent == null ? _selectedList!.Nodes : ((PickListNode)tn.Parent.Tag).Children;
+        var idx = siblings.IndexOf(_selectedNode);
+        var newIdx = idx + dir;
+
+        if (newIdx < 0 || newIdx >= siblings.Count) return;
+
+        siblings.RemoveAt(idx);
+        siblings.Insert(newIdx, _selectedNode);
+
+        RefreshTreeView();
+        SelectNodeInTree(_selectedNode);
+    }
+
+    private void CloneNode()
+    {
+        if (_selectedList == null || _selectedNode == null || _treeView.SelectedNode == null) return;
+
+        var tn = _treeView.SelectedNode;
+        var siblings = tn.Parent == null ? _selectedList.Nodes : ((PickListNode)tn.Parent.Tag).Children;
+
+        if (siblings.Count >= 9) return;
+
+        var clone = _selectedNode.Clone();
+        clone.Label += " (Copy)";
+
+        var idx = siblings.IndexOf(_selectedNode);
+        siblings.Insert(idx + 1, clone);
+
+        RefreshTreeView();
+        SelectNodeInTree(clone);
+        RefreshListBox();
+    }
+
+    private void SelectNodeInTree(PickListNode target)
+    {
+        TreeNode? Find(TreeNodeCollection nodes)
+        {
+            foreach (TreeNode tn in nodes)
+            {
+                if (tn.Tag == target) return tn;
+                var found = Find(tn.Nodes);
+                if (found != null) return found;
+            }
+            return null;
+        }
+        var node = Find(_treeView.Nodes);
+        if (node != null) _treeView.SelectedNode = node;
+    }
+
+    #endregion
+
+    private void SaveAndClose()
+    {
+        _config.PickLists = _pickLists;
+        _config.PickListEditorWidth = Width;
+        _config.PickListEditorHeight = Height;
+        _config.Save();
+        DialogResult = DialogResult.OK;
+        Close();
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        base.OnFormClosing(e);
+        _config.PickListEditorWidth = Width;
+        _config.PickListEditorHeight = Height;
+    }
+}

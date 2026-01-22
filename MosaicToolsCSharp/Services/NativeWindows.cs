@@ -206,7 +206,6 @@ public static class NativeWindows
                         // Active if start != 0 and stop == 0
                         if (start != 0 && stop == 0)
                         {
-                            Logger.Trace($"Registry: {subkeyName} is ACTIVE (start={start}, stop={stop})");
                             return true;
                         }
                     }

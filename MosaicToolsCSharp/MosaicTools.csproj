@@ -11,9 +11,9 @@
     <RootNamespace>MosaicTools</RootNamespace>
 
     <!-- Version -->
-    <Version>2.5.4</Version>
-    <AssemblyVersion>2.5.4.0</AssemblyVersion>
-    <FileVersion>2.5.4.0</FileVersion>
+    <Version>2.6.0</Version>
+    <AssemblyVersion>2.6.0.0</AssemblyVersion>
+    <FileVersion>2.6.0.0</FileVersion>
 
     <!-- Application Icon -->
     <ApplicationIcon>MosaicTools.ico</ApplicationIcon>
@@ -44,12 +44,19 @@
 
     <!-- JSON Configuration -->
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
 
+  <ItemGroup>
     <!-- Text Diffing for Report Changes -->
     <PackageReference Include="DiffPlex" Version="1.7.2" />
 
     <!-- Process management (needed for restart after update) -->
     <PackageReference Include="System.Diagnostics.Process" Version="4.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Embedded Resources -->
+    <EmbeddedResource Include="WhatsNew.txt" />
   </ItemGroup>
 
 </Project>

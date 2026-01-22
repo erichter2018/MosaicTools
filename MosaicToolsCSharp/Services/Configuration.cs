@@ -200,6 +200,32 @@ public class Configuration
     [JsonPropertyName("report_changes_alpha")]
     public int ReportChangesAlpha { get; set; } = 25; // 0-100 percent opacity
 
+    // Version tracking for What's New popup
+    [JsonPropertyName("last_seen_version")]
+    public string? LastSeenVersion { get; set; } = null;
+
+    // Pick Lists
+    [JsonPropertyName("pick_lists_enabled")]
+    public bool PickListsEnabled { get; set; } = false;
+
+    [JsonPropertyName("pick_lists")]
+    public List<PickListConfig> PickLists { get; set; } = new();
+
+    [JsonPropertyName("pick_list_skip_single_match")]
+    public bool PickListSkipSingleMatch { get; set; } = true;
+
+    [JsonPropertyName("pick_list_popup_x")]
+    public int PickListPopupX { get; set; } = 400;
+
+    [JsonPropertyName("pick_list_popup_y")]
+    public int PickListPopupY { get; set; } = 300;
+
+    [JsonPropertyName("pick_list_editor_width")]
+    public int PickListEditorWidth { get; set; } = 900;
+
+    [JsonPropertyName("pick_list_editor_height")]
+    public int PickListEditorHeight { get; set; } = 600;
+
     // Action Mappings (action name -> {hotkey, mic_button})
     [JsonPropertyName("action_mappings")]
     public Dictionary<string, ActionMapping> ActionMappings { get; set; } = new();
@@ -506,9 +532,287 @@ public static class Actions
     public const string SignReport = "Sign Report";
     public const string CreateImpression = "Create Impression";
     public const string DiscardStudy = "Discard Study";
+    public const string ShowPickLists = "Show Pick Lists";
 
     public static readonly string[] All = {
         None, SystemBeep, GetPrior, CriticalFindings,
-        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression, DiscardStudy
+        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression, DiscardStudy, ShowPickLists
     };
+}
+
+/// <summary>
+/// Pick list mode - Tree for hierarchical navigation, Builder for sentence construction.
+/// </summary>
+public enum PickListMode
+{
+    Tree,
+    Builder
+}
+
+/// <summary>
+/// A category in Builder mode pick lists. Each category has options to choose from.
+/// </summary>
+public class PickListCategory
+{
+    /// <summary>
+    /// Display name for this category (e.g., "Degree of Severity", "Location").
+    /// </summary>
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
+    /// <summary>
+    /// Available options for this category. Max 9 options (keyboard shortcuts 1-9).
+    /// Each option is the text that gets appended to the sentence.
+    /// </summary>
+    [JsonPropertyName("options")]
+    public List<string> Options { get; set; } = new();
+
+    /// <summary>
+    /// Text appended after the selected option. Default is a single space.
+    /// Use empty string for no separator, or custom text like ", " or " and ".
+    /// </summary>
+    [JsonPropertyName("separator")]
+    public string Separator { get; set; } = " ";
+
+    /// <summary>
+    /// Indices of options that complete the sentence immediately (terminal options).
+    /// When a terminal option is selected, the sentence is finalized without continuing to subsequent categories.
+    /// </summary>
+    [JsonPropertyName("terminal_options")]
+    public List<int> TerminalOptions { get; set; } = new();
+
+    /// <summary>
+    /// Check if the option at the given index is terminal.
+    /// </summary>
+    public bool IsTerminal(int index) => TerminalOptions.Contains(index);
+}
+
+/// <summary>
+/// Configuration for a pick list - a category of text snippets.
+/// </summary>
+public class PickListConfig
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = Guid.NewGuid().ToString("N")[..8];
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
+    /// <summary>
+    /// Pick list mode - Tree (hierarchical) or Builder (sentence construction).
+    /// </summary>
+    [JsonPropertyName("mode")]
+    public PickListMode Mode { get; set; } = PickListMode.Tree;
+
+    /// <summary>
+    /// Comma-separated required terms. ALL must match the study description.
+    /// Empty = matches all studies (global pick list).
+    /// </summary>
+    [JsonPropertyName("criteria_required")]
+    public string CriteriaRequired { get; set; } = "";
+
+    /// <summary>
+    /// Comma-separated optional terms. At least ONE must match (if specified).
+    /// Empty = no additional OR requirement.
+    /// </summary>
+    [JsonPropertyName("criteria_any_of")]
+    public string CriteriaAnyOf { get; set; } = "";
+
+    /// <summary>
+    /// Comma-separated exclusion terms. NONE must match (if specified).
+    /// Empty = no exclusion filter.
+    /// </summary>
+    [JsonPropertyName("criteria_exclude")]
+    public string CriteriaExclude { get; set; } = "";
+
+    /// <summary>
+    /// Root nodes of this pick list (Tree mode).
+    /// Each node can have nested children for arbitrary depth.
+    /// </summary>
+    [JsonPropertyName("nodes")]
+    public List<PickListNode> Nodes { get; set; } = new();
+
+    /// <summary>
+    /// Categories for Builder mode. Each category has options to select from.
+    /// Selections are concatenated in order to build a sentence.
+    /// </summary>
+    [JsonPropertyName("categories")]
+    public List<PickListCategory> Categories { get; set; } = new();
+
+    /// <summary>
+    /// Check if this pick list matches the given study description.
+    /// Uses same logic as MacroConfig for consistency.
+    /// Logic: (all Required match) AND (at least one AnyOf, if specified) AND (none of Exclude match)
+    /// </summary>
+    public bool MatchesStudy(string? studyDescription)
+    {
+        bool hasRequired = !string.IsNullOrWhiteSpace(CriteriaRequired);
+        bool hasAnyOf = !string.IsNullOrWhiteSpace(CriteriaAnyOf);
+        bool hasExclude = !string.IsNullOrWhiteSpace(CriteriaExclude);
+
+        // Global pick list - matches all (but still check exclusions)
+        if (!hasRequired && !hasAnyOf && !hasExclude)
+            return true;
+
+        if (string.IsNullOrWhiteSpace(studyDescription))
+            return false;
+
+        var description = studyDescription.ToUpperInvariant();
+
+        // Check Exclude terms first - if any match, reject
+        if (hasExclude)
+        {
+            var excludeTerms = CriteriaExclude.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var term in excludeTerms)
+            {
+                if (description.Contains(term.ToUpperInvariant()))
+                    return false;
+            }
+        }
+
+        // Check Required terms (AND logic) - all must match
+        if (hasRequired)
+        {
+            var requiredTerms = CriteriaRequired.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var term in requiredTerms)
+            {
+                if (!description.Contains(term.ToUpperInvariant()))
+                    return false;
+            }
+        }
+
+        // Check AnyOf terms (OR logic) - at least one must match
+        if (hasAnyOf)
+        {
+            var anyOfTerms = CriteriaAnyOf.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            bool anyMatch = false;
+            foreach (var term in anyOfTerms)
+            {
+                if (description.Contains(term.ToUpperInvariant()))
+                {
+                    anyMatch = true;
+                    break;
+                }
+            }
+            if (!anyMatch)
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Returns a display string for the criteria (for list preview).
+    /// </summary>
+    public string GetCriteriaDisplayString()
+    {
+        if (string.IsNullOrWhiteSpace(CriteriaRequired) &&
+            string.IsNullOrWhiteSpace(CriteriaAnyOf) &&
+            string.IsNullOrWhiteSpace(CriteriaExclude))
+            return "All studies";
+
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(CriteriaRequired))
+            parts.Add(CriteriaRequired.Trim());
+        if (!string.IsNullOrWhiteSpace(CriteriaAnyOf))
+            parts.Add($"({CriteriaAnyOf.Trim()})");
+        if (!string.IsNullOrWhiteSpace(CriteriaExclude))
+            parts.Add($"-{CriteriaExclude.Trim()}");
+
+        return string.Join(" + ", parts);
+    }
+}
+
+/// <summary>
+/// A node in the pick list tree. Can be a branch (has children) or leaf (inserts text).
+/// Supports arbitrary nesting depth for complex pick lists.
+/// </summary>
+public class PickListNode
+{
+    /// <summary>
+    /// Display label for this node (e.g., "Heart", "Enlarged", "Mildly").
+    /// </summary>
+    [JsonPropertyName("label")]
+    public string Label { get; set; } = "";
+
+    /// <summary>
+    /// Text to insert when this node is selected.
+    /// For branch nodes, this can be empty (user must drill down).
+    /// For leaf nodes, this is the text that gets pasted.
+    /// </summary>
+    [JsonPropertyName("text")]
+    public string Text { get; set; } = "";
+
+    /// <summary>
+    /// Child nodes. If empty, this is a leaf node.
+    /// User presses 1-9 to select children.
+    /// </summary>
+    [JsonPropertyName("children")]
+    public List<PickListNode> Children { get; set; } = new();
+
+    /// <summary>
+    /// Returns true if this node has children (is a branch).
+    /// </summary>
+    [JsonIgnore]
+    public bool HasChildren => Children.Count > 0;
+
+    /// <summary>
+    /// Returns true if this node is a leaf (no children, just text).
+    /// </summary>
+    [JsonIgnore]
+    public bool IsLeaf => Children.Count == 0;
+
+    /// <summary>
+    /// Deep clone this node and all children.
+    /// </summary>
+    public PickListNode Clone()
+    {
+        return new PickListNode
+        {
+            Label = Label,
+            Text = Text,
+            Children = Children.Select(c => c.Clone()).ToList()
+        };
+    }
+
+    /// <summary>
+    /// Count total descendants (for display).
+    /// </summary>
+    public int CountDescendants()
+    {
+        return Children.Count + Children.Sum(c => c.CountDescendants());
+    }
+}
+
+/// <summary>
+/// Legacy item format - kept for backwards compatibility during migration.
+/// </summary>
+public class PickListItem
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
+    [JsonPropertyName("options")]
+    public List<string> Options { get; set; } = new();
+
+    /// <summary>
+    /// Convert legacy item to new node format.
+    /// </summary>
+    public PickListNode ToNode()
+    {
+        return new PickListNode
+        {
+            Label = Name,
+            Text = "",
+            Children = Options.Select(opt => new PickListNode
+            {
+                Label = string.IsNullOrWhiteSpace(opt) ? "(empty)" : (opt.Length > 30 ? opt.Substring(0, 30) + "..." : opt),
+                Text = opt,
+                Children = new()
+            }).ToList()
+        };
+    }
 }

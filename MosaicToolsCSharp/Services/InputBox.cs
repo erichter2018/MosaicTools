@@ -10,7 +10,7 @@ namespace MosaicTools.Services;
 /// </summary>
 public static class InputBox
 {
-    public static string Show(string prompt, string title, string defaultValue = "")
+    public static string Show(string prompt, string title, string defaultValue = "", bool multiline = false)
     {
         using var form = new Form();
         using var label = new Label();
@@ -27,24 +27,41 @@ public static class InputBox
         buttonOk.DialogResult = DialogResult.OK;
         buttonCancel.DialogResult = DialogResult.Cancel;
 
-        label.SetBounds(12, 12, 372, 20);
-        textBox.SetBounds(12, 36, 372, 20);
-        buttonOk.SetBounds(228, 72, 75, 23);
-        buttonCancel.SetBounds(309, 72, 75, 23);
-
         label.AutoSize = true;
+
+        if (multiline)
+        {
+            textBox.Multiline = true;
+            textBox.ScrollBars = ScrollBars.Vertical;
+            textBox.AcceptsReturn = true;
+            label.SetBounds(12, 12, 450, 60);
+            textBox.SetBounds(12, 80, 450, 150);
+            buttonOk.SetBounds(306, 245, 75, 23);
+            buttonCancel.SetBounds(387, 245, 75, 23);
+            form.ClientSize = new Size(480, 280);
+        }
+        else
+        {
+            label.SetBounds(12, 12, 372, 20);
+            textBox.SetBounds(12, 36, 372, 20);
+            buttonOk.SetBounds(228, 72, 75, 23);
+            buttonCancel.SetBounds(309, 72, 75, 23);
+            form.ClientSize = new Size(396, 107);
+        }
+
         textBox.Anchor |= AnchorStyles.Right;
         buttonOk.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
         buttonCancel.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
 
-        form.ClientSize = new Size(396, 107);
         form.Controls.AddRange(new Control[] { label, textBox, buttonOk, buttonCancel });
-        form.ClientSize = new Size(Math.Max(300, label.Right + 10), form.ClientSize.Height);
+        if (!multiline)
+            form.ClientSize = new Size(Math.Max(300, label.Right + 10), form.ClientSize.Height);
         form.FormBorderStyle = FormBorderStyle.FixedDialog;
         form.StartPosition = FormStartPosition.CenterScreen;
         form.MinimizeBox = false;
         form.MaximizeBox = false;
-        form.AcceptButton = buttonOk;
+        if (!multiline)
+            form.AcceptButton = buttonOk;
         form.CancelButton = buttonCancel;
 
         // Visual Polish
@@ -61,7 +78,7 @@ public static class InputBox
         {
             return textBox.Text;
         }
-        
+
         return defaultValue;
     }
 }
