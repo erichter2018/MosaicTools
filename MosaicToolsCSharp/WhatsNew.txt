@@ -1,3 +1,6 @@
+2.7.1
+- Fixed hotkey and mic button settings not saving (broken since 2.6.0)
+
 2.7.0
 - Critical Results Communication Note: Auto-create notes for stroke cases in Clario
 - Click notification box to create note (when stroke detected)

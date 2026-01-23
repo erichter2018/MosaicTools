@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Windows.Forms;
 using MosaicTools.Services;
 
@@ -162,6 +164,35 @@ public class PickListEditorForm : Form
         builderExampleBtn.Click += (s, e) => AddExampleBuilderList();
         Controls.Add(builderExampleBtn);
 
+        // Backup/Restore buttons
+        var backupBtn = new Button
+        {
+            Text = "Backup...",
+            Size = new Size(75, 32),
+            Anchor = AnchorStyles.Bottom | AnchorStyles.Left,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        backupBtn.FlatAppearance.BorderSize = 0;
+        backupBtn.Click += (s, e) => BackupPickLists();
+        Controls.Add(backupBtn);
+
+        var restoreBtn = new Button
+        {
+            Text = "Restore...",
+            Size = new Size(75, 32),
+            Anchor = AnchorStyles.Bottom | AnchorStyles.Left,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        restoreBtn.FlatAppearance.BorderSize = 0;
+        restoreBtn.Click += (s, e) => RestorePickLists();
+        Controls.Add(restoreBtn);
+
         // Position buttons
         Resize += (s, e) =>
         {
@@ -169,11 +200,15 @@ public class PickListEditorForm : Form
             saveBtn.Location = new Point(cancelBtn.Left - saveBtn.Width - 10, cancelBtn.Top);
             treeExampleBtn.Location = new Point(15, ClientSize.Height - treeExampleBtn.Height - 15);
             builderExampleBtn.Location = new Point(treeExampleBtn.Right + 10, treeExampleBtn.Top);
+            backupBtn.Location = new Point(builderExampleBtn.Right + 20, treeExampleBtn.Top);
+            restoreBtn.Location = new Point(backupBtn.Right + 5, treeExampleBtn.Top);
         };
         cancelBtn.Location = new Point(ClientSize.Width - cancelBtn.Width - 15, ClientSize.Height - cancelBtn.Height - 15);
         saveBtn.Location = new Point(cancelBtn.Left - saveBtn.Width - 10, cancelBtn.Top);
         treeExampleBtn.Location = new Point(15, ClientSize.Height - treeExampleBtn.Height - 15);
         builderExampleBtn.Location = new Point(treeExampleBtn.Right + 10, treeExampleBtn.Top);
+        backupBtn.Location = new Point(builderExampleBtn.Right + 20, treeExampleBtn.Top);
+        restoreBtn.Location = new Point(backupBtn.Right + 5, treeExampleBtn.Top);
 
         // Create layout
         CreateLeftPanel();
@@ -1684,6 +1719,133 @@ public class PickListEditorForm : Form
         }
         var node = Find(_treeView.Nodes);
         if (node != null) _treeView.SelectedNode = node;
+    }
+
+    #endregion
+
+    #region Backup/Restore
+
+    private static readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNameCaseInsensitive = true
+    };
+
+    private void BackupPickLists()
+    {
+        if (_pickLists.Count == 0)
+        {
+            MessageBox.Show("No pick lists to backup.", "Backup", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Backup Pick Lists",
+            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+            DefaultExt = "json",
+            FileName = $"PickLists_Backup_{DateTime.Now:yyyy-MM-dd}.json"
+        };
+
+        if (dialog.ShowDialog() != DialogResult.OK)
+            return;
+
+        try
+        {
+            var json = JsonSerializer.Serialize(_pickLists, _jsonOptions);
+            File.WriteAllText(dialog.FileName, json);
+            MessageBox.Show($"Backed up {_pickLists.Count} pick list(s) to:\n{dialog.FileName}",
+                "Backup Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to save backup:\n{ex.Message}", "Backup Error",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void RestorePickLists()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Restore Pick Lists",
+            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+            DefaultExt = "json"
+        };
+
+        if (dialog.ShowDialog() != DialogResult.OK)
+            return;
+
+        List<PickListConfig> imported;
+        try
+        {
+            var json = File.ReadAllText(dialog.FileName);
+            imported = JsonSerializer.Deserialize<List<PickListConfig>>(json, _jsonOptions) ?? new();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to read backup file:\n{ex.Message}", "Restore Error",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        if (imported.Count == 0)
+        {
+            MessageBox.Show("No pick lists found in the backup file.", "Restore", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        // Check for duplicates by name (case-insensitive)
+        var existingNames = _pickLists.Select(p => p.Name.ToLowerInvariant()).ToHashSet();
+        var duplicates = new List<PickListConfig>();
+        var newItems = new List<PickListConfig>();
+
+        foreach (var item in imported)
+        {
+            if (existingNames.Contains(item.Name.ToLowerInvariant()))
+                duplicates.Add(item);
+            else
+                newItems.Add(item);
+        }
+
+        // Build confirmation message
+        var message = $"Found {imported.Count} pick list(s) in backup.\n\n";
+
+        if (newItems.Count > 0)
+            message += $"New (will be added): {newItems.Count}\n";
+
+        if (duplicates.Count > 0)
+            message += $"Duplicates (will be skipped): {duplicates.Count}\n" +
+                       $"  ({string.Join(", ", duplicates.Select(d => d.Name).Take(5))}" +
+                       (duplicates.Count > 5 ? "..." : "") + ")\n";
+
+        if (newItems.Count == 0)
+        {
+            MessageBox.Show(message + "\nNothing to import - all items already exist.",
+                "Restore", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        message += $"\nImport {newItems.Count} new pick list(s)?";
+
+        if (MessageBox.Show(message, "Confirm Restore", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            return;
+
+        // Import new items with fresh IDs
+        foreach (var item in newItems)
+        {
+            var clone = ClonePickList(item);
+            clone.Id = Guid.NewGuid().ToString("N")[..8]; // New ID to avoid conflicts
+            _pickLists.Add(clone);
+        }
+
+        RefreshListBox();
+        if (_pickLists.Count > 0)
+            _listBox.SelectedIndex = _pickLists.Count - 1;
+
+        MessageBox.Show($"Imported {newItems.Count} pick list(s)." +
+            (duplicates.Count > 0 ? $"\nSkipped {duplicates.Count} duplicate(s)." : ""),
+            "Restore Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     #endregion

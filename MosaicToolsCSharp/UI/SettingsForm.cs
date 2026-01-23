@@ -465,6 +465,7 @@ public class SettingsForm : Form
 
             var hotkeyBox = new TextBox
             {
+                Name = $"hotkey_{action}",
                 Location = new Point(180, y),
                 Width = 120,
                 BackColor = Color.FromArgb(60, 60, 60),
@@ -485,6 +486,7 @@ public class SettingsForm : Form
 
             var micCombo = new ComboBox
             {
+                Name = $"mic_{action}",
                 Location = new Point(App.IsHeadless ? 180 : 310, y),
                 Width = 140,
                 DropDownStyle = ComboBoxStyle.DropDownList,

@@ -32,7 +32,16 @@
       "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp && rd /s /q bin 2>nul && rd /s /q obj 2>nul && echo Cleaned\")",
       "Bash(cmd.exe /c \"start \"\"\"\" \"\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.exe\"\"\")",
       "Bash(cmd.exe /c \"type \"\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\mosaic_tools_log.txt\"\" | findstr /i \"\"critical\"\"\")",
-      "Bash(cmd.exe:*)"
+      "Bash(cmd.exe:*)",
+      "Bash(c:Userserik.richterDesktopdotnetdotnet.exe build ClarioIgnore.csproj)",
+      "Bash(\"c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe\" build ClarioIgnore.csproj)",
+      "Bash(\"c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe\" publish -c Release -r win-x64 --self-contained)",
+      "Bash(\"c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe\" build MosaicTools.csproj)",
+      "Bash(c:Userserik.richterDesktopdotnetdotnet.exe build ClarioIgnore.csproj -c Release)",
+      "Bash(Select-Object -Last 15)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(Start-Process \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\ClarioIgnore\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\ClarioIgnore.exe\")"
     ]
   }
 }
