@@ -13,6 +13,12 @@ If making significant changes to the codebase structure, update the Architecture
 
 ---
 
+## ClarioIgnore - Separate Project
+
+**IMPORTANT:** ClarioIgnore is a separate tool in the `ClarioIgnore/` folder. It is NOT part of MosaicTools releases. When publishing MosaicTools releases, do NOT include ClarioIgnore. ClarioIgnore code can be committed to the repo but should never be published as a GitHub release.
+
+---
+
 ## PENDING: Albert Song Macro Issue (2026-01-21)
 
 **User:** Albert Song (albert.song) on RPMXWRS130RR
