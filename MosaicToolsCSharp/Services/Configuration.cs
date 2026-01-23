@@ -123,6 +123,14 @@ public class Configuration
     [JsonPropertyName("stroke_auto_create_note")]
     public bool StrokeAutoCreateNote { get; set; } = false;
 
+    [JsonPropertyName("stroke_clinical_history_keywords")]
+    public List<string> StrokeClinicalHistoryKeywords { get; set; } = new()
+    {
+        "stroke", "CVA", "TIA", "hemiparesis", "hemiplegia", "aphasia",
+        "dysarthria", "facial droop", "weakness", "numbness", "code stroke",
+        "NIH stroke scale", "NIHSS"
+    };
+
     [JsonPropertyName("clinical_history_x")]
     public int ClinicalHistoryX { get; set; } = 100;
 

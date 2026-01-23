@@ -67,6 +67,7 @@ public class SettingsForm : Form
     private CheckBox _pickListsEnabledCheck = null!;
     private CheckBox _pickListSkipSingleMatchCheck = null!;
     private Label _pickListsCountLabel = null!;
+    private Label _macrosCountLabel = null!;
     private Label? _pickListsActionLabel;
     private TextBox? _pickListsActionHotkey;
     private ComboBox? _pickListsActionMic;
@@ -107,7 +108,7 @@ public class SettingsForm : Form
         };
         Controls.Add(_tabControl);
         
-        // General tab
+        // General tab (Profile, Desktop Mode, Updates)
         var generalTab = CreateGeneralTab();
         _tabControl.TabPages.Add(generalTab);
 
@@ -119,25 +120,21 @@ public class SettingsForm : Form
         var ivButtonsTab = CreateButtonStudioTab();
         _tabControl.TabPages.Add(ivButtonsTab);
 
-        // Templates tab
-        var templatesTab = CreateTemplatesTab();
-        _tabControl.TabPages.Add(templatesTab);
+        // Text Automation tab (combines Templates, Macros, Pick Lists)
+        var textAutomationTab = CreateTextAutomationTab();
+        _tabControl.TabPages.Add(textAutomationTab);
 
-        // Macros tab
-        var macrosTab = CreateMacrosTab();
-        _tabControl.TabPages.Add(macrosTab);
+        // Notifications tab (Clinical History, Alerts)
+        var notificationsTab = CreateNotificationsTab();
+        _tabControl.TabPages.Add(notificationsTab);
 
-        // Advanced tab
-        var advancedTab = CreateAdvancedTab();
-        _tabControl.TabPages.Add(advancedTab);
+        // Behavior tab (Scraping, Scrolling, Focus)
+        var behaviorTab = CreateBehaviorTab();
+        _tabControl.TabPages.Add(behaviorTab);
 
-        // Experimental tab
-        var experimentalTab = CreateExperimentalTab();
-        _tabControl.TabPages.Add(experimentalTab);
-
-        // AHK tab (last)
-        var ahkTab = CreateAhkTab();
-        _tabControl.TabPages.Add(ahkTab);
+        // Reference tab (AHK docs, Debug tips)
+        var referenceTab = CreateReferenceTab();
+        _tabControl.TabPages.Add(referenceTab);
         
         // Save/Cancel/Help buttons
         var buttonPanel = new Panel
@@ -202,208 +199,251 @@ public class SettingsForm : Form
     {
         var tab = new TabPage("General")
         {
-            BackColor = Color.FromArgb(40, 40, 40)
+            BackColor = Color.FromArgb(40, 40, 40),
+            AutoScroll = true
         };
-        
-        int y = 20;
-        int labelWidth = 180;
-        
-        // Doctor Name
-        tab.Controls.Add(CreateLabel("Doctor Name:", 20, y, labelWidth));
+
+        int y = 10;
+        int groupWidth = 440;
+
+        // ========== PROFILE SECTION ==========
+        var profileGroup = new GroupBox
+        {
+            Text = "Profile",
+            Location = new Point(15, y),
+            Size = new Size(groupWidth, 60),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(profileGroup);
+
+        profileGroup.Controls.Add(new Label
+        {
+            Text = "Doctor Name:",
+            Location = new Point(15, 25),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        });
         _doctorNameBox = new TextBox
         {
-            Location = new Point(200, y),
+            Location = new Point(120, 22),
             Width = 200,
             BackColor = Color.FromArgb(60, 60, 60),
             ForeColor = Color.White
         };
-        tab.Controls.Add(_doctorNameBox);
-        y += 35;
-        
-        // Start/Stop Beep options (hide in headless mode - no audio feedback needed)
-        _startBeepCheck = new CheckBox
-        {
-            Text = "Start Beep Enabled",
-            Location = new Point(20, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
+        profileGroup.Controls.Add(_doctorNameBox);
 
-        var startVolLabel = CreateLabel("Start Volume:", 40, y + 25, labelWidth);
-        _startVolumeSlider = new TrackBar
-        {
-            Location = new Point(200, y + 20),
-            Width = 200,
-            Minimum = 0,
-            Maximum = 100,
-            TickFrequency = 10
-        };
-        _startVolumeSlider.ValueChanged += (s, e) => UpdateVolumeLabels();
+        y += 70;
 
-        _startVolLabel = new Label
-        {
-            Location = new Point(410, y + 27),
-            AutoSize = true,
-            ForeColor = Color.White
-        };
+        // ========== DESKTOP MODE SECTION (hidden in headless) ==========
+        // Initialize controls regardless (for LoadSettings)
+        _startBeepCheck = new CheckBox { AutoSize = true };
+        _stopBeepCheck = new CheckBox { AutoSize = true };
+        _startVolumeSlider = new TrackBar { Minimum = 0, Maximum = 100, TickStyle = TickStyle.None, AutoSize = false, Height = 20 };
+        _stopVolumeSlider = new TrackBar { Minimum = 0, Maximum = 100, TickStyle = TickStyle.None, AutoSize = false, Height = 20 };
+        _startVolLabel = new Label { AutoSize = true, ForeColor = Color.White };
+        _stopVolLabel = new Label { AutoSize = true, ForeColor = Color.White };
+        _dictationPauseNum = new NumericUpDown { Minimum = 100, Maximum = 5000, Increment = 100, BackColor = Color.FromArgb(60, 60, 60), ForeColor = Color.White };
+        _ivHotkeyBox = new TextBox { BackColor = Color.FromArgb(60, 60, 60), ForeColor = Color.White, ReadOnly = true, Cursor = Cursors.Hand };
+        _indicatorCheck = new CheckBox { AutoSize = true };
+        _hideIndicatorWhenNoStudyCheck = new CheckBox { AutoSize = true };
+        _autoStopCheck = new CheckBox { AutoSize = true };
 
-        _stopBeepCheck = new CheckBox
-        {
-            Text = "Stop Beep Enabled",
-            Location = new Point(20, y + 65),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-
-        var stopVolLabel = CreateLabel("Stop Volume:", 40, y + 90, labelWidth);
-        _stopVolumeSlider = new TrackBar
-        {
-            Location = new Point(200, y + 85),
-            Width = 200,
-            Minimum = 0,
-            Maximum = 100,
-            TickFrequency = 10
-        };
-        _stopVolumeSlider.ValueChanged += (s, e) => UpdateVolumeLabels();
-
-        _stopVolLabel = new Label
-        {
-            Location = new Point(410, y + 92),
-            AutoSize = true,
-            ForeColor = Color.White
-        };
-
-        var dictPauseLabel = CreateLabel("Start Beep Pause (ms):", 20, y + 135, labelWidth);
-        _dictationPauseNum = new NumericUpDown
-        {
-            Location = new Point(200, y + 135),
-            Width = 100,
-            Minimum = 100,
-            Maximum = 5000,
-            Increment = 100,
-            BackColor = Color.FromArgb(60, 60, 60),
-            ForeColor = Color.White
-        };
-
-        // Only show beep options in non-headless mode
         if (!App.IsHeadless)
         {
-            tab.Controls.Add(_startBeepCheck);
-            tab.Controls.Add(startVolLabel);
-            tab.Controls.Add(_startVolumeSlider);
-            tab.Controls.Add(_startVolLabel);
-            tab.Controls.Add(_stopBeepCheck);
-            tab.Controls.Add(stopVolLabel);
-            tab.Controls.Add(_stopVolumeSlider);
-            tab.Controls.Add(_stopVolLabel);
-            tab.Controls.Add(dictPauseLabel);
-            tab.Controls.Add(_dictationPauseNum);
-            y += 170;
+            var desktopGroup = new GroupBox
+            {
+                Text = "Desktop Mode",
+                Location = new Point(15, y),
+                Size = new Size(groupWidth, 290),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold)
+            };
+            tab.Controls.Add(desktopGroup);
+
+            int dy = 22;
+
+            // IV Report Hotkey
+            desktopGroup.Controls.Add(new Label
+            {
+                Text = "IV Report Hotkey:",
+                Location = new Point(15, dy),
+                AutoSize = true,
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 9)
+            });
+            _ivHotkeyBox.Location = new Point(140, dy - 3);
+            _ivHotkeyBox.Width = 120;
+            SetupHotkeyCapture(_ivHotkeyBox);
+            desktopGroup.Controls.Add(_ivHotkeyBox);
+            dy += 30;
+
+            // Recording Indicator
+            _indicatorCheck.Text = "Show Recording Indicator";
+            _indicatorCheck.Location = new Point(15, dy);
+            _indicatorCheck.ForeColor = Color.White;
+            _indicatorCheck.Font = new Font("Segoe UI", 9);
+            desktopGroup.Controls.Add(_indicatorCheck);
+            dy += 22;
+
+            _hideIndicatorWhenNoStudyCheck.Text = "Hide when no study open";
+            _hideIndicatorWhenNoStudyCheck.Location = new Point(35, dy);
+            _hideIndicatorWhenNoStudyCheck.ForeColor = Color.Gray;
+            _hideIndicatorWhenNoStudyCheck.Font = new Font("Segoe UI", 9);
+            _hideIndicatorWhenNoStudyCheck.CheckedChanged += (s, e) =>
+            {
+                _config.HideIndicatorWhenNoStudy = _hideIndicatorWhenNoStudyCheck.Checked;
+                _mainForm.UpdateIndicatorVisibility();
+            };
+            desktopGroup.Controls.Add(_hideIndicatorWhenNoStudyCheck);
+            dy += 25;
+
+            // Auto-Stop Dictation
+            _autoStopCheck.Text = "Auto-Stop Dictation on Process";
+            _autoStopCheck.Location = new Point(15, dy);
+            _autoStopCheck.ForeColor = Color.White;
+            _autoStopCheck.Font = new Font("Segoe UI", 9);
+            desktopGroup.Controls.Add(_autoStopCheck);
+            dy += 30;
+
+            // Audio Feedback section header
+            desktopGroup.Controls.Add(new Label
+            {
+                Text = "Audio Feedback",
+                Location = new Point(15, dy),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(180, 180, 180),
+                Font = new Font("Segoe UI", 8, FontStyle.Italic)
+            });
+            dy += 20;
+
+            // Start Beep row
+            _startBeepCheck.Text = "Start Beep";
+            _startBeepCheck.Location = new Point(15, dy);
+            _startBeepCheck.ForeColor = Color.White;
+            _startBeepCheck.Font = new Font("Segoe UI", 9);
+            desktopGroup.Controls.Add(_startBeepCheck);
+
+            _startVolumeSlider.Location = new Point(120, dy - 3);
+            _startVolumeSlider.Width = 150;
+            _startVolumeSlider.ValueChanged += (s, e) => UpdateVolumeLabels();
+            desktopGroup.Controls.Add(_startVolumeSlider);
+
+            _startVolLabel.Location = new Point(275, dy + 3);
+            desktopGroup.Controls.Add(_startVolLabel);
+            dy += 40;
+
+            // Stop Beep row
+            _stopBeepCheck.Text = "Stop Beep";
+            _stopBeepCheck.Location = new Point(15, dy);
+            _stopBeepCheck.ForeColor = Color.White;
+            _stopBeepCheck.Font = new Font("Segoe UI", 9);
+            desktopGroup.Controls.Add(_stopBeepCheck);
+
+            _stopVolumeSlider.Location = new Point(120, dy - 3);
+            _stopVolumeSlider.Width = 150;
+            _stopVolumeSlider.ValueChanged += (s, e) => UpdateVolumeLabels();
+            desktopGroup.Controls.Add(_stopVolumeSlider);
+
+            _stopVolLabel.Location = new Point(275, dy + 3);
+            desktopGroup.Controls.Add(_stopVolLabel);
+            dy += 40;
+
+            // Dictation pause
+            desktopGroup.Controls.Add(new Label
+            {
+                Text = "Start Beep Pause:",
+                Location = new Point(15, dy + 2),
+                AutoSize = true,
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 9)
+            });
+            _dictationPauseNum.Location = new Point(155, dy);
+            _dictationPauseNum.Width = 70;
+            desktopGroup.Controls.Add(_dictationPauseNum);
+            desktopGroup.Controls.Add(new Label
+            {
+                Text = "ms",
+                Location = new Point(230, dy + 2),
+                AutoSize = true,
+                ForeColor = Color.Gray,
+                Font = new Font("Segoe UI", 9)
+            });
+
+            y += 300;
         }
-        
-        // IV Report Hotkey (hide in headless mode)
-        var ivHotkeyLabel = CreateLabel("IV Report Hotkey:", 20, y, labelWidth);
-        _ivHotkeyBox = new TextBox
+
+        // ========== COMMON OPTIONS SECTION ==========
+        var optionsGroup = new GroupBox
         {
-            Location = new Point(200, y),
-            Width = 150,
-            BackColor = Color.FromArgb(60, 60, 60),
+            Text = "Options",
+            Location = new Point(15, y),
+            Size = new Size(groupWidth, 70),
             ForeColor = Color.White,
-            ReadOnly = true,
-            Cursor = Cursors.Hand
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
-        SetupHotkeyCapture(_ivHotkeyBox);
-        
-        if (!App.IsHeadless)
-        {
-            tab.Controls.Add(ivHotkeyLabel);
-            tab.Controls.Add(_ivHotkeyBox);
-            y += 40;
-        }
-        
-        // Checkboxes
+        tab.Controls.Add(optionsGroup);
+
         _floatingToolbarCheck = new CheckBox
         {
-            Text = "Show Floating Toolbar",
-            Location = new Point(20, y),
+            Text = "Show InteleViewer Buttons",
+            Location = new Point(15, 22),
             ForeColor = Color.White,
-            AutoSize = true
+            AutoSize = true,
+            Font = new Font("Segoe UI", 9)
         };
-        tab.Controls.Add(_floatingToolbarCheck);
-        y += 25;
-        
-        // Show Recording Indicator (hide in headless mode)
-        _indicatorCheck = new CheckBox
-        {
-            Text = "Show Recording Indicator",
-            Location = new Point(20, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        if (!App.IsHeadless)
-        {
-            tab.Controls.Add(_indicatorCheck);
-            y += 25;
-        }
+        optionsGroup.Controls.Add(_floatingToolbarCheck);
 
-        // Hide indicator when no study
-        _hideIndicatorWhenNoStudyCheck = new CheckBox
+        var configureLink = new LinkLabel
         {
-            Text = "Hide indicator when no study open",
-            Location = new Point(40, y),
-            ForeColor = Color.Gray,
-            AutoSize = true
+            Text = "Configure",
+            Location = new Point(200, 23),
+            AutoSize = true,
+            LinkColor = Color.FromArgb(100, 149, 237),
+            Font = new Font("Segoe UI", 9)
         };
-        _hideIndicatorWhenNoStudyCheck.CheckedChanged += (s, e) =>
-        {
-            _config.HideIndicatorWhenNoStudy = _hideIndicatorWhenNoStudyCheck.Checked;
-            _mainForm.UpdateIndicatorVisibility();
-        };
-        if (!App.IsHeadless)
-        {
-            tab.Controls.Add(_hideIndicatorWhenNoStudyCheck);
-            y += 25;
-        }
+        configureLink.Click += (s, e) => _tabControl.SelectedIndex = 2;
+        optionsGroup.Controls.Add(configureLink);
 
-        // Auto-Stop Dictation (hide in headless mode)
-        _autoStopCheck = new CheckBox
-        {
-            Text = "Auto-Stop Dictation on Process",
-            Location = new Point(20, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        if (!App.IsHeadless)
-        {
-            tab.Controls.Add(_autoStopCheck);
-            y += 25;
-        }
-        
         _deadManCheck = new CheckBox
         {
             Text = "Push-to-Talk (Dead Man's Switch)",
-            Location = new Point(20, y),
+            Location = new Point(15, 44),
             ForeColor = Color.White,
-            AutoSize = true
+            AutoSize = true,
+            Font = new Font("Segoe UI", 9)
         };
-        tab.Controls.Add(_deadManCheck);
-        y += 35;
+        optionsGroup.Controls.Add(_deadManCheck);
 
-        // Auto-update section
+        y += 80;
+
+        // ========== UPDATES SECTION ==========
+        var updatesGroup = new GroupBox
+        {
+            Text = "Updates",
+            Location = new Point(15, y),
+            Size = new Size(groupWidth, 55),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(updatesGroup);
+
         _autoUpdateCheck = new CheckBox
         {
             Text = "Auto-update",
-            Location = new Point(20, y),
+            Location = new Point(15, 22),
             ForeColor = App.IsHeadless ? Color.Gray : Color.White,
             AutoSize = true,
-            Enabled = !App.IsHeadless // Disable auto-update in headless mode
+            Enabled = !App.IsHeadless,
+            Font = new Font("Segoe UI", 9)
         };
-        tab.Controls.Add(_autoUpdateCheck);
+        updatesGroup.Controls.Add(_autoUpdateCheck);
 
         var checkUpdatesBtn = new Button
         {
             Text = "Check for Updates",
-            Location = new Point(200, y - 3),
+            Location = new Point(140, 19),
             Size = new Size(130, 25),
             BackColor = Color.FromArgb(60, 60, 60),
             ForeColor = Color.White,
@@ -428,7 +468,7 @@ public class SettingsForm : Form
                 }
             }
         };
-        tab.Controls.Add(checkUpdatesBtn);
+        updatesGroup.Controls.Add(checkUpdatesBtn);
 
         return tab;
     }
@@ -1134,14 +1174,252 @@ public class SettingsForm : Form
         RenderButtonList();
         UpdateEditorFromSelection();
     }
-    
-    private TabPage CreateAhkTab()
+
+    // ========== TEXT AUTOMATION TAB (Templates + Macros + Pick Lists) ==========
+
+    private TabPage CreateTextAutomationTab()
     {
-        var tab = new TabPage("AHK")
+        var tab = new TabPage("Text")
+        {
+            BackColor = Color.FromArgb(40, 40, 40),
+            AutoScroll = true
+        };
+
+        int y = 10;
+        int groupWidth = 445;
+
+        // ========== TEMPLATES SECTION ==========
+        var templatesGroup = new GroupBox
+        {
+            Text = "Templates",
+            Location = new Point(10, y),
+            Size = new Size(groupWidth, 180),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(templatesGroup);
+
+        int ty = 20;
+        templatesGroup.Controls.Add(new Label
+        {
+            Text = "Critical Findings:",
+            Location = new Point(10, ty),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        });
+        ty += 18;
+
+        _criticalTemplateBox = new TextBox
+        {
+            Location = new Point(10, ty),
+            Width = 420,
+            Height = 50,
+            Multiline = true,
+            ScrollBars = ScrollBars.Vertical,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        templatesGroup.Controls.Add(_criticalTemplateBox);
+        ty += 55;
+
+        templatesGroup.Controls.Add(new Label
+        {
+            Text = "Placeholders: {name}, {time}, {date}",
+            Location = new Point(10, ty),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        });
+        ty += 20;
+
+        templatesGroup.Controls.Add(new Label
+        {
+            Text = "Series/Image:",
+            Location = new Point(10, ty),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        });
+        ty += 18;
+
+        _seriesTemplateBox = new TextBox
+        {
+            Location = new Point(10, ty),
+            Width = 420,
+            Height = 25,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        templatesGroup.Controls.Add(_seriesTemplateBox);
+        ty += 28;
+
+        templatesGroup.Controls.Add(new Label
+        {
+            Text = "Placeholders: {series}, {image}",
+            Location = new Point(10, ty),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        });
+
+        y += 190;
+
+        // ========== MACROS SECTION ==========
+        var macrosGroup = new GroupBox
+        {
+            Text = "Macros",
+            Location = new Point(10, y),
+            Size = new Size(groupWidth, 90),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(macrosGroup);
+
+        int my = 20;
+        _macrosEnabledCheck = new CheckBox
+        {
+            Text = "Enable Macros",
+            Location = new Point(10, my),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9),
+            Checked = _config.MacrosEnabled
+        };
+        _macrosEnabledCheck.CheckedChanged += (s, e) =>
+        {
+            UpdateMacroStates();
+            if (_macrosEnabledCheck.Checked && !_scrapeMosaicCheck.Checked)
+            {
+                _scrapeMosaicCheck.Checked = true;
+            }
+        };
+        macrosGroup.Controls.Add(_macrosEnabledCheck);
+
+        var editMacrosBtn = new Button
+        {
+            Text = "Edit...",
+            Location = new Point(130, my - 2),
+            Size = new Size(60, 22),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        editMacrosBtn.FlatAppearance.BorderColor = Color.Gray;
+        editMacrosBtn.Click += OnEditMacrosClick;
+        macrosGroup.Controls.Add(editMacrosBtn);
+
+        _macrosCountLabel = new Label
+        {
+            Text = GetMacrosCountText(),
+            Location = new Point(200, my + 2),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        macrosGroup.Controls.Add(_macrosCountLabel);
+        my += 25;
+
+        _macrosBlankLinesCheck = new CheckBox
+        {
+            Text = "Add blank lines before macro text",
+            Location = new Point(30, my),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 9),
+            Checked = _config.MacrosBlankLinesBefore
+        };
+        macrosGroup.Controls.Add(_macrosBlankLinesCheck);
+
+        UpdateMacroStates();
+
+        y += 100;
+
+        // ========== PICK LISTS SECTION ==========
+        var pickListsGroup = new GroupBox
+        {
+            Text = "Pick Lists",
+            Location = new Point(10, y),
+            Size = new Size(groupWidth, 90),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(pickListsGroup);
+
+        int py = 20;
+        _pickListsEnabledCheck = new CheckBox
+        {
+            Text = "Enable Pick Lists",
+            Location = new Point(10, py),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9),
+            Checked = _config.PickListsEnabled
+        };
+        _pickListsEnabledCheck.CheckedChanged += (s, e) => UpdatePickListStates();
+        pickListsGroup.Controls.Add(_pickListsEnabledCheck);
+
+        var editPickListsBtn = new Button
+        {
+            Text = "Edit...",
+            Location = new Point(145, py - 2),
+            Size = new Size(60, 22),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        editPickListsBtn.FlatAppearance.BorderColor = Color.Gray;
+        editPickListsBtn.Click += OnEditPickListsClick;
+        pickListsGroup.Controls.Add(editPickListsBtn);
+
+        _pickListsCountLabel = new Label
+        {
+            Text = GetPickListsCountText(),
+            Location = new Point(215, py + 2),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        pickListsGroup.Controls.Add(_pickListsCountLabel);
+        py += 25;
+
+        _pickListSkipSingleMatchCheck = new CheckBox
+        {
+            Text = "Skip list when only one matches",
+            Location = new Point(30, py),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 9),
+            Checked = _config.PickListSkipSingleMatch
+        };
+        pickListsGroup.Controls.Add(_pickListSkipSingleMatchCheck);
+        py += 22;
+
+        pickListsGroup.Controls.Add(new Label
+        {
+            Text = "Assign \"Show Pick Lists\" action in Keys tab.",
+            Location = new Point(10, py),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(100, 100, 100),
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        });
+
+        UpdatePickListStates();
+
+        return tab;
+    }
+
+    private TabPage CreateReferenceTab()
+    {
+        var tab = new TabPage("Reference")
         {
             BackColor = Color.FromArgb(40, 40, 40)
         };
-        
+
         var infoBox = new TextBox
         {
             Multiline = true,
@@ -1151,11 +1429,12 @@ public class SettingsForm : Form
             BackColor = Color.FromArgb(40, 40, 40),
             ForeColor = Color.LightGray,
             Font = new Font("Consolas", 9),
-            Text = @"=== AHK Integration ===
+            Text = @"=== AHK / External Integration ===
 
-Send Windows Messages to trigger actions:
+Send Windows Messages to trigger actions from
+AutoHotkey or other programs:
 
-WM_TRIGGER_SCRAPE = 0x0401        # Critical Findings (Win key = debug)
+WM_TRIGGER_SCRAPE = 0x0401        # Critical Findings
 WM_TRIGGER_BEEP = 0x0403          # System Beep
 WM_TRIGGER_SHOW_REPORT = 0x0404   # Show Report
 WM_TRIGGER_CAPTURE_SERIES = 0x0405 # Capture Series
@@ -1169,8 +1448,16 @@ Example AHK:
 DetectHiddenWindows, On
 PostMessage, 0x0401, 0, 0,, ahk_class WindowsForms
 
+=== Debug Tips ===
+
+• Hold Win key while triggering Critical Findings
+  to see raw data without pasting.
+
+• Right-click Clinical History or Impression
+  windows to copy debug info.
+
 === Config File ===
-Settings stored in: MosaicToolsSettings.json
+Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
 "
         };
         tab.Controls.Add(infoBox);
@@ -1178,7 +1465,636 @@ Settings stored in: MosaicToolsSettings.json
         return tab;
     }
 
+    // ========== NOTIFICATIONS TAB (Clinical History + Alerts) ==========
+
+    private TabPage CreateNotificationsTab()
+    {
+        var tab = new TabPage("Alerts")
+        {
+            BackColor = Color.FromArgb(40, 40, 40),
+            AutoScroll = true
+        };
+
+        int y = 10;
+        int groupWidth = 445;
+
+        // ========== NOTIFICATION BOX SECTION ==========
+        var notificationGroup = new GroupBox
+        {
+            Text = "Notification Box",
+            Location = new Point(10, y),
+            Size = new Size(groupWidth, 195),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(notificationGroup);
+
+        int ny = 20;
+
+        _showClinicalHistoryCheck = new CheckBox
+        {
+            Text = "Enable Notification Box",
+            Location = new Point(10, ny),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        _showClinicalHistoryCheck.CheckedChanged += (s, e) => UpdateNotificationBoxStates();
+        notificationGroup.Controls.Add(_showClinicalHistoryCheck);
+        ny += 22;
+
+        notificationGroup.Controls.Add(new Label
+        {
+            Text = "Floating window for clinical history and alerts.",
+            Location = new Point(30, ny),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        });
+        ny += 22;
+
+        // Clinical History Display options
+        _alwaysShowClinicalHistoryCheck = new CheckBox
+        {
+            Text = "Show clinical history in notification box",
+            Location = new Point(30, ny),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        _alwaysShowClinicalHistoryCheck.CheckedChanged += (s, e) => UpdateNotificationBoxStates();
+        notificationGroup.Controls.Add(_alwaysShowClinicalHistoryCheck);
+        ny += 22;
+
+        notificationGroup.Controls.Add(new Label
+        {
+            Text = "Unchecked = alerts-only mode (hidden until alert)",
+            Location = new Point(50, ny),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        });
+        ny += 22;
+
+        _hideClinicalHistoryWhenNoStudyCheck = new CheckBox
+        {
+            Text = "Hide when no study open",
+            Location = new Point(50, ny),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        _hideClinicalHistoryWhenNoStudyCheck.CheckedChanged += (s, e) =>
+        {
+            _config.HideClinicalHistoryWhenNoStudy = _hideClinicalHistoryWhenNoStudyCheck.Checked;
+            _mainForm.UpdateClinicalHistoryVisibility();
+        };
+        notificationGroup.Controls.Add(_hideClinicalHistoryWhenNoStudyCheck);
+        ny += 22;
+
+        _autoFixClinicalHistoryCheck = new CheckBox
+        {
+            Text = "Auto-paste corrected history",
+            Location = new Point(50, ny),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        notificationGroup.Controls.Add(_autoFixClinicalHistoryCheck);
+        ny += 22;
+
+        _showDraftedIndicatorCheck = new CheckBox
+        {
+            Text = "Show Drafted indicator",
+            Location = new Point(50, ny),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        notificationGroup.Controls.Add(_showDraftedIndicatorCheck);
+
+        notificationGroup.Controls.Add(new Label
+        {
+            Text = "(green border)",
+            Location = new Point(220, ny + 2),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(100, 180, 100),
+            Font = new Font("Segoe UI", 8)
+        });
+
+        y += 205;
+
+        // ========== ALERTS SECTION ==========
+        var alertsGroup = new GroupBox
+        {
+            Text = "Alert Triggers",
+            Location = new Point(10, y),
+            Size = new Size(groupWidth, 195),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(alertsGroup);
+
+        int ay = 20;
+
+        alertsGroup.Controls.Add(new Label
+        {
+            Text = "These alerts appear even in alerts-only mode:",
+            Location = new Point(10, ay),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(180, 180, 180),
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        });
+        ay += 22;
+
+        // Template Mismatch
+        _showTemplateMismatchCheck = new CheckBox
+        {
+            Text = "Template mismatch",
+            Location = new Point(10, ay),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        alertsGroup.Controls.Add(_showTemplateMismatchCheck);
+
+        alertsGroup.Controls.Add(new Label
+        {
+            Text = "(red border)",
+            Location = new Point(170, ay + 2),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(220, 100, 100),
+            Font = new Font("Segoe UI", 8)
+        });
+        ay += 22;
+
+        // Gender Check
+        _genderCheckEnabledCheck = new CheckBox
+        {
+            Text = "Gender check",
+            Location = new Point(10, ay),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        alertsGroup.Controls.Add(_genderCheckEnabledCheck);
+
+        alertsGroup.Controls.Add(new Label
+        {
+            Text = "(flashing red)",
+            Location = new Point(170, ay + 2),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(255, 100, 100),
+            Font = new Font("Segoe UI", 8)
+        });
+        ay += 22;
+
+        // Stroke Detection
+        _strokeDetectionEnabledCheck = new CheckBox
+        {
+            Text = "Stroke detection",
+            Location = new Point(10, ay),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        _strokeDetectionEnabledCheck.CheckedChanged += (s, e) => UpdateNotificationBoxStates();
+        alertsGroup.Controls.Add(_strokeDetectionEnabledCheck);
+
+        alertsGroup.Controls.Add(new Label
+        {
+            Text = "(purple border)",
+            Location = new Point(170, ay + 2),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(180, 130, 220),
+            Font = new Font("Segoe UI", 8)
+        });
+        ay += 22;
+
+        _strokeDetectionUseClinicalHistoryCheck = new CheckBox
+        {
+            Text = "Also use clinical history keywords",
+            Location = new Point(30, ay),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        alertsGroup.Controls.Add(_strokeDetectionUseClinicalHistoryCheck);
+
+        var editKeywordsBtn = new Button
+        {
+            Text = "Edit...",
+            Location = new Point(260, ay - 2),
+            Size = new Size(50, 20),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe UI", 7),
+            Cursor = Cursors.Hand
+        };
+        editKeywordsBtn.FlatAppearance.BorderColor = Color.Gray;
+        editKeywordsBtn.Click += OnEditStrokeKeywordsClick;
+        alertsGroup.Controls.Add(editKeywordsBtn);
+        ay += 22;
+
+        _strokeClickToCreateNoteCheck = new CheckBox
+        {
+            Text = "Click alert to create Clario note",
+            Location = new Point(30, ay),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        alertsGroup.Controls.Add(_strokeClickToCreateNoteCheck);
+        ay += 22;
+
+        _strokeAutoCreateNoteCheck = new CheckBox
+        {
+            Text = "Auto-create Clario note on Process Report",
+            Location = new Point(30, ay),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        alertsGroup.Controls.Add(_strokeAutoCreateNoteCheck);
+
+        return tab;
+    }
+
+    // ========== BEHAVIOR TAB (Scraping, Scrolling, Focus) ==========
+
+    private TabPage CreateBehaviorTab()
+    {
+        var tab = new TabPage("Behavior")
+        {
+            BackColor = Color.FromArgb(40, 40, 40),
+            AutoScroll = true
+        };
+
+        int y = 10;
+        int groupWidth = 445;
+
+        // ========== BACKGROUND MONITORING SECTION ==========
+        var monitoringGroup = new GroupBox
+        {
+            Text = "Background Monitoring",
+            Location = new Point(10, y),
+            Size = new Size(groupWidth, 95),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(monitoringGroup);
+
+        int my = 20;
+
+        _scrapeMosaicCheck = new CheckBox
+        {
+            Text = "Scrape Mosaic every",
+            Location = new Point(10, my),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        _scrapeMosaicCheck.CheckedChanged += (s, e) =>
+        {
+            UpdateThresholdStates();
+            if (!_scrapeMosaicCheck.Checked && _macrosEnabledCheck != null && _macrosEnabledCheck.Checked)
+            {
+                _macrosEnabledCheck.Checked = false;
+            }
+        };
+        monitoringGroup.Controls.Add(_scrapeMosaicCheck);
+
+        _scrapeIntervalUpDown = new NumericUpDown
+        {
+            Location = new Point(160, my - 2),
+            Width = 50,
+            Minimum = 1,
+            Maximum = 30,
+            Value = 3,
+            BackColor = Color.FromArgb(45, 45, 48),
+            ForeColor = Color.White
+        };
+        monitoringGroup.Controls.Add(_scrapeIntervalUpDown);
+
+        monitoringGroup.Controls.Add(new Label
+        {
+            Text = "seconds",
+            Location = new Point(215, my),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        });
+        my += 25;
+
+        monitoringGroup.Controls.Add(new Label
+        {
+            Text = "Required for: Clinical History, Alerts, Macros, Impression popup",
+            Location = new Point(30, my),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        });
+        my += 20;
+
+        _restoreFocusCheck = new CheckBox
+        {
+            Text = "Restore focus after action",
+            Location = new Point(10, my),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        monitoringGroup.Controls.Add(_restoreFocusCheck);
+
+        y += 105;
+
+        // ========== REPORT PROCESSING SECTION ==========
+        var processingGroup = new GroupBox
+        {
+            Text = "Report Processing",
+            Location = new Point(10, y),
+            Size = new Size(groupWidth, 170),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(processingGroup);
+
+        int py = 20;
+
+        _scrollToBottomCheck = new CheckBox
+        {
+            Text = "Scroll to bottom on Process Report",
+            Location = new Point(10, py),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        _scrollToBottomCheck.CheckedChanged += (s, e) => UpdateThresholdStates();
+        processingGroup.Controls.Add(_scrollToBottomCheck);
+        py += 22;
+
+        _showLineCountToastCheck = new CheckBox
+        {
+            Text = "Show line count toast",
+            Location = new Point(30, py),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        processingGroup.Controls.Add(_showLineCountToastCheck);
+        py += 25;
+
+        // Smart Scroll Thresholds (compact horizontal layout)
+        processingGroup.Controls.Add(new Label
+        {
+            Text = "Smart Scroll Thresholds (lines):",
+            Location = new Point(30, py),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(180, 180, 180),
+            Font = new Font("Segoe UI", 8)
+        });
+        py += 18;
+
+        processingGroup.Controls.Add(new Label { Text = "1 PgDn >", Location = new Point(30, py + 2), AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 8) });
+        _scrollThreshold1 = new NumericUpDown
+        {
+            Location = new Point(90, py),
+            Width = 50,
+            Minimum = 1,
+            Maximum = 500,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White
+        };
+        processingGroup.Controls.Add(_scrollThreshold1);
+
+        processingGroup.Controls.Add(new Label { Text = "2 PgDn >", Location = new Point(155, py + 2), AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 8) });
+        _scrollThreshold2 = new NumericUpDown
+        {
+            Location = new Point(215, py),
+            Width = 50,
+            Minimum = 1,
+            Maximum = 500,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White
+        };
+        processingGroup.Controls.Add(_scrollThreshold2);
+
+        processingGroup.Controls.Add(new Label { Text = "3 PgDn >", Location = new Point(280, py + 2), AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 8) });
+        _scrollThreshold3 = new NumericUpDown
+        {
+            Location = new Point(340, py),
+            Width = 50,
+            Minimum = 1,
+            Maximum = 500,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White
+        };
+        processingGroup.Controls.Add(_scrollThreshold3);
+        py += 30;
+
+        // Threshold constraints
+        _scrollThreshold1.ValueChanged += (s, e) =>
+        {
+            if (_scrollThreshold2.Value <= _scrollThreshold1.Value)
+                _scrollThreshold2.Value = Math.Min(_scrollThreshold2.Maximum, _scrollThreshold1.Value + 1);
+        };
+        _scrollThreshold2.ValueChanged += (s, e) =>
+        {
+            if (_scrollThreshold1.Value >= _scrollThreshold2.Value)
+                _scrollThreshold1.Value = Math.Max(_scrollThreshold1.Minimum, _scrollThreshold2.Value - 1);
+            if (_scrollThreshold3.Value <= _scrollThreshold2.Value)
+                _scrollThreshold3.Value = Math.Min(_scrollThreshold3.Maximum, _scrollThreshold2.Value + 1);
+        };
+        _scrollThreshold3.ValueChanged += (s, e) =>
+        {
+            if (_scrollThreshold2.Value >= _scrollThreshold3.Value)
+                _scrollThreshold2.Value = Math.Max(_scrollThreshold2.Minimum, _scrollThreshold3.Value - 1);
+        };
+
+        _showImpressionCheck = new CheckBox
+        {
+            Text = "Show Impression popup after Process Report",
+            Location = new Point(10, py),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        processingGroup.Controls.Add(_showImpressionCheck);
+
+        y += 180;
+
+        // ========== EXPERIMENTAL SECTION ==========
+        var experimentalGroup = new GroupBox
+        {
+            Text = "Experimental",
+            Location = new Point(10, y),
+            Size = new Size(groupWidth, 210),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(experimentalGroup);
+
+        int ey = 20;
+
+        experimentalGroup.Controls.Add(new Label
+        {
+            Text = "⚠ May change or be removed",
+            Location = new Point(10, ey),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(255, 180, 50),
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        });
+        ey += 22;
+
+        // Report Changes Highlighting (moved above RVU Counter)
+        _showReportChangesCheck = new CheckBox
+        {
+            Text = "Highlight report changes",
+            Location = new Point(10, ey),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        experimentalGroup.Controls.Add(_showReportChangesCheck);
+
+        _reportChangesColorPanel = new Panel
+        {
+            Location = new Point(190, ey - 2),
+            Size = new Size(40, 20),
+            BorderStyle = BorderStyle.FixedSingle,
+            Cursor = Cursors.Hand,
+            BackColor = Color.FromArgb(144, 238, 144)
+        };
+        _reportChangesColorPanel.Click += OnReportChangesColorClick;
+        experimentalGroup.Controls.Add(_reportChangesColorPanel);
+
+        _reportChangesAlphaSlider = new TrackBar
+        {
+            Location = new Point(240, ey - 2),
+            Size = new Size(100, 20),
+            Minimum = 5,
+            Maximum = 100,
+            TickStyle = TickStyle.None,
+            Value = 30,
+            BackColor = Color.FromArgb(45, 45, 48),
+            AutoSize = false
+        };
+        _reportChangesAlphaSlider.ValueChanged += (s, e) => { _reportChangesAlphaLabel.Text = $"{_reportChangesAlphaSlider.Value}%"; UpdateReportChangesPreview(); };
+        experimentalGroup.Controls.Add(_reportChangesAlphaSlider);
+
+        _reportChangesAlphaLabel = new Label
+        {
+            Text = "30%",
+            Location = new Point(345, ey),
+            AutoSize = true,
+            ForeColor = Color.Gray
+        };
+        experimentalGroup.Controls.Add(_reportChangesAlphaLabel);
+        ey += 25;
+
+        // Preview area
+        _reportChangesPreview = new RichTextBox
+        {
+            Location = new Point(10, ey),
+            Size = new Size(420, 40),
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            ReadOnly = true,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+        experimentalGroup.Controls.Add(_reportChangesPreview);
+        UpdateReportChangesPreview();
+        ey += 50;
+
+        // RVU Counter
+        _rvuCounterEnabledCheck = new CheckBox
+        {
+            Text = "RVUCounter integration",
+            Location = new Point(10, ey),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        experimentalGroup.Controls.Add(_rvuCounterEnabledCheck);
+        ey += 22;
+
+        _rvuCounterPathBox = new TextBox
+        {
+            Location = new Point(30, ey),
+            Size = new Size(300, 20),
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.LightGray,
+            ReadOnly = true
+        };
+        experimentalGroup.Controls.Add(_rvuCounterPathBox);
+
+        var findRvuBtn = new Button
+        {
+            Text = "Find",
+            Location = new Point(340, ey - 2),
+            Size = new Size(45, 22),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        findRvuBtn.Click += OnFindRvuCounterClick;
+        experimentalGroup.Controls.Add(findRvuBtn);
+
+        var browseRvuBtn = new Button
+        {
+            Text = "...",
+            Location = new Point(390, ey - 2),
+            Size = new Size(30, 22),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        browseRvuBtn.Click += OnBrowseDatabaseClick;
+        experimentalGroup.Controls.Add(browseRvuBtn);
+        ey += 25;
+
+        _rvuCounterStatusLabel = new Label
+        {
+            Text = "",
+            Location = new Point(30, ey),
+            Size = new Size(300, 18),
+            ForeColor = Color.Gray
+        };
+        experimentalGroup.Controls.Add(_rvuCounterStatusLabel);
+
+        return tab;
+    }
+
+    // ========== Helper Methods ==========
+
+    // Old CreateExperimentalTab removed - functionality moved to Text and Behavior tabs
+    // Stub to satisfy any remaining references
     private TabPage CreateExperimentalTab()
+    {
+        return new TabPage("Experimental") { BackColor = Color.FromArgb(40, 40, 40) };
+    }
+
+    // Old CreateAdvancedTab removed - functionality moved to Notifications and Behavior tabs
+    private TabPage CreateAdvancedTab()
+    {
+        return new TabPage("Advanced") { BackColor = Color.FromArgb(40, 40, 40) };
+    }
+
+    // Old CreateTemplatesTab removed - functionality moved to Text tab
+    private TabPage CreateTemplatesTab()
+    {
+        return new TabPage("Templates") { BackColor = Color.FromArgb(40, 40, 40) };
+    }
+
+    // Old CreateMacrosTab removed - functionality moved to Text tab
+    private TabPage CreateMacrosTab_Legacy()
+    {
+        return new TabPage("Macros") { BackColor = Color.FromArgb(40, 40, 40) };
+    }
+
+    // Keep this stub for the actual Experimental tab in InitializeUI
+    private TabPage CreateExperimentalTab_Stub()
     {
         var tab = new TabPage("Experimental")
         {
@@ -1626,6 +2542,48 @@ Settings stored in: MosaicToolsSettings.json
         return $"{enabledCount} of {count} pick list{(count == 1 ? "" : "s")} enabled";
     }
 
+    private void OnEditMacrosClick(object? sender, EventArgs e)
+    {
+        using (var editor = new MacroEditorForm(_config))
+        {
+            if (editor.ShowDialog() == DialogResult.OK)
+            {
+                _macrosCountLabel.Text = GetMacrosCountText();
+            }
+        }
+    }
+
+    private string GetMacrosCountText()
+    {
+        var count = _config.Macros.Count;
+        var enabledCount = _config.Macros.Count(m => m.Enabled);
+        if (count == 0)
+            return "No macros configured";
+        if (enabledCount == count)
+            return $"{count} macro{(count == 1 ? "" : "s")} configured";
+        return $"{enabledCount} of {count} macro{(count == 1 ? "" : "s")} enabled";
+    }
+
+    private void OnEditStrokeKeywordsClick(object? sender, EventArgs e)
+    {
+        var currentKeywords = string.Join("\n", _config.StrokeClinicalHistoryKeywords);
+        var input = InputBox.Show(
+            "Enter stroke detection keywords (one per line):\n\nThese keywords are checked against the clinical history when 'Also use clinical history keywords' is enabled.",
+            "Edit Stroke Keywords",
+            currentKeywords,
+            true);
+
+        if (input != null)
+        {
+            var keywords = input.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(k => k.Trim())
+                .Where(k => !string.IsNullOrWhiteSpace(k))
+                .ToList();
+            _config.StrokeClinicalHistoryKeywords = keywords;
+            _config.Save();
+        }
+    }
+
     private void OnFindRvuCounterClick(object? sender, EventArgs e)
     {
         string? foundDbPath = null;
@@ -1698,504 +2656,7 @@ Settings stored in: MosaicToolsSettings.json
         }
     }
 
-    private TabPage CreateAdvancedTab()
-    {
-        var tab = new TabPage("Advanced")
-        {
-            BackColor = Color.FromArgb(40, 40, 40),
-            AutoScroll = true
-        };
-
-        int y = 20;
-
-        // Warning label
-        var warningLabel = new Label
-        {
-            Text = "Change these settings if you know what you're doing.",
-            Location = new Point(20, y),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(255, 180, 50),
-            Font = new Font("Segoe UI", 9, FontStyle.Italic)
-        };
-        tab.Controls.Add(warningLabel);
-        y += 25;
-
-        // Debug info blurb
-        var debugBlurb = new Label
-        {
-            Text = "Tip: Right-click the Clinical History or Impression windows to copy debug info.\nIf extraction isn't working correctly, send this to the author via Teams for finetuning.",
-            Location = new Point(20, y),
-            Size = new Size(420, 35),
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(debugBlurb);
-        y += 45;
-
-        // Restore Focus checkbox
-        _restoreFocusCheck = new CheckBox
-        {
-            Text = "Restore Focus After Action",
-            Location = new Point(20, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_restoreFocusCheck);
-        y += 25;
-
-        var restoreFocusHint = new Label
-        {
-            Text = "Return focus to the previous window after Mosaic actions complete.",
-            Location = new Point(40, y),
-            AutoSize = true,
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(restoreFocusHint);
-        y += 30;
-
-        // Scrape Mosaic checkbox with interval selector on same line
-        _scrapeMosaicCheck = new CheckBox
-        {
-            Text = "Scrape Mosaic every",
-            Location = new Point(20, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        _scrapeMosaicCheck.CheckedChanged += (s, e) =>
-        {
-            // If scraping is disabled, also disable macros (they depend on scraping)
-            if (!_scrapeMosaicCheck.Checked && _macrosEnabledCheck != null && _macrosEnabledCheck.Checked)
-            {
-                _macrosEnabledCheck.Checked = false;
-            }
-        };
-        tab.Controls.Add(_scrapeMosaicCheck);
-
-        _scrapeIntervalUpDown = new NumericUpDown
-        {
-            Location = new Point(_scrapeMosaicCheck.Right + 5, y - 2),
-            Width = 50,
-            Minimum = 1,
-            Maximum = 30,
-            Value = 3,
-            BackColor = Color.FromArgb(45, 45, 48),
-            ForeColor = Color.White
-        };
-        tab.Controls.Add(_scrapeIntervalUpDown);
-
-        var secondsLabel = new Label
-        {
-            Text = "seconds",
-            Location = new Point(_scrapeIntervalUpDown.Right + 5, y + 2),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(secondsLabel);
-        y += 25;
-
-        var scrapeHint = new Label
-        {
-            Text = "Enable background scraping of Mosaic report editor.",
-            Location = new Point(40, y),
-            AutoSize = true,
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(scrapeHint);
-        y += 30;
-
-        // Notification Box checkbox (master toggle, formerly "Show Clinical History")
-        _showClinicalHistoryCheck = new CheckBox
-        {
-            Text = "Notification Box",
-            Location = new Point(40, y), // Indented under Scrape Mosaic
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_showClinicalHistoryCheck);
-        y += 25;
-
-        var notificationHint = new Label
-        {
-            Text = "Floating window for clinical history and alerts (template/gender/stroke).",
-            Location = new Point(60, y),
-            AutoSize = true,
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(notificationHint);
-        y += 25;
-
-        // Always show clinical history checkbox (child of Notification Box)
-        _alwaysShowClinicalHistoryCheck = new CheckBox
-        {
-            Text = "Always show clinical history",
-            Location = new Point(60, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        _alwaysShowClinicalHistoryCheck.CheckedChanged += (s, e) => UpdateNotificationBoxStates();
-        tab.Controls.Add(_alwaysShowClinicalHistoryCheck);
-        y += 25;
-
-        var alwaysShowHint = new Label
-        {
-            Text = "Unchecked = alerts-only mode (box hidden until alert).",
-            Location = new Point(80, y),
-            AutoSize = true,
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(alwaysShowHint);
-        y += 25;
-
-        // Hide when no study checkbox (child of Always show)
-        _hideClinicalHistoryWhenNoStudyCheck = new CheckBox
-        {
-            Text = "Hide when no study open",
-            Location = new Point(80, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        _hideClinicalHistoryWhenNoStudyCheck.CheckedChanged += (s, e) =>
-        {
-            _config.HideClinicalHistoryWhenNoStudy = _hideClinicalHistoryWhenNoStudyCheck.Checked;
-            _mainForm.UpdateClinicalHistoryVisibility();
-        };
-        tab.Controls.Add(_hideClinicalHistoryWhenNoStudyCheck);
-        y += 25;
-
-        // Auto-paste checkbox (child of Always show)
-        _autoFixClinicalHistoryCheck = new CheckBox
-        {
-            Text = "Auto-paste fixed history",
-            Location = new Point(80, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_autoFixClinicalHistoryCheck);
-        y += 25;
-
-        var autoFixHint = new Label
-        {
-            Text = "Auto-pastes cleaned history when malformed.\nClick box to paste manually.",
-            Location = new Point(100, y),
-            AutoSize = true,
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(autoFixHint);
-        y += 35;
-
-        // Show Drafted Indicator checkbox (child of Always show)
-        _showDraftedIndicatorCheck = new CheckBox
-        {
-            Text = "Indicate Drafted Status",
-            Location = new Point(80, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_showDraftedIndicatorCheck);
-        y += 25;
-
-        var draftedHint = new Label
-        {
-            Text = "Green border when study is drafted.",
-            Location = new Point(100, y),
-            AutoSize = true,
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(draftedHint);
-        y += 30;
-
-        // Alerts section header
-        var alertsLabel = new Label
-        {
-            Text = "Alerts (appear even in alerts-only mode):",
-            Location = new Point(60, y),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(200, 200, 200),
-            Font = new Font("Segoe UI", 9, FontStyle.Italic)
-        };
-        tab.Controls.Add(alertsLabel);
-        y += 25;
-
-        // Show Template Mismatch checkbox (alert)
-        _showTemplateMismatchCheck = new CheckBox
-        {
-            Text = "Template mismatch",
-            Location = new Point(80, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_showTemplateMismatchCheck);
-
-        var templateColorLabel = new Label
-        {
-            Text = "(red border)",
-            Location = new Point(_showTemplateMismatchCheck.Right + 5, y + 2),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(220, 100, 100),
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(templateColorLabel);
-        y += 25;
-
-        // Gender Check checkbox (alert)
-        _genderCheckEnabledCheck = new CheckBox
-        {
-            Text = "Gender check",
-            Location = new Point(80, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_genderCheckEnabledCheck);
-
-        var genderColorLabel = new Label
-        {
-            Text = "(flashing red)",
-            Location = new Point(_genderCheckEnabledCheck.Right + 5, y + 2),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(255, 100, 100),
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(genderColorLabel);
-        y += 25;
-
-        // Stroke Detection checkbox (alert)
-        _strokeDetectionEnabledCheck = new CheckBox
-        {
-            Text = "Stroke detection",
-            Location = new Point(80, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_strokeDetectionEnabledCheck);
-
-        var strokeColorLabel = new Label
-        {
-            Text = "(purple border)",
-            Location = new Point(_strokeDetectionEnabledCheck.Right + 5, y + 2),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(180, 130, 220),
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(strokeColorLabel);
-        y += 25;
-
-        // Also use clinical history checkbox (subset of Stroke Detection)
-        _strokeDetectionUseClinicalHistoryCheck = new CheckBox
-        {
-            Text = "Also use clinical history keywords",
-            Location = new Point(100, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_strokeDetectionUseClinicalHistoryCheck);
-        y += 25;
-
-        var strokeHistoryHint = new Label
-        {
-            Text = "Keywords: stroke, CVA, TIA, etc.",
-            Location = new Point(120, y),
-            AutoSize = true,
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(strokeHistoryHint);
-        y += 25;
-
-        // Click to create critical note checkbox (subset of Stroke Detection)
-        _strokeClickToCreateNoteCheck = new CheckBox
-        {
-            Text = "Click to create critical note",
-            Location = new Point(100, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_strokeClickToCreateNoteCheck);
-        y += 25;
-
-        // Auto-create on Process Report checkbox (subset of Stroke Detection)
-        _strokeAutoCreateNoteCheck = new CheckBox
-        {
-            Text = "Auto-create on Process Report",
-            Location = new Point(100, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_strokeAutoCreateNoteCheck);
-        y += 30;
-
-        // Show Impression checkbox (subset of Scrape Mosaic)
-        _showImpressionCheck = new CheckBox
-        {
-            Text = "Show Impression",
-            Location = new Point(40, y), // Indented under Scrape Mosaic
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_showImpressionCheck);
-        y += 25;
-
-        var impressionHint = new Label
-        {
-            Text = "Display impression in a floating box after Process Report.",
-            Location = new Point(60, y),
-            AutoSize = true,
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(impressionHint);
-        y += 35;
-
-        // Scroll to Bottom checkbox (Second)
-        _scrollToBottomCheck = new CheckBox
-        {
-            Text = "Scroll to Bottom on Process",
-            Location = new Point(20, y),
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_scrollToBottomCheck);
-        y += 25;
-
-        var scrollHint = new Label
-        {
-            Text = "After 'Process Report', send 3 Page Down keys to scroll down the report.",
-            Location = new Point(40, y),
-            AutoSize = true,
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(scrollHint);
-        y += 35;
-
-
-        // Show Line Count Toast (Subset)
-        _showLineCountToastCheck = new CheckBox
-        {
-            Text = "Show Line Count Toast",
-            Location = new Point(40, y), // Indented
-            ForeColor = Color.White,
-            AutoSize = true
-        };
-        tab.Controls.Add(_showLineCountToastCheck);
-        y += 30;
-        
-        // Smart Scroll Thresholds
-        var threshGroup = new GroupBox
-        {
-            Text = "Smart Scroll Thresholds (Lines)",
-            Location = new Point(20, y),
-            Size = new Size(420, 100), // Narrower to avoid horizontal scroll
-            ForeColor = Color.White
-        };
-        tab.Controls.Add(threshGroup);
-
-        int rowY = 50;
-        int inputWidth = 55;
-
-        // Block 1
-        threshGroup.Controls.Add(CreateLabel("1 PgDn >", 10, rowY+2, 55));
-        _scrollThreshold1 = new NumericUpDown
-        {
-            Location = new Point(68, rowY),
-            Width = inputWidth,
-            Minimum = 1,
-            Maximum = 500,
-            BackColor = Color.FromArgb(60, 60, 60),
-            ForeColor = Color.White
-        };
-        threshGroup.Controls.Add(_scrollThreshold1);
-
-        // Block 2
-        threshGroup.Controls.Add(CreateLabel("2 PgDn >", 140, rowY+2, 55));
-        _scrollThreshold2 = new NumericUpDown
-        {
-            Location = new Point(198, rowY),
-            Width = inputWidth,
-            Minimum = 1,
-            Maximum = 500,
-            BackColor = Color.FromArgb(60, 60, 60),
-            ForeColor = Color.White
-        };
-        threshGroup.Controls.Add(_scrollThreshold2);
-
-        // Block 3
-        threshGroup.Controls.Add(CreateLabel("3 PgDn >", 270, rowY+2, 55));
-        _scrollThreshold3 = new NumericUpDown
-        {
-            Location = new Point(328, rowY),
-            Width = inputWidth,
-            Minimum = 1,
-            Maximum = 500,
-            BackColor = Color.FromArgb(60, 60, 60),
-            ForeColor = Color.White
-        };
-        threshGroup.Controls.Add(_scrollThreshold3);
-        
-        // Event handlers for enable/disable logic
-        _scrollToBottomCheck.CheckedChanged += (_, _) => UpdateThresholdStates();
-        _scrapeMosaicCheck.CheckedChanged += (_, _) => UpdateThresholdStates();
-        _showClinicalHistoryCheck.CheckedChanged += (_, _) => UpdateThresholdStates();
-        _strokeDetectionEnabledCheck.CheckedChanged += (_, _) => UpdateNotificationBoxStates();
-
-        // Enforce logical constraints (T1 < T2 < T3)
-        // Using explicit updates to ensure propagation
-
-        _scrollThreshold1.ValueChanged += (_, _) =>
-        {
-            // Pushing Up: T1 -> T2 -> T3
-            if (_scrollThreshold2.Value <= _scrollThreshold1.Value)
-            {
-                _scrollThreshold2.Value = Math.Min(_scrollThreshold2.Maximum, _scrollThreshold1.Value + 1);
-                // The change to T2 will trigger T2's handler, but we can be explicit if needed
-            }
-        };
-
-        _scrollThreshold2.ValueChanged += (_, _) =>
-        {
-            // Pushing Down: T2 -> T1
-            if (_scrollThreshold1.Value >= _scrollThreshold2.Value)
-            {
-                 _scrollThreshold1.Value = Math.Max(_scrollThreshold1.Minimum, _scrollThreshold2.Value - 1);
-            }
-
-            // Pushing Up: T2 -> T3
-            if (_scrollThreshold3.Value <= _scrollThreshold2.Value)
-            {
-                _scrollThreshold3.Value = Math.Min(_scrollThreshold3.Maximum, _scrollThreshold2.Value + 1);
-            }
-        };
-
-        _scrollThreshold3.ValueChanged += (_, _) =>
-        {
-            // Pushing Down: T3 -> T2 -> T1
-            if (_scrollThreshold2.Value >= _scrollThreshold3.Value)
-            {
-                _scrollThreshold2.Value = Math.Max(_scrollThreshold2.Minimum, _scrollThreshold3.Value - 1);
-            }
-        };
-
-        y += 115; // After thresholds group
-
-        // Debug tip section
-        var debugTipLabel = new Label
-        {
-            Text = "Debug Tip: Right-click on the Clinical History or Impression floating\n" +
-                   "windows to copy debug information to the clipboard.",
-            Location = new Point(20, y),
-            Size = new Size(420, 35),
-            ForeColor = Color.FromArgb(150, 150, 150),
-            Font = new Font("Segoe UI", 8, FontStyle.Italic)
-        };
-        tab.Controls.Add(debugTipLabel);
-
-        return tab;
-    }
+    // ========== Helper Methods for Tab State Management ==========
 
     private void UpdateThresholdStates()
     {
@@ -2233,475 +2694,17 @@ Settings stored in: MosaicToolsSettings.json
         _strokeDetectionUseClinicalHistoryCheck.Enabled = notificationBoxEnabled && _strokeDetectionEnabledCheck.Checked;
     }
 
-    private TabPage CreateTemplatesTab()
-    {
-        var tab = new TabPage("Templates")
-        {
-            BackColor = Color.FromArgb(40, 40, 40),
-            AutoScroll = true
-        };
-        
-        int y = 20;
-        tab.Controls.Add(CreateLabel("Critical Findings Template:", 20, y, 400));
-        y += 25;
-        
-        _criticalTemplateBox = new TextBox
-        {
-            Location = new Point(20, y),
-            Width = 410,
-            Height = 75,
-            Multiline = true,
-            ScrollBars = ScrollBars.Vertical,
-            BackColor = Color.FromArgb(60, 60, 60),
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 9)
-        };
-        tab.Controls.Add(_criticalTemplateBox);
-        y += 85;
-        
-        var helpLabel = new Label
-        {
-            Text = "Placeholders:\n" +
-                   "{name} - Referring Clinician (Dr. / Nurse)\n" +
-                   "{time} - Timestamp and Timezone\n" +
-                   "{date} - Date of finding\n\n" +
-                   "Example:\n" +
-                   "Critical findings discussed with {name} at {time} on {date}.",
-            Location = new Point(20, y),
-            Size = new Size(410, 140),
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 8, FontStyle.Italic)
-        };
-        tab.Controls.Add(helpLabel);
-        y += 140;
-        
-        // Separator - more visible
-        var sep = new Panel
-        {
-            Location = new Point(20, y - 10),
-            Size = new Size(410, 1),
-            BackColor = Color.FromArgb(100, 100, 100)
-        };
-        tab.Controls.Add(sep);
-        
-        tab.Controls.Add(CreateLabel("Series/Image Template:", 20, y, 400));
-        y += 25;
-        
-        _seriesTemplateBox = new TextBox
-        {
-            Location = new Point(20, y),
-            Width = 410,
-            Height = 40,
-            Multiline = true,
-            BackColor = Color.FromArgb(60, 60, 60),
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 9)
-        };
-        tab.Controls.Add(_seriesTemplateBox);
-        y += 45;
-        
-        var seriesHelpLabel = new Label
-        {
-            Text = "Placeholders: {series}, {image}\n" +
-                   "Example: (series {series}, image {image})",
-            Location = new Point(20, y),
-            Size = new Size(410, 60),
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 8, FontStyle.Italic)
-        };
-        tab.Controls.Add(seriesHelpLabel);
-        
-        // Add a bottom spacer for comfortable scrolling
-        var bottomSpacer = new Label { Location = new Point(20, y + 80), Size = new Size(1, 10) };
-        tab.Controls.Add(bottomSpacer);
-
-        return tab;
-    }
+    // Old CreateTemplatesTab removed - content moved to CreateTextAutomationTab
 
     // Macros tab state
     private CheckBox _macrosEnabledCheck = null!;
     private CheckBox _macrosBlankLinesCheck = null!;
-    private Panel _macroListPanel = null!;
-    private TextBox _macroNameBox = null!;
-    private TextBox _macroCriteriaRequiredBox = null!;
-    private TextBox _macroCriteriaAnyOfBox = null!;
-    private TextBox _macroCriteriaExcludeBox = null!;
-    private TextBox _macroTextBox = null!;
-    private List<MacroConfig> _macros = new();
-    private int _selectedMacroIdx = -1;
-    private bool _updatingMacroEditor = false;
-
-    private TabPage CreateMacrosTab()
-    {
-        var tab = new TabPage("Macros")
-        {
-            BackColor = Color.FromArgb(40, 40, 40)
-        };
-
-        int y = 12;
-
-        // Top row: Enable + blank lines
-        _macrosEnabledCheck = new CheckBox
-        {
-            Text = "Enable Macros",
-            Location = new Point(15, y),
-            AutoSize = true,
-            ForeColor = Color.White,
-            Checked = _config.MacrosEnabled
-        };
-        _macrosEnabledCheck.CheckedChanged += (s, e) =>
-        {
-            UpdateMacroStates();
-            // Auto-enable Scrape Mosaic when macros are enabled (required for study change detection)
-            if (_macrosEnabledCheck.Checked && !_scrapeMosaicCheck.Checked)
-            {
-                _scrapeMosaicCheck.Checked = true;
-            }
-        };
-        tab.Controls.Add(_macrosEnabledCheck);
-
-        _macrosBlankLinesCheck = new CheckBox
-        {
-            Text = "Add blank lines before (dictation space)",
-            Location = new Point(140, y),
-            AutoSize = true,
-            ForeColor = Color.White,
-            Checked = _config.MacrosBlankLinesBefore
-        };
-        tab.Controls.Add(_macrosBlankLinesCheck);
-        y += 28;
-
-        // Left column: Macro list
-        var listLabel = new Label
-        {
-            Text = "Macros",
-            Location = new Point(15, y),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(180, 180, 180),
-            Font = new Font("Segoe UI", 8)
-        };
-        tab.Controls.Add(listLabel);
-
-        var addBtn = new Button
-        {
-            Text = "+",
-            Location = new Point(100, y - 2),
-            Size = new Size(24, 20),
-            BackColor = Color.FromArgb(60, 100, 60),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Cursor = Cursors.Hand,
-            Font = new Font("Segoe UI", 8, FontStyle.Bold)
-        };
-        addBtn.FlatAppearance.BorderSize = 0;
-        addBtn.Click += (s, e) => AddMacro();
-        tab.Controls.Add(addBtn);
-
-        var removeBtn = new Button
-        {
-            Text = "-",
-            Location = new Point(126, y - 2),
-            Size = new Size(24, 20),
-            BackColor = Color.FromArgb(100, 60, 60),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Cursor = Cursors.Hand,
-            Font = new Font("Segoe UI", 8, FontStyle.Bold)
-        };
-        removeBtn.FlatAppearance.BorderSize = 0;
-        removeBtn.Click += (s, e) => RemoveMacro();
-        tab.Controls.Add(removeBtn);
-        y += 20;
-
-        _macroListPanel = new Panel
-        {
-            Location = new Point(15, y),
-            Size = new Size(135, 230),
-            BackColor = Color.FromArgb(30, 30, 30),
-            AutoScroll = true,
-            BorderStyle = BorderStyle.FixedSingle
-        };
-        tab.Controls.Add(_macroListPanel);
-
-        // Right column: Editor (full height)
-        var editorX = 165;
-        var editorY = 40;
-
-        var nameLabel = new Label { Text = "Name", Location = new Point(editorX, editorY), AutoSize = true, ForeColor = Color.FromArgb(180, 180, 180), Font = new Font("Segoe UI", 8) };
-        tab.Controls.Add(nameLabel);
-        editorY += 16;
-
-        _macroNameBox = new TextBox
-        {
-            Location = new Point(editorX, editorY),
-            Width = 275,
-            BackColor = Color.FromArgb(50, 50, 50),
-            ForeColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle
-        };
-        _macroNameBox.TextChanged += (s, e) => ApplyMacroEditorChanges();
-        tab.Controls.Add(_macroNameBox);
-        editorY += 26;
-
-        var requiredLabel = new Label { Text = "Required (all must match)", Location = new Point(editorX, editorY), AutoSize = true, ForeColor = Color.FromArgb(180, 180, 180), Font = new Font("Segoe UI", 8) };
-        tab.Controls.Add(requiredLabel);
-        editorY += 16;
-
-        _macroCriteriaRequiredBox = new TextBox
-        {
-            Location = new Point(editorX, editorY),
-            Width = 275,
-            BackColor = Color.FromArgb(50, 50, 50),
-            ForeColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle
-        };
-        _macroCriteriaRequiredBox.TextChanged += (s, e) => ApplyMacroEditorChanges();
-        tab.Controls.Add(_macroCriteriaRequiredBox);
-        editorY += 26;
-
-        var anyOfLabel = new Label { Text = "Any of (optional, at least one)", Location = new Point(editorX, editorY), AutoSize = true, ForeColor = Color.FromArgb(180, 180, 180), Font = new Font("Segoe UI", 8) };
-        tab.Controls.Add(anyOfLabel);
-        editorY += 16;
-
-        _macroCriteriaAnyOfBox = new TextBox
-        {
-            Location = new Point(editorX, editorY),
-            Width = 275,
-            BackColor = Color.FromArgb(50, 50, 50),
-            ForeColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle
-        };
-        _macroCriteriaAnyOfBox.TextChanged += (s, e) => ApplyMacroEditorChanges();
-        tab.Controls.Add(_macroCriteriaAnyOfBox);
-        editorY += 26;
-
-        var excludeLabel = new Label { Text = "Exclude (none must match)", Location = new Point(editorX, editorY), AutoSize = true, ForeColor = Color.FromArgb(180, 180, 180), Font = new Font("Segoe UI", 8) };
-        tab.Controls.Add(excludeLabel);
-        editorY += 16;
-
-        _macroCriteriaExcludeBox = new TextBox
-        {
-            Location = new Point(editorX, editorY),
-            Width = 275,
-            BackColor = Color.FromArgb(50, 50, 50),
-            ForeColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle
-        };
-        _macroCriteriaExcludeBox.TextChanged += (s, e) => ApplyMacroEditorChanges();
-        tab.Controls.Add(_macroCriteriaExcludeBox);
-        editorY += 26;
-
-        var textLabel = new Label { Text = "Macro Text", Location = new Point(editorX, editorY), AutoSize = true, ForeColor = Color.FromArgb(180, 180, 180), Font = new Font("Segoe UI", 8) };
-        tab.Controls.Add(textLabel);
-        editorY += 16;
-
-        _macroTextBox = new TextBox
-        {
-            Location = new Point(editorX, editorY),
-            Size = new Size(275, 100),
-            BackColor = Color.FromArgb(50, 50, 50),
-            ForeColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle,
-            Multiline = true,
-            ScrollBars = ScrollBars.Vertical,
-            Font = new Font("Consolas", 9)
-        };
-        _macroTextBox.TextChanged += (s, e) => ApplyMacroEditorChanges();
-        tab.Controls.Add(_macroTextBox);
-        editorY += 104;
-
-        // Note about case insensitivity
-        var noteLabel = new Label
-        {
-            Text = "Separate criteria with commas. Not case sensitive.",
-            Location = new Point(editorX, editorY),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(120, 120, 120),
-            Font = new Font("Segoe UI", 7.5f)
-        };
-        tab.Controls.Add(noteLabel);
-
-        // Load macros
-        _macros = _config.Macros.Select(m => new MacroConfig
-        {
-            Enabled = m.Enabled,
-            Name = m.Name,
-            CriteriaRequired = m.CriteriaRequired,
-            CriteriaAnyOf = m.CriteriaAnyOf,
-            CriteriaExclude = m.CriteriaExclude,
-            Text = m.Text
-        }).ToList();
-
-        RenderMacroList();
-        UpdateMacroStates();
-
-        return tab;
-    }
-
-    private void RenderMacroList()
-    {
-        _macroListPanel.Controls.Clear();
-        int y = 1;
-
-        for (int i = 0; i < _macros.Count; i++)
-        {
-            var macro = _macros[i];
-            var idx = i;
-            bool isSelected = (i == _selectedMacroIdx);
-            bool isGlobal = string.IsNullOrWhiteSpace(macro.CriteriaRequired) && string.IsNullOrWhiteSpace(macro.CriteriaAnyOf);
-
-            var itemPanel = new Panel
-            {
-                Location = new Point(1, y),
-                Size = new Size(115, 32),
-                BackColor = isSelected ? Color.FromArgb(50, 60, 80) : Color.FromArgb(40, 40, 40),
-                Cursor = Cursors.Hand
-            };
-
-            var cb = new CheckBox
-            {
-                Location = new Point(2, 8),
-                Size = new Size(16, 16),
-                Checked = macro.Enabled,
-                FlatStyle = FlatStyle.Flat
-            };
-            cb.CheckedChanged += (s, e) => { _macros[idx].Enabled = cb.Checked; };
-            itemPanel.Controls.Add(cb);
-
-            var nameStr = string.IsNullOrWhiteSpace(macro.Name) ? "(unnamed)" : macro.Name;
-            if (nameStr.Length > 12) nameStr = nameStr.Substring(0, 10) + "..";
-
-            var nameLabel = new Label
-            {
-                Text = (isGlobal ? "● " : "◆ ") + nameStr,
-                Location = new Point(18, 2),
-                Size = new Size(95, 15),
-                ForeColor = Color.White,
-                Font = new Font("Segoe UI", 7.5f, FontStyle.Bold)
-            };
-            nameLabel.ForeColor = isGlobal ? Color.FromArgb(140, 200, 140) : Color.White;
-            itemPanel.Controls.Add(nameLabel);
-
-            var criteriaStr = macro.GetCriteriaDisplayString();
-            if (criteriaStr.Length > 14) criteriaStr = criteriaStr.Substring(0, 12) + "..";
-
-            var criteriaLabel = new Label
-            {
-                Text = criteriaStr,
-                Location = new Point(18, 16),
-                Size = new Size(95, 14),
-                ForeColor = Color.FromArgb(130, 130, 130),
-                Font = new Font("Segoe UI", 7)
-            };
-            itemPanel.Controls.Add(criteriaLabel);
-
-            void SelectThis(object? s, EventArgs e) => SelectMacro(idx);
-            itemPanel.Click += SelectThis;
-            nameLabel.Click += SelectThis;
-            criteriaLabel.Click += SelectThis;
-
-            _macroListPanel.Controls.Add(itemPanel);
-            y += 33;
-        }
-    }
-
-    private void SelectMacro(int idx)
-    {
-        _selectedMacroIdx = idx;
-        RenderMacroList();
-        UpdateMacroEditorFromSelection();
-    }
-
-    private void UpdateMacroEditorFromSelection()
-    {
-        _updatingMacroEditor = true;
-        try
-        {
-            if (_selectedMacroIdx < 0 || _selectedMacroIdx >= _macros.Count)
-            {
-                _macroNameBox.Text = "";
-                _macroCriteriaRequiredBox.Text = "";
-                _macroCriteriaAnyOfBox.Text = "";
-                _macroCriteriaExcludeBox.Text = "";
-                _macroTextBox.Text = "";
-                _macroNameBox.Enabled = false;
-                _macroCriteriaRequiredBox.Enabled = false;
-                _macroCriteriaAnyOfBox.Enabled = false;
-                _macroCriteriaExcludeBox.Enabled = false;
-                _macroTextBox.Enabled = false;
-                return;
-            }
-
-            var macro = _macros[_selectedMacroIdx];
-            _macroNameBox.Text = macro.Name;
-            _macroCriteriaRequiredBox.Text = macro.CriteriaRequired;
-            _macroCriteriaAnyOfBox.Text = macro.CriteriaAnyOf;
-            _macroCriteriaExcludeBox.Text = macro.CriteriaExclude;
-            _macroTextBox.Text = macro.Text;
-            _macroNameBox.Enabled = true;
-            _macroCriteriaRequiredBox.Enabled = true;
-            _macroCriteriaAnyOfBox.Enabled = true;
-            _macroCriteriaExcludeBox.Enabled = true;
-            _macroTextBox.Enabled = true;
-        }
-        finally
-        {
-            _updatingMacroEditor = false;
-        }
-    }
-
-    private void ApplyMacroEditorChanges()
-    {
-        if (_updatingMacroEditor) return;
-        if (_selectedMacroIdx < 0 || _selectedMacroIdx >= _macros.Count) return;
-
-        var macro = _macros[_selectedMacroIdx];
-        macro.Name = _macroNameBox.Text;
-        macro.CriteriaRequired = _macroCriteriaRequiredBox.Text;
-        macro.CriteriaAnyOf = _macroCriteriaAnyOfBox.Text;
-        macro.CriteriaExclude = _macroCriteriaExcludeBox.Text;
-        macro.Text = _macroTextBox.Text;
-
-        RenderMacroList();
-    }
-
-    private void AddMacro()
-    {
-        _macros.Add(new MacroConfig
-        {
-            Enabled = true,
-            Name = "New Macro",
-            CriteriaRequired = "",
-            CriteriaExclude = "",
-            CriteriaAnyOf = "",
-            Text = ""
-        });
-        _selectedMacroIdx = _macros.Count - 1;
-        RenderMacroList();
-        UpdateMacroEditorFromSelection();
-    }
-
-    private void RemoveMacro()
-    {
-        if (_selectedMacroIdx < 0 || _selectedMacroIdx >= _macros.Count) return;
-
-        _macros.RemoveAt(_selectedMacroIdx);
-        if (_selectedMacroIdx >= _macros.Count)
-            _selectedMacroIdx = _macros.Count - 1;
-
-        RenderMacroList();
-        UpdateMacroEditorFromSelection();
-    }
 
     private void UpdateMacroStates()
     {
         bool enabled = _macrosEnabledCheck.Checked;
         _macrosBlankLinesCheck.Enabled = enabled;
-        _macroListPanel.Enabled = enabled;
-        _macroNameBox.Enabled = enabled && _selectedMacroIdx >= 0;
-        _macroCriteriaRequiredBox.Enabled = enabled && _selectedMacroIdx >= 0;
-        _macroCriteriaAnyOfBox.Enabled = enabled && _selectedMacroIdx >= 0;
-        _macroTextBox.Enabled = enabled && _selectedMacroIdx >= 0;
+        _macrosBlankLinesCheck.ForeColor = enabled ? Color.White : Color.Gray;
     }
 
     private static Label CreateLabel(string text, int x, int y, int width)
@@ -3000,9 +3003,9 @@ Common InteleViewer shortcuts:
 • - : Zoom out";
                 break;
 
-            case 3: // Templates
-                title = "Templates Help";
-                content = @"TEMPLATES
+            case 3: // Text Automation
+                title = "Text Automation Help";
+                content = @"TEXT AUTOMATION
 ═══════════════════════════════════════
 
 Customize the text that gets inserted into your reports.
@@ -3048,9 +3051,9 @@ TIPS
 • The OCR looks for patterns like ""S: 3"" or ""Series: 3"" and ""I: 142"" or ""Image: 142"".";
                 break;
 
-            case 4: // Macros
-                title = "Macros Help";
-                content = @"MACROS
+            case 4: // Alerts
+                title = "Alerts Help";
+                content = @"ALERTS
 ═══════════════════════════════════════
 
 Macros are text snippets that are automatically inserted when you open a new study. This saves time for common report sections you frequently type.
@@ -3084,9 +3087,9 @@ MULTIPLE MACROS
 Multiple macros can match the same study. All matching macros are inserted together. Blank lines (if enabled) are added only once.";
                 break;
 
-            case 5: // Advanced
-                title = "Advanced Settings Help";
-                content = @"ADVANCED SETTINGS
+            case 5: // Behavior
+                title = "Behavior Settings Help";
+                content = @"BEHAVIOR SETTINGS
 ═══════════════════════════════════════
 
 These settings control background features and behaviors.
@@ -3160,34 +3163,13 @@ When enabled, after processing a report, the tool sends Page Down keys to scroll
   Adjust these thresholds based on your typical report lengths and screen size.";
                 break;
 
-            case 6: // Experimental
-                title = "Experimental Features Help";
-                content = @"EXPERIMENTAL FEATURES
+            case 6: // Reference
+                title = "Reference Help";
+                content = @"REFERENCE
 ═══════════════════════════════════════
 
-Features in this tab are experimental and may change or be removed in future versions.
-
-RVUCOUNTER INTEGRATION
-Reads the current shift RVU total from a local RVUCounter installation.
-
-To set up:
-1. Click 'Find RVUCounter' to locate your RVUCounter installation
-2. The tool will search common locations (Desktop, same folder as MosaicTools)
-3. If not found automatically, browse to select the RVUCounter folder
-4. Enable 'Read RVUCounter shift total' to activate the feature
-
-The RVUCounter database is read in read-only mode, so it won't interfere with RVUCounter's normal operation.";
-                break;
-
-            case 7: // AHK
-                title = "AHK Integration Help";
-                content = @"AHK (AUTOHOTKEY) INTEGRATION
-═══════════════════════════════════════
-
-This tab shows how to trigger Mosaic Tools actions from external programs like AutoHotkey scripts.
-
-HOW IT WORKS
-Mosaic Tools listens for Windows Messages. You can send these messages from any program to trigger actions without needing to set up hotkeys.
+AHK / EXTERNAL INTEGRATION
+This shows how to trigger Mosaic Tools actions from external programs.
 
 WINDOWS MESSAGE CODES
 • 0x0401 - Critical Findings (hold Win key for debug mode)
@@ -3201,21 +3183,15 @@ WINDOWS MESSAGE CODES
 • 0x040A - Open Settings
 
 AUTOHOTKEY EXAMPLE
-To trigger Critical Findings from an AHK script:
-
 DetectHiddenWindows, On
 PostMessage, 0x0401, 0, 0,, ahk_class WindowsForms
 
-This can be useful if you want to:
-• Trigger actions from other applications
-• Create complex macros that combine multiple tools
-• Use foot pedals or other input devices that only support AHK
+DEBUG TIPS
+• Hold Win key while triggering Critical Findings to see raw data.
+• Right-click Clinical History or Impression windows to copy debug info.
 
-SETTINGS FILE LOCATION
-Your settings are saved to:
-%LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
-
-You can back up this file or copy it to other workstations.";
+SETTINGS FILE
+%LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json";
                 break;
 
             default:
@@ -3371,18 +3347,9 @@ You can back up this file or copy it to other workstations.";
         _config.ScrollThreshold2 = (int)_scrollThreshold2.Value;
         _config.ScrollThreshold3 = (int)_scrollThreshold3.Value;
 
-        // Macros
+        // Macros (macros list is saved in MacroEditorForm)
         _config.MacrosEnabled = _macrosEnabledCheck.Checked;
         _config.MacrosBlankLinesBefore = _macrosBlankLinesCheck.Checked;
-        _config.Macros = _macros.Select(m => new MacroConfig
-        {
-            Enabled = m.Enabled,
-            Name = m.Name,
-            CriteriaRequired = m.CriteriaRequired,
-            CriteriaAnyOf = m.CriteriaAnyOf,
-            CriteriaExclude = m.CriteriaExclude,
-            Text = m.Text
-        }).ToList();
 
         // Experimental
         _config.RvuCounterEnabled = _rvuCounterEnabledCheck.Checked;

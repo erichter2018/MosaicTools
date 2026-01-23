@@ -84,6 +84,8 @@ public class ClinicalHistoryForm : Form
     private bool _strokeDetected = false;
     private System.Windows.Forms.Timer? _blinkTimer;
     private bool _blinkState = false;
+    private bool _noteCreated = false;
+    private Label? _noteCreatedIndicator;
 
     // Alert-only mode state (when AlwaysShowClinicalHistory is false)
     private bool _showingAlert = false;
@@ -153,6 +155,23 @@ public class ClinicalHistoryForm : Form
             MaximumSize = new Size(0, 0) // No limit
         };
         layout.Controls.Add(_contentLabel, 0, 1);
+
+        // Note created indicator (purple checkmark) - positioned on the drag bar right side
+        _noteCreatedIndicator = new Label
+        {
+            Text = "✓",
+            Font = new Font("Segoe UI", 10, FontStyle.Bold),
+            ForeColor = StrokeBorderColor,
+            BackColor = Color.Black,
+            Size = new Size(18, 16),
+            Visible = false,
+            Cursor = Cursors.Default,
+            Anchor = AnchorStyles.Top | AnchorStyles.Right
+        };
+        // Add to the drag bar area, positioned to the right
+        _noteCreatedIndicator.Location = new Point(dragBar.Width - 20, 0);
+        dragBar.Controls.Add(_noteCreatedIndicator);
+        // Tooltip will be set after _borderTooltip is created
 
         // Make form auto-size to content
         AutoSize = true;
@@ -317,9 +336,12 @@ public class ClinicalHistoryForm : Form
         _lastAutoFixedAccession = null;
         _lastAutoFixTime = DateTime.MinValue;
 
-        // Reset template mismatch and stroke state
+        // Reset template mismatch, stroke state, and note created state
         _templateMismatch = false;
         _strokeDetected = false;
+        _noteCreated = false;
+        if (_noteCreatedIndicator != null)
+            _noteCreatedIndicator.Visible = false;
         _lastDescription = null;
         _lastTemplateName = null;
         BackColor = NormalBorderColor;
@@ -504,6 +526,31 @@ public class ClinicalHistoryForm : Form
     public bool IsStrokeDetected => _strokeDetected;
 
     /// <summary>
+    /// Set the note created indicator state.
+    /// Shows a purple checkmark when a Critical Communication Note has been created.
+    /// </summary>
+    public void SetNoteCreated(bool created)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(() => SetNoteCreated(created));
+            return;
+        }
+
+        _noteCreated = created;
+        if (_noteCreatedIndicator != null)
+        {
+            _noteCreatedIndicator.Visible = created && _strokeDetected;
+        }
+        UpdateBorderTooltip();
+    }
+
+    /// <summary>
+    /// Returns whether a note has been created for the current stroke case.
+    /// </summary>
+    public bool IsNoteCreated => _noteCreated;
+
+    /// <summary>
     /// Set the callback for creating a stroke critical note.
     /// Called when user clicks the notification box during stroke case.
     /// </summary>
@@ -631,7 +678,11 @@ public class ClinicalHistoryForm : Form
         }
         else if (_strokeDetected)
         {
-            if (_config.StrokeClickToCreateNote)
+            if (_noteCreated)
+            {
+                tooltip = "Purple: Stroke protocol - Critical Communication Note created ✓";
+            }
+            else if (_config.StrokeClickToCreateNote)
             {
                 tooltip = "Purple: Stroke protocol - click to create critical note";
             }
@@ -651,6 +702,10 @@ public class ClinicalHistoryForm : Form
 
         _borderTooltip.SetToolTip(this, tooltip);
         _borderTooltip.SetToolTip(_contentLabel, tooltip);
+        if (_noteCreatedIndicator != null)
+        {
+            _borderTooltip.SetToolTip(_noteCreatedIndicator, "Critical Communication Note created in Clario");
+        }
     }
 
     /// <summary>

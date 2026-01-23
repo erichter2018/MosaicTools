@@ -1821,8 +1821,8 @@ public class ActionController : IDisposable
 
     #region Stroke Detection
 
-    // Keywords for stroke detection in clinical history
-    private static readonly string[] StrokeKeywords = new[]
+    // Default keywords for stroke detection in clinical history (used if config list is empty)
+    private static readonly string[] DefaultStrokeKeywords = new[]
     {
         "stroke", "CVA", "TIA", "hemiparesis", "hemiplegia", "aphasia",
         "dysarthria", "facial droop", "weakness", "numbness", "code stroke",
@@ -1890,10 +1890,14 @@ public class ActionController : IDisposable
         }
     }
 
-    private static bool ContainsStrokeKeywords(string text)
+    private bool ContainsStrokeKeywords(string text)
     {
         var lowerText = text.ToLowerInvariant();
-        foreach (var keyword in StrokeKeywords)
+        // Use config keywords if available, otherwise use defaults
+        var keywords = _config.StrokeClinicalHistoryKeywords.Count > 0
+            ? _config.StrokeClinicalHistoryKeywords
+            : DefaultStrokeKeywords.ToList();
+        foreach (var keyword in keywords)
         {
             if (lowerText.Contains(keyword.ToLowerInvariant()))
             {
@@ -1937,7 +1941,11 @@ public class ActionController : IDisposable
         if (success)
         {
             _criticalNoteCreatedForAccession = accession;
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Critical note created", 3000));
+            _mainForm.Invoke(() =>
+            {
+                _mainForm.ShowStatusToast("Critical note created", 3000);
+                _mainForm.SetNoteCreatedState(true);
+            });
         }
         return success;
     }

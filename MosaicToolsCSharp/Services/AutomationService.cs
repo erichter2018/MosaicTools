@@ -651,20 +651,36 @@ public class AutomationService : IDisposable
 
             // Click Communication Note
             ClickElement(commNoteBtn, "Communication Note");
-            Thread.Sleep(300); // Wait for dialog to appear
+            Thread.Sleep(500); // Wait for dialog to appear
 
-            // Step 3: Find and click "Submit" button
+            // Step 3: Find and click "Submit" button with retry
+            // Need to find the actual button, not a group containing "Submit" in its name
             FlaUI.Core.AutomationElements.AutomationElement? submitBtn = null;
 
-            submitBtn = clarioWindow.FindFirstDescendant(cf =>
-                cf.ByName("Submit", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
-
-            if (submitBtn == null)
+            // Retry a few times with short waits (dialog may take time to fully render)
+            for (int retry = 0; retry < 5 && submitBtn == null; retry++)
             {
-                // Search desktop for popup dialogs
-                var desktop = _automation.GetDesktop();
-                submitBtn = desktop.FindFirstDescendant(cf =>
-                    cf.ByName("Submit", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+                if (retry > 0) Thread.Sleep(300);
+
+                var submitElements = clarioWindow.FindAllDescendants();
+                foreach (var elem in submitElements)
+                {
+                    try
+                    {
+                        if (elem.Name?.Trim() == "Submit" &&
+                            (elem.ControlType == FlaUI.Core.Definitions.ControlType.Button ||
+                             elem.ControlType == FlaUI.Core.Definitions.ControlType.Hyperlink ||
+                             elem.ControlType == FlaUI.Core.Definitions.ControlType.Text))
+                        {
+                            submitBtn = elem;
+                            break;
+                        }
+                    }
+                    catch { }
+                }
+
+                if (submitBtn != null) break;
+                Logger.Trace($"CreateCriticalCommunicationNote: Submit not found on attempt {retry + 1}, retrying...");
             }
 
             if (submitBtn != null)
@@ -673,7 +689,7 @@ public class AutomationService : IDisposable
             }
             else
             {
-                Logger.Trace("CreateCriticalCommunicationNote: Submit button not found");
+                Logger.Trace("CreateCriticalCommunicationNote: Submit button not found after retries");
                 return false;
             }
 

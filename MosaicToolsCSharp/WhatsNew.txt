@@ -1,3 +1,11 @@
+2.7.2
+- Settings reorganization: cleaner tab layout (Text, Alerts, Behavior tabs)
+- Macros editor: dedicated window for managing macros (like Pick Lists)
+- Stroke keywords now configurable via Edit button in Alerts
+- Purple checkmark indicator when Critical Communication Note is created
+- Fixed Clario note submit button not clicking
+- UI polish: cleaner sliders, improved label text
+
 2.7.1
 - Fixed hotkey and mic button settings not saving (broken since 2.6.0)
 

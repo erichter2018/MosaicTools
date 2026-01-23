@@ -764,6 +764,14 @@ public class MainForm : Form
         _clinicalHistoryWindow.SetStrokeState(isStroke);
     }
 
+    public void SetNoteCreatedState(bool created)
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        _clinicalHistoryWindow.SetNoteCreated(created);
+    }
+
     public void ShowAlertOnly(AlertType type, string details)
     {
         if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)

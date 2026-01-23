@@ -41,7 +41,11 @@
       "Bash(Select-Object -Last 15)",
       "WebSearch",
       "WebFetch(domain:github.com)",
-      "Bash(Start-Process \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\ClarioIgnore\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\ClarioIgnore.exe\")"
+      "Bash(Start-Process \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\ClarioIgnore\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\ClarioIgnore.exe\")",
+      "Bash(c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe build:*)",
+      "Bash(c:Userserik.richterDesktopdotnetdotnet.exe build \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\MosaicTools.csproj\")",
+      "Bash(c:Userserik.richterDesktopdotnetdotnet.exe publish C:Userserik.richterDesktopMosaicToolsMosaicToolsCSharpMosaicTools.csproj -c Release -r win-x64 --self-contained)",
+      "Bash(Start-Process 'C:\\\\Users\\\\erik.richter\\\\Desktop\\\\MosaicTools\\\\MosaicToolsCSharp\\\\bin\\\\Release\\\\net8.0-windows10.0.19041.0\\\\win-x64\\\\publish\\\\MosaicTools.exe' \")"
     ]
   }
 }
