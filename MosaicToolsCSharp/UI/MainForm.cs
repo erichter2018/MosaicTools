@@ -860,7 +860,6 @@ public class MainForm : Form
     private void ReloadApp()
     {
         _controller.Stop();
-        Close();
 
         // Relaunch - preserve command line arguments (especially -headless)
         var args = Environment.GetCommandLineArgs();
@@ -872,7 +871,15 @@ public class MainForm : Form
             Arguments = argsToPass,
             UseShellExecute = true
         };
-        System.Diagnostics.Process.Start(startInfo);
+
+        // Launch new instance on background thread with delay to avoid mutex conflict
+        // The delay gives this instance time to fully exit before new one checks mutex
+        System.Threading.Tasks.Task.Run(async () =>
+        {
+            await System.Threading.Tasks.Task.Delay(800);
+            System.Diagnostics.Process.Start(startInfo);
+        });
+
         Application.Exit();
     }
     

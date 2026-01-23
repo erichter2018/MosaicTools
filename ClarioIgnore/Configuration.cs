@@ -26,6 +26,7 @@ public class Configuration
 
     // Settings
     public int PollIntervalSeconds { get; set; } = 10;
+    public int MaxFilesToMonitor { get; set; } = 17;
     public bool IsPaused { get; set; } = false;
     public bool ShowNotifications { get; set; } = true;
     public List<SkipRule> SkipRules { get; set; } = new();

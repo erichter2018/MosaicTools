@@ -17,6 +17,7 @@ public class SettingsForm : Form
     private Button _saveButton = null!;
     private Button _testButton = null!;
     private NumericUpDown _intervalUpDown = null!;
+    private NumericUpDown _maxFilesUpDown = null!;
     private CheckBox _notificationsCheck = null!;
 
     private int _selectedIndex = -1;
@@ -146,6 +147,19 @@ public class SettingsForm : Form
             Value = Configuration.Instance.PollIntervalSeconds
         };
         settingsGroup.Controls.Add(_intervalUpDown);
+
+        var maxFilesLabel = new Label { Text = "Max files to monitor:", Location = new Point(230, 25), AutoSize = true };
+        settingsGroup.Controls.Add(maxFilesLabel);
+
+        _maxFilesUpDown = new NumericUpDown
+        {
+            Location = new Point(360, 23),
+            Size = new Size(60, 20),
+            Minimum = 1,
+            Maximum = 50,
+            Value = Configuration.Instance.MaxFilesToMonitor
+        };
+        settingsGroup.Controls.Add(_maxFilesUpDown);
 
         _notificationsCheck = new CheckBox
         {
@@ -292,6 +306,7 @@ public class SettingsForm : Form
         LoadRules(); // Refresh display
 
         Configuration.Instance.PollIntervalSeconds = (int)_intervalUpDown.Value;
+        Configuration.Instance.MaxFilesToMonitor = (int)_maxFilesUpDown.Value;
         Configuration.Instance.ShowNotifications = _notificationsCheck.Checked;
         Configuration.Instance.Save();
 

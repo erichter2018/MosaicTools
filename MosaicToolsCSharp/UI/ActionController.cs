@@ -1508,9 +1508,9 @@ public class ActionController : IDisposable
                             Logger.Trace($"Captured baseline report ({reportText.Length} chars) for changes tracking");
                         }
 
-                        // Show toast
-                        Logger.Trace($"Showing New Study toast for {currentAccession}");
-                        _mainForm.Invoke(() => _mainForm.ShowStatusToast($"New Study: {currentAccession}", 3000));
+                        // Show toast (disabled - too noisy)
+                        // Logger.Trace($"Showing New Study toast for {currentAccession}");
+                        // _mainForm.Invoke(() => _mainForm.ShowStatusToast($"New Study: {currentAccession}", 3000));
 
                         // Re-show clinical history window if it was hidden due to no study
                         // (only in always-show mode; alerts-only mode will show when alert triggers)

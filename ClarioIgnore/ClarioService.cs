@@ -122,15 +122,25 @@ public class ClarioService : IDisposable
                         // Procedure patterns (imaging study types)
                         else if (string.IsNullOrEmpty(procedure) &&
                             (cellName.StartsWith("XR ", StringComparison.OrdinalIgnoreCase) ||
+                             cellName.StartsWith("XR-", StringComparison.OrdinalIgnoreCase) ||
                              cellName.StartsWith("CT ", StringComparison.OrdinalIgnoreCase) ||
+                             cellName.StartsWith("CT-", StringComparison.OrdinalIgnoreCase) ||
                              cellName.StartsWith("MR ", StringComparison.OrdinalIgnoreCase) ||
+                             cellName.StartsWith("MR-", StringComparison.OrdinalIgnoreCase) ||
                              cellName.StartsWith("US ", StringComparison.OrdinalIgnoreCase) ||
+                             cellName.StartsWith("US-", StringComparison.OrdinalIgnoreCase) ||
                              cellName.Contains("CHEST", StringComparison.OrdinalIgnoreCase) ||
                              cellName.Contains("ABDOMEN", StringComparison.OrdinalIgnoreCase) ||
                              cellName.Contains("VENOUS", StringComparison.OrdinalIgnoreCase) ||
+                             cellName.Contains("VASCULAR", StringComparison.OrdinalIgnoreCase) ||
                              cellName.Contains("DOPPLER", StringComparison.OrdinalIgnoreCase) ||
                              cellName.Contains("ANGIO", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("MRI ", StringComparison.OrdinalIgnoreCase)))
+                             cellName.Contains("EXTREMITY", StringComparison.OrdinalIgnoreCase) ||
+                             cellName.Contains("MRI ", StringComparison.OrdinalIgnoreCase) ||
+                             cellName.Contains("SCROTUM", StringComparison.OrdinalIgnoreCase) ||
+                             cellName.Contains("PELVIS", StringComparison.OrdinalIgnoreCase) ||
+                             cellName.Contains("SPINE", StringComparison.OrdinalIgnoreCase) ||
+                             cellName.Contains("BRAIN", StringComparison.OrdinalIgnoreCase)))
                         {
                             procedure = cellName.Trim();
                         }
@@ -160,13 +170,14 @@ public class ClarioService : IDisposable
                 }
             }
 
-            // Only return first 17 items (visible portion of worklist)
-            if (items.Count > 17)
+            // Only return first N items (visible portion of worklist)
+            var maxFiles = Configuration.Instance.MaxFilesToMonitor;
+            if (items.Count > maxFiles)
             {
-                items = items.Take(17).ToList();
+                items = items.Take(maxFiles).ToList();
             }
 
-            Logger.Log($"Found {items.Count} worklist items (limited to 17)");
+            Logger.Log($"Found {items.Count} worklist items (limited to {maxFiles})");
         }
         catch (Exception ex)
         {
@@ -239,6 +250,11 @@ public class ClarioService : IDisposable
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+    private const uint GA_ROOT = 2; // Get root owner window
 
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     private struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
@@ -427,31 +443,55 @@ public class ClarioService : IDisposable
     {
         try
         {
-            // Find the top-level window at these screen coordinates
+            // Find window at screen coordinates
             var screenPt = new POINT { X = screenX, Y = screenY };
-            IntPtr chromeWindow = WindowFromPoint(screenPt);
+            IntPtr windowAtPoint = WindowFromPoint(screenPt);
 
-            if (chromeWindow == IntPtr.Zero)
+            if (windowAtPoint == IntPtr.Zero)
             {
                 Logger.Log($"PostMessage: No window found at ({screenX}, {screenY}) for '{procedureName}'");
                 return false;
             }
 
-            // Find Chrome's render widget - this is where web content actually lives
-            // Chrome window hierarchy: Chrome_WidgetWin_1 -> Chrome_RenderWidgetHostHWND
-            IntPtr renderWidget = FindChromeRenderWidget(chromeWindow);
-            IntPtr targetWindow = renderWidget != IntPtr.Zero ? renderWidget : chromeWindow;
+            // Get the root/top-level window (WindowFromPoint may return a deeply nested child)
+            IntPtr rootWindow = GetAncestor(windowAtPoint, GA_ROOT);
+            if (rootWindow == IntPtr.Zero)
+                rootWindow = windowAtPoint;
 
-            // Get the target window's screen position
-            if (!GetWindowRect(targetWindow, out RECT windowRect))
+            // Find Chrome's render widget from the root window - this is where web content lives
+            IntPtr renderWidget = FindChromeRenderWidget(rootWindow);
+            IntPtr targetWindow = renderWidget != IntPtr.Zero ? renderWidget : windowAtPoint;
+
+            // Log the render widget's screen position for debugging
+            if (renderWidget != IntPtr.Zero && GetWindowRect(renderWidget, out RECT widgetRect))
             {
-                Logger.Log($"PostMessage: GetWindowRect failed for '{procedureName}'");
+                Logger.Log($"RenderWidget rect: top={widgetRect.Top}, left={widgetRect.Left}, bottom={widgetRect.Bottom}, right={widgetRect.Right}");
+
+                // Items near the bottom of the viewport have unreliable coordinates from UI Automation
+                // Skip PostMessage for these - they'll fall back to regular mouse click
+                int viewportHeight = widgetRect.Bottom - widgetRect.Top;
+                int maxReliableY = widgetRect.Top + (int)(viewportHeight * 0.75); // Top 75% is reliable
+                if (screenY > maxReliableY)
+                {
+                    Logger.Log($"PostMessage: screenY={screenY} exceeds reliable zone ({maxReliableY}), skipping PostMessage");
+                    return false;
+                }
+            }
+
+            // Convert screen coordinates to client coordinates using ScreenToClient
+            // This properly accounts for title bar, menu bar, etc.
+            var clientPt = new POINT { X = screenX, Y = screenY };
+            if (!ScreenToClient(targetWindow, ref clientPt))
+            {
+                Logger.Log($"PostMessage: ScreenToClient failed for '{procedureName}'");
                 return false;
             }
 
-            // Calculate client coordinates relative to the target window's position
-            int clientX = screenX - windowRect.Left;
-            int clientY = screenY - windowRect.Top;
+            int clientX = clientPt.X;
+            int clientY = clientPt.Y;
+
+            string widgetInfo = renderWidget != IntPtr.Zero ? "render widget" : "fallback window";
+            Logger.Log($"PostMessage: screen=({screenX},{screenY}) -> client=({clientX},{clientY}) via {widgetInfo}, renderFound={renderWidget != IntPtr.Zero}");
 
             // Pack coordinates into lParam: (y << 16) | (x & 0xFFFF)
             IntPtr lParam = (IntPtr)((clientY << 16) | (clientX & 0xFFFF));
@@ -464,8 +504,7 @@ public class ClarioService : IDisposable
 
             if (downResult && upResult)
             {
-                string widgetInfo = renderWidget != IntPtr.Zero ? "render widget" : "main window";
-                Logger.Log($"PostMessage click for '{procedureName}' at ({clientX}, {clientY}) via {widgetInfo} - no mouse movement");
+                Logger.Log($"PostMessage click for '{procedureName}' at ({clientX}, {clientY}) - no mouse movement");
                 return true;
             }
             else
@@ -490,19 +529,41 @@ public class ClarioService : IDisposable
         // First find the intermediate widget window
         IntPtr intermediateWidget = FindWindowEx(chromeWindow, IntPtr.Zero, "Chrome_RenderWidgetHostHWND", null);
         if (intermediateWidget != IntPtr.Zero)
+        {
+            Logger.Log($"FindChromeRenderWidget: Found at level 1");
             return intermediateWidget;
+        }
 
         // Try searching one level deeper - Chrome sometimes nests windows
         IntPtr child = FindWindowEx(chromeWindow, IntPtr.Zero, null, null);
-        while (child != IntPtr.Zero)
+        int depth = 0;
+        while (child != IntPtr.Zero && depth < 20)
         {
             IntPtr renderWidget = FindWindowEx(child, IntPtr.Zero, "Chrome_RenderWidgetHostHWND", null);
             if (renderWidget != IntPtr.Zero)
+            {
+                Logger.Log($"FindChromeRenderWidget: Found at level 2 (child {depth})");
                 return renderWidget;
+            }
+
+            // Also check grandchildren
+            IntPtr grandchild = FindWindowEx(child, IntPtr.Zero, null, null);
+            while (grandchild != IntPtr.Zero)
+            {
+                renderWidget = FindWindowEx(grandchild, IntPtr.Zero, "Chrome_RenderWidgetHostHWND", null);
+                if (renderWidget != IntPtr.Zero)
+                {
+                    Logger.Log($"FindChromeRenderWidget: Found at level 3");
+                    return renderWidget;
+                }
+                grandchild = FindWindowEx(child, grandchild, null, null);
+            }
 
             child = FindWindowEx(chromeWindow, child, null, null);
+            depth++;
         }
 
+        Logger.Log($"FindChromeRenderWidget: Not found after checking {depth} children");
         return IntPtr.Zero;
     }
 
@@ -522,6 +583,21 @@ public class ClarioService : IDisposable
             if (rowRect.IsEmpty || rowRect.Width <= 0)
             {
                 Logger.Log($"Row has invalid bounds for '{item.Procedure}'");
+                return false;
+            }
+
+            // Check if row is likely off-screen (scrolled out of view)
+            // Off-screen rows often have very small height or unreasonable Y coordinates
+            if (rowRect.Height < 15)
+            {
+                Logger.Log($"Row appears off-screen (height={rowRect.Height}) for '{item.Procedure}' - skipping");
+                return false;
+            }
+
+            // Sanity check: Y coordinate should be reasonable (not negative, not way off screen)
+            if (rowRect.Y < 0 || rowRect.Y > 3000)
+            {
+                Logger.Log($"Row has unreasonable Y coordinate ({rowRect.Y}) for '{item.Procedure}' - skipping");
                 return false;
             }
 
@@ -553,6 +629,14 @@ public class ClarioService : IDisposable
                 // Fallback coordinates
                 clickX = (int)(rowRect.X + 33);
                 clickY = (int)(rowRect.Y + rowRect.Height / 2);
+            }
+
+            // Skip items beyond Y=800 - they have unreliable coordinates and will scroll up eventually
+            const int MAX_RELIABLE_Y = 800;
+            if (clickY > MAX_RELIABLE_Y)
+            {
+                Logger.Log($"Skipping '{item.Procedure}' at Y={clickY} (beyond {MAX_RELIABLE_Y}) - will scroll up later");
+                return false;
             }
 
             // Check if button is already active (bright) - don't click if so
