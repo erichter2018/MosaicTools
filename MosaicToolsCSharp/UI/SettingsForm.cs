@@ -2566,7 +2566,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
 
     private void OnEditStrokeKeywordsClick(object? sender, EventArgs e)
     {
-        var currentKeywords = string.Join("\n", _config.StrokeClinicalHistoryKeywords);
+        var currentKeywords = string.Join(Environment.NewLine, _config.StrokeClinicalHistoryKeywords);
         var input = InputBox.Show(
             "Enter stroke detection keywords (one per line):\n\nThese keywords are checked against the clinical history when 'Also use clinical history keywords' is enabled.",
             "Edit Stroke Keywords",
