@@ -210,6 +210,15 @@ public class Configuration
     [JsonPropertyName("rvucounter_path")]
     public string RvuCounterPath { get; set; } = "";
 
+    [JsonPropertyName("rvu_display_mode")]
+    public RvuDisplayMode RvuDisplayMode { get; set; } = RvuDisplayMode.Total;
+
+    [JsonPropertyName("rvu_goal_enabled")]
+    public bool RvuGoalEnabled { get; set; } = false;
+
+    [JsonPropertyName("rvu_goal_per_hour")]
+    public double RvuGoalPerHour { get; set; } = 10.0;
+
     // Report Changes Highlighting (Experimental)
     [JsonPropertyName("show_report_changes")]
     public bool ShowReportChanges { get; set; } = false;
@@ -234,6 +243,9 @@ public class Configuration
     [JsonPropertyName("pick_list_skip_single_match")]
     public bool PickListSkipSingleMatch { get; set; } = true;
 
+    [JsonPropertyName("pick_list_keep_open")]
+    public bool PickListKeepOpen { get; set; } = false;
+
     [JsonPropertyName("pick_list_popup_x")]
     public int PickListPopupX { get; set; } = 400;
 
@@ -245,6 +257,11 @@ public class Configuration
 
     [JsonPropertyName("pick_list_editor_height")]
     public int PickListEditorHeight { get; set; } = 600;
+
+    // InteleViewer Window/Level Cycle Keystrokes
+    // Keys sent to InteleViewer when Cycle Window/Level action is triggered
+    [JsonPropertyName("window_level_keys")]
+    public List<string> WindowLevelKeys { get; set; } = new() { "F4", "F5", "F7", "F6" };
 
     // Action Mappings (action name -> {hotkey, mic_button})
     [JsonPropertyName("action_mappings")]
@@ -553,10 +570,12 @@ public static class Actions
     public const string CreateImpression = "Create Impression";
     public const string DiscardStudy = "Discard Study";
     public const string ShowPickLists = "Show Pick Lists";
+    public const string CycleWindowLevel = "Cycle Window/Level";
+    public const string CreateCriticalNote = "Create Critical Note";
 
     public static readonly string[] All = {
         None, SystemBeep, GetPrior, CriticalFindings,
-        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression, DiscardStudy, ShowPickLists
+        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression, DiscardStudy, ShowPickLists, CycleWindowLevel, CreateCriticalNote
     };
 }
 
@@ -567,6 +586,50 @@ public enum PickListMode
 {
     Tree,
     Builder
+}
+
+/// <summary>
+/// RVU display mode - what to show in the main window.
+/// </summary>
+public enum RvuDisplayMode
+{
+    Total,
+    PerHour,
+    Both
+}
+
+/// <summary>
+/// Tree pick list style - controls how selections are formatted when pasted.
+/// </summary>
+public enum TreePickListStyle
+{
+    /// <summary>
+    /// Each selection pastes immediately with a leading space (if text doesn't start with one).
+    /// Result: "The lungs are clear. Heart size is normal."
+    /// </summary>
+    Freeform,
+
+    /// <summary>
+    /// Accumulates selections per top-level category, formats output as uppercase headings.
+    /// Result: "LUNGS: RLL Opacity\nHEART: Mildly Enlarged Heart"
+    /// </summary>
+    Structured
+}
+
+/// <summary>
+/// Controls text placement in structured tree mode output.
+/// </summary>
+public enum StructuredTextPlacement
+{
+    /// <summary>
+    /// Text on same line as heading: "LUNGS: Clear"
+    /// </summary>
+    Inline,
+
+    /// <summary>
+    /// Text on line below heading with indent: "LUNGS:\n  Clear"
+    /// </summary>
+    BelowHeading
 }
 
 /// <summary>
@@ -626,6 +689,27 @@ public class PickListConfig
     /// </summary>
     [JsonPropertyName("mode")]
     public PickListMode Mode { get; set; } = PickListMode.Tree;
+
+    /// <summary>
+    /// Tree pick list style - Freeform (immediate paste) or Structured (accumulated headings).
+    /// Only applies when Mode is Tree.
+    /// </summary>
+    [JsonPropertyName("tree_style")]
+    public TreePickListStyle TreeStyle { get; set; } = TreePickListStyle.Freeform;
+
+    /// <summary>
+    /// Text placement in structured mode - Inline (LUNGS: Clear) or BelowHeading (LUNGS:\n  Clear).
+    /// Only applies when Mode is Tree and TreeStyle is Structured.
+    /// </summary>
+    [JsonPropertyName("structured_text_placement")]
+    public StructuredTextPlacement StructuredTextPlacement { get; set; } = StructuredTextPlacement.Inline;
+
+    /// <summary>
+    /// Whether to add blank lines between sections in structured mode.
+    /// Only applies when Mode is Tree and TreeStyle is Structured.
+    /// </summary>
+    [JsonPropertyName("structured_blank_lines")]
+    public bool StructuredBlankLines { get; set; } = false;
 
     /// <summary>
     /// Comma-separated required terms. ALL must match the study description.
@@ -747,7 +831,8 @@ public class PickListConfig
 }
 
 /// <summary>
-/// A node in the pick list tree. Can be a branch (has children) or leaf (inserts text).
+/// A node in the pick list tree. Can be a branch (has children), leaf (inserts text),
+/// or builder-ref (launches a builder pick list).
 /// Supports arbitrary nesting depth for complex pick lists.
 /// </summary>
 public class PickListNode
@@ -762,6 +847,7 @@ public class PickListNode
     /// Text to insert when this node is selected.
     /// For branch nodes, this can be empty (user must drill down).
     /// For leaf nodes, this is the text that gets pasted.
+    /// For builder-ref nodes, this is optional prefix text inserted before builder output.
     /// </summary>
     [JsonPropertyName("text")]
     public string Text { get; set; } = "";
@@ -774,16 +860,30 @@ public class PickListNode
     public List<PickListNode> Children { get; set; } = new();
 
     /// <summary>
+    /// Optional reference to a builder-mode pick list ID.
+    /// When set, selecting this node launches that builder instead of using Text directly.
+    /// The builder's output is appended to any prefix Text.
+    /// </summary>
+    [JsonPropertyName("builder_list_id")]
+    public string? BuilderListId { get; set; }
+
+    /// <summary>
     /// Returns true if this node has children (is a branch).
     /// </summary>
     [JsonIgnore]
     public bool HasChildren => Children.Count > 0;
 
     /// <summary>
-    /// Returns true if this node is a leaf (no children, just text).
+    /// Returns true if this node is a leaf (no children, just text, no builder reference).
     /// </summary>
     [JsonIgnore]
-    public bool IsLeaf => Children.Count == 0;
+    public bool IsLeaf => Children.Count == 0 && string.IsNullOrEmpty(BuilderListId);
+
+    /// <summary>
+    /// Returns true if this node references a builder pick list.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsBuilderRef => !string.IsNullOrEmpty(BuilderListId);
 
     /// <summary>
     /// Deep clone this node and all children.
@@ -794,6 +894,7 @@ public class PickListNode
         {
             Label = Label,
             Text = Text,
+            BuilderListId = BuilderListId,
             Children = Children.Select(c => c.Clone()).ToList()
         };
     }

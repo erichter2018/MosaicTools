@@ -11,9 +11,9 @@
     <RootNamespace>MosaicTools</RootNamespace>
 
     <!-- Version -->
-    <Version>2.7.6</Version>
-    <AssemblyVersion>2.7.6.0</AssemblyVersion>
-    <FileVersion>2.7.6.0</FileVersion>
+    <Version>2.7.7</Version>
+    <AssemblyVersion>2.7.7.0</AssemblyVersion>
+    <FileVersion>2.7.7.0</FileVersion>
 
     <!-- Application Icon -->
     <ApplicationIcon>MosaicTools.ico</ApplicationIcon>

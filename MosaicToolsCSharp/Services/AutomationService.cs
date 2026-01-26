@@ -1456,7 +1456,7 @@ public class AutomationService : IDisposable
         "HEAD", "BRAIN", "NECK", "CERVICAL", "C-SPINE", "CSPINE",
         "CHEST", "THORAX", "THORACIC", "T-SPINE", "TSPINE", "LUNG",
         "ABDOMEN", "ABDOMINAL", "PELVIS", "PELVIC", "LUMBAR", "L-SPINE", "LSPINE",
-        "SPINE", "EXTREMITY", "UPPER EXTREMITY", "LOWER EXTREMITY",
+        "SPINE", "UPPER EXTREMITY", "LOWER EXTREMITY", // No generic "EXTREMITY" to avoid false matches
         "ARM", "LEG", "SHOULDER", "HIP", "KNEE", "ANKLE", "WRIST", "ELBOW",
         "FOOT", "HAND", "FINGER", "TOE",
         "CARDIAC", "HEART", "CORONARY", "CTA", "MRA",
@@ -1531,6 +1531,10 @@ public class AutomationService : IDisposable
         if (descParts.Count == 0 || templateParts.Count == 0)
             return true; // Can't determine, assume OK
 
+        // Normalize runoff studies - AORTA + RUNOFF is equivalent to ABDOMEN/PELVIS + LOWER EXTREMITY
+        NormalizeRunoffStudy(descParts);
+        NormalizeRunoffStudy(templateParts);
+
         // Require complete agreement - both sets must be equal
         bool match = descParts.SetEquals(templateParts);
 
@@ -1544,6 +1548,38 @@ public class AutomationService : IDisposable
         }
 
         return match;
+    }
+
+    /// <summary>
+    /// Normalize runoff study body parts so equivalent descriptions match.
+    /// AORTA + RUNOFF → ABDOMEN, PELVIS, LOWER EXTREMITY, RUNOFF (AORTA removed as it's implied)
+    /// </summary>
+    private static void NormalizeRunoffStudy(HashSet<string> parts)
+    {
+        if (!parts.Contains("RUNOFF")) return;
+
+        // If AORTA is present with RUNOFF, expand to standard runoff parts
+        // and remove AORTA since it's implied by abdomen/pelvis runoff
+        if (parts.Contains("AORTA"))
+        {
+            parts.Remove("AORTA"); // AORTA is implied in runoff studies
+            parts.Add("ABDOMEN");
+            parts.Add("PELVIS");
+            parts.Add("LOWER EXTREMITY");
+        }
+
+        // If ABDOMEN/PELVIS is present with RUNOFF, add LOWER EXTREMITY
+        if ((parts.Contains("ABDOMEN") || parts.Contains("PELVIS")) && !parts.Contains("LOWER EXTREMITY"))
+        {
+            parts.Add("LOWER EXTREMITY");
+        }
+
+        // If LOWER EXTREMITY is present with RUNOFF, add ABDOMEN/PELVIS
+        if (parts.Contains("LOWER EXTREMITY"))
+        {
+            parts.Add("ABDOMEN");
+            parts.Add("PELVIS");
+        }
     }
 
     #endregion

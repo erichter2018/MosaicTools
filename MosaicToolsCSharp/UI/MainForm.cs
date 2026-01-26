@@ -738,12 +738,15 @@ public class MainForm : Form
             if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
             {
                 _clinicalHistoryWindow = new ClinicalHistoryForm(_config);
-                // Wire up stroke note click callback
+                // Wire up stroke note click callback (for stroke-specific click)
                 _clinicalHistoryWindow.SetStrokeNoteClickCallback(() =>
                 {
                     var accession = _controller.GetCurrentAccession();
                     return _controller.CreateStrokeCriticalNote(accession);
                 });
+                // Wire up critical note click callback (for Ctrl+Click and context menu)
+                _clinicalHistoryWindow.SetCriticalNoteClickCallback(() =>
+                    _controller.TriggerAction(Actions.CreateCriticalNote, "CtrlClick"));
                 _clinicalHistoryWindow.Show();
             }
         }
@@ -1143,6 +1146,10 @@ public class MainForm : Form
             case NativeWindows.WM_TRIGGER_SHOW_PICK_LISTS:
                 Logger.Trace("WndProc: Triggering ShowPickLists");
                 BeginInvoke(() => _controller.TriggerAction(Actions.ShowPickLists));
+                break;
+            case NativeWindows.WM_TRIGGER_CREATE_CRITICAL_NOTE:
+                Logger.Trace("WndProc: Triggering CreateCriticalNote");
+                BeginInvoke(() => _controller.TriggerAction(Actions.CreateCriticalNote));
                 break;
         }
 

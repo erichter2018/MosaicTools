@@ -10,6 +10,7 @@ public class SkipRule
     public string CriteriaRequired { get; set; } = "";
     public string CriteriaAnyOf { get; set; } = "";
     public string CriteriaExclude { get; set; } = "";
+    public bool IncludePriority { get; set; } = false;
 
     /// <summary>
     /// Check if a study procedure name matches this rule.
@@ -17,12 +18,15 @@ public class SkipRule
     /// - CriteriaAnyOf: At least ONE term must be present (comma-separated)
     /// - CriteriaExclude: NONE of these terms can be present (comma-separated)
     /// </summary>
-    public bool MatchesStudy(string procedureName)
+    public bool MatchesStudy(string procedureName, string priority = "")
     {
         if (!Enabled) return false;
         if (string.IsNullOrWhiteSpace(procedureName)) return false;
 
-        var text = procedureName.ToUpperInvariant();
+        // Combine priority with procedure if IncludePriority is enabled
+        var text = IncludePriority && !string.IsNullOrWhiteSpace(priority)
+            ? $"{priority} | {procedureName}".ToUpperInvariant()
+            : procedureName.ToUpperInvariant();
 
         // Check Required - ALL must match
         if (!string.IsNullOrWhiteSpace(CriteriaRequired))

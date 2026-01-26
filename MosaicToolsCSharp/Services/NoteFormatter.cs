@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace MosaicTools.Services;
@@ -38,9 +39,9 @@ public class NoteFormatter
                 segments.AddRange(parts);
             }
             
-            // Fallback: Individual title matches (Dr. or Nurse)
+            // Fallback: Individual title matches (Dr., Nurse, NP, PA, etc.)
             // Stop at common verbs/prepositions that indicate end of name
-            var namePattern = @"((?:Dr\.|Nurse)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is|and|&|connected|contacted|spoke|discussed|transferred|called|notified|informed|reached|paged)|\s*[-;:,]|\s+(?:Dr\.|Nurse)|\s+\d{2}/\d{2}/|$)";
+            var namePattern = @"((?:Dr\.?|Nurse|NP|PA|RN|MD)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is|and|&|connected|contacted|spoke|discussed|transferred|called|notified|informed|reached|paged)|\s*[-;:,]|\s+(?:Dr\.?|Nurse|NP|PA|RN|MD)|\s+\d{2}/\d{2}/|$)";
             var nameMatches = Regex.Matches(rawText, namePattern, RegexOptions.IgnoreCase);
             foreach (Match m in nameMatches)
             {
@@ -52,9 +53,19 @@ public class NoteFormatter
             {
                 var cleaned = s.Trim();
                 cleaned = Regex.Replace(cleaned, @"^(?:with|to|at|from|and|@|w/)\s+", "", RegexOptions.IgnoreCase);
-                
+
                 // Skip if it's the current doctor or too short
-                if (!cleaned.Contains(_doctorName, StringComparison.OrdinalIgnoreCase) && cleaned.Length > 2)
+                // Check both "Firstname Lastname" and "Lastname, Firstname" formats
+                bool isCurrentDoctor = false;
+                if (!string.IsNullOrWhiteSpace(_doctorName))
+                {
+                    var nameParts = _doctorName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    // If any part of the doctor's name appears in this segment, skip it
+                    isCurrentDoctor = nameParts.Any(part =>
+                        part.Length > 2 && cleaned.Contains(part, StringComparison.OrdinalIgnoreCase));
+                }
+
+                if (!isCurrentDoctor && cleaned.Length > 2)
                 {
                     cleaned = Regex.Split(cleaned, @"\s+(?:to|at|@|w/)\s+|[-;:,]", RegexOptions.IgnoreCase)[0];
                     titleAndName = ToTitleCase(cleaned);

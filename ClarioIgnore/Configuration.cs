@@ -86,11 +86,11 @@ public class Configuration
         }
     }
 
-    public SkipRule? FindMatchingRule(string procedureName)
+    public SkipRule? FindMatchingRule(string procedureName, string priority = "")
     {
         foreach (var rule in SkipRules)
         {
-            if (rule.MatchesStudy(procedureName))
+            if (rule.MatchesStudy(procedureName, priority))
                 return rule;
         }
         return null;

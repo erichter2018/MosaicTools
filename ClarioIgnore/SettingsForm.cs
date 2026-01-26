@@ -12,6 +12,7 @@ public class SettingsForm : Form
     private TextBox _anyOfBox = null!;
     private TextBox _excludeBox = null!;
     private CheckBox _enabledCheck = null!;
+    private CheckBox _includePriorityCheck = null!;
     private Button _addButton = null!;
     private Button _deleteButton = null!;
     private Button _saveButton = null!;
@@ -125,6 +126,15 @@ public class SettingsForm : Form
             Font = new Font(Font.FontFamily, 7)
         };
         editorPanel.Controls.Add(exclHint);
+        y += 25;
+
+        _includePriorityCheck = new CheckBox
+        {
+            Text = "Include priority in matching (e.g., STAT IP, Routine)",
+            Location = new Point(0, y),
+            AutoSize = true
+        };
+        editorPanel.Controls.Add(_includePriorityCheck);
 
         // General settings
         var settingsGroup = new GroupBox
@@ -230,6 +240,7 @@ public class SettingsForm : Form
             _requiredBox.Text = rule.CriteriaRequired;
             _anyOfBox.Text = rule.CriteriaAnyOf;
             _excludeBox.Text = rule.CriteriaExclude;
+            _includePriorityCheck.Checked = rule.IncludePriority;
         }
     }
 
@@ -243,6 +254,7 @@ public class SettingsForm : Form
             rule.CriteriaRequired = _requiredBox.Text.Trim();
             rule.CriteriaAnyOf = _anyOfBox.Text.Trim();
             rule.CriteriaExclude = _excludeBox.Text.Trim();
+            rule.IncludePriority = _includePriorityCheck.Checked;
         }
     }
 

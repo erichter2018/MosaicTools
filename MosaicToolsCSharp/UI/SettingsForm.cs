@@ -75,9 +75,6 @@ public class SettingsForm : Form
     private CheckBox _pickListKeepOpenCheck = null!;
     private Label _pickListsCountLabel = null!;
     private Label _macrosCountLabel = null!;
-    private Label? _pickListsActionLabel;
-    private TextBox? _pickListsActionHotkey;
-    private ComboBox? _pickListsActionMic;
     private Panel _reportChangesColorPanel = null!;
     private TrackBar _reportChangesAlphaSlider = null!;
     private Label _reportChangesAlphaLabel = null!;
@@ -505,12 +502,7 @@ public class SettingsForm : Form
             // Hide Cycle Window/Level entirely in headless mode
             if (App.IsHeadless && action == Actions.CycleWindowLevel) continue;
 
-            // Check if this is the Pick Lists action (we'll create but maybe hide it)
-            var isPickListAction = action == Actions.ShowPickLists;
-            var hidePickList = isPickListAction && !_config.PickListsEnabled;
-
             var lbl = CreateLabel(action, 20, y, 150);
-            lbl.Visible = !hidePickList;
             tab.Controls.Add(lbl);
 
             var hotkeyBox = new TextBox
@@ -522,8 +514,7 @@ public class SettingsForm : Form
                 ForeColor = Color.White,
                 Tag = action,
                 ReadOnly = true,
-                Cursor = Cursors.Hand,
-                Visible = !hidePickList
+                Cursor = Cursors.Hand
             };
             hotkeyBox.Text = _config.ActionMappings.GetValueOrDefault(action)?.Hotkey ?? "";
             SetupHotkeyCapture(hotkeyBox);
@@ -542,22 +533,13 @@ public class SettingsForm : Form
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(60, 60, 60),
                 ForeColor = Color.White,
-                Tag = action,
-                Visible = !hidePickList
+                Tag = action
             };
             micCombo.Items.Add("");
             micCombo.Items.AddRange(HidService.AllButtons);
             var currentMic = _config.ActionMappings.GetValueOrDefault(action)?.MicButton ?? "";
             micCombo.SelectedItem = micCombo.Items.Contains(currentMic) ? currentMic : "";
             tab.Controls.Add(micCombo);
-
-            // Store references to Pick Lists action controls for dynamic show/hide
-            if (isPickListAction)
-            {
-                _pickListsActionLabel = lbl;
-                _pickListsActionHotkey = hotkeyBox;
-                _pickListsActionMic = micCombo;
-            }
 
             y += 30;
         }
@@ -1469,10 +1451,19 @@ WM_TRIGGER_CREATE_IMPRESSION = 0x040B # Create Impression
 WM_TRIGGER_DISCARD_STUDY = 0x040C # Discard Study
 WM_TRIGGER_CHECK_UPDATES = 0x040D # Check for Updates
 WM_TRIGGER_SHOW_PICK_LISTS = 0x040E # Show Pick Lists
+WM_TRIGGER_CREATE_CRITICAL_NOTE = 0x040F # Create Critical Note
 
 Example AHK:
 DetectHiddenWindows, On
 PostMessage, 0x0401, 0, 0,, ahk_class WindowsForms
+
+=== Critical Note Creation ===
+
+Create a Critical Communication Note in Clario for any study:
+• Map 'Create Critical Note' to hotkey/mic button
+• Ctrl+Click on Clinical History window
+• Right-click Clinical History → Create Critical Note
+• Windows message 0x040F from AHK
 
 === Debug Tips ===
 
@@ -1480,7 +1471,7 @@ PostMessage, 0x0401, 0, 0,, ahk_class WindowsForms
   to see raw data without pasting.
 
 • Right-click Clinical History or Impression
-  windows to copy debug info.
+  windows for context menu and debug options.
 
 === Config File ===
 Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
@@ -2735,11 +2726,6 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         bool enabled = _pickListsEnabledCheck.Checked;
         _pickListSkipSingleMatchCheck.Enabled = enabled;
         _pickListKeepOpenCheck.Enabled = enabled;
-
-        // Toggle visibility of Pick Lists action controls in the Keys tab
-        if (_pickListsActionLabel != null) _pickListsActionLabel.Visible = enabled;
-        if (_pickListsActionHotkey != null) _pickListsActionHotkey.Visible = enabled;
-        if (_pickListsActionMic != null) _pickListsActionMic.Visible = enabled;
     }
 
     private string GetPickListsCountText()
@@ -3171,6 +3157,16 @@ AVAILABLE ACTIONS
 
 • Sign Report: Sends Alt+F to Mosaic to sign/finalize the report.
 
+• Create Impression: Clicks the Create Impression button in Mosaic. Useful when Skip Forward is mapped to another action.
+
+• Discard Study: Closes the current study without signing. Useful for studies you've already read or don't need to report.
+
+• Show Pick Lists: Opens the pick list popup for quick text insertion. Configure pick lists in the Pick Lists tab.
+
+• Cycle Window/Level: Cycles through configured window/level presets in InteleViewer. Configure presets in the IV Buttons tab.
+
+• Create Critical Note: Creates a Critical Communication Note in Clario for the current study. Works for both stroke and non-stroke cases. Can also be triggered by Ctrl+Click on the Clinical History window or via the right-click context menu.
+
 HOTKEY COLUMN
 Click on a hotkey field and press your desired key combination. Use Backspace or Delete to clear. Some hotkeys (like Alt+P, Alt+R) are restricted because they conflict with Mosaic's built-in shortcuts.
 
@@ -3404,14 +3400,24 @@ WINDOWS MESSAGE CODES
 • 0x040C - Discard Study
 • 0x040D - Check for Updates
 • 0x040E - Show Pick Lists
+• 0x040F - Create Critical Note
 
 AUTOHOTKEY EXAMPLE
 DetectHiddenWindows, On
 PostMessage, 0x0401, 0, 0,, ahk_class WindowsForms
 
+CREATE CRITICAL NOTE
+Creates a Critical Communication Note in Clario for the current study.
+Works for both stroke and non-stroke cases.
+Triggers:
+• Map to hotkey or mic button in Actions tab
+• Ctrl+Click on Clinical History window
+• Right-click Clinical History window → Create Critical Note
+• Windows message 0x040F from AHK
+
 DEBUG TIPS
 • Hold Win key while triggering Critical Findings to see raw data.
-• Right-click Clinical History or Impression windows to copy debug info.
+• Right-click Clinical History or Impression windows for context menu.
 
 SETTINGS FILE
 %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json";

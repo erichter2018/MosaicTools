@@ -508,6 +508,7 @@ public static class NativeWindows
     public const int WM_TRIGGER_DISCARD_STUDY = 0x040C;
     public const int WM_TRIGGER_CHECK_UPDATES = 0x040D;
     public const int WM_TRIGGER_SHOW_PICK_LISTS = 0x040E;
+    public const int WM_TRIGGER_CREATE_CRITICAL_NOTE = 0x040F;
 
     #endregion
 
@@ -516,8 +517,10 @@ public static class NativeWindows
     public const int WM_COPYDATA = 0x004A;
 
     // Message types for RVUCounter
-    public const int MSG_STUDY_SIGNED = 1;           // Study was signed via MosaicTools
-    public const int MSG_STUDY_CLOSED_UNSIGNED = 2;  // Study closed without being signed
+    public const int MSG_STUDY_SIGNED = 1;                    // Study signed, no critical result
+    public const int MSG_STUDY_CLOSED_UNSIGNED = 2;           // Study closed unsigned, no critical result
+    public const int MSG_STUDY_SIGNED_CRITICAL = 3;           // Study signed with critical result
+    public const int MSG_STUDY_CLOSED_UNSIGNED_CRITICAL = 4;  // Study closed unsigned with critical result
 
     [StructLayout(LayoutKind.Sequential)]
     public struct COPYDATASTRUCT
@@ -568,7 +571,14 @@ public static class NativeWindows
 
                 SendMessage(rvuHandle, WM_COPYDATA, IntPtr.Zero, ref copyData);
 
-                var msgName = messageType == MSG_STUDY_SIGNED ? "SIGNED" : "CLOSED_UNSIGNED";
+                var msgName = messageType switch
+                {
+                    MSG_STUDY_SIGNED => "SIGNED",
+                    MSG_STUDY_CLOSED_UNSIGNED => "CLOSED_UNSIGNED",
+                    MSG_STUDY_SIGNED_CRITICAL => "SIGNED_CRITICAL",
+                    MSG_STUDY_CLOSED_UNSIGNED_CRITICAL => "CLOSED_UNSIGNED_CRITICAL",
+                    _ => $"UNKNOWN({messageType})"
+                };
                 Logger.Trace($"SendToRvuCounter: Sent {msgName} for '{accession}'");
                 return true;
             }

@@ -31,6 +31,16 @@ public class PickListEditorForm : Form
     private TextBox _listCriteriaExcludeBox = null!;
     private CheckBox _listEnabledCheck = null!;
 
+    // Tree style controls
+    private Panel _treeStylePanel = null!;
+    private RadioButton _freeformStyleRadio = null!;
+    private RadioButton _structuredStyleRadio = null!;
+    private ToolTip _styleToolTip = null!;
+    private Label _structuredHelpLabel = null!;
+    private Panel _structuredOptionsPanel = null!;
+    private ComboBox _textPlacementCombo = null!;
+    private CheckBox _blankLinesCheck = null!;
+
     // Tree mode panel (right side)
     private Panel _treeModePanel = null!;
     private TreeView _treeView = null!;
@@ -46,6 +56,14 @@ public class PickListEditorForm : Form
     private Label _selectedNodeHeader = null!;
     private Label _labelLabel = null!;
     private Label _textToInsertLabel = null!;
+
+    // Builder reference UI for tree nodes
+    private RadioButton _nodeTypeTextRadio = null!;
+    private RadioButton _nodeTypeBuilderRadio = null!;
+    private ComboBox _builderRefCombo = null!;
+    private Label _builderRefLabel = null!;
+    private Label _prefixTextLabel = null!;
+    private Panel _nodeTypePanel = null!;
 
     // Builder mode panel (right side)
     private Panel _builderModePanel = null!;
@@ -82,6 +100,9 @@ public class PickListEditorForm : Form
             Enabled = pl.Enabled,
             Name = pl.Name,
             Mode = pl.Mode,
+            TreeStyle = pl.TreeStyle,
+            StructuredTextPlacement = pl.StructuredTextPlacement,
+            StructuredBlankLines = pl.StructuredBlankLines,
             CriteriaRequired = pl.CriteriaRequired,
             CriteriaAnyOf = pl.CriteriaAnyOf,
             CriteriaExclude = pl.CriteriaExclude,
@@ -308,6 +329,132 @@ public class PickListEditorForm : Form
         Controls.Add(_modeCombo);
         y += 28;
 
+        // Tree Style panel (only visible for Tree mode)
+        _treeStylePanel = new Panel
+        {
+            Location = new Point(x, y),
+            Size = new Size(260, 50),
+            BackColor = Color.Transparent,
+            Visible = true
+        };
+        Controls.Add(_treeStylePanel);
+
+        var styleLabel = new Label
+        {
+            Text = "Style:",
+            Location = new Point(0, 2),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(150, 150, 150),
+            Font = new Font("Segoe UI", 9)
+        };
+        _treeStylePanel.Controls.Add(styleLabel);
+
+        _freeformStyleRadio = new RadioButton
+        {
+            Text = "Freeform",
+            Location = new Point(60, 0),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(100, 220, 150),
+            Checked = true
+        };
+        _freeformStyleRadio.CheckedChanged += TreeStyleRadio_CheckedChanged;
+        _treeStylePanel.Controls.Add(_freeformStyleRadio);
+
+        // Help button for freeform
+        var freeformHelp = new Label
+        {
+            Text = "?",
+            Location = new Point(_freeformStyleRadio.Right - 2, 2),
+            Size = new Size(14, 14),
+            ForeColor = Color.FromArgb(100, 150, 200),
+            Font = new Font("Segoe UI", 7, FontStyle.Bold),
+            Cursor = Cursors.Help
+        };
+        _treeStylePanel.Controls.Add(freeformHelp);
+
+        _structuredStyleRadio = new RadioButton
+        {
+            Text = "Structured",
+            Location = new Point(60, 22),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(255, 180, 100)
+        };
+        _structuredStyleRadio.CheckedChanged += TreeStyleRadio_CheckedChanged;
+        _treeStylePanel.Controls.Add(_structuredStyleRadio);
+
+        // Help button for structured
+        _structuredHelpLabel = new Label
+        {
+            Text = "?",
+            Location = new Point(_structuredStyleRadio.Right - 2, 24),
+            Size = new Size(14, 14),
+            ForeColor = Color.FromArgb(100, 150, 200),
+            Font = new Font("Segoe UI", 7, FontStyle.Bold),
+            Cursor = Cursors.Help
+        };
+        _treeStylePanel.Controls.Add(_structuredHelpLabel);
+
+        // Tooltips for style help
+        _styleToolTip = new ToolTip
+        {
+            AutoPopDelay = 15000,
+            InitialDelay = 200,
+            ReshowDelay = 100
+        };
+        _styleToolTip.SetToolTip(freeformHelp, "Freeform: Paste each selection immediately.\nResult: \"The lungs are clear. Heart size is normal.\"");
+        _styleToolTip.SetToolTip(_freeformStyleRadio, "Each selection pastes immediately with leading space");
+        _styleToolTip.SetToolTip(_structuredStyleRadio, "Accumulate selections, format as CATEGORY: text");
+        UpdateStructuredTooltip();
+
+        y += 52;
+
+        // Structured formatting options panel (only visible when Structured is selected)
+        _structuredOptionsPanel = new Panel
+        {
+            Location = new Point(x, y),
+            Size = new Size(260, 52),
+            BackColor = Color.Transparent,
+            Visible = false
+        };
+        Controls.Add(_structuredOptionsPanel);
+
+        var placementLabel = new Label
+        {
+            Text = "Text placement:",
+            Location = new Point(20, 2),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(150, 150, 150),
+            Font = new Font("Segoe UI", 8)
+        };
+        _structuredOptionsPanel.Controls.Add(placementLabel);
+
+        _textPlacementCombo = new ComboBox
+        {
+            Location = new Point(110, 0),
+            Width = 130,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            DropDownStyle = ComboBoxStyle.DropDownList
+        };
+        _textPlacementCombo.Items.AddRange(new object[] { "Inline", "Below Heading" });
+        _textPlacementCombo.SelectedIndex = 0;
+        _textPlacementCombo.SelectedIndexChanged += TextPlacementCombo_SelectedIndexChanged;
+        _structuredOptionsPanel.Controls.Add(_textPlacementCombo);
+
+        _blankLinesCheck = new CheckBox
+        {
+            Text = "Blank line between sections",
+            Location = new Point(20, 26),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(180, 180, 180),
+            Font = new Font("Segoe UI", 8)
+        };
+        _blankLinesCheck.CheckedChanged += BlankLinesCheck_CheckedChanged;
+        _structuredOptionsPanel.Controls.Add(_blankLinesCheck);
+
+        y += 55;
+
         // Required
         Controls.Add(CreateLabel("Required:", x, y + 2));
         _listCriteriaRequiredBox = CreateTextBox(x + 60, y, 200);
@@ -421,6 +568,58 @@ public class PickListEditorForm : Form
         _nodeLabelBox = CreateTextBox(x + 50, 0, 300);
         _nodeLabelBox.TextChanged += NodeLabelBox_TextChanged;
         _treeModePanel.Controls.Add(_nodeLabelBox);
+
+        // Node type panel (radio buttons for leaf type selection)
+        _nodeTypePanel = new Panel
+        {
+            Location = new Point(x, 0),
+            Size = new Size(400, 26),
+            BackColor = Color.Transparent
+        };
+        _treeModePanel.Controls.Add(_nodeTypePanel);
+
+        _nodeTypeTextRadio = new RadioButton
+        {
+            Text = "Text leaf",
+            Location = new Point(0, 2),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(100, 220, 150),
+            Checked = true
+        };
+        _nodeTypeTextRadio.CheckedChanged += NodeTypeRadio_CheckedChanged;
+        _nodeTypePanel.Controls.Add(_nodeTypeTextRadio);
+
+        _nodeTypeBuilderRadio = new RadioButton
+        {
+            Text = "Builder reference",
+            Location = new Point(100, 2),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(255, 180, 100)
+        };
+        _nodeTypeBuilderRadio.CheckedChanged += NodeTypeRadio_CheckedChanged;
+        _nodeTypePanel.Controls.Add(_nodeTypeBuilderRadio);
+
+        // Builder reference dropdown (position updated in UpdateLayout)
+        _builderRefLabel = CreateLabel("Builder list:", x, 0);
+        _builderRefLabel.ForeColor = Color.FromArgb(255, 180, 100);
+        _treeModePanel.Controls.Add(_builderRefLabel);
+
+        _builderRefCombo = new ComboBox
+        {
+            Location = new Point(x + 80, 0),
+            Width = 250,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            DropDownStyle = ComboBoxStyle.DropDownList
+        };
+        _builderRefCombo.SelectedIndexChanged += BuilderRefCombo_SelectedIndexChanged;
+        _treeModePanel.Controls.Add(_builderRefCombo);
+
+        // Prefix text label (for builder ref nodes)
+        _prefixTextLabel = CreateLabel("Prefix text (optional):", x, 0);
+        _prefixTextLabel.ForeColor = Color.FromArgb(255, 180, 100);
+        _treeModePanel.Controls.Add(_prefixTextLabel);
 
         // Text to insert (position updated in UpdateLayout)
         _textToInsertLabel = CreateLabel("Text to insert:", x, 0);
@@ -602,7 +801,7 @@ public class PickListEditorForm : Form
     private void UpdateTreeModeLayout(int panelW, int panelH)
     {
         // Tree view - takes upper portion
-        var treeH = Math.Max(150, (panelH - 200) / 2 + 100);
+        var treeH = Math.Max(150, (panelH - 280) / 2 + 100);
         _treeView.Size = new Size(Math.Max(300, panelW - 10), treeH);
 
         // Position node properties section below tree view
@@ -619,6 +818,19 @@ public class PickListEditorForm : Form
         _nodeLabelBox.Width = Math.Max(200, panelW - 60);
         y += 28;
 
+        // Node type selection (only visible for leaf nodes)
+        _nodeTypePanel.Location = new Point(0, y);
+        _nodeTypePanel.Width = Math.Max(300, panelW - 10);
+        y += 28;
+
+        // Builder reference dropdown (visible when builder ref selected)
+        _builderRefLabel.Location = new Point(0, y + 2);
+        _builderRefCombo.Location = new Point(80, y);
+        _builderRefCombo.Width = Math.Max(150, panelW - 100);
+        y += 28;
+
+        // Prefix text label (for builder ref) / Text to insert label (for text leaf)
+        _prefixTextLabel.Location = new Point(0, y);
         _textToInsertLabel.Location = new Point(0, y);
         y += 20;
 
@@ -682,11 +894,70 @@ public class PickListEditorForm : Form
         RefreshListBox();
     }
 
+    private void TreeStyleRadio_CheckedChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedList == null) return;
+
+        _selectedList.TreeStyle = _structuredStyleRadio.Checked
+            ? TreePickListStyle.Structured
+            : TreePickListStyle.Freeform;
+
+        // Show/hide structured formatting options
+        _structuredOptionsPanel.Visible = _structuredStyleRadio.Checked;
+    }
+
+    private void TextPlacementCombo_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedList == null) return;
+
+        _selectedList.StructuredTextPlacement = _textPlacementCombo.SelectedIndex == 1
+            ? StructuredTextPlacement.BelowHeading
+            : StructuredTextPlacement.Inline;
+
+        UpdateStructuredTooltip();
+    }
+
+    private void BlankLinesCheck_CheckedChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedList == null) return;
+
+        _selectedList.StructuredBlankLines = _blankLinesCheck.Checked;
+
+        UpdateStructuredTooltip();
+    }
+
+    private void UpdateStructuredTooltip()
+    {
+        // Build example based on current settings
+        var belowHeading = _textPlacementCombo?.SelectedIndex == 1;
+        var blankLines = _blankLinesCheck?.Checked == true;
+
+        string line1, line2;
+        if (belowHeading)
+        {
+            line1 = "LUNGS:\n  Clear";
+            line2 = "HEART:\n  Normal Size";
+        }
+        else
+        {
+            line1 = "LUNGS: Clear";
+            line2 = "HEART: Normal Size";
+        }
+
+        var separator = blankLines ? "\n\n" : "\n";
+        var example = line1 + separator + line2;
+
+        var tooltip = $"Structured: Accumulate selections per category.\nResult:\n{example}\n\nUse Insert All to paste when done.";
+        _styleToolTip?.SetToolTip(_structuredHelpLabel, tooltip);
+    }
+
     private void ShowModePanel()
     {
         var isTreeMode = _selectedList?.Mode != PickListMode.Builder;
         _treeModePanel.Visible = isTreeMode;
         _builderModePanel.Visible = !isTreeMode;
+        _treeStylePanel.Visible = isTreeMode;
+        _structuredOptionsPanel.Visible = isTreeMode && _selectedList?.TreeStyle == TreePickListStyle.Structured;
 
         if (isTreeMode)
         {
@@ -822,10 +1093,16 @@ public class PickListEditorForm : Form
         _listEnabledCheck.Checked = _selectedList.Enabled;
         _listNameBox.Text = _selectedList.Name;
         _modeCombo.SelectedIndex = _selectedList.Mode == PickListMode.Builder ? 1 : 0;
+        _freeformStyleRadio.Checked = _selectedList.TreeStyle == TreePickListStyle.Freeform;
+        _structuredStyleRadio.Checked = _selectedList.TreeStyle == TreePickListStyle.Structured;
+        _textPlacementCombo.SelectedIndex = _selectedList.StructuredTextPlacement == StructuredTextPlacement.BelowHeading ? 1 : 0;
+        _blankLinesCheck.Checked = _selectedList.StructuredBlankLines;
+        _structuredOptionsPanel.Visible = _selectedList.Mode == PickListMode.Tree && _selectedList.TreeStyle == TreePickListStyle.Structured;
         _listCriteriaRequiredBox.Text = _selectedList.CriteriaRequired;
         _listCriteriaAnyOfBox.Text = _selectedList.CriteriaAnyOf;
         _listCriteriaExcludeBox.Text = _selectedList.CriteriaExclude;
         _suppressEvents = false;
+        UpdateStructuredTooltip();
     }
 
     private void ClearListProperties()
@@ -834,6 +1111,10 @@ public class PickListEditorForm : Form
         _listEnabledCheck.Checked = false;
         _listNameBox.Text = "";
         _modeCombo.SelectedIndex = 0;
+        _freeformStyleRadio.Checked = true;
+        _textPlacementCombo.SelectedIndex = 0;
+        _blankLinesCheck.Checked = false;
+        _structuredOptionsPanel.Visible = false;
         _listCriteriaRequiredBox.Text = "";
         _listCriteriaAnyOfBox.Text = "";
         _listCriteriaExcludeBox.Text = "";
@@ -868,13 +1149,30 @@ public class PickListEditorForm : Form
     private TreeNode CreateTreeNode(PickListNode node, int num)
     {
         var label = string.IsNullOrEmpty(node.Label) ? "(unnamed)" : node.Label;
-        var suffix = node.HasChildren ? $" [{node.Children.Count}]" : (!string.IsNullOrEmpty(node.Text) ? " *" : "");
+        string suffix;
+        Color color;
+
+        if (node.HasChildren)
+        {
+            suffix = $" [{node.Children.Count}]";
+            color = Color.FromArgb(100, 180, 255);  // Blue for branch
+        }
+        else if (node.IsBuilderRef)
+        {
+            suffix = " [B]";
+            color = Color.FromArgb(255, 180, 100);  // Orange for builder ref
+        }
+        else
+        {
+            suffix = !string.IsNullOrEmpty(node.Text) ? " *" : "";
+            color = Color.White;  // White for text leaf
+        }
 
         var treeNode = new TreeNode
         {
             Text = $"{num}. {label}{suffix}",
             Tag = node,
-            ForeColor = node.HasChildren ? Color.FromArgb(100, 180, 255) : Color.White
+            ForeColor = color
         };
 
         for (int i = 0; i < node.Children.Count; i++)
@@ -900,7 +1198,20 @@ public class PickListEditorForm : Form
         _nodeLabelBox.Text = _selectedNode.Label;
         _nodeTextBox.Text = _selectedNode.Text;
         _breadcrumbLabel.Text = GetBreadcrumb();
+
+        // Set node type radio buttons
+        if (_selectedNode.IsBuilderRef)
+        {
+            _nodeTypeBuilderRadio.Checked = true;
+            PopulateBuilderRefCombo();
+        }
+        else
+        {
+            _nodeTypeTextRadio.Checked = true;
+        }
+
         _suppressEvents = false;
+        UpdateNodeTypeUI();
     }
 
     private void ClearNodeProperties()
@@ -909,7 +1220,10 @@ public class PickListEditorForm : Form
         _nodeLabelBox.Text = "";
         _nodeTextBox.Text = "";
         _breadcrumbLabel.Text = "";
+        _nodeTypeTextRadio.Checked = true;
+        _builderRefCombo.Items.Clear();
         _suppressEvents = false;
+        UpdateNodeTypeUI();
     }
 
     private string GetBreadcrumb()
@@ -941,14 +1255,130 @@ public class PickListEditorForm : Form
         UpdateSelectedTreeNode();
     }
 
+    private void NodeTypeRadio_CheckedChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedNode == null) return;
+
+        if (_nodeTypeBuilderRadio.Checked)
+        {
+            // Switching to builder reference mode - clear text, it's not used
+            _selectedNode.Text = "";
+            _nodeTextBox.Text = "";
+            PopulateBuilderRefCombo();
+            // If no builder selected yet, select first available
+            if (_builderRefCombo.SelectedIndex < 0 && _builderRefCombo.Items.Count > 0)
+            {
+                _builderRefCombo.SelectedIndex = 0;
+            }
+        }
+        else
+        {
+            // Switching to text leaf mode - clear builder reference
+            _selectedNode.BuilderListId = null;
+        }
+
+        UpdateNodeTypeUI();
+        UpdateSelectedTreeNode();
+        _listBox.Invalidate();  // Just redraw, don't refresh (which would reset tree selection)
+    }
+
+    private void BuilderRefCombo_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedNode == null) return;
+
+        if (_builderRefCombo.SelectedItem is BuilderListItem item)
+        {
+            _selectedNode.BuilderListId = item.Id;
+        }
+        else
+        {
+            _selectedNode.BuilderListId = null;
+        }
+
+        UpdateSelectedTreeNode();
+        _listBox.Invalidate();  // Just redraw, don't refresh (which would reset tree selection)
+    }
+
+    private void PopulateBuilderRefCombo()
+    {
+        _builderRefCombo.Items.Clear();
+
+        // Add all enabled builder-mode pick lists (except the current one to prevent cycles)
+        foreach (var list in _pickLists)
+        {
+            if (list.Mode == PickListMode.Builder && list.Enabled && list.Id != _selectedList?.Id)
+            {
+                _builderRefCombo.Items.Add(new BuilderListItem { Id = list.Id, Name = list.Name });
+            }
+        }
+
+        // Select the currently referenced builder if any
+        if (_selectedNode?.BuilderListId != null)
+        {
+            for (int i = 0; i < _builderRefCombo.Items.Count; i++)
+            {
+                if (_builderRefCombo.Items[i] is BuilderListItem item && item.Id == _selectedNode.BuilderListId)
+                {
+                    _builderRefCombo.SelectedIndex = i;
+                    return;
+                }
+            }
+        }
+    }
+
+    private void UpdateNodeTypeUI()
+    {
+        var isBuilderRef = _nodeTypeBuilderRadio.Checked;
+        var isLeaf = _selectedNode != null && !_selectedNode.HasChildren;
+
+        // Show/hide node type panel (only for leaf nodes)
+        _nodeTypePanel.Visible = isLeaf;
+
+        // Show/hide builder reference controls
+        _builderRefLabel.Visible = isLeaf && isBuilderRef;
+        _builderRefCombo.Visible = isLeaf && isBuilderRef;
+
+        // Text box: show for text leaves, hide for builder refs
+        _prefixTextLabel.Visible = false;  // No longer used
+        _textToInsertLabel.Visible = isLeaf && !isBuilderRef;
+        _nodeTextBox.Visible = isLeaf && !isBuilderRef;
+    }
+
+    // Helper class for builder list dropdown items
+    private class BuilderListItem
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public override string ToString() => string.IsNullOrEmpty(Name) ? "(unnamed)" : Name;
+    }
+
     private void UpdateSelectedTreeNode()
     {
         if (_treeView.SelectedNode == null || _selectedNode == null) return;
         var idx = _treeView.SelectedNode.Parent?.Nodes.IndexOf(_treeView.SelectedNode) ?? _treeView.Nodes.IndexOf(_treeView.SelectedNode);
         var label = string.IsNullOrEmpty(_selectedNode.Label) ? "(unnamed)" : _selectedNode.Label;
-        var suffix = _selectedNode.HasChildren ? $" [{_selectedNode.Children.Count}]" : (!string.IsNullOrEmpty(_selectedNode.Text) ? " *" : "");
+
+        string suffix;
+        Color color;
+
+        if (_selectedNode.HasChildren)
+        {
+            suffix = $" [{_selectedNode.Children.Count}]";
+            color = Color.FromArgb(100, 180, 255);  // Blue for branch
+        }
+        else if (_selectedNode.IsBuilderRef)
+        {
+            suffix = " [B]";
+            color = Color.FromArgb(255, 180, 100);  // Orange for builder ref
+        }
+        else
+        {
+            suffix = !string.IsNullOrEmpty(_selectedNode.Text) ? " *" : "";
+            color = Color.White;  // White for text leaf
+        }
+
         _treeView.SelectedNode.Text = $"{idx + 1}. {label}{suffix}";
-        _treeView.SelectedNode.ForeColor = _selectedNode.HasChildren ? Color.FromArgb(100, 180, 255) : Color.White;
+        _treeView.SelectedNode.ForeColor = color;
     }
 
     #endregion
@@ -1359,11 +1789,25 @@ public class PickListEditorForm : Form
         _removeNodeBtn.Enabled = hasNode;
         _nodeLabelBox.Enabled = hasNode;
 
-        // Text box only enabled for leaf nodes (no children)
+        // Leaf/builder-ref handling
         var isLeaf = hasNode && !_selectedNode!.HasChildren;
-        _nodeTextBox.Enabled = isLeaf;
-        _textToInsertLabel.ForeColor = isLeaf ? Color.FromArgb(150, 150, 150) : Color.FromArgb(80, 80, 80);
-        if (hasNode && !isLeaf)
+        var isBuilderRef = hasNode && _selectedNode!.IsBuilderRef;
+
+        // Node type panel only visible for leaf nodes (including builder refs)
+        _nodeTypePanel.Visible = isLeaf;
+        _nodeTypePanel.Enabled = isLeaf;
+
+        // Builder ref controls
+        _builderRefLabel.Visible = isLeaf && isBuilderRef;
+        _builderRefCombo.Visible = isLeaf && isBuilderRef;
+        _builderRefCombo.Enabled = isLeaf && isBuilderRef;
+
+        // Text box: show for text leaves only, hide for builder refs and branches
+        _textToInsertLabel.Visible = isLeaf && !isBuilderRef;
+        _nodeTextBox.Visible = isLeaf && !isBuilderRef;
+        _nodeTextBox.Enabled = isLeaf && !isBuilderRef;
+
+        if (hasNode && !isLeaf && _nodeTextBox.Visible)
         {
             _suppressEvents = true;
             _nodeTextBox.Text = "(Branch nodes don't have text - select a leaf node)";

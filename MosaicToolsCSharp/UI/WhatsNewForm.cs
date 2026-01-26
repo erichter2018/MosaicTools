@@ -66,12 +66,14 @@ public class WhatsNewForm : Form
             BackColor = Color.FromArgb(45, 45, 45),
             BorderStyle = BorderStyle.None,
             Location = new Point(20, 50),
-            Size = new Size(365, 180)
+            Size = new Size(365, 165)
         };
         contentBox.Text = GetRelevantChanges();
+        contentBox.SelectionStart = 0;
+        contentBox.SelectionLength = 0;
         Controls.Add(contentBox);
 
-        // OK button
+        // OK button - positioned below textbox with padding
         var okButton = new Button
         {
             Text = "OK",
@@ -80,7 +82,7 @@ public class WhatsNewForm : Form
             BackColor = Color.FromArgb(0, 120, 215),
             FlatStyle = FlatStyle.Flat,
             Size = new Size(100, 35),
-            Location = new Point((ClientSize.Width - 100) / 2, ClientSize.Height - 55),
+            Location = new Point((ClientSize.Width - 100) / 2, 230),
             Cursor = Cursors.Hand
         };
         okButton.FlatAppearance.BorderSize = 0;

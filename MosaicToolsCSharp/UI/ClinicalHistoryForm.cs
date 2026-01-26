@@ -87,6 +87,10 @@ public class ClinicalHistoryForm : Form
     private bool _noteCreated = false;
     private Label? _noteCreatedIndicator;
 
+    // Clinical history fix indicator
+    private bool _historyFixInserted = false;
+    private Label? _historyFixedIndicator;
+
     // Alert-only mode state (when AlwaysShowClinicalHistory is false)
     private bool _showingAlert = false;
     private AlertType? _currentAlertType = null;
@@ -96,6 +100,9 @@ public class ClinicalHistoryForm : Form
 
     // Callback for stroke note creation (set by MainForm)
     private Func<bool>? _onStrokeNoteClick;
+
+    // Callback for critical note creation (for any case, not just stroke)
+    private Action? _onCriticalNoteClick;
 
     public ClinicalHistoryForm(Configuration config)
     {
@@ -173,6 +180,21 @@ public class ClinicalHistoryForm : Form
         dragBar.Controls.Add(_noteCreatedIndicator);
         // Tooltip will be set after _borderTooltip is created
 
+        // History fixed indicator (yellow checkmark) - positioned next to purple one
+        _historyFixedIndicator = new Label
+        {
+            Text = "✓",
+            Font = new Font("Segoe UI", 10, FontStyle.Bold),
+            ForeColor = FixedTextColor,  // Yellow
+            BackColor = Color.Black,
+            Size = new Size(18, 16),
+            Visible = false,
+            Cursor = Cursors.Default,
+            Anchor = AnchorStyles.Top | AnchorStyles.Right
+        };
+        _historyFixedIndicator.Location = new Point(dragBar.Width - 38, 0);
+        dragBar.Controls.Add(_historyFixedIndicator);
+
         // Make form auto-size to content
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
@@ -181,6 +203,13 @@ public class ClinicalHistoryForm : Form
         var menu = new ContextMenuStrip();
         menu.Items.Add("Close", null, (_, _) => Close());
         dragBar.ContextMenuStrip = menu;
+
+        // Context menu for content label (Create Critical Note + Copy Debug Info)
+        var contentMenu = new ContextMenuStrip();
+        contentMenu.Items.Add("Create Critical Note", null, (_, _) => _onCriticalNoteClick?.Invoke());
+        contentMenu.Items.Add(new ToolStripSeparator());
+        contentMenu.Items.Add("Copy Debug Info", null, (_, _) => CopyDebugInfoToClipboard());
+        _contentLabel.ContextMenuStrip = contentMenu;
 
         // Right-click on content label copies debug info
         _contentLabel.MouseDown += OnContentLabelMouseDown;
@@ -307,7 +336,7 @@ public class ClinicalHistoryForm : Form
         _lastAutoFixTime = DateTime.Now;
 
         // Trigger the paste (this runs on background thread)
-        PasteClinicalHistoryToMosaic();
+        PasteClinicalHistoryToMosaic(showYellowCheckmark: true);
     }
 
     /// <summary>
@@ -336,12 +365,15 @@ public class ClinicalHistoryForm : Form
         _lastAutoFixedAccession = null;
         _lastAutoFixTime = DateTime.MinValue;
 
-        // Reset template mismatch, stroke state, and note created state
+        // Reset template mismatch, stroke state, note created state, and history fix state
         _templateMismatch = false;
         _strokeDetected = false;
         _noteCreated = false;
+        _historyFixInserted = false;
         if (_noteCreatedIndicator != null)
             _noteCreatedIndicator.Visible = false;
+        if (_historyFixedIndicator != null)
+            _historyFixedIndicator.Visible = false;
         _lastDescription = null;
         _lastTemplateName = null;
         BackColor = NormalBorderColor;
@@ -551,12 +583,46 @@ public class ClinicalHistoryForm : Form
     public bool IsNoteCreated => _noteCreated;
 
     /// <summary>
+    /// Set the history fix inserted indicator state.
+    /// Shows a yellow checkmark when corrected clinical history has been inserted to Mosaic.
+    /// </summary>
+    public void SetHistoryFixInserted(bool inserted)
+    {
+        if (InvokeRequired)
+        {
+            Invoke(() => SetHistoryFixInserted(inserted));
+            return;
+        }
+
+        _historyFixInserted = inserted;
+        if (_historyFixedIndicator != null)
+        {
+            _historyFixedIndicator.Visible = inserted;
+        }
+        UpdateBorderTooltip();
+    }
+
+    /// <summary>
+    /// Returns whether corrected clinical history has been inserted for this study.
+    /// </summary>
+    public bool IsHistoryFixInserted => _historyFixInserted;
+
+    /// <summary>
     /// Set the callback for creating a stroke critical note.
     /// Called when user clicks the notification box during stroke case.
     /// </summary>
     public void SetStrokeNoteClickCallback(Func<bool> callback)
     {
         _onStrokeNoteClick = callback;
+    }
+
+    /// <summary>
+    /// Set the callback for creating a critical note (for any case, not just stroke).
+    /// Called when user Ctrl+clicks the notification box or uses the context menu.
+    /// </summary>
+    public void SetCriticalNoteClickCallback(Action callback)
+    {
+        _onCriticalNoteClick = callback;
     }
 
     /// <summary>
@@ -706,17 +772,30 @@ public class ClinicalHistoryForm : Form
         {
             _borderTooltip.SetToolTip(_noteCreatedIndicator, "Critical Communication Note created in Clario");
         }
+        if (_historyFixedIndicator != null)
+        {
+            _borderTooltip.SetToolTip(_historyFixedIndicator, "Corrected clinical history inserted to Mosaic");
+        }
     }
 
     /// <summary>
     /// Handle mouse clicks on content label.
+    /// Ctrl+Left-click: create critical note (for any case)
     /// Left-click: paste clinical history to Mosaic (or create stroke note if enabled)
-    /// Right-click: copy debug info to clipboard
+    /// Right-click: shows context menu (handled by ContextMenuStrip)
     /// </summary>
     private void OnContentLabelMouseDown(object? sender, MouseEventArgs e)
     {
         if (e.Button == MouseButtons.Left)
         {
+            // Ctrl+Click = create critical note (for any case, not just stroke)
+            if (ModifierKeys.HasFlag(Keys.Control))
+            {
+                Services.Logger.Trace("ClinicalHistory: Ctrl+Click - invoking critical note callback");
+                _onCriticalNoteClick?.Invoke();
+                return;
+            }
+
             Services.Logger.Trace($"ClinicalHistory click: strokeDetected={_strokeDetected}, clickToCreate={_config.StrokeClickToCreateNote}, callbackSet={_onStrokeNoteClick != null}");
 
             // If stroke detected and click-to-create enabled, create note instead of paste
@@ -736,10 +815,7 @@ public class ClinicalHistoryForm : Form
             // Default behavior: paste clinical history
             PasteClinicalHistoryToMosaic();
         }
-        else if (e.Button == MouseButtons.Right)
-        {
-            CopyDebugInfoToClipboard();
-        }
+        // Right-click is handled by ContextMenuStrip
     }
 
     /// <summary>
@@ -754,7 +830,8 @@ public class ClinicalHistoryForm : Form
     /// <summary>
     /// Paste the clinical history to Mosaic and return focus to previous window.
     /// </summary>
-    private void PasteClinicalHistoryToMosaic()
+    /// <param name="showYellowCheckmark">If true, shows the yellow checkmark after successful paste (for corrected history)</param>
+    private void PasteClinicalHistoryToMosaic(bool showYellowCheckmark = false)
     {
         var text = _contentLabel.Text;
         if (string.IsNullOrWhiteSpace(text) || text == "(No clinical history)")
@@ -763,8 +840,14 @@ public class ClinicalHistoryForm : Form
             return;
         }
 
-        // Format the text with leading newline for cleaner paste
-        var formatted = $"\nClinical history: {text}.";
+        // If manually clicking and text was fixed, show the checkmark
+        if (!showYellowCheckmark && _currentTextWasFixed)
+        {
+            showYellowCheckmark = true;
+        }
+
+        // Format the text with leading and trailing newline for cleaner paste
+        var formatted = $"\nClinical history: {text}.\n";
 
         // Run on background thread to avoid blocking UI
         System.Threading.Tasks.Task.Run(() =>
@@ -798,7 +881,16 @@ public class ClinicalHistoryForm : Form
                     // Restore focus to previous window
                     NativeWindows.RestorePreviousFocus();
 
-                    Invoke(() => ShowToast("Pasted to Mosaic"));
+                    // Show yellow checkmark if corrected clinical history was inserted
+                    if (showYellowCheckmark)
+                    {
+                        Invoke(() => SetHistoryFixInserted(true));
+                        Invoke(() => ShowToast("Corrected history pasted"));
+                    }
+                    else
+                    {
+                        Invoke(() => ShowToast("Pasted to Mosaic"));
+                    }
                 }
                 catch (Exception ex)
                 {

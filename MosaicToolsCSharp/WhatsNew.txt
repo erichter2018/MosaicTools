@@ -1,3 +1,9 @@
+2.7.7
+- Create Critical Note action: Create notes for non-stroke cases
+- Trigger via hotkey, mic button, Ctrl+Click, or right-click menu on Clinical History window
+- Show Pick Lists action always visible in Actions tab
+- Complete help documentation for all actions in Keys tab
+
 2.7.6
 - New Windows messages for AHK integration: Create Impression, Discard Study, Check for Updates, Show Pick Lists
 - Cycle Window/Level action and settings hidden in headless mode

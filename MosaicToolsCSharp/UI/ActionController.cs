@@ -369,6 +369,9 @@ public class ActionController : IDisposable
             case Actions.CycleWindowLevel:
                 PerformCycleWindowLevel();
                 break;
+            case Actions.CreateCriticalNote:
+                PerformCreateCriticalNote();
+                break;
             case "__InsertMacros__":
                 PerformInsertMacros();
                 break;
@@ -817,8 +820,10 @@ public class ActionController : IDisposable
             // Send CLOSED_UNSIGNED immediately after successful discard
             if (!string.IsNullOrEmpty(accessionToDiscard))
             {
-                Logger.Trace($"RVUCounter: Sending CLOSED_UNSIGNED (discard action) for '{accessionToDiscard}'");
-                NativeWindows.SendToRvuCounter(NativeWindows.MSG_STUDY_CLOSED_UNSIGNED, accessionToDiscard);
+                var hasCritical = HasCriticalNoteForAccession(accessionToDiscard);
+                var msgType = hasCritical ? NativeWindows.MSG_STUDY_CLOSED_UNSIGNED_CRITICAL : NativeWindows.MSG_STUDY_CLOSED_UNSIGNED;
+                Logger.Trace($"RVUCounter: Sending {(hasCritical ? "CLOSED_UNSIGNED_CRITICAL" : "CLOSED_UNSIGNED")} (discard action) for '{accessionToDiscard}'");
+                NativeWindows.SendToRvuCounter(msgType, accessionToDiscard);
 
                 // Clear state to prevent duplicate message from scrape loop
                 _lastNonEmptyAccession = null;
@@ -1462,8 +1467,41 @@ public class ActionController : IDisposable
         };
     }
 
+    private void PerformCreateCriticalNote()
+    {
+        Logger.Trace("Create Critical Note action triggered");
+
+        var accession = _automationService.LastAccession;
+        if (string.IsNullOrEmpty(accession))
+        {
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("No study loaded", 2000));
+            return;
+        }
+
+        if (HasCriticalNoteForAccession(accession))
+        {
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Critical note already created", 2000));
+            return;
+        }
+
+        bool success = _automationService.CreateCriticalCommunicationNote();
+        if (success)
+        {
+            _criticalNoteCreatedForAccession = accession;
+            _mainForm.Invoke(() =>
+            {
+                _mainForm.ShowStatusToast("Critical note created", 3000);
+                _mainForm.SetNoteCreatedState(true);
+            });
+        }
+        else
+        {
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Failed to create critical note - Clario may not be open", 3000));
+        }
+    }
+
     #endregion
-    
+
     #region Dictation Sync
     
     private void StartDictationSync()
@@ -1548,25 +1586,32 @@ public class ActionController : IDisposable
                     //   1. If _currentAccessionSigned → SIGNED (MosaicTools triggered sign)
                     //   2. Else if discard dialog was shown for this accession → CLOSED_UNSIGNED
                     //   3. Else → SIGNED (no dialog = manual sign via Alt+F or button click)
+                    //   Each type has a _CRITICAL variant if a critical note was created
                     if (!string.IsNullOrEmpty(_lastNonEmptyAccession))
                     {
+                        var hasCritical = HasCriticalNoteForAccession(_lastNonEmptyAccession);
+                        var criticalSuffix = hasCritical ? "_CRITICAL" : "";
+
                         if (_currentAccessionSigned)
                         {
                             // Explicitly signed via MosaicTools
-                            Logger.Trace($"RVUCounter: Sending SIGNED (MosaicTools) for '{_lastNonEmptyAccession}'");
-                            NativeWindows.SendToRvuCounter(NativeWindows.MSG_STUDY_SIGNED, _lastNonEmptyAccession);
+                            var msgType = hasCritical ? NativeWindows.MSG_STUDY_SIGNED_CRITICAL : NativeWindows.MSG_STUDY_SIGNED;
+                            Logger.Trace($"RVUCounter: Sending SIGNED{criticalSuffix} (MosaicTools) for '{_lastNonEmptyAccession}'");
+                            NativeWindows.SendToRvuCounter(msgType, _lastNonEmptyAccession);
                         }
                         else if (_discardDialogShownForCurrentAccession)
                         {
                             // Discard dialog was shown for this accession → study was discarded
-                            Logger.Trace($"RVUCounter: Sending CLOSED_UNSIGNED (dialog was shown) for '{_lastNonEmptyAccession}'");
-                            NativeWindows.SendToRvuCounter(NativeWindows.MSG_STUDY_CLOSED_UNSIGNED, _lastNonEmptyAccession);
+                            var msgType = hasCritical ? NativeWindows.MSG_STUDY_CLOSED_UNSIGNED_CRITICAL : NativeWindows.MSG_STUDY_CLOSED_UNSIGNED;
+                            Logger.Trace($"RVUCounter: Sending CLOSED_UNSIGNED{criticalSuffix} (dialog was shown) for '{_lastNonEmptyAccession}'");
+                            NativeWindows.SendToRvuCounter(msgType, _lastNonEmptyAccession);
                         }
                         else
                         {
                             // No dialog → user signed manually (Alt+F or clicked Sign button)
-                            Logger.Trace($"RVUCounter: Sending SIGNED (manual) for '{_lastNonEmptyAccession}'");
-                            NativeWindows.SendToRvuCounter(NativeWindows.MSG_STUDY_SIGNED, _lastNonEmptyAccession);
+                            var msgType = hasCritical ? NativeWindows.MSG_STUDY_SIGNED_CRITICAL : NativeWindows.MSG_STUDY_SIGNED;
+                            Logger.Trace($"RVUCounter: Sending SIGNED{criticalSuffix} (manual) for '{_lastNonEmptyAccession}'");
+                            NativeWindows.SendToRvuCounter(msgType, _lastNonEmptyAccession);
                         }
                     }
 

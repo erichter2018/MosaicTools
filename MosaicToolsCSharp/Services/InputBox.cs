@@ -21,6 +21,8 @@ public static class InputBox
         form.Text = title;
         label.Text = prompt;
         textBox.Text = defaultValue;
+        textBox.SelectionStart = 0;
+        textBox.SelectionLength = 0;
 
         buttonOk.Text = "OK";
         buttonCancel.Text = "Cancel";

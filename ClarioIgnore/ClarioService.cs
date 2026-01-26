@@ -102,55 +102,20 @@ public class ClarioService : IDisposable
                     // Get all cells in this row
                     var cells = elem.FindAllDescendants();
 
-                    string procedure = "";
-                    string priority = "";
-                    string accession = "";
-
+                    // Collect non-empty cell values
+                    var cellValues = new List<string>();
                     foreach (var cell in cells)
                     {
                         var cellName = cell.Name ?? "";
-                        if (string.IsNullOrWhiteSpace(cellName)) continue;
-
-                        // Priority patterns
-                        if (string.IsNullOrEmpty(priority) &&
-                            (cellName.Contains("STAT", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("Routine", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("Stroke", StringComparison.OrdinalIgnoreCase)))
-                        {
-                            priority = cellName.Trim();
-                        }
-                        // Procedure patterns (imaging study types)
-                        else if (string.IsNullOrEmpty(procedure) &&
-                            (cellName.StartsWith("XR ", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.StartsWith("XR-", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.StartsWith("CT ", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.StartsWith("CT-", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.StartsWith("MR ", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.StartsWith("MR-", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.StartsWith("US ", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.StartsWith("US-", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("CHEST", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("ABDOMEN", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("VENOUS", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("VASCULAR", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("DOPPLER", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("ANGIO", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("EXTREMITY", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("MRI ", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("SCROTUM", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("PELVIS", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("SPINE", StringComparison.OrdinalIgnoreCase) ||
-                             cellName.Contains("BRAIN", StringComparison.OrdinalIgnoreCase)))
-                        {
-                            procedure = cellName.Trim();
-                        }
-                        // Accession patterns (alphanumeric codes)
-                        else if (string.IsNullOrEmpty(accession) &&
-                            System.Text.RegularExpressions.Regex.IsMatch(cellName, @"^[A-Z0-9]{10,}$"))
-                        {
-                            accession = cellName.Trim();
-                        }
+                        if (!string.IsNullOrWhiteSpace(cellName))
+                            cellValues.Add(cellName.Trim());
                     }
+
+                    // Field 4 (0-indexed) is the procedure
+                    // Fields: 0=Priority, 1=Location, 2=Code, 3=Time, 4=Procedure, 5=Code, 6=Hospital, 7=Patient...
+                    string procedure = cellValues.Count > 4 ? cellValues[4] : "";
+                    string priority = cellValues.Count > 0 ? cellValues[0] : "";
+                    string accession = cellValues.Count > 2 ? cellValues[2] : "";
 
                     if (!string.IsNullOrEmpty(procedure))
                     {
@@ -681,7 +646,7 @@ public class ClarioService : IDisposable
 
         foreach (var item in items)
         {
-            var rule = Configuration.Instance.FindMatchingRule(item.Procedure);
+            var rule = Configuration.Instance.FindMatchingRule(item.Procedure, item.Priority);
             if (rule != null)
             {
                 matches.Add((item, rule));

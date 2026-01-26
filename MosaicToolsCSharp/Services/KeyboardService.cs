@@ -15,6 +15,7 @@ public class KeyboardService : IDisposable
 {
     private TaskPoolGlobalHook? _hook;
     private readonly ConcurrentDictionary<string, Action> _hotkeyActions = new();
+    private readonly ConcurrentDictionary<string, Action> _directHotkeyActions = new(); // Execute immediately, no ThreadPool
     private readonly HashSet<KeyCode> _pressedModifiers = new();
     private volatile bool _isRecording = false;
     private Action<string>? _recordCallback;
@@ -54,10 +55,23 @@ public class KeyboardService : IDisposable
     public void RegisterHotkey(string hotkey, Action action)
     {
         if (string.IsNullOrWhiteSpace(hotkey)) return;
-        
+
         var normalized = NormalizeHotkey(hotkey);
         _hotkeyActions[normalized] = action;
         Logger.Trace($"Registered hotkey: {normalized}");
+    }
+
+    /// <summary>
+    /// Register a hotkey that executes immediately on the hook thread (no ThreadPool delay).
+    /// Use only for very fast actions that won't block.
+    /// </summary>
+    public void RegisterDirectHotkey(string hotkey, Action action)
+    {
+        if (string.IsNullOrWhiteSpace(hotkey)) return;
+
+        var normalized = NormalizeHotkey(hotkey);
+        _directHotkeyActions[normalized] = action;
+        Logger.Trace($"Registered direct hotkey: {normalized}");
     }
     
     /// <summary>
@@ -66,6 +80,7 @@ public class KeyboardService : IDisposable
     public void ClearHotkeys()
     {
         _hotkeyActions.Clear();
+        _directHotkeyActions.Clear();
     }
 
     /// <summary>
@@ -112,16 +127,32 @@ public class KeyboardService : IDisposable
                 return;
             }
             
-            // 2. Cooldown check (prevent accidental double-triggers or feedback loops)
+            // 2. Build hotkey string and check for matches
             var now = DateTime.UtcNow;
             var hotkeyStr = BuildHotkeyString(code, mask);
-            
-            // Check registered hotkeys
+
+            // Check direct hotkeys first (execute immediately, minimal cooldown)
+            if (_directHotkeyActions.TryGetValue(hotkeyStr, out var directAction))
+            {
+                // 100ms cooldown for direct hotkeys
+                if (_lastTriggers.TryGetValue(hotkeyStr, out var lastTime) && (now - lastTime).TotalMilliseconds < 100)
+                {
+                    return;
+                }
+                _lastTriggers[hotkeyStr] = now;
+
+                try
+                {
+                    directAction();
+                }
+                catch { }
+                return;
+            }
+
+            // Check registered hotkeys (run on ThreadPool)
             if (_hotkeyActions.TryGetValue(hotkeyStr, out var action))
             {
-                // Simple 300ms cooldown per specific hotkey string
-                // We'll use a local static or a dictionary if needed, but for now a global simple check
-                // or just trust the simulated flag. Let's add a per-key cooldown.
+                // 300ms cooldown for normal hotkeys
                 if (_lastTriggers.TryGetValue(hotkeyStr, out var lastTime) && (now - lastTime).TotalMilliseconds < 300)
                 {
                     Logger.Trace($"Ignoring rapid repeat: {hotkeyStr}");
@@ -131,7 +162,7 @@ public class KeyboardService : IDisposable
 
                 Logger.Trace($"Hotkey triggered: {hotkeyStr}");
                 HotkeyTriggered?.Invoke(hotkeyStr);
-                
+
                 // Run action on thread pool to not block hook
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
