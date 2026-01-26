@@ -1,10 +1,6 @@
 2.7.6
-- New Windows message: Show Pick Lists (0x040E)
-
-2.7.5
-- New Windows messages: Create Impression (0x040B), Discard Study (0x040C), Check for Updates (0x040D)
-- Cycle Window/Level action now hidden in headless mode
-- InteleViewer Integration settings hidden in headless mode
+- New Windows messages for AHK integration: Create Impression, Discard Study, Check for Updates, Show Pick Lists
+- Cycle Window/Level action and settings hidden in headless mode
 
 2.7.2
 - Settings reorganization: cleaner tab layout (Text, Alerts, Behavior tabs)
