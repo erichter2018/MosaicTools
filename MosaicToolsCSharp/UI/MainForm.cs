@@ -239,13 +239,6 @@ public class MainForm : Form
         };
         _trayIcon.DoubleClick += (_, _) => OpenSettings();
 
-        // Headless mode: hide the widget bar
-        if (App.IsHeadless)
-        {
-            Opacity = 0;
-            ShowInTaskbar = false;
-        }
-        
         // Defer initialization until form is shown (handle exists)
         Shown += OnFormShown;
     }
@@ -1046,7 +1039,7 @@ public class MainForm : Form
         }
 
         var count = _controller.CriticalStudies.Count;
-        _criticalPanel.Visible = count > 0;
+        _criticalPanel.Visible = _config.TrackCriticalStudies && count > 0;
         _criticalCountLabel.Text = count.ToString();
 
         Logger.Trace($"UpdateCriticalIndicator: count={count}, visible={_criticalPanel.Visible}");
@@ -1064,7 +1057,7 @@ public class MainForm : Form
 
         // Create and position popup below the indicator
         var popupLocation = PointToScreen(new Point(_criticalPanel.Left, Height));
-        _criticalStudiesPopup = new CriticalStudiesPopup(_controller.CriticalStudies, popupLocation);
+        _criticalStudiesPopup = new CriticalStudiesPopup(_controller.CriticalStudies, popupLocation, _controller.Automation);
         _criticalStudiesPopup.Show();
     }
 

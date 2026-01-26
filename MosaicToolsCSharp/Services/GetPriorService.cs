@@ -127,9 +127,10 @@ public class GetPriorService
     {
         var match = Regex.Match(text, @"US.*SIGNXED", RegexOptions.IgnoreCase);
         if (!match.Success) return "";
-        
+
         var desc = match.Value;
-        desc = Regex.Replace(desc, @"^US", "", RegexOptions.IgnoreCase);
+        // Remove leading US modality indicator(s) - handle cases where description also starts with "US"
+        desc = Regex.Replace(desc, @"^(US\s+)+", "", RegexOptions.IgnoreCase);
         desc = desc.Replace(" SIGNXED", "").Replace(" abd.", " abdomen.").Trim();
         desc = ReorderLaterality(desc.ToLower());
         
@@ -151,7 +152,8 @@ public class GetPriorService
         if (!match.Success) return "";
 
         var desc = match.Value;
-        desc = Regex.Replace(desc, @"^MR", "", RegexOptions.IgnoreCase);
+        // Remove leading MR modality indicator(s) - handle cases where description also starts with "MR"
+        desc = Regex.Replace(desc, @"^(MR\s+)+", "", RegexOptions.IgnoreCase);
         desc = desc.Replace(" SIGNXED", "").Trim();
         desc = desc.Replace(" + ", " and ").Replace(" W/O", " without").Replace(" W/", " with");
         desc = desc.Replace(" W WO", " with and without").Replace(" WO", " without").Replace(" IV ", " ");
@@ -201,27 +203,42 @@ public class GetPriorService
     {
         var match = Regex.Match(text, @"NM.*SIGNXED", RegexOptions.IgnoreCase);
         if (!match.Success) return "";
-        
-        var desc = match.Value.Replace("NM", "nuclear medicine").Replace(" SIGNXED", "").Trim().ToLower();
+
+        var desc = match.Value;
+        // Remove leading NM modality indicator(s) - handle cases where description also starts with "NM"
+        desc = Regex.Replace(desc, @"^(NM\s+)+", "", RegexOptions.IgnoreCase);
+        desc = desc.Replace(" SIGNXED", "").Trim().ToLower();
+        desc += " nuclear medicine";
         return ReorderLaterality(desc);
     }
     
     private string ProcessRadiograph(string text)
     {
         Match match;
+        string modalityPattern;
         if (text.Contains("\tXR"))
+        {
             match = Regex.Match(text, @"XR.*SIGNXED", RegexOptions.IgnoreCase);
+            modalityPattern = @"^(XR\s*)+";
+        }
         else if (text.Contains("\tCR"))
+        {
             match = Regex.Match(text, @"CR.*SIGNXED", RegexOptions.IgnoreCase);
+            modalityPattern = @"^(CR\s*)+";
+        }
         else
+        {
             match = Regex.Match(text, @"X-ray.*SIGNXED", RegexOptions.IgnoreCase);
-        
+            modalityPattern = @"^(X-ray(?:, OT)?\s*)+";
+        }
+
         if (!match.Success) return "";
-        
+
         var desc = match.Value;
-        desc = Regex.Replace(desc, @"^(XR|CR|X-ray, OT|X-ray)\t?", "", RegexOptions.IgnoreCase);
+        // Remove leading modality indicator(s) - handle cases where description also starts with modality
+        desc = Regex.Replace(desc, modalityPattern, "", RegexOptions.IgnoreCase);
         desc = desc.Replace(" SIGNXED", "").Trim();
-        
+
         desc = ProcessRadiographDescription(desc.ToLower());
         return desc;
     }
@@ -270,7 +287,8 @@ public class GetPriorService
         var desc = match.Value;
         desc = desc.Replace("CTA - ", "CTA ");
         desc = desc.Replace("CTA", "CTAPLACEHOLDER");
-        desc = Regex.Replace(desc, @"^CT(\s|$)", "$1", RegexOptions.IgnoreCase);
+        // Remove leading CT modality indicator(s) - handle cases where description also starts with "CT"
+        desc = Regex.Replace(desc, @"^(CT\s+)+", "", RegexOptions.IgnoreCase);
         desc = desc.Replace("CTAPLACEHOLDER", "CTA").Replace(" SIGNXED", "").Trim();
         
         // Substitutions

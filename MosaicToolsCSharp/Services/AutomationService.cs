@@ -1,5 +1,6 @@
 using System.Threading;
 using System.Text.RegularExpressions;
+using System.Runtime.InteropServices;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Conditions;
@@ -51,6 +52,9 @@ public class AutomationService : IDisposable
 
     // Last scraped site code (e.g., "MLC", "UNM")
     public string? LastSiteCode { get; private set; }
+
+    // Last scraped MRN (Medical Record Number) - required for XML file drop
+    public string? LastMrn { get; private set; }
 
     // Debug flag
     private bool _hasLoggedDebugInfo = false;
@@ -536,6 +540,70 @@ public class AutomationService : IDisposable
         IsStrokeStudy = false;
     }
 
+    #region Open Study via XML File Drop
+
+    private const string XmlInFolder = @"C:\MModal\FluencyForImaging\Reporting\XML\IN";
+
+    /// <summary>
+    /// Opens a study in Mosaic by writing an OpenReport XML file to Fluency's monitored folder.
+    /// This is more reliable than UI automation.
+    /// </summary>
+    /// <param name="accession">The accession number</param>
+    /// <param name="mrn">The Medical Record Number (required)</param>
+    /// <returns>True if XML was written successfully, false otherwise</returns>
+    public bool OpenStudyInClario(string accession, string? mrn)
+    {
+        if (string.IsNullOrWhiteSpace(accession))
+        {
+            Logger.Trace("OpenStudyInClario: No accession provided");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(mrn))
+        {
+            Logger.Trace("OpenStudyInClario: No MRN provided - required for XML file drop");
+            return false;
+        }
+
+        try
+        {
+            if (!Directory.Exists(XmlInFolder))
+            {
+                Logger.Trace($"OpenStudyInClario: XML folder not found: {XmlInFolder}");
+                return false;
+            }
+
+            var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var pid = Environment.ProcessId;
+            var filename = $"openreport{timestamp}.{pid}.xml";
+            var filepath = Path.Combine(XmlInFolder, filename);
+
+            var xml = $@"<Message>
+  <Type>OpenReport</Type>
+  <AccessionNumbers>
+    <AccessionNumber>{accession}</AccessionNumber>
+  </AccessionNumbers>
+  <MedicalRecordNumber>{mrn}</MedicalRecordNumber>
+</Message>";
+
+            File.WriteAllText(filepath, xml);
+            Logger.Trace($"OpenStudyInClario: Wrote XML to {filepath}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"OpenStudyInClario: Error writing XML - {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Checks if the Fluency XML folder exists for opening studies.
+    /// </summary>
+    public bool IsXmlFolderAvailable() => Directory.Exists(XmlInFolder);
+
+    #endregion
+
     /// <summary>
     /// Creates a Critical Results Communication Note in Clario.
     /// Steps: Click "Create" button → Click "Communication Note" → Click "Submit"
@@ -992,6 +1060,7 @@ public class AutomationService : IDisposable
             LastPatientGender = null; // Reset - will be set if found
             LastPatientName = null; // Reset - will be set if found
             LastSiteCode = null; // Reset - will be set if found
+            LastMrn = null; // Reset - will be set if found
 
             // Extract accession: find "Current Study" text and the next text element after it
             try
@@ -1070,6 +1139,17 @@ public class AutomationService : IDisposable
                         {
                             LastSiteCode = siteMatch.Groups[1].Value.ToUpperInvariant();
                             Logger.Trace($"Found Site Code: {LastSiteCode}");
+                        }
+                    }
+
+                    // MRN extraction: pattern "MRN: XXX" (alphanumeric, 5-20 chars)
+                    if (LastMrn == null)
+                    {
+                        var mrnMatch = Regex.Match(text, @"MRN:\s*([A-Z0-9]{5,20})", RegexOptions.IgnoreCase);
+                        if (mrnMatch.Success)
+                        {
+                            LastMrn = mrnMatch.Groups[1].Value.ToUpperInvariant();
+                            Logger.Trace($"Found MRN: {LastMrn}");
                         }
                     }
 

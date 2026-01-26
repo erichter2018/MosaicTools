@@ -103,6 +103,11 @@ public class ActionController : IDisposable
     public IReadOnlyList<CriticalStudyEntry> CriticalStudies => _criticalStudies;
 
     /// <summary>
+    /// Automation service for UI automation tasks (exposed for critical studies popup).
+    /// </summary>
+    public AutomationService Automation => _automationService;
+
+    /// <summary>
     /// Event raised when the critical studies list changes.
     /// </summary>
     public event Action? CriticalStudiesChanged;
@@ -191,7 +196,7 @@ public class ActionController : IDisposable
             RegisterHotkeys();
             _keyboardService.Start();
         }
-        
+
         // Start background dictation sync (skip in headless mode)
         if (!App.IsHeadless && _config.IndicatorEnabled)
         {
@@ -1317,8 +1322,8 @@ public class ActionController : IDisposable
 
             Logger.Trace($"Critical Findings complete: {formatted}");
 
-            // Track critical study for session-based tracker
-            TrackCriticalStudy();
+            // Remove from critical studies tracker (user has dealt with this study)
+            UntrackCriticalStudy();
 
             _mainForm.Invoke(() => _mainForm.ShowStatusToast(
                 "Critical findings inserted.\nHold Win key and trigger again to debug.", 20000));
@@ -1334,6 +1339,9 @@ public class ActionController : IDisposable
     /// </summary>
     private void TrackCriticalStudy()
     {
+        if (!_config.TrackCriticalStudies)
+            return;
+
         var accession = _automationService.LastAccession;
         if (string.IsNullOrEmpty(accession))
         {
@@ -1354,11 +1362,41 @@ public class ActionController : IDisposable
             PatientName = _automationService.LastPatientName ?? "Unknown",
             SiteCode = _automationService.LastSiteCode ?? "???",
             Description = _automationService.LastDescription ?? "Unknown",
+            Mrn = _automationService.LastMrn ?? "",
             CriticalNoteTime = DateTime.Now
         };
 
         _criticalStudies.Add(entry);
-        Logger.Trace($"TrackCriticalStudy: Added entry for {accession} ({entry.PatientName} @ {entry.SiteCode})");
+        Logger.Trace($"TrackCriticalStudy: Added entry for {accession} ({entry.PatientName} @ {entry.SiteCode}, MRN={entry.Mrn})");
+
+        // Notify UI
+        _mainForm.Invoke(() => CriticalStudiesChanged?.Invoke());
+    }
+
+    /// <summary>
+    /// Remove the current study from the critical studies tracker (user has dealt with it).
+    /// </summary>
+    private void UntrackCriticalStudy()
+    {
+        if (!_config.TrackCriticalStudies)
+            return;
+
+        var accession = _automationService.LastAccession;
+        if (string.IsNullOrEmpty(accession))
+        {
+            Logger.Trace("UntrackCriticalStudy: No accession to untrack");
+            return;
+        }
+
+        var entry = _criticalStudies.FirstOrDefault(s => s.Accession == accession);
+        if (entry == null)
+        {
+            Logger.Trace($"UntrackCriticalStudy: Accession {accession} not in tracker");
+            return;
+        }
+
+        _criticalStudies.Remove(entry);
+        Logger.Trace($"UntrackCriticalStudy: Removed entry for {accession}");
 
         // Notify UI
         _mainForm.Invoke(() => CriticalStudiesChanged?.Invoke());
@@ -1563,6 +1601,10 @@ public class ActionController : IDisposable
         if (success)
         {
             _criticalNoteCreatedForAccession = accession;
+
+            // Track critical study for session-based tracker
+            TrackCriticalStudy();
+
             _mainForm.Invoke(() =>
             {
                 _mainForm.ShowStatusToast("Critical note created", 3000);

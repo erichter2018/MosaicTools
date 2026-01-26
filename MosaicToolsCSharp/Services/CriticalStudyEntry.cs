@@ -27,6 +27,12 @@ public class CriticalStudyEntry
     public string Description { get; set; } = "";
 
     /// <summary>
+    /// Medical Record Number (MRN) - required for XML file drop to open studies.
+    /// Memory only, not persisted.
+    /// </summary>
+    public string Mrn { get; set; } = "";
+
+    /// <summary>
     /// When the critical note was placed.
     /// </summary>
     public DateTime CriticalNoteTime { get; set; }

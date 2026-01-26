@@ -13,13 +13,15 @@ namespace MosaicTools.UI;
 public class CriticalStudiesPopup : Form
 {
     private readonly IReadOnlyList<CriticalStudyEntry> _studies;
+    private readonly AutomationService? _automationService;
     private readonly ListBox _listBox;
     private bool _allowDeactivateClose = false;
     private int _hoveredIndex = -1;
 
-    public CriticalStudiesPopup(IReadOnlyList<CriticalStudyEntry> studies, Point location)
+    public CriticalStudiesPopup(IReadOnlyList<CriticalStudyEntry> studies, Point location, AutomationService? automationService = null)
     {
         _studies = studies;
+        _automationService = automationService;
 
         // Form setup
         FormBorderStyle = FormBorderStyle.None;
@@ -32,10 +34,11 @@ public class CriticalStudiesPopup : Form
         // Calculate size based on number of entries
         var itemHeight = 50;
         var headerHeight = 30;
+        var footerHeight = studies.Count > 0 && automationService != null ? 22 : 0;
         var minHeight = 80;
         var maxHeight = 350;
         var width = 280;
-        var calculatedHeight = headerHeight + Math.Max(1, studies.Count) * itemHeight + 10;
+        var calculatedHeight = headerHeight + Math.Max(1, studies.Count) * itemHeight + footerHeight + 10;
         var height = Math.Max(minHeight, Math.Min(maxHeight, calculatedHeight));
         Size = new Size(width, height);
 
@@ -108,6 +111,8 @@ public class CriticalStudiesPopup : Form
         _listBox.DrawItem += ListBox_DrawItem;
         _listBox.MouseMove += ListBox_MouseMove;
         _listBox.MouseLeave += (s, e) => { _hoveredIndex = -1; _listBox.Invalidate(); };
+        _listBox.DoubleClick += ListBox_DoubleClick;
+        _listBox.Cursor = Cursors.Hand;
 
         // Populate list
         if (studies.Count == 0)
@@ -123,6 +128,29 @@ public class CriticalStudiesPopup : Form
         }
 
         innerPanel.Controls.Add(_listBox);
+
+        // Footer hint (only if we have studies and automation service)
+        if (studies.Count > 0 && automationService != null)
+        {
+            var footerPanel = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 22,
+                BackColor = Color.FromArgb(45, 45, 45)
+            };
+
+            var footerLabel = new Label
+            {
+                Text = "Double-click to open in Clario",
+                Font = new Font("Segoe UI", 8, FontStyle.Italic),
+                ForeColor = Color.FromArgb(120, 120, 120),
+                AutoSize = false,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+            footerPanel.Controls.Add(footerLabel);
+            innerPanel.Controls.Add(footerPanel);
+        }
 
         // Handle click outside
         Deactivate += (s, e) =>
@@ -211,6 +239,28 @@ public class CriticalStudiesPopup : Form
         {
             _hoveredIndex = index;
             _listBox.Invalidate();
+        }
+    }
+
+    private void ListBox_DoubleClick(object? sender, EventArgs e)
+    {
+        if (_automationService == null) return;
+        if (_listBox.SelectedIndex < 0) return;
+
+        var item = _listBox.Items[_listBox.SelectedIndex];
+        if (item is CriticalStudyEntry entry && !string.IsNullOrEmpty(entry.Accession))
+        {
+            if (string.IsNullOrEmpty(entry.Mrn))
+            {
+                // Can't open without MRN
+                return;
+            }
+
+            var success = _automationService.OpenStudyInClario(entry.Accession, entry.Mrn);
+            if (success)
+            {
+                Close();
+            }
         }
     }
 

@@ -123,6 +123,9 @@ public class Configuration
     [JsonPropertyName("stroke_auto_create_note")]
     public bool StrokeAutoCreateNote { get; set; } = false;
 
+    [JsonPropertyName("track_critical_studies")]
+    public bool TrackCriticalStudies { get; set; } = true;
+
     [JsonPropertyName("stroke_clinical_history_keywords")]
     public List<string> StrokeClinicalHistoryKeywords { get; set; } = new()
     {

@@ -53,6 +53,7 @@ public class SettingsForm : Form
     private CheckBox _strokeDetectionUseClinicalHistoryCheck = null!;
     private CheckBox _strokeClickToCreateNoteCheck = null!;
     private CheckBox _strokeAutoCreateNoteCheck = null!;
+    private CheckBox _trackCriticalStudiesCheck = null!;
     private CheckBox _showImpressionCheck = null!;
     private CheckBox _showLineCountToastCheck = null!;
     private NumericUpDown _scrollThreshold1 = null!;
@@ -1494,6 +1495,40 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
 
         int y = 10;
         int groupWidth = 445;
+
+        // ========== CRITICAL STUDIES TRACKER SECTION ==========
+        var criticalTrackerGroup = new GroupBox
+        {
+            Text = "Critical Studies Tracker",
+            Location = new Point(10, y),
+            Size = new Size(groupWidth, 70),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(criticalTrackerGroup);
+
+        int cy = 20;
+
+        _trackCriticalStudiesCheck = new CheckBox
+        {
+            Text = "Track critical studies this session",
+            Location = new Point(10, cy),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        criticalTrackerGroup.Controls.Add(_trackCriticalStudiesCheck);
+
+        criticalTrackerGroup.Controls.Add(new Label
+        {
+            Text = "Shows count badge on main bar when critical notes are created",
+            Location = new Point(30, cy + 22),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        });
+
+        y += 80;
 
         // ========== NOTIFICATION BOX SECTION ==========
         var notificationGroup = new GroupBox
@@ -3019,6 +3054,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         _strokeDetectionUseClinicalHistoryCheck.Checked = _config.StrokeDetectionUseClinicalHistory;
         _strokeClickToCreateNoteCheck.Checked = _config.StrokeClickToCreateNote;
         _strokeAutoCreateNoteCheck.Checked = _config.StrokeAutoCreateNote;
+        _trackCriticalStudiesCheck.Checked = _config.TrackCriticalStudies;
         _showImpressionCheck.Checked = _config.ShowImpression;
         _scrollThreshold1.Value = _config.ScrollThreshold1;
         _scrollThreshold2.Value = _config.ScrollThreshold2;
@@ -3571,6 +3607,7 @@ SETTINGS FILE
         _config.StrokeDetectionUseClinicalHistory = _strokeDetectionUseClinicalHistoryCheck.Checked;
         _config.StrokeClickToCreateNote = _strokeClickToCreateNoteCheck.Checked;
         _config.StrokeAutoCreateNote = _strokeAutoCreateNoteCheck.Checked;
+        _config.TrackCriticalStudies = _trackCriticalStudiesCheck.Checked;
         _config.ShowImpression = _showImpressionCheck.Checked;
         _config.ScrollThreshold1 = (int)_scrollThreshold1.Value;
         _config.ScrollThreshold2 = (int)_scrollThreshold2.Value;
