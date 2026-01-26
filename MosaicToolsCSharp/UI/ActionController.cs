@@ -94,6 +94,19 @@ public class ActionController : IDisposable
     private readonly HashSet<string> _macrosInsertedForAccessions = new();
     private readonly HashSet<string> _clinicalHistoryFixedForAccessions = new();
 
+    // Critical studies tracker - studies where critical notes were placed this session
+    private readonly List<CriticalStudyEntry> _criticalStudies = new();
+
+    /// <summary>
+    /// List of studies where critical notes were placed this session.
+    /// </summary>
+    public IReadOnlyList<CriticalStudyEntry> CriticalStudies => _criticalStudies;
+
+    /// <summary>
+    /// Event raised when the critical studies list changes.
+    /// </summary>
+    public event Action? CriticalStudiesChanged;
+
     // Window/Level cycle state for InteleViewer
     private int _windowLevelCycleIndex = 0;
 
@@ -1303,6 +1316,10 @@ public class ActionController : IDisposable
             NativeWindows.SendHotkey("ctrl+v");
 
             Logger.Trace($"Critical Findings complete: {formatted}");
+
+            // Track critical study for session-based tracker
+            TrackCriticalStudy();
+
             _mainForm.Invoke(() => _mainForm.ShowStatusToast(
                 "Critical findings inserted.\nHold Win key and trigger again to debug.", 20000));
         }
@@ -1311,7 +1328,42 @@ public class ActionController : IDisposable
             _isUserActive = false;
         }
     }
-    
+
+    /// <summary>
+    /// Track a critical study entry after successful critical note paste.
+    /// </summary>
+    private void TrackCriticalStudy()
+    {
+        var accession = _automationService.LastAccession;
+        if (string.IsNullOrEmpty(accession))
+        {
+            Logger.Trace("TrackCriticalStudy: No accession to track");
+            return;
+        }
+
+        // Avoid duplicate entries for the same accession
+        if (_criticalStudies.Any(s => s.Accession == accession))
+        {
+            Logger.Trace($"TrackCriticalStudy: Already tracking accession {accession}");
+            return;
+        }
+
+        var entry = new CriticalStudyEntry
+        {
+            Accession = accession,
+            PatientName = _automationService.LastPatientName ?? "Unknown",
+            SiteCode = _automationService.LastSiteCode ?? "???",
+            Description = _automationService.LastDescription ?? "Unknown",
+            CriticalNoteTime = DateTime.Now
+        };
+
+        _criticalStudies.Add(entry);
+        Logger.Trace($"TrackCriticalStudy: Added entry for {accession} ({entry.PatientName} @ {entry.SiteCode})");
+
+        // Notify UI
+        _mainForm.Invoke(() => CriticalStudiesChanged?.Invoke());
+    }
+
     // State for Report Popup Toggle
     private ReportPopupForm? _currentReportPopup;
 

@@ -19,50 +19,6 @@ If making significant changes to the codebase structure, update the Architecture
 
 ---
 
-## PENDING: Albert Song Macro Issue (2026-01-21)
-
-**User:** Albert Song (albert.song) on RPMXWRS130RR
-**Mosaic Version:** 2.0.2.0
-**Issue:** Macros only partially triggering - only 1 of 4 macros matches each study
-
-### Root Cause Identified
-The **study description is always empty** (`''`). From his trace log:
-```
-Macros: Queuing for study '' (4 macros configured)
-Macros: 1 macro(s) match study ''
-```
-
-- Accession IS found (e.g., `25826626CHS`) ✓
-- Gender IS found (`Female`) ✓
-- ProseMirror/report content IS found ✓
-- **Description is NOT found** ✗
-
-The code in `AutomationService.cs:624-628` looks for a Text element starting with `"Description:"` but it's not being found on his system. Only macros with empty study filter work.
-
-### Diagnostic Tool Created
-Created `MosaicDiagnostic` project in `MosaicTools/MosaicDiagnostic/` to investigate.
-
-**Problem:** Diagnostic tool found 0 elements inside Mosaic window, even though MosaicTools scraping works on his machine. Likely cause was missing `[STAThread]` attribute (required for COM-based UI Automation in console apps).
-
-**v3 diagnostic ready:** `C:\Users\erik.richter\Desktop\MosaicDiagnostic.zip`
-- Added `[STAThread]`
-- Brings Mosaic to foreground
-- Shows raw element count by type
-- Lists all Text elements with flags for Description/Study/Exam keywords
-
-### Next Steps (when Albert tests)
-1. Have him run v3 diagnostic with a study loaded
-2. Check if elements are now visible
-3. Look for how Description is labeled in his Mosaic (might be "Study Description:", "Exam Type:", etc.)
-4. Update `AutomationService.cs` to handle alternate labeling
-
-### Files
-- Trace log: `C:\Users\erik.richter\Downloads\mosaic_setup_trace (1).txt`
-- Diagnostic v1: `C:\Users\erik.richter\Downloads\mosaic_diagnostic_20260121_160148.txt` (showed 0 elements)
-- Diagnostic v3 (pending test): `C:\Users\erik.richter\Desktop\MosaicDiagnostic.zip`
-
----
-
 ## Build Instructions
 
 **IMPORTANT: When user says "build" or "rebuild", OR when you finish making code changes, just run the full build command immediately without asking for confirmation. This includes taskkill, compile, and starting the app - do it all automatically.**

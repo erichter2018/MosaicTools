@@ -1,3 +1,8 @@
+2.7.9
+- Fix macros not matching when "Indicate drafted status" disabled
+- Critical studies tracker: shows count badge for studies with critical notes this session
+- Click badge to see list of patients, sites, and times
+
 2.7.8
 - Fix duplicate macro/clinical history pasting when reopening same study
 - Session-wide tracking prevents re-insertion on study close/reopen

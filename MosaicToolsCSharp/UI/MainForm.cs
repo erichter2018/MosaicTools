@@ -23,6 +23,11 @@ public class MainForm : Form
     private readonly Label _rvuSeparatorLabel;
     private readonly Label _rvuSuffixLabel;
 
+    // Critical studies indicator
+    private readonly Panel _criticalPanel;
+    private readonly Label _criticalIconLabel;
+    private readonly Label _criticalCountLabel;
+
     // RVU Counter
     private readonly RvuCounterService _rvuCounterService;
     private System.Windows.Forms.Timer? _rvuTimer;
@@ -157,11 +162,59 @@ public class MainForm : Form
         };
         _rvuPanel.Controls.Add(_rvuSuffixLabel);
 
+        // Critical studies indicator panel (shown when critical notes placed)
+        _criticalPanel = new Panel
+        {
+            BackColor = Color.Black,
+            Width = 30,
+            Dock = DockStyle.Left,
+            Visible = false, // Hidden until critical studies exist
+            Cursor = Cursors.Hand
+        };
+        _criticalPanel.Click += OnCriticalPanelClick;
+
+        // Warning icon
+        _criticalIconLabel = new Label
+        {
+            Text = "!",
+            Font = new Font("Segoe UI", 12, FontStyle.Bold),
+            ForeColor = Color.FromArgb(255, 100, 100), // Red
+            BackColor = Color.Black,
+            AutoSize = false,
+            Size = new Size(20, 38),
+            TextAlign = ContentAlignment.MiddleCenter,
+            Location = new Point(0, 0)
+        };
+        _criticalIconLabel.Click += OnCriticalPanelClick;
+        _criticalPanel.Controls.Add(_criticalIconLabel);
+
+        // Count badge
+        _criticalCountLabel = new Label
+        {
+            Text = "0",
+            Font = new Font("Segoe UI", 7, FontStyle.Bold),
+            ForeColor = Color.White,
+            BackColor = Color.FromArgb(180, 50, 50), // Dark red background
+            AutoSize = false,
+            Size = new Size(14, 14),
+            TextAlign = ContentAlignment.MiddleCenter,
+            Location = new Point(14, 2) // Top-right of the panel
+        };
+        _criticalCountLabel.Click += OnCriticalPanelClick;
+        _criticalPanel.Controls.Add(_criticalCountLabel);
+
+        // Tooltip for critical panel
+        var toolTip = new ToolTip();
+        toolTip.SetToolTip(_criticalPanel, "Critical notes placed this session (click to view)");
+        toolTip.SetToolTip(_criticalIconLabel, "Critical notes placed this session (click to view)");
+        toolTip.SetToolTip(_criticalCountLabel, "Critical notes placed this session (click to view)");
+
         // Add controls: Fill first (laid out last), then Left/Right (laid out first)
         // WinForms docks in REVERSE order of Controls collection
         _innerFrame.Controls.Add(_titleLabel);   // index 0, laid out last (fills remaining)
-        _innerFrame.Controls.Add(_dragHandle);   // index 1, laid out second (takes left)
-        _innerFrame.Controls.Add(_rvuPanel);     // index 2, laid out first (takes right)
+        _innerFrame.Controls.Add(_criticalPanel); // index 1, laid out third (takes left after drag handle)
+        _innerFrame.Controls.Add(_dragHandle);   // index 2, laid out second (takes left)
+        _innerFrame.Controls.Add(_rvuPanel);     // index 3, laid out first (takes right)
 
         // Context menu (for normal mode right-click)
         var contextMenu = new ContextMenuStrip();
@@ -223,6 +276,9 @@ public class MainForm : Form
 
         // Start controller (HID, hotkeys, etc.)
         _controller.Start();
+
+        // Subscribe to critical studies changes
+        _controller.CriticalStudiesChanged += UpdateCriticalIndicator;
 
         // Log window info for AHK debugging
         Logger.Trace($"MainForm HWND: 0x{Handle:X} Title: '{Text}' Class: WindowsForms");
@@ -974,9 +1030,46 @@ public class MainForm : Form
         _clinicalHistoryWindow?.EnsureOnTop();
         _impressionWindow?.EnsureOnTop();
     }
-    
+
     #endregion
-    
+
+    #region Critical Studies Indicator
+
+    private CriticalStudiesPopup? _criticalStudiesPopup;
+
+    private void UpdateCriticalIndicator()
+    {
+        if (InvokeRequired)
+        {
+            Invoke(UpdateCriticalIndicator);
+            return;
+        }
+
+        var count = _controller.CriticalStudies.Count;
+        _criticalPanel.Visible = count > 0;
+        _criticalCountLabel.Text = count.ToString();
+
+        Logger.Trace($"UpdateCriticalIndicator: count={count}, visible={_criticalPanel.Visible}");
+    }
+
+    private void OnCriticalPanelClick(object? sender, EventArgs e)
+    {
+        // Toggle popup
+        if (_criticalStudiesPopup != null && !_criticalStudiesPopup.IsDisposed && _criticalStudiesPopup.Visible)
+        {
+            _criticalStudiesPopup.Close();
+            _criticalStudiesPopup = null;
+            return;
+        }
+
+        // Create and position popup below the indicator
+        var popupLocation = PointToScreen(new Point(_criticalPanel.Left, Height));
+        _criticalStudiesPopup = new CriticalStudiesPopup(_controller.CriticalStudies, popupLocation);
+        _criticalStudiesPopup.Show();
+    }
+
+    #endregion
+
     #region Settings
     
     private void OpenSettings()

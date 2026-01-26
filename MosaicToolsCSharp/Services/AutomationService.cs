@@ -46,6 +46,12 @@ public class AutomationService : IDisposable
     // Whether the current study is detected as a Stroke study
     public bool IsStrokeStudy { get; private set; }
 
+    // Last scraped patient name (title case, e.g., "Smith John")
+    public string? LastPatientName { get; private set; }
+
+    // Last scraped site code (e.g., "MLC", "UNM")
+    public string? LastSiteCode { get; private set; }
+
     // Debug flag
     private bool _hasLoggedDebugInfo = false;
     
@@ -984,6 +990,8 @@ public class AutomationService : IDisposable
             LastTemplateName = null; // Reset - prevents stale template from previous study causing false mismatch
             LastAccession = null; // Reset - will be set if found, stays null if no study open
             LastPatientGender = null; // Reset - will be set if found
+            LastPatientName = null; // Reset - will be set if found
+            LastSiteCode = null; // Reset - will be set if found
 
             // Extract accession: find "Current Study" text and the next text element after it
             try
@@ -1028,7 +1036,7 @@ public class AutomationService : IDisposable
                 Logger.Trace($"Accession extraction error: {ex.Message}");
             }
 
-            // Extract patient gender: look for text matching "MALE, AGE" or "FEMALE, AGE"
+            // Extract patient gender, patient name, and site code: look for patterns in text elements
             try
             {
                 var textElements = _cachedSlimHubWindow.FindAllDescendants(cf =>
@@ -1036,24 +1044,54 @@ public class AutomationService : IDisposable
 
                 foreach (var textEl in textElements)
                 {
-                    var text = textEl.Name?.ToUpperInvariant() ?? "";
-                    if (text.StartsWith("MALE, AGE") || text.StartsWith("MALE,AGE"))
+                    var text = textEl.Name ?? "";
+                    var textUpper = text.ToUpperInvariant();
+
+                    // Gender extraction
+                    if (LastPatientGender == null)
                     {
-                        LastPatientGender = "Male";
-                        Logger.Trace($"Found Patient Gender: Male");
-                        break;
+                        if (textUpper.StartsWith("MALE, AGE") || textUpper.StartsWith("MALE,AGE"))
+                        {
+                            LastPatientGender = "Male";
+                            Logger.Trace($"Found Patient Gender: Male");
+                        }
+                        else if (textUpper.StartsWith("FEMALE, AGE") || textUpper.StartsWith("FEMALE,AGE"))
+                        {
+                            LastPatientGender = "Female";
+                            Logger.Trace($"Found Patient Gender: Female");
+                        }
                     }
-                    else if (text.StartsWith("FEMALE, AGE") || text.StartsWith("FEMALE,AGE"))
+
+                    // Site code extraction: pattern "Site Code: XXX"
+                    if (LastSiteCode == null)
                     {
-                        LastPatientGender = "Female";
-                        Logger.Trace($"Found Patient Gender: Female");
-                        break;
+                        var siteMatch = Regex.Match(text, @"Site\s*Code:\s*([A-Z]{2,5})", RegexOptions.IgnoreCase);
+                        if (siteMatch.Success)
+                        {
+                            LastSiteCode = siteMatch.Groups[1].Value.ToUpperInvariant();
+                            Logger.Trace($"Found Site Code: {LastSiteCode}");
+                        }
+                    }
+
+                    // Patient name extraction: all-caps 2-4 word pattern (e.g., "LASTNAME FIRSTNAME" or "SMITH JOHN MICHAEL")
+                    if (LastPatientName == null && IsPatientNameCandidate(textUpper))
+                    {
+                        LastPatientName = ToTitleCase(textUpper);
+                        Logger.Trace($"Found Patient Name: {LastPatientName}");
+                    }
+
+                    // Description extraction: "Description: CT ABDOMEN PELVIS..."
+                    // IMPORTANT: Always extract this regardless of checkDraftedStatus - macros need it!
+                    if (LastDescription == null && text.StartsWith("Description:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        LastDescription = text.Substring("Description:".Length).Trim();
+                        Logger.Trace($"Found Description: {LastDescription}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Logger.Trace($"Gender extraction error: {ex.Message}");
+                Logger.Trace($"Gender/PatientName/SiteCode/Description extraction error: {ex.Message}");
             }
 
             if (checkDraftedStatus)
@@ -1580,6 +1618,92 @@ public class AutomationService : IDisposable
             parts.Add("ABDOMEN");
             parts.Add("PELVIS");
         }
+    }
+
+    #endregion
+
+    #region Patient Name Extraction
+
+    /// <summary>
+    /// Common UI/medical terms to exclude from patient name detection.
+    /// </summary>
+    private static readonly HashSet<string> PatientNameExclusions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CURRENT STUDY", "SITE CODE", "FINDINGS", "EXAM", "IMPRESSION", "TECHNIQUE",
+        "CLINICAL HISTORY", "COMPARISON", "INDICATION", "CONTRAST", "ADDENDUM",
+        "REPORT", "ACCESSION", "PATIENT", "PHYSICIAN", "RADIOLOGIST", "DOCTOR",
+        "MALE", "FEMALE", "AGE", "DOB", "MRN", "STATUS", "PRIORITY", "CLASS",
+        "EMERGENCY", "INPATIENT", "OUTPATIENT", "STAT", "ROUTINE", "STROKE",
+        "DRAFTED", "SIGNED", "PENDING", "FINAL", "PRELIMINARY", "ACTIONS",
+        "CT", "MRI", "MR", "XR", "US", "PET", "NM", "FLUORO", "MAMMOGRAM",
+        "HEAD", "NECK", "CHEST", "ABDOMEN", "PELVIS", "SPINE", "BRAIN",
+        "WITHOUT", "WITH", "CONTRAST", "IV", "ORAL", "PROTOCOL"
+    };
+
+    /// <summary>
+    /// Check if text is a valid patient name candidate.
+    /// Pattern: All-caps 2-4 word string (e.g., "SMITH JOHN" or "SMITH JOHN MICHAEL JR")
+    /// </summary>
+    private static bool IsPatientNameCandidate(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+
+        text = text.Trim();
+
+        // Length check: 5-50 characters
+        if (text.Length < 5 || text.Length > 50) return false;
+
+        // Split into words
+        var words = text.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+        // Must be 2-4 words
+        if (words.Length < 2 || words.Length > 4) return false;
+
+        // Check if excluded term
+        if (PatientNameExclusions.Contains(text)) return false;
+
+        // Check each word: must be all uppercase letters (with optional hyphens/apostrophes)
+        foreach (var word in words)
+        {
+            // Skip suffixes like "JR", "SR", "II", "III"
+            if (word.Length <= 3 && (word == "JR" || word == "SR" || word == "II" || word == "III" || word == "IV"))
+                continue;
+
+            // Must be at least 2 characters (for actual name parts)
+            if (word.Length < 2) return false;
+
+            // Check each character: must be A-Z, hyphen, or apostrophe
+            foreach (var ch in word)
+            {
+                if (!((ch >= 'A' && ch <= 'Z') || ch == '-' || ch == '\''))
+                    return false;
+            }
+
+            // Check if word is an excluded term
+            if (PatientNameExclusions.Contains(word))
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Convert all-caps text to title case (e.g., "SMITH JOHN" → "Smith John")
+    /// </summary>
+    private static string ToTitleCase(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return text;
+
+        var words = text.Split(' ');
+        for (int i = 0; i < words.Length; i++)
+        {
+            if (words[i].Length > 0)
+            {
+                words[i] = char.ToUpper(words[i][0]) +
+                           (words[i].Length > 1 ? words[i].Substring(1).ToLower() : "");
+            }
+        }
+        return string.Join(" ", words);
     }
 
     #endregion
