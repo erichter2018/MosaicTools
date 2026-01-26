@@ -90,6 +90,10 @@ public class ActionController : IDisposable
     // Critical note tracking - which accession already has a critical note created
     private string? _criticalNoteCreatedForAccession = null;
 
+    // Session-wide tracking to prevent duplicate pastes on study reopen
+    private readonly HashSet<string> _macrosInsertedForAccessions = new();
+    private readonly HashSet<string> _clinicalHistoryFixedForAccessions = new();
+
     // Window/Level cycle state for InteleViewer
     private int _windowLevelCycleIndex = 0;
 
@@ -875,6 +879,14 @@ public class ActionController : IDisposable
 
     private void InsertMacrosForStudy(string? studyDescription)
     {
+        // Session-wide check: don't re-insert macros for a study that was already processed
+        var accession = _automationService.LastAccession;
+        if (!string.IsNullOrEmpty(accession) && _macrosInsertedForAccessions.Contains(accession))
+        {
+            Logger.Trace($"Macros: Already inserted for accession {accession} this session, skipping");
+            return;
+        }
+
         // Find all matching enabled macros
         var matchingMacros = _config.Macros
             .Where(m => m.Enabled && m.MatchesStudy(studyDescription))
@@ -925,6 +937,7 @@ public class ActionController : IDisposable
         // Store the text BEFORE queuing the action (avoid race condition)
         _pendingMacroText = textToPaste;
         _pendingMacroCount = matchingMacros.Count;
+        _pendingMacroInsertAccession = accession;
 
         // Queue the paste action (needs to run on STA thread)
         TriggerAction("__InsertMacros__", "Internal");
@@ -932,13 +945,16 @@ public class ActionController : IDisposable
 
     private string? _pendingMacroText = null;
     private int _pendingMacroCount = 0;
+    private string? _pendingMacroInsertAccession = null;
 
     private void PerformInsertMacros()
     {
         var text = _pendingMacroText;
         var count = _pendingMacroCount;
+        var accessionToMark = _pendingMacroInsertAccession;
         _pendingMacroText = null;
         _pendingMacroCount = 0;
+        _pendingMacroInsertAccession = null;
 
         if (string.IsNullOrEmpty(text)) return;
 
@@ -967,6 +983,13 @@ public class ActionController : IDisposable
                 // Paste
                 NativeWindows.SendHotkey("ctrl+v");
                 Thread.Sleep(100); // Increased for reliability
+
+                // Mark this accession as having had macros inserted (session-wide tracking)
+                if (!string.IsNullOrEmpty(accessionToMark))
+                {
+                    _macrosInsertedForAccessions.Add(accessionToMark);
+                    TrimTrackingSets();
+                }
 
                 _mainForm.Invoke(() => _mainForm.ShowStatusToast(
                     count == 1 ? "Macro inserted" : $"{count} macros inserted", 2000));
@@ -2090,6 +2113,48 @@ public class ActionController : IDisposable
     public bool HasCriticalNoteForAccession(string? accession)
     {
         return accession != null && _criticalNoteCreatedForAccession == accession;
+    }
+
+    #endregion
+
+    #region Session-Wide Tracking
+
+    /// <summary>
+    /// Check if clinical history has already been auto-fixed for the given accession this session.
+    /// </summary>
+    public bool HasClinicalHistoryFixedForAccession(string? accession)
+    {
+        return accession != null && _clinicalHistoryFixedForAccessions.Contains(accession);
+    }
+
+    /// <summary>
+    /// Mark that clinical history has been auto-fixed for the given accession.
+    /// </summary>
+    public void MarkClinicalHistoryFixedForAccession(string? accession)
+    {
+        if (!string.IsNullOrEmpty(accession))
+        {
+            _clinicalHistoryFixedForAccessions.Add(accession);
+            TrimTrackingSets();
+        }
+    }
+
+    /// <summary>
+    /// Prevent unbounded growth of tracking sets by clearing when they get too large.
+    /// </summary>
+    private void TrimTrackingSets()
+    {
+        const int maxSize = 100;
+        if (_macrosInsertedForAccessions.Count > maxSize)
+        {
+            Logger.Trace($"Trimming macro tracking set (was {_macrosInsertedForAccessions.Count})");
+            _macrosInsertedForAccessions.Clear();
+        }
+        if (_clinicalHistoryFixedForAccessions.Count > maxSize)
+        {
+            Logger.Trace($"Trimming clinical history tracking set (was {_clinicalHistoryFixedForAccessions.Count})");
+            _clinicalHistoryFixedForAccessions.Clear();
+        }
     }
 
     #endregion

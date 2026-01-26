@@ -747,6 +747,10 @@ public class MainForm : Form
                 // Wire up critical note click callback (for Ctrl+Click and context menu)
                 _clinicalHistoryWindow.SetCriticalNoteClickCallback(() =>
                     _controller.TriggerAction(Actions.CreateCriticalNote, "CtrlClick"));
+                // Wire up session-wide clinical history fix tracking (prevents duplicate fixes on study reopen)
+                _clinicalHistoryWindow.SetClinicalHistoryFixCallbacks(
+                    _controller.HasClinicalHistoryFixedForAccession,
+                    _controller.MarkClinicalHistoryFixedForAccession);
                 _clinicalHistoryWindow.Show();
             }
         }

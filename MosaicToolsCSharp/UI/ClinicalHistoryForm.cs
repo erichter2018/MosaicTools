@@ -49,9 +49,13 @@ public class ClinicalHistoryForm : Form
     private string? _lastTemplateName;
     private bool _templateMismatch = false;
 
-    // Auto-fix tracking - stores the accession we've already auto-fixed to prevent loops
+    // Auto-fix tracking - local fallback, but prefer session-wide callbacks if set
     private string? _lastAutoFixedAccession;
     private DateTime _lastAutoFixTime = DateTime.MinValue;
+
+    // Session-wide clinical history fix tracking callbacks (set by MainForm)
+    private Func<string?, bool>? _hasClinicalHistoryFixed;
+    private Action<string?>? _markClinicalHistoryFixed;
 
     // Track displayed text and whether it was "fixed" from original
     private string? _currentDisplayedText;
@@ -323,17 +327,33 @@ public class ClinicalHistoryForm : Form
         if (!wasFixed)
             return;
 
-        // Prevent loops: don't re-fix the same accession
-        if (!string.IsNullOrEmpty(accession) && string.Equals(_lastAutoFixedAccession, accession, StringComparison.Ordinal))
+        // Prevent loops: check session-wide tracking first (if callbacks set), then fall back to local
+        if (_hasClinicalHistoryFixed != null)
         {
-            Logger.Trace($"Auto-fix: already fixed accession {accession}");
-            return;
+            // Use session-wide tracking (preferred - survives study close/reopen)
+            if (_hasClinicalHistoryFixed(accession))
+            {
+                Logger.Trace($"Auto-fix: already fixed accession {accession} (session tracking)");
+                return;
+            }
+        }
+        else
+        {
+            // Fall back to local tracking
+            if (!string.IsNullOrEmpty(accession) && string.Equals(_lastAutoFixedAccession, accession, StringComparison.Ordinal))
+            {
+                Logger.Trace($"Auto-fix: already fixed accession {accession} (local tracking)");
+                return;
+            }
         }
 
         // All conditions met - trigger auto-fix
         Logger.Trace($"Auto-fix triggered for accession '{accession}': preCleaned='{preCleaned}' -> cleaned='{cleaned}'");
+
+        // Mark as fixed in both local and session-wide tracking
         _lastAutoFixedAccession = accession;
         _lastAutoFixTime = DateTime.Now;
+        _markClinicalHistoryFixed?.Invoke(accession);
 
         // Trigger the paste (this runs on background thread)
         PasteClinicalHistoryToMosaic(showYellowCheckmark: true);
@@ -623,6 +643,16 @@ public class ClinicalHistoryForm : Form
     public void SetCriticalNoteClickCallback(Action callback)
     {
         _onCriticalNoteClick = callback;
+    }
+
+    /// <summary>
+    /// Set callbacks for session-wide clinical history fix tracking.
+    /// This prevents duplicate auto-fixes when a study is reopened.
+    /// </summary>
+    public void SetClinicalHistoryFixCallbacks(Func<string?, bool> hasFixed, Action<string?> markFixed)
+    {
+        _hasClinicalHistoryFixed = hasFixed;
+        _markClinicalHistoryFixed = markFixed;
     }
 
     /// <summary>
