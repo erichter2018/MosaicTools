@@ -1,3 +1,8 @@
+2.7.5
+- New Windows messages: Create Impression (0x040B), Discard Study (0x040C), Check for Updates (0x040D)
+- Cycle Window/Level action now hidden in headless mode
+- InteleViewer Integration settings hidden in headless mode
+
 2.7.2
 - Settings reorganization: cleaner tab layout (Text, Alerts, Behavior tabs)
 - Macros editor: dedicated window for managing macros (like Pick Lists)

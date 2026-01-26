@@ -504,6 +504,9 @@ public static class NativeWindows
     public const int WM_TRIGGER_PROCESS_REPORT = 0x0408;
     public const int WM_TRIGGER_SIGN_REPORT = 0x0409;
     public const int WM_TRIGGER_OPEN_SETTINGS = 0x040A;
+    public const int WM_TRIGGER_CREATE_IMPRESSION = 0x040B;
+    public const int WM_TRIGGER_DISCARD_STUDY = 0x040C;
+    public const int WM_TRIGGER_CHECK_UPDATES = 0x040D;
 
     #endregion
 

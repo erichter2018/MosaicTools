@@ -20,6 +20,7 @@ public class MainForm : Form
     private readonly Panel _innerFrame;
     private readonly Panel _rvuPanel;
     private readonly Label _rvuValueLabel;
+    private readonly Label _rvuSeparatorLabel;
     private readonly Label _rvuSuffixLabel;
 
     // RVU Counter
@@ -52,9 +53,9 @@ public class MainForm : Form
         _rvuCounterService = new RvuCounterService(config);
 
         // Form properties (borderless, topmost, small)
-        // Width extends when RVU counter is enabled
-        int baseWidth = 160;
-        int rvuWidth = _config.RvuCounterEnabled ? 80 : 0;
+        // Width adjusts based on RVU counter settings
+        int baseWidth = 145; // Base for "Mosaic Tools" title + drag handle
+        int rvuWidth = GetRvuPanelWidth();
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
@@ -97,8 +98,7 @@ public class MainForm : Form
         _dragHandle.MouseDown += OnDragStart;
         _dragHandle.MouseMove += OnDragMove;
         _dragHandle.MouseUp += OnDragEnd;
-        _innerFrame.Controls.Add(_dragHandle);
-        
+
         // Title label (clickable -> settings)
         _titleLabel = new Label
         {
@@ -113,7 +113,6 @@ public class MainForm : Form
         _titleLabel.MouseEnter += (_, _) => _titleLabel.ForeColor = Color.White;
         _titleLabel.MouseLeave += (_, _) => _titleLabel.ForeColor = Color.FromArgb(204, 204, 204);
         _titleLabel.Click += (_, _) => OpenSettings();
-        _innerFrame.Controls.Add(_titleLabel);
 
         // RVU panel with two labels (shown when RVU counter is enabled)
         _rvuPanel = new Panel
@@ -128,30 +127,45 @@ public class MainForm : Form
         _rvuValueLabel = new Label
         {
             Text = "",
-            Font = new Font("Segoe UI", 8, FontStyle.Bold),
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
             ForeColor = Color.FromArgb(75, 156, 211), // Carolina blue
             BackColor = Color.Black,
-            AutoSize = true,
-            Location = new Point(2, 12)
+            AutoSize = true
         };
         _rvuPanel.Controls.Add(_rvuValueLabel);
 
-        // RVU suffix label (grey)
+        // RVU separator label (white, only visible in Both mode)
+        _rvuSeparatorLabel = new Label
+        {
+            Text = " |  ",
+            Font = new Font("Segoe UI", 9),
+            ForeColor = Color.FromArgb(204, 204, 204), // White like title
+            BackColor = Color.Black,
+            AutoSize = true,
+            Visible = false
+        };
+        _rvuPanel.Controls.Add(_rvuSeparatorLabel);
+
+        // RVU suffix label
         _rvuSuffixLabel = new Label
         {
             Text = "RVU",
-            Font = new Font("Segoe UI", 8),
-            ForeColor = Color.FromArgb(100, 100, 100), // Grey
+            Font = new Font("Segoe UI", 9),
+            ForeColor = Color.FromArgb(75, 156, 211), // Carolina blue
             BackColor = Color.Black,
-            AutoSize = true,
-            Location = new Point(40, 12) // Will be repositioned dynamically
+            AutoSize = true
         };
         _rvuPanel.Controls.Add(_rvuSuffixLabel);
 
-        _innerFrame.Controls.Add(_rvuPanel);
+        // Add controls: Fill first (laid out last), then Left/Right (laid out first)
+        // WinForms docks in REVERSE order of Controls collection
+        _innerFrame.Controls.Add(_titleLabel);   // index 0, laid out last (fills remaining)
+        _innerFrame.Controls.Add(_dragHandle);   // index 1, laid out second (takes left)
+        _innerFrame.Controls.Add(_rvuPanel);     // index 2, laid out first (takes right)
 
         // Context menu (for normal mode right-click)
         var contextMenu = new ContextMenuStrip();
+        contextMenu.Items.Add("Settings", null, (_, _) => OpenSettings());
         contextMenu.Items.Add("Reload", null, (_, _) => ReloadApp());
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Exit", null, (_, _) => ExitApp());
@@ -256,6 +270,24 @@ public class MainForm : Form
         }
     }
 
+    /// <summary>
+    /// Calculate the RVU panel width based on display mode.
+    /// Max values to fit: Total="999.9 RVU", PerHour="99.9/h", Both="999 | 99.9/h"
+    /// </summary>
+    private int GetRvuPanelWidth()
+    {
+        if (!_config.RvuCounterEnabled)
+            return 0;
+
+        return _config.RvuDisplayMode switch
+        {
+            RvuDisplayMode.Total => 75,    // "999.9 RVU"
+            RvuDisplayMode.PerHour => 60,  // "99.9/h"
+            RvuDisplayMode.Both => 105,    // "999 | 99.9/h"
+            _ => 75
+        };
+    }
+
     private void UpdateRvuDisplay()
     {
         Logger.Trace("UpdateRvuDisplay called");
@@ -266,30 +298,115 @@ public class MainForm : Form
             return;
         }
 
-        var rvuTotal = _rvuCounterService.GetCurrentShiftRvuTotal();
-        Logger.Trace($"UpdateRvuDisplay: Got RVU total = {rvuTotal?.ToString() ?? "null"}");
-        if (rvuTotal.HasValue)
-        {
-            // Show value in Carolina blue, "RVU" suffix in grey
-            _rvuValueLabel.Text = $"{rvuTotal.Value:F1}";
-            _rvuValueLabel.ForeColor = Color.FromArgb(75, 156, 211); // Carolina blue
-            _rvuValueLabel.Font = new Font("Segoe UI", 8, FontStyle.Bold);
-            _rvuValueLabel.Visible = true;
+        var shiftInfo = _rvuCounterService.GetCurrentShiftInfo();
+        Logger.Trace($"UpdateRvuDisplay: Got shift info = {(shiftInfo != null ? $"total={shiftInfo.TotalRvu:F1}" : "null")}");
 
-            // Position RVU suffix after the value
-            _rvuSuffixLabel.Location = new Point(_rvuValueLabel.Right + 1, _rvuValueLabel.Top + 1);
+        if (shiftInfo != null)
+        {
+            // Calculate RVU/hour
+            double rvuPerHour = 0;
+            if (DateTime.TryParse(shiftInfo.ShiftStart, out var shiftStart))
+            {
+                var hoursElapsed = (DateTime.Now - shiftStart).TotalHours;
+                if (hoursElapsed > 0.01) // Avoid division by very small numbers
+                {
+                    rvuPerHour = shiftInfo.TotalRvu / hoursElapsed;
+                }
+            }
+
+            // Determine color based on goal
+            var carolinaBlue = Color.FromArgb(75, 156, 211);
+            var lightRed = Color.FromArgb(255, 120, 120);
+
+            // Check if below goal (only when goal is enabled and we have RVU/h to compare)
+            bool belowGoal = _config.RvuGoalEnabled && rvuPerHour < _config.RvuGoalPerHour;
+            var rateColor = belowGoal ? lightRed : carolinaBlue;
+
+            // Build display based on mode
+            switch (_config.RvuDisplayMode)
+            {
+                case RvuDisplayMode.Total:
+                    _rvuValueLabel.Text = $"{shiftInfo.TotalRvu:F1}";
+                    _rvuValueLabel.ForeColor = carolinaBlue;
+                    _rvuSeparatorLabel.Visible = false;
+                    _rvuSuffixLabel.Text = " RVU";
+                    _rvuSuffixLabel.ForeColor = Color.FromArgb(120, 120, 120);
+                    break;
+                case RvuDisplayMode.PerHour:
+                    _rvuValueLabel.Text = $"{rvuPerHour:F1}";
+                    _rvuValueLabel.ForeColor = rateColor;
+                    _rvuSeparatorLabel.Visible = false;
+                    _rvuSuffixLabel.Text = "/h";
+                    _rvuSuffixLabel.ForeColor = Color.FromArgb(120, 120, 120);
+                    break;
+                case RvuDisplayMode.Both:
+                    _rvuValueLabel.Text = $"{shiftInfo.TotalRvu:F0}";
+                    _rvuValueLabel.ForeColor = carolinaBlue;
+                    _rvuSeparatorLabel.Visible = true;
+                    _rvuSuffixLabel.Text = $"{rvuPerHour:F1}/h";
+                    _rvuSuffixLabel.ForeColor = rateColor;
+                    break;
+                default:
+                    _rvuValueLabel.Text = $"{shiftInfo.TotalRvu:F1}";
+                    _rvuValueLabel.ForeColor = carolinaBlue;
+                    _rvuSeparatorLabel.Visible = false;
+                    _rvuSuffixLabel.Text = " RVU";
+                    _rvuSuffixLabel.ForeColor = Color.FromArgb(120, 120, 120);
+                    break;
+            }
+
+            _rvuValueLabel.Visible = true;
             _rvuSuffixLabel.Visible = true;
+
+            // Center labels within the panel
+            CenterRvuLabels();
         }
         else
         {
-            // Show "no shift" in grey, hide RVU suffix
-            _rvuValueLabel.Text = "no shift";
-            _rvuValueLabel.ForeColor = Color.FromArgb(120, 120, 120); // Gray
-            _rvuValueLabel.Font = new Font("Segoe UI", 7);
+            // Show "--" in grey when no shift
+            _rvuValueLabel.Text = "--";
+            _rvuValueLabel.ForeColor = Color.FromArgb(100, 100, 100);
+            _rvuValueLabel.Font = new Font("Segoe UI", 9, FontStyle.Bold);
             _rvuValueLabel.Visible = true;
+            _rvuSeparatorLabel.Visible = false;
             _rvuSuffixLabel.Visible = false;
+
+            // Center the label
+            CenterRvuLabels();
         }
         _rvuPanel.Visible = true;
+    }
+
+    private void CenterRvuLabels()
+    {
+        // Calculate total width of visible labels
+        int totalWidth = _rvuValueLabel.PreferredWidth;
+        if (_rvuSeparatorLabel.Visible)
+        {
+            totalWidth += _rvuSeparatorLabel.PreferredWidth;
+        }
+        if (_rvuSuffixLabel.Visible)
+        {
+            totalWidth += _rvuSuffixLabel.PreferredWidth;
+        }
+
+        // Center horizontally in panel
+        int startX = Math.Max(2, (_rvuPanel.Width - totalWidth) / 2);
+        int centerY = (_rvuPanel.Height - _rvuValueLabel.PreferredHeight) / 2;
+
+        _rvuValueLabel.Location = new Point(startX, centerY);
+        int nextX = _rvuValueLabel.Right;
+
+        if (_rvuSeparatorLabel.Visible)
+        {
+            _rvuSeparatorLabel.Location = new Point(nextX, centerY);
+            nextX = _rvuSeparatorLabel.Right;
+        }
+
+        if (_rvuSuffixLabel.Visible)
+        {
+            _rvuSuffixLabel.Location = new Point(nextX, centerY);
+        }
     }
 
     private async System.Threading.Tasks.Task CheckForUpdatesAsync()
@@ -1010,6 +1127,18 @@ public class MainForm : Form
             case NativeWindows.WM_TRIGGER_OPEN_SETTINGS:
                 Logger.Trace("WndProc: Triggering OpenSettings");
                 BeginInvoke(() => OpenSettings());
+                break;
+            case NativeWindows.WM_TRIGGER_CREATE_IMPRESSION:
+                Logger.Trace("WndProc: Triggering CreateImpression");
+                BeginInvoke(() => _controller.TriggerAction(Actions.CreateImpression));
+                break;
+            case NativeWindows.WM_TRIGGER_DISCARD_STUDY:
+                Logger.Trace("WndProc: Triggering DiscardStudy");
+                BeginInvoke(() => _controller.TriggerAction(Actions.DiscardStudy));
+                break;
+            case NativeWindows.WM_TRIGGER_CHECK_UPDATES:
+                Logger.Trace("WndProc: Triggering CheckForUpdates");
+                BeginInvoke(async () => await CheckForUpdatesManualAsync());
                 break;
         }
 

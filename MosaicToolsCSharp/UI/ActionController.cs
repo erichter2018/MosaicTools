@@ -90,6 +90,9 @@ public class ActionController : IDisposable
     // Critical note tracking - which accession already has a critical note created
     private string? _criticalNoteCreatedForAccession = null;
 
+    // Window/Level cycle state for InteleViewer
+    private int _windowLevelCycleIndex = 0;
+
     // Shared paste lock to prevent concurrent clipboard operations
     public static readonly object PasteLock = new();
     public static DateTime LastPasteTime = DateTime.MinValue;
@@ -213,7 +216,16 @@ public class ActionController : IDisposable
             if (!string.IsNullOrEmpty(mapping.Hotkey))
             {
                 var actionName = action; // Capture for closure
-                _keyboardService.RegisterHotkey(mapping.Hotkey, () => TriggerAction(actionName, "Hotkey"));
+
+                // CycleWindowLevel uses direct hotkey for instant response (no ThreadPool)
+                if (actionName == Actions.CycleWindowLevel)
+                {
+                    _keyboardService.RegisterDirectHotkey(mapping.Hotkey, () => PerformCycleWindowLevel());
+                }
+                else
+                {
+                    _keyboardService.RegisterHotkey(mapping.Hotkey, () => TriggerAction(actionName, "Hotkey"));
+                }
             }
         }
     }
@@ -232,7 +244,21 @@ public class ActionController : IDisposable
         {
             if (mapping.MicButton == button)
             {
-                TriggerAction(action, button);
+                // Skip CycleWindowLevel in headless mode (requires InteleViewer integration)
+                if (action == Actions.CycleWindowLevel && App.IsHeadless)
+                {
+                    return;
+                }
+
+                // CycleWindowLevel bypasses the queue for instant response
+                if (action == Actions.CycleWindowLevel)
+                {
+                    PerformCycleWindowLevel();
+                }
+                else
+                {
+                    TriggerAction(action, button);
+                }
                 return;
             }
         }
@@ -289,9 +315,10 @@ public class ActionController : IDisposable
     {
         Logger.Trace($"Executing Action: {req.Action} (Source: {req.Source})");
 
-        // GLOBAL FIX: If triggered by a Hotkey, release physically held modifiers 
+        // GLOBAL FIX: If triggered by a Hotkey, release physically held modifiers
         // to prevent interference with emitted keystrokes.
-        if (req.Source == "Hotkey")
+        // Skip for CycleWindowLevel - needs to be instant, handles its own modifiers
+        if (req.Source == "Hotkey" && req.Action != Actions.CycleWindowLevel)
         {
             NativeWindows.KeyUpModifiers();
             Thread.Sleep(50);
@@ -338,6 +365,9 @@ public class ActionController : IDisposable
                 break;
             case Actions.ShowPickLists:
                 PerformShowPickLists();
+                break;
+            case Actions.CycleWindowLevel:
+                PerformCycleWindowLevel();
                 break;
             case "__InsertMacros__":
                 PerformInsertMacros();
@@ -993,7 +1023,18 @@ public class ActionController : IDisposable
 
         Logger.Trace($"Pick Lists: {matchingLists.Count} list(s) match study '{studyDescription}'");
 
-        // Close existing popup if open
+        // If keep-open is enabled and popup exists, just bring it to front
+        if (_config.PickListKeepOpen && _currentPickListPopup != null && !_currentPickListPopup.IsDisposed)
+        {
+            _mainForm.Invoke(() =>
+            {
+                _currentPickListPopup?.Activate();
+                _currentPickListPopup?.Focus();
+            });
+            return;
+        }
+
+        // Close existing popup if open (and keep-open is disabled)
         if (_currentPickListPopup != null && !_currentPickListPopup.IsDisposed)
         {
             _mainForm.Invoke(() =>
@@ -1153,8 +1194,8 @@ public class ActionController : IDisposable
                 return;
             }
             
-            // Paste into Mosaic (with leading newline for cleaner insertion)
-            ClipboardService.SetText("\n" + formatted);
+            // Paste into Mosaic (with leading and trailing newline for cleaner insertion)
+            ClipboardService.SetText("\n" + formatted + "\n");
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(200);
 
@@ -1372,7 +1413,55 @@ public class ActionController : IDisposable
             _isUserActive = false;
         }
     }
-    
+
+    private void PerformCycleWindowLevel()
+    {
+        // Check if we have any keys configured
+        var keys = _config.WindowLevelKeys;
+        if (keys == null || keys.Count == 0) return;
+
+        // Check if InteleViewer is the active window (fast title check)
+        var foreground = NativeWindows.GetForegroundWindow();
+        var title = NativeWindows.GetWindowTitle(foreground);
+
+        if (!title.Contains("InteleViewer", StringComparison.OrdinalIgnoreCase))
+        {
+            return; // Silent ignore
+        }
+
+        // Release modifiers without delay (F-keys work fine even if modifiers briefly held)
+        NativeWindows.KeyUpModifiers();
+
+        // Get the next key in the cycle
+        if (_windowLevelCycleIndex >= keys.Count) _windowLevelCycleIndex = 0;
+        var keyName = keys[_windowLevelCycleIndex];
+        _windowLevelCycleIndex = (_windowLevelCycleIndex + 1) % keys.Count;
+
+        // Convert key name to VK code and send
+        var vk = KeyNameToVK(keyName);
+        if (vk != 0)
+        {
+            NativeWindows.keybd_event(vk, 0, 0, UIntPtr.Zero);
+            NativeWindows.keybd_event(vk, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+        }
+    }
+
+    /// <summary>
+    /// Convert a key name (e.g., "F4", "F5") to a virtual key code.
+    /// </summary>
+    private static byte KeyNameToVK(string keyName)
+    {
+        return keyName.ToUpperInvariant() switch
+        {
+            "F1" => 0x70, "F2" => 0x71, "F3" => 0x72, "F4" => 0x73,
+            "F5" => 0x74, "F6" => 0x75, "F7" => 0x76, "F8" => 0x77,
+            "F9" => 0x78, "F10" => 0x79, "F11" => 0x7A, "F12" => 0x7B,
+            "1" => 0x31, "2" => 0x32, "3" => 0x33, "4" => 0x34,
+            "5" => 0x35, "6" => 0x36, "7" => 0x37, "8" => 0x38, "9" => 0x39, "0" => 0x30,
+            _ => 0
+        };
+    }
+
     #endregion
     
     #region Dictation Sync

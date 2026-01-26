@@ -59,13 +59,20 @@ public class SettingsForm : Form
     private NumericUpDown _scrollThreshold2 = null!;
     private NumericUpDown _scrollThreshold3 = null!;
 
+    // InteleViewer Window/Level keys (null in headless mode)
+    private TextBox? _windowLevelKeysBox;
+
     // Experimental tab controls
     private CheckBox _rvuCounterEnabledCheck = null!;
+    private ComboBox _rvuDisplayModeCombo = null!;
+    private CheckBox _rvuGoalEnabledCheck = null!;
+    private NumericUpDown _rvuGoalValueBox = null!;
     private TextBox _rvuCounterPathBox = null!;
     private Label _rvuCounterStatusLabel = null!;
     private CheckBox _showReportChangesCheck = null!;
     private CheckBox _pickListsEnabledCheck = null!;
     private CheckBox _pickListSkipSingleMatchCheck = null!;
+    private CheckBox _pickListKeepOpenCheck = null!;
     private Label _pickListsCountLabel = null!;
     private Label _macrosCountLabel = null!;
     private Label? _pickListsActionLabel;
@@ -494,6 +501,9 @@ public class SettingsForm : Form
         foreach (var action in Actions.All)
         {
             if (action == Actions.None) continue;
+
+            // Hide Cycle Window/Level entirely in headless mode
+            if (App.IsHeadless && action == Actions.CycleWindowLevel) continue;
 
             // Check if this is the Pick Lists action (we'll create but maybe hide it)
             var isPickListAction = action == Actions.ShowPickLists;
@@ -1399,6 +1409,18 @@ public class SettingsForm : Form
         pickListsGroup.Controls.Add(_pickListSkipSingleMatchCheck);
         py += 22;
 
+        _pickListKeepOpenCheck = new CheckBox
+        {
+            Text = "Keep window open",
+            Location = new Point(30, py),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 9),
+            Checked = _config.PickListKeepOpen
+        };
+        pickListsGroup.Controls.Add(_pickListKeepOpenCheck);
+        py += 22;
+
         pickListsGroup.Controls.Add(new Label
         {
             Text = "Assign \"Show Pick Lists\" action in Keys tab.",
@@ -1443,6 +1465,9 @@ WM_TRIGGER_TOGGLE_RECORD = 0x0407 # Toggle Record
 WM_TRIGGER_PROCESS_REPORT = 0x0408 # Process Report
 WM_TRIGGER_SIGN_REPORT = 0x0409   # Sign Report
 WM_TRIGGER_OPEN_SETTINGS = 0x040A # Open Settings
+WM_TRIGGER_CREATE_IMPRESSION = 0x040B # Create Impression
+WM_TRIGGER_DISCARD_STUDY = 0x040C # Discard Study
+WM_TRIGGER_CHECK_UPDATES = 0x040D # Check for Updates
 
 Example AHK:
 DetectHiddenWindows, On
@@ -1924,6 +1949,63 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
 
         y += 180;
 
+        // ========== INTELEVIEWER SECTION ========== (skip in headless mode)
+        if (!App.IsHeadless)
+        {
+            var inteleviewerGroup = new GroupBox
+            {
+                Text = "InteleViewer Integration",
+                Location = new Point(10, y),
+                Size = new Size(groupWidth, 95),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold)
+            };
+            tab.Controls.Add(inteleviewerGroup);
+
+            int iy = 20;
+
+            inteleviewerGroup.Controls.Add(new Label
+            {
+                Text = "Window/Level cycle keys:",
+                Location = new Point(10, iy),
+                AutoSize = true,
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 9)
+            });
+
+            _windowLevelKeysBox = new TextBox
+            {
+                Location = new Point(170, iy - 2),
+                Size = new Size(200, 22),
+                BackColor = Color.FromArgb(50, 50, 50),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 9)
+            };
+            inteleviewerGroup.Controls.Add(_windowLevelKeysBox);
+            iy += 25;
+
+            inteleviewerGroup.Controls.Add(new Label
+            {
+                Text = "Comma-separated keys sent to InteleViewer (e.g., F4, F5, F7, F6)",
+                Location = new Point(10, iy),
+                AutoSize = true,
+                ForeColor = Color.Gray,
+                Font = new Font("Segoe UI", 8, FontStyle.Italic)
+            });
+            iy += 18;
+
+            inteleviewerGroup.Controls.Add(new Label
+            {
+                Text = "Cycles through window/level presets when triggered",
+                Location = new Point(10, iy),
+                AutoSize = true,
+                ForeColor = Color.Gray,
+                Font = new Font("Segoe UI", 8, FontStyle.Italic)
+            });
+
+            y += 105;
+        }
+
         // ========== EXPERIMENTAL SECTION ==========
         var experimentalGroup = new GroupBox
         {
@@ -2017,7 +2099,62 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             Font = new Font("Segoe UI", 9)
         };
         experimentalGroup.Controls.Add(_rvuCounterEnabledCheck);
+
+        var rvuDisplayLabel = new Label
+        {
+            Text = "Display:",
+            Location = new Point(200, ey + 2),
+            AutoSize = true,
+            ForeColor = Color.LightGray
+        };
+        experimentalGroup.Controls.Add(rvuDisplayLabel);
+
+        _rvuDisplayModeCombo = new ComboBox
+        {
+            Location = new Point(250, ey - 2),
+            Size = new Size(90, 22),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _rvuDisplayModeCombo.Items.AddRange(new object[] { "Total", "RVU/h", "Both" });
+        experimentalGroup.Controls.Add(_rvuDisplayModeCombo);
         ey += 22;
+
+        // Goal setting
+        _rvuGoalEnabledCheck = new CheckBox
+        {
+            Text = "Goal:",
+            Location = new Point(30, ey),
+            AutoSize = true,
+            ForeColor = Color.White
+        };
+        experimentalGroup.Controls.Add(_rvuGoalEnabledCheck);
+
+        _rvuGoalValueBox = new NumericUpDown
+        {
+            Location = new Point(85, ey - 2),
+            Size = new Size(55, 20),
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            Minimum = 1,
+            Maximum = 100,
+            DecimalPlaces = 1,
+            Increment = 0.5m,
+            Value = 10
+        };
+        experimentalGroup.Controls.Add(_rvuGoalValueBox);
+
+        var rvuGoalSuffixLabel = new Label
+        {
+            Text = "/h",
+            Location = new Point(142, ey + 2),
+            AutoSize = true,
+            ForeColor = Color.Gray
+        };
+        experimentalGroup.Controls.Add(rvuGoalSuffixLabel);
+        ey += 24;
 
         _rvuCounterPathBox = new TextBox
         {
@@ -2161,6 +2298,20 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         scrollPanel.Controls.Add(_pickListSkipSingleMatchCheck);
         y += 25;
 
+        // Keep pick list open checkbox
+        _pickListKeepOpenCheck = new CheckBox
+        {
+            Text = "Keep pick list window open",
+            Location = new Point(40, y),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Checked = _config.PickListKeepOpen
+        };
+        var pickListToolTip = new ToolTip { AutoPopDelay = 10000, InitialDelay = 300 };
+        pickListToolTip.SetToolTip(_pickListKeepOpenCheck, "When enabled, the pick list stays visible after inserting text.\nClick the popup to use number keys.");
+        scrollPanel.Controls.Add(_pickListKeepOpenCheck);
+        y += 25;
+
         // Edit Pick Lists button
         var editPickListsBtn = new Button
         {
@@ -2223,7 +2374,65 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             ForeColor = Color.White
         };
         scrollPanel.Controls.Add(_rvuCounterEnabledCheck);
-        y += 22;
+        y += 25;
+
+        // Display mode
+        var rvuDisplayLabel = new Label
+        {
+            Text = "Display mode:",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.LightGray
+        };
+        scrollPanel.Controls.Add(rvuDisplayLabel);
+
+        _rvuDisplayModeCombo = new ComboBox
+        {
+            Location = new Point(110, y - 3),
+            Size = new Size(100, 22),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _rvuDisplayModeCombo.Items.AddRange(new object[] { "Total", "RVU/h", "Both" });
+        scrollPanel.Controls.Add(_rvuDisplayModeCombo);
+        y += 28;
+
+        // Goal setting
+        _rvuGoalEnabledCheck = new CheckBox
+        {
+            Text = "Color by goal:",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.White
+        };
+        scrollPanel.Controls.Add(_rvuGoalEnabledCheck);
+
+        _rvuGoalValueBox = new NumericUpDown
+        {
+            Location = new Point(130, y - 2),
+            Size = new Size(60, 22),
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            Minimum = 1,
+            Maximum = 100,
+            DecimalPlaces = 1,
+            Increment = 0.5m,
+            Value = 10
+        };
+        scrollPanel.Controls.Add(_rvuGoalValueBox);
+
+        var rvuGoalSuffixLabel = new Label
+        {
+            Text = "RVU/h (blue if met, red if below)",
+            Location = new Point(195, y + 2),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        scrollPanel.Controls.Add(rvuGoalSuffixLabel);
+        y += 28;
 
         // Warning about current version
         var rvuWarningLabel = new Label
@@ -2524,6 +2733,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
     {
         bool enabled = _pickListsEnabledCheck.Checked;
         _pickListSkipSingleMatchCheck.Enabled = enabled;
+        _pickListKeepOpenCheck.Enabled = enabled;
 
         // Toggle visibility of Pick Lists action controls in the Keys tab
         if (_pickListsActionLabel != null) _pickListsActionLabel.Visible = enabled;
@@ -2827,8 +3037,15 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         _scrollThreshold2.Value = _config.ScrollThreshold2;
         _scrollThreshold3.Value = _config.ScrollThreshold3;
 
+        // InteleViewer (not in headless mode)
+        if (_windowLevelKeysBox != null)
+            _windowLevelKeysBox.Text = string.Join(", ", _config.WindowLevelKeys);
+
         // Experimental tab
         _rvuCounterEnabledCheck.Checked = _config.RvuCounterEnabled;
+        _rvuDisplayModeCombo.SelectedIndex = (int)_config.RvuDisplayMode;
+        _rvuGoalEnabledCheck.Checked = _config.RvuGoalEnabled;
+        _rvuGoalValueBox.Value = (decimal)Math.Clamp(_config.RvuGoalPerHour, 1, 100);
         _rvuCounterPathBox.Text = _config.RvuCounterPath;
         _showReportChangesCheck.Checked = _config.ShowReportChanges;
         try
@@ -2843,6 +3060,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         _reportChangesAlphaLabel.Text = $"{_reportChangesAlphaSlider.Value}%";
         _pickListsEnabledCheck.Checked = _config.PickListsEnabled;
         _pickListSkipSingleMatchCheck.Checked = _config.PickListSkipSingleMatch;
+        _pickListKeepOpenCheck.Checked = _config.PickListKeepOpen;
         _pickListsCountLabel.Text = GetPickListsCountText();
         UpdatePickListStates();
         if (!string.IsNullOrEmpty(_config.RvuCounterPath))
@@ -3181,6 +3399,9 @@ WINDOWS MESSAGE CODES
 • 0x0408 - Process Report
 • 0x0409 - Sign Report
 • 0x040A - Open Settings
+• 0x040B - Create Impression
+• 0x040C - Discard Study
+• 0x040D - Check for Updates
 
 AUTOHOTKEY EXAMPLE
 DetectHiddenWindows, On
@@ -3351,14 +3572,24 @@ SETTINGS FILE
         _config.MacrosEnabled = _macrosEnabledCheck.Checked;
         _config.MacrosBlankLinesBefore = _macrosBlankLinesCheck.Checked;
 
+        // InteleViewer (not in headless mode)
+        if (_windowLevelKeysBox != null)
+            _config.WindowLevelKeys = _windowLevelKeysBox.Text
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .ToList();
+
         // Experimental
         _config.RvuCounterEnabled = _rvuCounterEnabledCheck.Checked;
+        _config.RvuDisplayMode = (RvuDisplayMode)_rvuDisplayModeCombo.SelectedIndex;
+        _config.RvuGoalEnabled = _rvuGoalEnabledCheck.Checked;
+        _config.RvuGoalPerHour = (double)_rvuGoalValueBox.Value;
         _config.RvuCounterPath = _rvuCounterPathBox.Text;
         _config.ShowReportChanges = _showReportChangesCheck.Checked;
         _config.ReportChangesColor = ColorTranslator.ToHtml(_reportChangesColorPanel.BackColor);
         _config.ReportChangesAlpha = _reportChangesAlphaSlider.Value;
         _config.PickListsEnabled = _pickListsEnabledCheck.Checked;
         _config.PickListSkipSingleMatch = _pickListSkipSingleMatchCheck.Checked;
+        _config.PickListKeepOpen = _pickListKeepOpenCheck.Checked;
 
         // Position
         _config.SettingsX = this.Location.X;
