@@ -1140,6 +1140,10 @@ public class MainForm : Form
                 Logger.Trace("WndProc: Triggering CheckForUpdates");
                 BeginInvoke(async () => await CheckForUpdatesManualAsync());
                 break;
+            case NativeWindows.WM_TRIGGER_SHOW_PICK_LISTS:
+                Logger.Trace("WndProc: Triggering ShowPickLists");
+                BeginInvoke(() => _controller.TriggerAction(Actions.ShowPickLists));
+                break;
         }
 
         base.WndProc(ref m);

@@ -507,6 +507,7 @@ public static class NativeWindows
     public const int WM_TRIGGER_CREATE_IMPRESSION = 0x040B;
     public const int WM_TRIGGER_DISCARD_STUDY = 0x040C;
     public const int WM_TRIGGER_CHECK_UPDATES = 0x040D;
+    public const int WM_TRIGGER_SHOW_PICK_LISTS = 0x040E;
 
     #endregion
 

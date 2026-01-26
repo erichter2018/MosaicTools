@@ -1468,6 +1468,7 @@ WM_TRIGGER_OPEN_SETTINGS = 0x040A # Open Settings
 WM_TRIGGER_CREATE_IMPRESSION = 0x040B # Create Impression
 WM_TRIGGER_DISCARD_STUDY = 0x040C # Discard Study
 WM_TRIGGER_CHECK_UPDATES = 0x040D # Check for Updates
+WM_TRIGGER_SHOW_PICK_LISTS = 0x040E # Show Pick Lists
 
 Example AHK:
 DetectHiddenWindows, On
@@ -3402,6 +3403,7 @@ WINDOWS MESSAGE CODES
 • 0x040B - Create Impression
 • 0x040C - Discard Study
 • 0x040D - Check for Updates
+• 0x040E - Show Pick Lists
 
 AUTOHOTKEY EXAMPLE
 DetectHiddenWindows, On
