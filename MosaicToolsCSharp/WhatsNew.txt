@@ -1,3 +1,9 @@
+2.8.1
+- Pick list references: tree nodes can reference macros, builder options can reference macros or tree lists
+- Live macro resolution in pick lists (text updates when macro changes)
+- Embedded tree navigation from builder options
+- Fix critical studies showing "My Macros" as patient name
+
 2.8.0
 - Critical studies tracker: double-click to open study in Mosaic via XML file drop
 - Headless mode now shows main widget bar (settings and features still restricted)

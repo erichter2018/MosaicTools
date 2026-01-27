@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using MosaicTools.Services;
 
@@ -12,6 +13,11 @@ namespace MosaicTools.UI;
 /// </summary>
 public class SettingsForm : Form
 {
+    // Dark mode title bar support
+    [DllImport("dwmapi.dll", PreserveSig = true)]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+
     private readonly Configuration _config;
     private readonly ActionController _controller;
     private readonly MainForm _mainForm;
@@ -81,14 +87,31 @@ public class SettingsForm : Form
     private Label _reportChangesAlphaLabel = null!;
     private RichTextBox _reportChangesPreview = null!;
 
+    // Network monitor controls
+    private CheckBox _connectivityMonitorEnabledCheck = null!;
+    private NumericUpDown _connectivityIntervalUpDown = null!;
+    private NumericUpDown _connectivityTimeoutUpDown = null!;
+
     public SettingsForm(Configuration config, ActionController controller, MainForm mainForm)
     {
         _config = config;
         _controller = controller;
         _mainForm = mainForm;
-        
+
         InitializeUI();
         LoadSettings();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        // Enable dark mode title bar
+        try
+        {
+            int value = 1;
+            DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref value, sizeof(int));
+        }
+        catch { /* Ignore on older Windows versions */ }
     }
     
     private void InitializeUI()
@@ -105,11 +128,10 @@ public class SettingsForm : Form
         BackColor = Color.FromArgb(30, 30, 30);
         ForeColor = Color.White;
         
-        // Tab control
-        _tabControl = new TabControl
+        // Tab control with owner-drawn dark theme
+        _tabControl = new DarkTabControl
         {
-            Dock = DockStyle.Fill,
-            Appearance = TabAppearance.FlatButtons
+            Dock = DockStyle.Fill
         };
         Controls.Add(_tabControl);
         
@@ -2033,6 +2055,108 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             y += 105;
         }
 
+        // ========== NETWORK MONITOR SECTION ==========
+        var networkGroup = new GroupBox
+        {
+            Text = "Network Monitor",
+            Location = new Point(10, y),
+            Size = new Size(groupWidth, 130),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(networkGroup);
+
+        int ny = 20;
+
+        _connectivityMonitorEnabledCheck = new CheckBox
+        {
+            Text = "Enable connectivity monitoring",
+            Location = new Point(10, ny),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        _connectivityMonitorEnabledCheck.CheckedChanged += (s, e) => UpdateNetworkSettingsStates();
+        networkGroup.Controls.Add(_connectivityMonitorEnabledCheck);
+        ny += 25;
+
+        networkGroup.Controls.Add(new Label
+        {
+            Text = "Check every:",
+            Location = new Point(30, ny + 2),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        });
+        _connectivityIntervalUpDown = new NumericUpDown
+        {
+            Location = new Point(120, ny),
+            Width = 50,
+            Minimum = 10,
+            Maximum = 120,
+            Value = 30,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White
+        };
+        networkGroup.Controls.Add(_connectivityIntervalUpDown);
+        networkGroup.Controls.Add(new Label
+        {
+            Text = "seconds",
+            Location = new Point(175, ny + 2),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 9)
+        });
+
+        networkGroup.Controls.Add(new Label
+        {
+            Text = "Timeout:",
+            Location = new Point(250, ny + 2),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        });
+        _connectivityTimeoutUpDown = new NumericUpDown
+        {
+            Location = new Point(310, ny),
+            Width = 50,
+            Minimum = 1,
+            Maximum = 10,
+            Value = 5,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White
+        };
+        networkGroup.Controls.Add(_connectivityTimeoutUpDown);
+        networkGroup.Controls.Add(new Label
+        {
+            Text = "sec",
+            Location = new Point(365, ny + 2),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 9)
+        });
+        ny += 28;
+
+        networkGroup.Controls.Add(new Label
+        {
+            Text = "Shows 4 status dots in the widget bar (currently using placeholder IPs).",
+            Location = new Point(30, ny),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(120, 120, 120),
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        });
+        ny += 18;
+        networkGroup.Controls.Add(new Label
+        {
+            Text = "Mirth=8.8.8.8, Mosaic=1.1.1.1, Clario=208.67.222.222, IV=9.9.9.9",
+            Location = new Point(30, ny),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(100, 100, 100),
+            Font = new Font("Segoe UI", 7)
+        });
+
+        y += 140;
+
         // ========== EXPERIMENTAL SECTION ==========
         var experimentalGroup = new GroupBox
         {
@@ -2774,6 +2898,13 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         return $"{enabledCount} of {count} pick list{(count == 1 ? "" : "s")} enabled";
     }
 
+    private void UpdateNetworkSettingsStates()
+    {
+        bool enabled = _connectivityMonitorEnabledCheck.Checked;
+        _connectivityIntervalUpDown.Enabled = enabled;
+        _connectivityTimeoutUpDown.Enabled = enabled;
+    }
+
     private void OnEditMacrosClick(object? sender, EventArgs e)
     {
         using (var editor = new MacroEditorForm(_config))
@@ -3063,6 +3194,12 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         // InteleViewer (not in headless mode)
         if (_windowLevelKeysBox != null)
             _windowLevelKeysBox.Text = string.Join(", ", _config.WindowLevelKeys);
+
+        // Network monitor
+        _connectivityMonitorEnabledCheck.Checked = _config.ConnectivityMonitorEnabled;
+        _connectivityIntervalUpDown.Value = Math.Clamp(_config.ConnectivityCheckIntervalSeconds, 10, 120);
+        _connectivityTimeoutUpDown.Value = Math.Clamp(_config.ConnectivityTimeoutMs / 1000, 1, 10);
+        UpdateNetworkSettingsStates();
 
         // Experimental tab
         _rvuCounterEnabledCheck.Checked = _config.RvuCounterEnabled;
@@ -3623,6 +3760,11 @@ SETTINGS FILE
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .ToList();
 
+        // Network monitor
+        _config.ConnectivityMonitorEnabled = _connectivityMonitorEnabledCheck.Checked;
+        _config.ConnectivityCheckIntervalSeconds = (int)_connectivityIntervalUpDown.Value;
+        _config.ConnectivityTimeoutMs = (int)_connectivityTimeoutUpDown.Value * 1000;
+
         // Experimental
         _config.RvuCounterEnabled = _rvuCounterEnabledCheck.Checked;
         _config.RvuDisplayMode = (RvuDisplayMode)_rvuDisplayModeCombo.SelectedIndex;
@@ -3677,7 +3819,76 @@ SETTINGS FILE
         _mainForm.UpdateIndicatorVisibility();  // Respects "hide when no study" setting
         _mainForm.UpdateClinicalHistoryVisibility();  // Respects "hide when no study" setting
         _mainForm.RefreshFloatingToolbar(_config.FloatingButtons);
+        _mainForm.RefreshConnectivityService();  // Apply network monitor settings
 
         Close();
+    }
+}
+
+/// <summary>
+/// Custom TabControl with dark theme support.
+/// </summary>
+public class DarkTabControl : TabControl
+{
+    public DarkTabControl()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.DoubleBuffer, true);
+        DrawMode = TabDrawMode.OwnerDrawFixed;
+        SizeMode = TabSizeMode.Fixed;
+        ItemSize = new Size(70, 26);
+        Padding = new Point(6, 3);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        // Fill entire background
+        using var bgBrush = new SolidBrush(Color.FromArgb(30, 30, 30));
+        e.Graphics.FillRectangle(bgBrush, ClientRectangle);
+
+        // Draw each tab
+        for (int i = 0; i < TabCount; i++)
+        {
+            DrawTab(e.Graphics, i);
+        }
+
+        // Draw selected tab page border
+        if (SelectedTab != null)
+        {
+            var pageRect = SelectedTab.Bounds;
+            pageRect.Inflate(1, 1);
+        }
+    }
+
+    private void DrawTab(Graphics g, int index)
+    {
+        var tabRect = GetTabRect(index);
+        var isSelected = SelectedIndex == index;
+
+        // Tab background
+        using var tabBrush = new SolidBrush(isSelected
+            ? Color.FromArgb(50, 50, 50)
+            : Color.FromArgb(35, 35, 35));
+        g.FillRectangle(tabBrush, tabRect);
+
+        // Tab text
+        using var textBrush = new SolidBrush(isSelected ? Color.White : Color.FromArgb(160, 160, 160));
+        var textFormat = new StringFormat
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center
+        };
+        g.DrawString(TabPages[index].Text, Font, textBrush, tabRect, textFormat);
+
+        // Selected indicator line
+        if (isSelected)
+        {
+            using var linePen = new Pen(Color.FromArgb(80, 140, 200), 2);
+            g.DrawLine(linePen, tabRect.Left + 3, tabRect.Bottom - 1, tabRect.Right - 3, tabRect.Bottom - 1);
+        }
+    }
+
+    protected override void OnDrawItem(DrawItemEventArgs e)
+    {
+        // Handled in OnPaint
     }
 }

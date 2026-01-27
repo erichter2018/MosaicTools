@@ -33,7 +33,7 @@ public class SkipRule
         {
             var requiredTerms = CriteriaRequired
                 .Split(',', StringSplitOptions.RemoveEmptyEntries)
-                .Select(t => t.Trim().ToUpperInvariant())
+                .Select(t => t.TrimStart().ToUpperInvariant())  // TrimStart preserves trailing spaces for exact matching
                 .Where(t => !string.IsNullOrEmpty(t));
 
             foreach (var term in requiredTerms)
@@ -48,7 +48,7 @@ public class SkipRule
         {
             var anyOfTerms = CriteriaAnyOf
                 .Split(',', StringSplitOptions.RemoveEmptyEntries)
-                .Select(t => t.Trim().ToUpperInvariant())
+                .Select(t => t.TrimStart().ToUpperInvariant())  // TrimStart preserves trailing spaces for exact matching
                 .Where(t => !string.IsNullOrEmpty(t))
                 .ToList();
 
@@ -65,7 +65,7 @@ public class SkipRule
         {
             var excludeTerms = CriteriaExclude
                 .Split(',', StringSplitOptions.RemoveEmptyEntries)
-                .Select(t => t.Trim().ToUpperInvariant())
+                .Select(t => t.TrimStart().ToUpperInvariant())  // TrimStart preserves trailing spaces for exact matching
                 .Where(t => !string.IsNullOrEmpty(t));
 
             foreach (var term in excludeTerms)

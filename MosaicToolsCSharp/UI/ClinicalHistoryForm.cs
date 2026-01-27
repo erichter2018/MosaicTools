@@ -64,19 +64,33 @@ public class ClinicalHistoryForm : Form
     // Gender check - terms that are impossible for the opposite gender
     // Female-only terms (flag if patient is Male)
     private static readonly string[] FemaleOnlyTerms = {
+        // Anatomy
         "uterus", "uterine", "ovary", "ovaries", "ovarian",
         "fallopian", "endometrium", "endometrial",
         "vagina", "vaginal", "vulva", "vulvar",
-        "adnexa", "adnexal", "pregnancy", "pregnant", "gravid", "gestational",
-        "placenta", "placental", "fetus", "fetal"
+        "adnexa", "adnexal", "cervix",
+        // Pregnancy
+        "pregnancy", "pregnant", "gravid", "gestational",
+        "placenta", "placental", "fetus", "fetal",
+        // Surgeries
+        "hysterectomy", "myomectomy", "endometrial ablation",
+        "oophorectomy", "salpingectomy", "salpingo-oophorectomy",
+        "tubal ligation", "colposcopy", "conization", "cone biopsy", "LEEP",
+        "vaginoplasty", "colporrhaphy", "cervical cerclage",
+        "cesarean", "c-section", "D&C", "dilation and curettage",
+        "vulvectomy", "labiaplasty"
     };
 
     // Male-only terms (flag if patient is Female)
     private static readonly string[] MaleOnlyTerms = {
+        // Anatomy
         "prostate", "prostatic", "seminal vesicle", "seminal vesicles",
         "testicle", "testis", "testes", "testicular",
         "scrotum", "scrotal", "epididymis", "epididymal",
-        "spermatic cord", "penis", "penile", "vas deferens"
+        "spermatic cord", "penis", "penile", "vas deferens",
+        // Surgeries
+        "prostatectomy", "orchiectomy", "vasectomy", "TURP",
+        "transurethral resection of prostate"
     };
 
     // Gender warning state
@@ -592,7 +606,7 @@ public class ClinicalHistoryForm : Form
         _noteCreated = created;
         if (_noteCreatedIndicator != null)
         {
-            _noteCreatedIndicator.Visible = created && _strokeDetected;
+            _noteCreatedIndicator.Visible = created;
         }
         UpdateBorderTooltip();
     }
@@ -877,7 +891,9 @@ public class ClinicalHistoryForm : Form
         }
 
         // Format the text with leading and trailing newline for cleaner paste
-        var formatted = $"\nClinical history: {text}.\n";
+        // Trim trailing spaces/periods to avoid " .." when we append our period
+        var trimmedText = text.TrimEnd(' ', '.');
+        var formatted = $"\nClinical history: {trimmedText}.\n";
 
         // Run on background thread to avoid blocking UI
         System.Threading.Tasks.Task.Run(() =>
@@ -1025,6 +1041,17 @@ public class ClinicalHistoryForm : Form
         // Remove junk phrases and re-collapse any gaps left behind
         cleaned = Regex.Replace(cleaned, @"Other\s*\(Please Specify\)\s*;?\s*", " ", RegexOptions.IgnoreCase);
         cleaned = Regex.Replace(cleaned, @"\s+", " ").Trim();
+
+        // Deduplicate consecutive identical words (case-insensitive)
+        // e.g., "FALL Fall" → "FALL", "pain PAIN" → "pain"
+        var words = cleaned.Split(' ');
+        var dedupedWords = new System.Collections.Generic.List<string>();
+        for (int i = 0; i < words.Length; i++)
+        {
+            if (i == 0 || !string.Equals(words[i].TrimEnd('.', ',', ';'), words[i - 1].TrimEnd('.', ',', ';'), StringComparison.OrdinalIgnoreCase))
+                dedupedWords.Add(words[i]);
+        }
+        cleaned = string.Join(" ", dedupedWords);
 
         // Remove repeating phrases
         return RemoveRepeatingPhrases(cleaned);

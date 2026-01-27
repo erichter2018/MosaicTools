@@ -60,6 +60,9 @@ static class Program
             Logger.Trace("========================================");
             Logger.Trace($"App Init Started (Headless: {App.IsHeadless})");
             
+            // Enable dark mode for scrollbars, menus, etc (must be before visual styles)
+            NativeWindows.EnableDarkMode();
+
             // Enable visual styles
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);

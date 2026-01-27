@@ -1717,7 +1717,9 @@ public class AutomationService : IDisposable
         "DRAFTED", "SIGNED", "PENDING", "FINAL", "PRELIMINARY", "ACTIONS",
         "CT", "MRI", "MR", "XR", "US", "PET", "NM", "FLUORO", "MAMMOGRAM",
         "HEAD", "NECK", "CHEST", "ABDOMEN", "PELVIS", "SPINE", "BRAIN",
-        "WITHOUT", "WITH", "CONTRAST", "IV", "ORAL", "PROTOCOL"
+        "WITHOUT", "WITH", "CONTRAST", "IV", "ORAL", "PROTOCOL",
+        "MY", "MACROS", "MY MACROS", "TEMPLATES", "MY TEMPLATES", "FAVORITES",
+        "MY FAVORITES", "QUICK", "PICK", "PICK LIST", "TOOLS", "SETTINGS"
     };
 
     /// <summary>

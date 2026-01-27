@@ -57,11 +57,12 @@ public class PickListEditorForm : Form
     private Label _labelLabel = null!;
     private Label _textToInsertLabel = null!;
 
-    // Builder reference UI for tree nodes
+    // Builder/Macro reference UI for tree nodes
     private RadioButton _nodeTypeTextRadio = null!;
     private RadioButton _nodeTypeBuilderRadio = null!;
-    private ComboBox _builderRefCombo = null!;
-    private Label _builderRefLabel = null!;
+    private RadioButton _nodeTypeMacroRadio = null!;
+    private ComboBox _nodeRefCombo = null!;  // Single combo for both builder and macro refs
+    private Label _nodeRefLabel = null!;     // Single label for both
     private Label _prefixTextLabel = null!;
     private Panel _nodeTypePanel = null!;
 
@@ -83,6 +84,16 @@ public class PickListEditorForm : Form
     private CheckBox _terminalCheckBox = null!;
     private Label _optionsHeader = null!;
     private Button _importBtn = null!;
+
+    // Builder option reference UI
+    private RadioButton _optTypeTextRadio = null!;
+    private RadioButton _optTypeMacroRadio = null!;
+    private RadioButton _optTypeTreeRadio = null!;
+    private Panel _optTypePanel = null!;
+    private ComboBox _optMacroRefCombo = null!;
+    private ComboBox _optTreeRefCombo = null!;
+    private Label _optMacroRefLabel = null!;
+    private Label _optTreeRefLabel = null!;
 
     public PickListEditorForm(Configuration config)
     {
@@ -110,7 +121,13 @@ public class PickListEditorForm : Form
             Categories = pl.Categories.Select(c => new PickListCategory
             {
                 Name = c.Name,
-                Options = new List<string>(c.Options),
+                Options = c.Options.Select(o => new BuilderOption
+                {
+                    Text = o.Text,
+                    MacroId = o.MacroId,
+                    TreeListId = o.TreeListId
+                }).ToList(),
+                OptionsLegacy = new List<string>(c.OptionsLegacy),
                 Separator = c.Separator,
                 TerminalOptions = new List<int>(c.TerminalOptions)
             }).ToList()
@@ -591,30 +608,40 @@ public class PickListEditorForm : Form
 
         _nodeTypeBuilderRadio = new RadioButton
         {
-            Text = "Builder reference",
-            Location = new Point(100, 2),
+            Text = "Builder ref",
+            Location = new Point(90, 2),
             AutoSize = true,
             ForeColor = Color.FromArgb(255, 180, 100)
         };
         _nodeTypeBuilderRadio.CheckedChanged += NodeTypeRadio_CheckedChanged;
         _nodeTypePanel.Controls.Add(_nodeTypeBuilderRadio);
 
-        // Builder reference dropdown (position updated in UpdateLayout)
-        _builderRefLabel = CreateLabel("Builder list:", x, 0);
-        _builderRefLabel.ForeColor = Color.FromArgb(255, 180, 100);
-        _treeModePanel.Controls.Add(_builderRefLabel);
+        _nodeTypeMacroRadio = new RadioButton
+        {
+            Text = "Macro ref",
+            Location = new Point(195, 2),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(180, 150, 255)
+        };
+        _nodeTypeMacroRadio.CheckedChanged += NodeTypeRadio_CheckedChanged;
+        _nodeTypePanel.Controls.Add(_nodeTypeMacroRadio);
 
-        _builderRefCombo = new ComboBox
+        // Reference dropdown — shared by builder ref and macro ref (position updated in UpdateLayout)
+        _nodeRefLabel = CreateLabel("Reference:", x, 0);
+        _treeModePanel.Controls.Add(_nodeRefLabel);
+
+        _nodeRefCombo = new ComboBox
         {
             Location = new Point(x + 80, 0),
             Width = 250,
             BackColor = Color.FromArgb(50, 50, 50),
             ForeColor = Color.White,
             FlatStyle = FlatStyle.Flat,
-            DropDownStyle = ComboBoxStyle.DropDownList
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            MaxDropDownItems = 12
         };
-        _builderRefCombo.SelectedIndexChanged += BuilderRefCombo_SelectedIndexChanged;
-        _treeModePanel.Controls.Add(_builderRefCombo);
+        _nodeRefCombo.SelectedIndexChanged += NodeRefCombo_SelectedIndexChanged;
+        _treeModePanel.Controls.Add(_nodeRefCombo);
 
         // Prefix text label (for builder ref nodes)
         _prefixTextLabel = CreateLabel("Prefix text (optional):", x, 0);
@@ -743,8 +770,53 @@ public class PickListEditorForm : Form
         _optionsListBox.SelectedIndexChanged += OptionsListBox_SelectedIndexChanged;
         _builderModePanel.Controls.Add(_optionsListBox);
 
-        // Option text box (multiline for longer text)
+        // Option type panel
         var optPropY = y + 210;
+        _optTypePanel = new Panel
+        {
+            Location = new Point(optX, optPropY),
+            Size = new Size(340, 22),
+            BackColor = Color.Transparent
+        };
+        _builderModePanel.Controls.Add(_optTypePanel);
+
+        _optTypeTextRadio = new RadioButton
+        {
+            Text = "Text",
+            Location = new Point(0, 0),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(100, 220, 150),
+            Checked = true,
+            Font = new Font("Segoe UI", 8)
+        };
+        _optTypeTextRadio.CheckedChanged += OptTypeRadio_CheckedChanged;
+        _optTypePanel.Controls.Add(_optTypeTextRadio);
+
+        _optTypeMacroRadio = new RadioButton
+        {
+            Text = "Macro",
+            Location = new Point(65, 0),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(180, 150, 255),
+            Font = new Font("Segoe UI", 8)
+        };
+        _optTypeMacroRadio.CheckedChanged += OptTypeRadio_CheckedChanged;
+        _optTypePanel.Controls.Add(_optTypeMacroRadio);
+
+        _optTypeTreeRadio = new RadioButton
+        {
+            Text = "Tree",
+            Location = new Point(135, 0),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(100, 180, 255),
+            Font = new Font("Segoe UI", 8)
+        };
+        _optTypeTreeRadio.CheckedChanged += OptTypeRadio_CheckedChanged;
+        _optTypePanel.Controls.Add(_optTypeTreeRadio);
+
+        optPropY += 24;
+
+        // Option text box (multiline for longer text)
         _builderModePanel.Controls.Add(CreateLabel("Option text:", optX, optPropY + 2));
         _optionTextBox = new TextBox
         {
@@ -759,11 +831,53 @@ public class PickListEditorForm : Form
         _optionTextBox.TextChanged += OptionTextBox_TextChanged;
         _builderModePanel.Controls.Add(_optionTextBox);
 
+        // Macro ref combo for options
+        _optMacroRefLabel = CreateLabel("Macro:", optX, optPropY + 2);
+        _optMacroRefLabel.ForeColor = Color.FromArgb(180, 150, 255);
+        _optMacroRefLabel.Visible = false;
+        _builderModePanel.Controls.Add(_optMacroRefLabel);
+
+        _optMacroRefCombo = new ComboBox
+        {
+            Location = new Point(optX + 50, optPropY),
+            Width = 290,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            MaxDropDownItems = 12,
+            Visible = false
+        };
+        _optMacroRefCombo.SelectedIndexChanged += OptMacroRefCombo_SelectedIndexChanged;
+        _builderModePanel.Controls.Add(_optMacroRefCombo);
+
+        // Tree ref combo for options
+        _optTreeRefLabel = CreateLabel("Tree:", optX, optPropY + 2);
+        _optTreeRefLabel.ForeColor = Color.FromArgb(100, 180, 255);
+        _optTreeRefLabel.Visible = false;
+        _builderModePanel.Controls.Add(_optTreeRefLabel);
+
+        _optTreeRefCombo = new ComboBox
+        {
+            Location = new Point(optX + 50, optPropY),
+            Width = 290,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            MaxDropDownItems = 12,
+            Visible = false
+        };
+        _optTreeRefCombo.SelectedIndexChanged += OptTreeRefCombo_SelectedIndexChanged;
+        _builderModePanel.Controls.Add(_optTreeRefCombo);
+
+        optPropY += 85;
+
         // Terminal checkbox
         _terminalCheckBox = new CheckBox
         {
             Text = "Completes sentence (skip remaining categories)",
-            Location = new Point(optX, optPropY + 85),
+            Location = new Point(optX, optPropY),
             AutoSize = true,
             ForeColor = Color.FromArgb(255, 200, 150)
         };
@@ -771,7 +885,7 @@ public class PickListEditorForm : Form
         _builderModePanel.Controls.Add(_terminalCheckBox);
 
         // 9-option limit hint
-        var limitHint = CreateLabel("(max 9 options per category)", optX, optPropY + 108);
+        var limitHint = CreateLabel("(max 9 options per category)", optX, optPropY + 23);
         limitHint.ForeColor = Color.FromArgb(100, 100, 100);
         _builderModePanel.Controls.Add(limitHint);
     }
@@ -823,10 +937,10 @@ public class PickListEditorForm : Form
         _nodeTypePanel.Width = Math.Max(300, panelW - 10);
         y += 28;
 
-        // Builder reference dropdown (visible when builder ref selected)
-        _builderRefLabel.Location = new Point(0, y + 2);
-        _builderRefCombo.Location = new Point(80, y);
-        _builderRefCombo.Width = Math.Max(150, panelW - 100);
+        // Reference dropdown (builder ref or macro ref)
+        _nodeRefLabel.Location = new Point(0, y + 2);
+        _nodeRefCombo.Location = new Point(80, y);
+        _nodeRefCombo.Width = Math.Max(150, panelW - 100);
         y += 28;
 
         // Prefix text label (for builder ref) / Text to insert label (for text leaf)
@@ -863,6 +977,11 @@ public class PickListEditorForm : Form
         // Option editing area below options list
         var optPropY = _optionsListBox.Bottom + 10;
 
+        // Option type panel
+        _optTypePanel.Location = new Point(optX, optPropY);
+        _optTypePanel.Width = optW;
+        optPropY += 24;
+
         // "Option text:" label
         foreach (Control c in _builderModePanel.Controls)
         {
@@ -873,6 +992,15 @@ public class PickListEditorForm : Form
         // Option text box
         _optionTextBox.Location = new Point(optX, optPropY + 18);
         _optionTextBox.Size = new Size(optW, 50);
+
+        // Macro/Tree ref combos (same position as text box, shown/hidden based on type)
+        _optMacroRefLabel.Location = new Point(optX, optPropY);
+        _optMacroRefCombo.Location = new Point(optX + 50, optPropY);
+        _optMacroRefCombo.Width = optW - 50;
+
+        _optTreeRefLabel.Location = new Point(optX, optPropY);
+        _optTreeRefCombo.Location = new Point(optX + 50, optPropY);
+        _optTreeRefCombo.Width = optW - 50;
 
         // Terminal checkbox
         _terminalCheckBox.Location = new Point(optX, optPropY + 72);
@@ -1157,6 +1285,11 @@ public class PickListEditorForm : Form
             suffix = $" [{node.Children.Count}]";
             color = Color.FromArgb(100, 180, 255);  // Blue for branch
         }
+        else if (node.IsMacroRef)
+        {
+            suffix = " [M]";
+            color = Color.FromArgb(180, 150, 255);  // Purple for macro ref
+        }
         else if (node.IsBuilderRef)
         {
             suffix = " [B]";
@@ -1200,7 +1333,12 @@ public class PickListEditorForm : Form
         _breadcrumbLabel.Text = GetBreadcrumb();
 
         // Set node type radio buttons
-        if (_selectedNode.IsBuilderRef)
+        if (_selectedNode.IsMacroRef)
+        {
+            _nodeTypeMacroRadio.Checked = true;
+            PopulateMacroRefCombo();
+        }
+        else if (_selectedNode.IsBuilderRef)
         {
             _nodeTypeBuilderRadio.Checked = true;
             PopulateBuilderRefCombo();
@@ -1221,7 +1359,7 @@ public class PickListEditorForm : Form
         _nodeTextBox.Text = "";
         _breadcrumbLabel.Text = "";
         _nodeTypeTextRadio.Checked = true;
-        _builderRefCombo.Items.Clear();
+        _nodeRefCombo.Items.Clear();
         _suppressEvents = false;
         UpdateNodeTypeUI();
     }
@@ -1261,65 +1399,112 @@ public class PickListEditorForm : Form
 
         if (_nodeTypeBuilderRadio.Checked)
         {
-            // Switching to builder reference mode - clear text, it's not used
+            // Switching to builder reference mode - clear text and macro
             _selectedNode.Text = "";
             _nodeTextBox.Text = "";
+            _selectedNode.MacroId = null;
             PopulateBuilderRefCombo();
-            // If no builder selected yet, select first available
-            if (_builderRefCombo.SelectedIndex < 0 && _builderRefCombo.Items.Count > 0)
+            if (_nodeRefCombo.SelectedIndex < 0 && _nodeRefCombo.Items.Count > 0)
             {
-                _builderRefCombo.SelectedIndex = 0;
+                _nodeRefCombo.SelectedIndex = 0;
+            }
+        }
+        else if (_nodeTypeMacroRadio.Checked)
+        {
+            // Switching to macro reference mode - clear text and builder
+            _selectedNode.Text = "";
+            _nodeTextBox.Text = "";
+            _selectedNode.BuilderListId = null;
+            PopulateMacroRefCombo();
+            if (_nodeRefCombo.SelectedIndex < 0 && _nodeRefCombo.Items.Count > 0)
+            {
+                _nodeRefCombo.SelectedIndex = 0;
             }
         }
         else
         {
-            // Switching to text leaf mode - clear builder reference
+            // Switching to text leaf mode - clear builder and macro references
             _selectedNode.BuilderListId = null;
+            _selectedNode.MacroId = null;
         }
 
         UpdateNodeTypeUI();
         UpdateSelectedTreeNode();
-        _listBox.Invalidate();  // Just redraw, don't refresh (which would reset tree selection)
+        _listBox.Invalidate();
     }
 
-    private void BuilderRefCombo_SelectedIndexChanged(object? sender, EventArgs e)
+    private void NodeRefCombo_SelectedIndexChanged(object? sender, EventArgs e)
     {
         if (_suppressEvents || _selectedNode == null) return;
 
-        if (_builderRefCombo.SelectedItem is BuilderListItem item)
+        if (_nodeTypeBuilderRadio.Checked)
         {
-            _selectedNode.BuilderListId = item.Id;
+            _selectedNode.BuilderListId = (_nodeRefCombo.SelectedItem is BuilderListItem item) ? item.Id : null;
         }
-        else
+        else if (_nodeTypeMacroRadio.Checked)
         {
-            _selectedNode.BuilderListId = null;
+            _selectedNode.MacroId = (_nodeRefCombo.SelectedItem is MacroListItem item) ? item.Id : null;
         }
 
         UpdateSelectedTreeNode();
-        _listBox.Invalidate();  // Just redraw, don't refresh (which would reset tree selection)
+        _listBox.Invalidate();
+    }
+
+    private void PopulateMacroRefCombo()
+    {
+        _nodeRefCombo.Items.Clear();
+
+        foreach (var macro in _config.Macros)
+        {
+            if (macro.Enabled)
+            {
+                _nodeRefCombo.Items.Add(new MacroListItem { Id = macro.Id, Name = macro.Name });
+            }
+        }
+
+        // Select the currently referenced macro if any
+        if (_selectedNode?.MacroId != null)
+        {
+            for (int i = 0; i < _nodeRefCombo.Items.Count; i++)
+            {
+                if (_nodeRefCombo.Items[i] is MacroListItem item && item.Id == _selectedNode.MacroId)
+                {
+                    _nodeRefCombo.SelectedIndex = i;
+                    return;
+                }
+            }
+        }
+    }
+
+    // Helper class for macro list dropdown items
+    private class MacroListItem
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public override string ToString() => string.IsNullOrEmpty(Name) ? "(unnamed)" : Name;
     }
 
     private void PopulateBuilderRefCombo()
     {
-        _builderRefCombo.Items.Clear();
+        _nodeRefCombo.Items.Clear();
 
         // Add all enabled builder-mode pick lists (except the current one to prevent cycles)
         foreach (var list in _pickLists)
         {
             if (list.Mode == PickListMode.Builder && list.Enabled && list.Id != _selectedList?.Id)
             {
-                _builderRefCombo.Items.Add(new BuilderListItem { Id = list.Id, Name = list.Name });
+                _nodeRefCombo.Items.Add(new BuilderListItem { Id = list.Id, Name = list.Name });
             }
         }
 
         // Select the currently referenced builder if any
         if (_selectedNode?.BuilderListId != null)
         {
-            for (int i = 0; i < _builderRefCombo.Items.Count; i++)
+            for (int i = 0; i < _nodeRefCombo.Items.Count; i++)
             {
-                if (_builderRefCombo.Items[i] is BuilderListItem item && item.Id == _selectedNode.BuilderListId)
+                if (_nodeRefCombo.Items[i] is BuilderListItem item && item.Id == _selectedNode.BuilderListId)
                 {
-                    _builderRefCombo.SelectedIndex = i;
+                    _nodeRefCombo.SelectedIndex = i;
                     return;
                 }
             }
@@ -1329,19 +1514,34 @@ public class PickListEditorForm : Form
     private void UpdateNodeTypeUI()
     {
         var isBuilderRef = _nodeTypeBuilderRadio.Checked;
+        var isMacroRef = _nodeTypeMacroRadio.Checked;
+        var isRef = isBuilderRef || isMacroRef;
         var isLeaf = _selectedNode != null && !_selectedNode.HasChildren;
 
         // Show/hide node type panel (only for leaf nodes)
         _nodeTypePanel.Visible = isLeaf;
 
-        // Show/hide builder reference controls
-        _builderRefLabel.Visible = isLeaf && isBuilderRef;
-        _builderRefCombo.Visible = isLeaf && isBuilderRef;
+        // Show/hide single reference combo
+        _nodeRefLabel.Visible = isLeaf && isRef;
+        _nodeRefCombo.Visible = isLeaf && isRef;
+        _nodeRefCombo.Enabled = isLeaf && isRef;
 
-        // Text box: show for text leaves, hide for builder refs
+        // Update label text based on type
+        if (isBuilderRef)
+        {
+            _nodeRefLabel.Text = "Builder list:";
+            _nodeRefLabel.ForeColor = Color.FromArgb(255, 180, 100);
+        }
+        else if (isMacroRef)
+        {
+            _nodeRefLabel.Text = "Macro:";
+            _nodeRefLabel.ForeColor = Color.FromArgb(180, 150, 255);
+        }
+
+        // Text box: show for text leaves only, hide for builder/macro refs
         _prefixTextLabel.Visible = false;  // No longer used
-        _textToInsertLabel.Visible = isLeaf && !isBuilderRef;
-        _nodeTextBox.Visible = isLeaf && !isBuilderRef;
+        _textToInsertLabel.Visible = isLeaf && !isRef;
+        _nodeTextBox.Visible = isLeaf && !isRef;
     }
 
     // Helper class for builder list dropdown items
@@ -1365,6 +1565,11 @@ public class PickListEditorForm : Form
         {
             suffix = $" [{_selectedNode.Children.Count}]";
             color = Color.FromArgb(100, 180, 255);  // Blue for branch
+        }
+        else if (_selectedNode.IsMacroRef)
+        {
+            suffix = " [M]";
+            color = Color.FromArgb(180, 150, 255);  // Purple for macro ref
         }
         else if (_selectedNode.IsBuilderRef)
         {
@@ -1497,6 +1702,23 @@ public class PickListEditorForm : Form
         UpdateBuilderButtonStates();
     }
 
+    private string GetOptionDisplayText(BuilderOption opt)
+    {
+        if (opt.IsMacroRef)
+        {
+            var macro = _config.Macros.FirstOrDefault(m => m.Id == opt.MacroId);
+            var name = macro?.Name ?? "?";
+            return $"[M] {name}";
+        }
+        if (opt.IsTreeRef)
+        {
+            var tree = _config.PickLists.FirstOrDefault(p => p.Id == opt.TreeListId);
+            var name = tree?.Name ?? "?";
+            return $"[T] {name}";
+        }
+        return opt.Text;
+    }
+
     private void OptionsListBox_DrawItem(object? sender, DrawItemEventArgs e)
     {
         if (e.Index < 0 || _selectedCategory == null || e.Index >= _selectedCategory.Options.Count) return;
@@ -1508,26 +1730,44 @@ public class PickListEditorForm : Form
         var isSelected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
         var bgColor = isTerminal
             ? (isSelected ? Color.FromArgb(70, 60, 40) : Color.FromArgb(55, 50, 35))
+            : opt.IsMacroRef ? (isSelected ? Color.FromArgb(55, 45, 75) : Color.FromArgb(45, 40, 55))
+            : opt.IsTreeRef ? (isSelected ? Color.FromArgb(40, 55, 75) : Color.FromArgb(35, 45, 55))
             : (isSelected ? Color.FromArgb(50, 80, 110) : Color.FromArgb(45, 45, 45));
         using var bgBrush = new SolidBrush(bgColor);
         e.Graphics.FillRectangle(bgBrush, e.Bounds);
 
         // Number
-        var numColor = isTerminal ? Color.FromArgb(255, 200, 100) : Color.FromArgb(100, 220, 150);
+        var numColor = isTerminal ? Color.FromArgb(255, 200, 100)
+            : opt.IsMacroRef ? Color.FromArgb(180, 150, 255)
+            : opt.IsTreeRef ? Color.FromArgb(100, 180, 255)
+            : Color.FromArgb(100, 220, 150);
         using var numBrush = new SolidBrush(numColor);
         using var numFont = new Font("Consolas", 10, FontStyle.Bold);
         e.Graphics.DrawString($"{e.Index + 1}", numFont, numBrush, e.Bounds.X + 6, e.Bounds.Y + 3);
 
         // Option text
         using var textBrush = new SolidBrush(Color.White);
-        var text = string.IsNullOrEmpty(opt) ? "(empty)" : opt;
+        var displayText = GetOptionDisplayText(opt);
+        var text = string.IsNullOrEmpty(displayText) ? "(empty)" : displayText;
         e.Graphics.DrawString(text, e.Font!, textBrush, e.Bounds.X + 30, e.Bounds.Y + 3);
 
-        // Terminal indicator
+        // Indicators
         if (isTerminal)
         {
             using var endBrush = new SolidBrush(Color.FromArgb(255, 180, 100));
             e.Graphics.DrawString("[END]", e.Font!, endBrush, e.Bounds.Right - 45, e.Bounds.Y + 3);
+        }
+        else if (opt.IsMacroRef)
+        {
+            using var refBrush = new SolidBrush(Color.FromArgb(180, 150, 255));
+            using var refFont = new Font("Segoe UI", 7, FontStyle.Bold);
+            e.Graphics.DrawString("[M]", refFont, refBrush, e.Bounds.Right - 30, e.Bounds.Y + 5);
+        }
+        else if (opt.IsTreeRef)
+        {
+            using var refBrush = new SolidBrush(Color.FromArgb(100, 180, 255));
+            using var refFont = new Font("Segoe UI", 7, FontStyle.Bold);
+            e.Graphics.DrawString("[T]", refFont, refBrush, e.Bounds.Right - 25, e.Bounds.Y + 5);
         }
     }
 
@@ -1550,9 +1790,28 @@ public class PickListEditorForm : Form
     {
         if (_selectedCategory == null || _selectedOptionIndex < 0) return;
         _suppressEvents = true;
-        _optionTextBox.Text = _selectedCategory.Options[_selectedOptionIndex];
+        var opt = _selectedCategory.Options[_selectedOptionIndex];
+        _optionTextBox.Text = opt.Text;
         _terminalCheckBox.Checked = _selectedCategory.IsTerminal(_selectedOptionIndex);
+
+        // Set option type radio
+        if (opt.IsMacroRef)
+        {
+            _optTypeMacroRadio.Checked = true;
+            PopulateOptMacroRefCombo();
+        }
+        else if (opt.IsTreeRef)
+        {
+            _optTypeTreeRadio.Checked = true;
+            PopulateOptTreeRefCombo();
+        }
+        else
+        {
+            _optTypeTextRadio.Checked = true;
+        }
+
         _suppressEvents = false;
+        UpdateOptTypeUI();
     }
 
     private void ClearOptionProperties()
@@ -1560,13 +1819,17 @@ public class PickListEditorForm : Form
         _suppressEvents = true;
         _optionTextBox.Text = "";
         _terminalCheckBox.Checked = false;
+        _optTypeTextRadio.Checked = true;
+        _optMacroRefCombo.Items.Clear();
+        _optTreeRefCombo.Items.Clear();
         _suppressEvents = false;
+        UpdateOptTypeUI();
     }
 
     private void OptionTextBox_TextChanged(object? sender, EventArgs e)
     {
         if (_suppressEvents || _selectedCategory == null || _selectedOptionIndex < 0) return;
-        _selectedCategory.Options[_selectedOptionIndex] = _optionTextBox.Text;
+        _selectedCategory.Options[_selectedOptionIndex].Text = _optionTextBox.Text;
         _optionsListBox.Invalidate();
     }
 
@@ -1582,6 +1845,155 @@ public class PickListEditorForm : Form
         else
         {
             _selectedCategory.TerminalOptions.Remove(_selectedOptionIndex);
+        }
+        _optionsListBox.Invalidate();
+    }
+
+    private void OptTypeRadio_CheckedChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedCategory == null || _selectedOptionIndex < 0) return;
+
+        var opt = _selectedCategory.Options[_selectedOptionIndex];
+
+        if (_optTypeMacroRadio.Checked)
+        {
+            opt.TreeListId = null;
+            PopulateOptMacroRefCombo();
+            if (_optMacroRefCombo.SelectedIndex < 0 && _optMacroRefCombo.Items.Count > 0)
+                _optMacroRefCombo.SelectedIndex = 0;
+        }
+        else if (_optTypeTreeRadio.Checked)
+        {
+            opt.MacroId = null;
+            PopulateOptTreeRefCombo();
+            if (_optTreeRefCombo.SelectedIndex < 0 && _optTreeRefCombo.Items.Count > 0)
+                _optTreeRefCombo.SelectedIndex = 0;
+        }
+        else
+        {
+            // Text mode
+            opt.MacroId = null;
+            opt.TreeListId = null;
+        }
+
+        UpdateOptTypeUI();
+        _optionsListBox.Invalidate();
+    }
+
+    private void UpdateOptTypeUI()
+    {
+        var isMacro = _optTypeMacroRadio.Checked;
+        var isTree = _optTypeTreeRadio.Checked;
+        var hasOpt = _selectedOptionIndex >= 0;
+
+        // Text controls
+        foreach (Control c in _builderModePanel.Controls)
+        {
+            if (c is Label lbl && lbl.Text == "Option text:")
+                lbl.Visible = hasOpt && !isMacro && !isTree;
+        }
+        _optionTextBox.Visible = hasOpt && !isMacro && !isTree;
+
+        // Macro ref controls
+        _optMacroRefLabel.Visible = hasOpt && isMacro;
+        _optMacroRefCombo.Visible = hasOpt && isMacro;
+
+        // Tree ref controls
+        _optTreeRefLabel.Visible = hasOpt && isTree;
+        _optTreeRefCombo.Visible = hasOpt && isTree;
+
+        // Option type panel
+        _optTypePanel.Visible = hasOpt;
+    }
+
+    private void PopulateOptMacroRefCombo()
+    {
+        _optMacroRefCombo.Items.Clear();
+
+        foreach (var macro in _config.Macros)
+        {
+            if (macro.Enabled)
+            {
+                _optMacroRefCombo.Items.Add(new MacroListItem { Id = macro.Id, Name = macro.Name });
+            }
+        }
+
+        // Select current
+        if (_selectedCategory != null && _selectedOptionIndex >= 0)
+        {
+            var opt = _selectedCategory.Options[_selectedOptionIndex];
+            if (opt.MacroId != null)
+            {
+                for (int i = 0; i < _optMacroRefCombo.Items.Count; i++)
+                {
+                    if (_optMacroRefCombo.Items[i] is MacroListItem item && item.Id == opt.MacroId)
+                    {
+                        _optMacroRefCombo.SelectedIndex = i;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    private void PopulateOptTreeRefCombo()
+    {
+        _optTreeRefCombo.Items.Clear();
+
+        foreach (var list in _pickLists)
+        {
+            if (list.Mode == PickListMode.Tree && list.Enabled && list.Id != _selectedList?.Id)
+            {
+                _optTreeRefCombo.Items.Add(new BuilderListItem { Id = list.Id, Name = list.Name });
+            }
+        }
+
+        // Select current
+        if (_selectedCategory != null && _selectedOptionIndex >= 0)
+        {
+            var opt = _selectedCategory.Options[_selectedOptionIndex];
+            if (opt.TreeListId != null)
+            {
+                for (int i = 0; i < _optTreeRefCombo.Items.Count; i++)
+                {
+                    if (_optTreeRefCombo.Items[i] is BuilderListItem item && item.Id == opt.TreeListId)
+                    {
+                        _optTreeRefCombo.SelectedIndex = i;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    private void OptMacroRefCombo_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedCategory == null || _selectedOptionIndex < 0) return;
+
+        var opt = _selectedCategory.Options[_selectedOptionIndex];
+        if (_optMacroRefCombo.SelectedItem is MacroListItem item)
+        {
+            opt.MacroId = item.Id;
+        }
+        else
+        {
+            opt.MacroId = null;
+        }
+        _optionsListBox.Invalidate();
+    }
+
+    private void OptTreeRefCombo_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        if (_suppressEvents || _selectedCategory == null || _selectedOptionIndex < 0) return;
+
+        var opt = _selectedCategory.Options[_selectedOptionIndex];
+        if (_optTreeRefCombo.SelectedItem is BuilderListItem item)
+        {
+            opt.TreeListId = item.Id;
+        }
+        else
+        {
+            opt.TreeListId = null;
         }
         _optionsListBox.Invalidate();
     }
@@ -1653,7 +2065,7 @@ public class PickListEditorForm : Form
     {
         if (_selectedCategory == null || _selectedCategory.Options.Count >= 9) return;
 
-        _selectedCategory.Options.Add("New option");
+        _selectedCategory.Options.Add(new BuilderOption { Text = "New option" });
         RefreshOptionsList();
         _optionsListBox.SelectedIndex = _selectedCategory.Options.Count - 1;
         _optionTextBox.Focus();
@@ -1730,7 +2142,8 @@ public class PickListEditorForm : Form
 
             var name = line.Substring(0, colonIdx).Trim();
             var optionsStr = line.Substring(colonIdx + 1).Trim();
-            var options = optionsStr.Split('/').Select(o => o.Trim()).Where(o => !string.IsNullOrEmpty(o)).Take(9).ToList();
+            var options = optionsStr.Split('/').Select(o => o.Trim()).Where(o => !string.IsNullOrEmpty(o)).Take(9)
+                .Select(text => new BuilderOption { Text = text }).ToList();
 
             if (options.Count == 0) continue;
 
@@ -1789,23 +2202,26 @@ public class PickListEditorForm : Form
         _removeNodeBtn.Enabled = hasNode;
         _nodeLabelBox.Enabled = hasNode;
 
-        // Leaf/builder-ref handling
+        // Leaf/builder-ref/macro-ref handling
         var isLeaf = hasNode && !_selectedNode!.HasChildren;
         var isBuilderRef = hasNode && _selectedNode!.IsBuilderRef;
+        var isMacroRef = hasNode && _selectedNode!.IsMacroRef;
 
-        // Node type panel only visible for leaf nodes (including builder refs)
+        // Node type panel only visible for leaf nodes (including builder/macro refs)
         _nodeTypePanel.Visible = isLeaf;
         _nodeTypePanel.Enabled = isLeaf;
 
-        // Builder ref controls
-        _builderRefLabel.Visible = isLeaf && isBuilderRef;
-        _builderRefCombo.Visible = isLeaf && isBuilderRef;
-        _builderRefCombo.Enabled = isLeaf && isBuilderRef;
+        // Node ref controls (shared combo for builder and macro refs)
+        // Use radio button state, not data model, since radios may change before data is saved
+        var isRefRadio = _nodeTypeBuilderRadio.Checked || _nodeTypeMacroRadio.Checked;
+        _nodeRefLabel.Visible = isLeaf && isRefRadio;
+        _nodeRefCombo.Visible = isLeaf && isRefRadio;
+        _nodeRefCombo.Enabled = isLeaf && isRefRadio;
 
-        // Text box: show for text leaves only, hide for builder refs and branches
-        _textToInsertLabel.Visible = isLeaf && !isBuilderRef;
-        _nodeTextBox.Visible = isLeaf && !isBuilderRef;
-        _nodeTextBox.Enabled = isLeaf && !isBuilderRef;
+        // Text box: show for text leaves only, hide for builder/macro refs and branches
+        _textToInsertLabel.Visible = isLeaf && !isBuilderRef && !isMacroRef;
+        _nodeTextBox.Visible = isLeaf && !isBuilderRef && !isMacroRef;
+        _nodeTextBox.Enabled = isLeaf && !isBuilderRef && !isMacroRef;
 
         if (hasNode && !isLeaf && _nodeTextBox.Visible)
         {
@@ -1889,56 +2305,56 @@ public class PickListEditorForm : Form
                 {
                     Name = "Severity",
                     Separator = " ",
-                    Options = new List<string>
+                    Options = new List<BuilderOption>
                     {
-                        "No significant atherosclerosis.",  // Terminal - ends sentence immediately
-                        "Trace", "Very minimal", "Minimal", "Mild",
-                        "Mild to moderate", "Moderate", "Moderate to severe", "Severe"
+                        new() { Text = "No significant atherosclerosis." },
+                        new() { Text = "Trace" }, new() { Text = "Very minimal" }, new() { Text = "Minimal" }, new() { Text = "Mild" },
+                        new() { Text = "Mild to moderate" }, new() { Text = "Moderate" }, new() { Text = "Moderate to severe" }, new() { Text = "Severe" }
                     },
-                    TerminalOptions = new List<int> { 0 }  // First option is terminal
+                    TerminalOptions = new List<int> { 0 }
                 },
                 new PickListCategory
                 {
                     Name = "Type",
                     Separator = " ",
-                    Options = new List<string>
+                    Options = new List<BuilderOption>
                     {
-                        "atherosclerotic calcifications are noted in",
-                        "mixed soft/hard atherosclerotic plaque is noted in",
-                        "predominantly hard atherosclerotic plaque is noted in",
-                        "predominantly soft atherosclerotic plaque is noted in"
+                        new() { Text = "atherosclerotic calcifications are noted in" },
+                        new() { Text = "mixed soft/hard atherosclerotic plaque is noted in" },
+                        new() { Text = "predominantly hard atherosclerotic plaque is noted in" },
+                        new() { Text = "predominantly soft atherosclerotic plaque is noted in" }
                     }
                 },
                 new PickListCategory
                 {
                     Name = "Location",
                     Separator = ", producing ",
-                    Options = new List<string>
+                    Options = new List<BuilderOption>
                     {
-                        "the cavernous segments of both ICAs",
-                        "the supraclinoid segments of both ICAs",
-                        "the distal petrous/cavernous/supraclinoid segments of both ICAs",
-                        "both common carotid arterial bifurcations",
-                        "the proximal internal carotid arteries",
-                        "the left common carotid bifurcation/proximal left ICA",
-                        "the right common carotid bifurcation/proximal right ICA",
-                        "No significant stenosis.",  // Terminal - ends sentence immediately
-                        "the aortic arch and its proximal major branches"
+                        new() { Text = "the cavernous segments of both ICAs" },
+                        new() { Text = "the supraclinoid segments of both ICAs" },
+                        new() { Text = "the distal petrous/cavernous/supraclinoid segments of both ICAs" },
+                        new() { Text = "both common carotid arterial bifurcations" },
+                        new() { Text = "the proximal internal carotid arteries" },
+                        new() { Text = "the left common carotid bifurcation/proximal left ICA" },
+                        new() { Text = "the right common carotid bifurcation/proximal right ICA" },
+                        new() { Text = "No significant stenosis." },
+                        new() { Text = "the aortic arch and its proximal major branches" }
                     },
-                    TerminalOptions = new List<int> { 7 }  // "No significant stenosis" is terminal
+                    TerminalOptions = new List<int> { 7 }
                 },
                 new PickListCategory
                 {
                     Name = "Result",
                     Separator = "",
-                    Options = new List<string>
+                    Options = new List<BuilderOption>
                     {
-                        "trace endoluminal surface irregularity.",
-                        "minimal endoluminal surface irregularity.",
-                        "mild endoluminal surface irregularity.",
-                        "moderate endoluminal surface irregularity.",
-                        "severe endoluminal surface irregularity.",
-                        "equivalent endoluminal surface irregularity, without hemodynamically-significant stenosis."
+                        new() { Text = "trace endoluminal surface irregularity." },
+                        new() { Text = "minimal endoluminal surface irregularity." },
+                        new() { Text = "mild endoluminal surface irregularity." },
+                        new() { Text = "moderate endoluminal surface irregularity." },
+                        new() { Text = "severe endoluminal surface irregularity." },
+                        new() { Text = "equivalent endoluminal surface irregularity, without hemodynamically-significant stenosis." }
                     }
                 }
             }

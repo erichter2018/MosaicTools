@@ -678,4 +678,43 @@ public static class NativeWindows
     }
 
     #endregion
+
+    #region Dark Mode Support
+
+    // uxtheme ordinal 135 - SetPreferredAppMode
+    [DllImport("uxtheme.dll", EntryPoint = "#135", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern int SetPreferredAppMode(int preferredAppMode);
+
+    // uxtheme ordinal 136 - FlushMenuThemes
+    [DllImport("uxtheme.dll", EntryPoint = "#136", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern void FlushMenuThemes();
+
+    private enum PreferredAppMode
+    {
+        Default = 0,
+        AllowDark = 1,
+        ForceDark = 2,
+        ForceLight = 3,
+        Max = 4
+    }
+
+    /// <summary>
+    /// Enable dark mode for the application (affects scrollbars, context menus, etc.)
+    /// Must be called before any windows are created.
+    /// </summary>
+    public static void EnableDarkMode()
+    {
+        try
+        {
+            // Windows 10 1903+ and Windows 11
+            SetPreferredAppMode((int)PreferredAppMode.ForceDark);
+            FlushMenuThemes();
+        }
+        catch
+        {
+            // Ignore on older Windows versions
+        }
+    }
+
+    #endregion
 }

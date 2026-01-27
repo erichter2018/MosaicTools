@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Linq;
 using System.Windows.Forms;
 using MosaicTools.Services;
 
@@ -31,6 +32,12 @@ public class MainForm : Form
     // RVU Counter
     private readonly RvuCounterService _rvuCounterService;
     private System.Windows.Forms.Timer? _rvuTimer;
+
+    // Connectivity Monitor
+    private readonly ConnectivityService _connectivityService;
+    private readonly Panel _connectivityPanel;
+    private readonly Label[] _connectivityDots = new Label[4];
+    private readonly ToolTip _connectivityTooltip;
     
     // Child Windows
     private FloatingToolbarForm? _toolbarWindow;
@@ -56,18 +63,21 @@ public class MainForm : Form
         _config = config;
         _controller = new ActionController(config, this);
         _rvuCounterService = new RvuCounterService(config);
+        _connectivityService = new ConnectivityService(config);
+        _connectivityTooltip = new ToolTip { InitialDelay = 200, ReshowDelay = 100 };
 
         // Form properties (borderless, topmost, small)
-        // Width adjusts based on RVU counter settings
+        // Width adjusts based on RVU counter and connectivity monitor settings
         int baseWidth = 145; // Base for "Mosaic Tools" title + drag handle
         int rvuWidth = GetRvuPanelWidth();
+        int connectivityWidth = GetConnectivityPanelWidth();
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
         Text = "MosaicToolsMainWindow";  // Hidden title for AHK targeting
         BackColor = Color.FromArgb(51, 51, 51); // #333333
-        Size = new Size(baseWidth + rvuWidth, 40);
+        Size = new Size(baseWidth + rvuWidth + connectivityWidth, 40);
         StartPosition = FormStartPosition.Manual;
         Location = new Point(_config.WindowX, _config.WindowY);
 
@@ -162,43 +172,83 @@ public class MainForm : Form
         };
         _rvuPanel.Controls.Add(_rvuSuffixLabel);
 
+        // Connectivity monitor panel - 2x2 grid of small dots
+        _connectivityPanel = new Panel
+        {
+            BackColor = Color.Black,
+            Width = connectivityWidth,
+            Dock = DockStyle.Right,
+            Visible = _config.ConnectivityMonitorEnabled,
+            Cursor = Cursors.Hand
+        };
+        _connectivityPanel.Click += OnConnectivityPanelClick;
+
+        // Create 4 dots in 2x2 grid layout: [Mirth, Mosaic] / [Clario, IV]
+        var dotSize = 4;
+        var dotSpacing = 2;
+        var gridWidth = 2 * dotSize + dotSpacing;
+        var gridHeight = 2 * dotSize + dotSpacing;
+        var startX = connectivityWidth - gridWidth - 5; // Align to right with 5px padding
+        var startY = (40 - gridHeight) / 2; // Center vertically
+
+        string[] serverNames = { "Mirth", "Mosaic", "Clario", "InteleViewer" };
+        for (int i = 0; i < 4; i++)
+        {
+            int col = i % 2;
+            int row = i / 2;
+            _connectivityDots[i] = new Label
+            {
+                AutoSize = false,
+                Size = new Size(dotSize, dotSize),
+                Location = new Point(startX + col * (dotSize + dotSpacing), startY + row * (dotSize + dotSpacing)),
+                BackColor = Color.FromArgb(74, 74, 74), // Dark gray (unknown)
+                Tag = serverNames[i]
+            };
+            // Make it round
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            path.AddEllipse(0, 0, dotSize, dotSize);
+            _connectivityDots[i].Region = new Region(path);
+            _connectivityDots[i].Click += OnConnectivityPanelClick;
+            _connectivityPanel.Controls.Add(_connectivityDots[i]);
+        }
+
         // Critical studies indicator panel (shown when critical notes placed)
         _criticalPanel = new Panel
         {
             BackColor = Color.Black,
-            Width = 30,
+            Width = 36,
             Dock = DockStyle.Left,
             Visible = false, // Hidden until critical studies exist
             Cursor = Cursors.Hand
         };
         _criticalPanel.Click += OnCriticalPanelClick;
 
-        // Warning icon
+        // Warning icon - bright red triangle with count
         _criticalIconLabel = new Label
         {
-            Text = "!",
-            Font = new Font("Segoe UI", 12, FontStyle.Bold),
-            ForeColor = Color.FromArgb(255, 100, 100), // Red
+            Text = "\u26A0",  // ⚠ warning sign
+            Font = new Font("Segoe UI", 12, FontStyle.Regular),
+            ForeColor = Color.FromArgb(255, 60, 60), // Bright red
             BackColor = Color.Black,
             AutoSize = false,
-            Size = new Size(20, 38),
+            Size = new Size(24, 38),
             TextAlign = ContentAlignment.MiddleCenter,
             Location = new Point(0, 0)
         };
         _criticalIconLabel.Click += OnCriticalPanelClick;
         _criticalPanel.Controls.Add(_criticalIconLabel);
 
-        // Count badge
+        // Count label (right of icon)
         _criticalCountLabel = new Label
         {
             Text = "0",
-            Font = new Font("Segoe UI", 7, FontStyle.Bold),
-            ForeColor = Color.White,
-            BackColor = Color.FromArgb(180, 50, 50), // Dark red background
+            Font = new Font("Segoe UI", 8, FontStyle.Bold),
+            ForeColor = Color.FromArgb(255, 120, 120), // Light red text
+            BackColor = Color.Black,
             AutoSize = false,
-            Size = new Size(14, 14),
-            TextAlign = ContentAlignment.MiddleCenter,
-            Location = new Point(14, 2) // Top-right of the panel
+            Size = new Size(14, 38),
+            TextAlign = ContentAlignment.MiddleLeft,
+            Location = new Point(22, 0)
         };
         _criticalCountLabel.Click += OnCriticalPanelClick;
         _criticalPanel.Controls.Add(_criticalCountLabel);
@@ -212,9 +262,10 @@ public class MainForm : Form
         // Add controls: Fill first (laid out last), then Left/Right (laid out first)
         // WinForms docks in REVERSE order of Controls collection
         _innerFrame.Controls.Add(_titleLabel);   // index 0, laid out last (fills remaining)
-        _innerFrame.Controls.Add(_criticalPanel); // index 1, laid out third (takes left after drag handle)
-        _innerFrame.Controls.Add(_dragHandle);   // index 2, laid out second (takes left)
-        _innerFrame.Controls.Add(_rvuPanel);     // index 3, laid out first (takes right)
+        _innerFrame.Controls.Add(_criticalPanel); // index 1, laid out fourth (takes left after drag handle)
+        _innerFrame.Controls.Add(_dragHandle);   // index 2, laid out third (takes left)
+        _innerFrame.Controls.Add(_rvuPanel);     // index 3, laid out second (takes right before connectivity)
+        _innerFrame.Controls.Add(_connectivityPanel); // index 4, laid out first (takes rightmost)
 
         // Context menu (for normal mode right-click)
         var contextMenu = new ContextMenuStrip();
@@ -317,6 +368,13 @@ public class MainForm : Form
             _rvuTimer.Tick += (_, _) => UpdateRvuDisplay();
             _rvuTimer.Start();
         }
+
+        // Start connectivity monitor if enabled (skip in headless mode - no UI to display it)
+        if (_config.ConnectivityMonitorEnabled && !App.IsHeadless)
+        {
+            _connectivityService.StatusChanged += UpdateConnectivityDots;
+            _connectivityService.Start();
+        }
     }
 
     /// <summary>
@@ -335,6 +393,15 @@ public class MainForm : Form
             RvuDisplayMode.Both => 105,    // "999 | 99.9/h"
             _ => 75
         };
+    }
+
+    /// <summary>
+    /// Calculate the connectivity panel width. Fixed 16px for 2x2 dot grid.
+    /// </summary>
+    private int GetConnectivityPanelWidth()
+    {
+        // 20px for small dots when enabled (includes right padding)
+        return _config.ConnectivityMonitorEnabled ? 20 : 0;
     }
 
     private void UpdateRvuDisplay()
@@ -457,6 +524,169 @@ public class MainForm : Form
             _rvuSuffixLabel.Location = new Point(nextX, centerY);
         }
     }
+
+    #region Connectivity Monitor
+
+    // Muted colors for status indicators (non-distracting)
+    private static readonly Color ConnectivityColorGood = Color.FromArgb(90, 138, 90);      // Muted green
+    private static readonly Color ConnectivityColorSlow = Color.FromArgb(154, 138, 80);     // Muted amber
+    private static readonly Color ConnectivityColorDegraded = Color.FromArgb(154, 106, 74); // Muted orange
+    private static readonly Color ConnectivityColorOffline = Color.FromArgb(138, 74, 74);   // Muted red
+    private static readonly Color ConnectivityColorUnknown = Color.FromArgb(74, 74, 74);    // Dark gray
+
+    private void UpdateConnectivityDots()
+    {
+        if (InvokeRequired)
+        {
+            Invoke(UpdateConnectivityDots);
+            return;
+        }
+
+        // Update each dot's color based on server status
+        for (int i = 0; i < _connectivityDots.Length; i++)
+        {
+            var dot = _connectivityDots[i];
+            if (dot == null) continue;
+
+            var serverName = dot.Tag as string;
+            if (string.IsNullOrEmpty(serverName)) continue;
+
+            var status = _connectivityService.GetStatus(serverName);
+            var serverConfig = _config.ConnectivityServers.FirstOrDefault(s => s.Name == serverName);
+
+            // Hide dot if server is disabled or has no host configured
+            if (serverConfig == null || !serverConfig.Enabled || string.IsNullOrWhiteSpace(serverConfig.Host))
+            {
+                dot.Visible = false;
+                continue;
+            }
+
+            dot.Visible = true;
+            dot.BackColor = GetConnectivityStateColor(status?.State ?? ConnectivityState.Unknown);
+        }
+
+        // Update tooltip
+        UpdateConnectivityTooltip();
+
+        // Update panel visibility
+        var hasVisibleDots = _connectivityDots.Any(d => d?.Visible == true);
+        _connectivityPanel.Visible = _config.ConnectivityMonitorEnabled && hasVisibleDots;
+    }
+
+    private static Color GetConnectivityStateColor(ConnectivityState state)
+    {
+        return state switch
+        {
+            ConnectivityState.Good => ConnectivityColorGood,
+            ConnectivityState.Slow => ConnectivityColorSlow,
+            ConnectivityState.Degraded => ConnectivityColorDegraded,
+            ConnectivityState.Offline => ConnectivityColorOffline,
+            _ => ConnectivityColorUnknown
+        };
+    }
+
+    private void UpdateConnectivityTooltip()
+    {
+        var tooltipLines = new System.Collections.Generic.List<string>();
+
+        foreach (var dot in _connectivityDots)
+        {
+            if (dot == null || !dot.Visible) continue;
+
+            var serverName = dot.Tag as string;
+            if (string.IsNullOrEmpty(serverName)) continue;
+
+            // Use abbreviated names for compact tooltip
+            var shortName = serverName switch
+            {
+                "Mirth" => "Mi",
+                "Mosaic" => "Mo",
+                "Clario" => "Cl",
+                "InteleViewer" => "IV",
+                _ => serverName.Length > 2 ? serverName[..2] : serverName
+            };
+
+            var status = _connectivityService.GetStatus(serverName);
+            if (status == null)
+            {
+                tooltipLines.Add($"{shortName}: ...");
+            }
+            else
+            {
+                var statusText = status.State switch
+                {
+                    ConnectivityState.Good => $"{status.CurrentLatencyMs:F0}ms",
+                    ConnectivityState.Slow => $"Slow {status.CurrentLatencyMs:F0}ms",
+                    ConnectivityState.Degraded => $"Slow {status.CurrentLatencyMs:F0}ms",
+                    ConnectivityState.Offline => "Offline",
+                    _ => "..."
+                };
+                tooltipLines.Add($"{shortName}: {statusText}");
+            }
+        }
+
+        var tooltipText = string.Join("\n", tooltipLines);
+        _connectivityTooltip.SetToolTip(_connectivityPanel, tooltipText);
+        foreach (var dot in _connectivityDots)
+        {
+            if (dot != null)
+                _connectivityTooltip.SetToolTip(dot, tooltipText);
+        }
+    }
+
+    private ConnectivityDetailsForm? _connectivityDetailsPopup;
+
+    private void OnConnectivityPanelClick(object? sender, EventArgs e)
+    {
+        // Toggle popup
+        if (_connectivityDetailsPopup != null && !_connectivityDetailsPopup.IsDisposed && _connectivityDetailsPopup.Visible)
+        {
+            _connectivityDetailsPopup.Close();
+            _connectivityDetailsPopup = null;
+            return;
+        }
+
+        // Create and position popup below the panel
+        var popupLocation = PointToScreen(new Point(_connectivityPanel.Left, Height));
+        _connectivityDetailsPopup = new ConnectivityDetailsForm(_connectivityService, popupLocation);
+        _connectivityDetailsPopup.Show();
+    }
+
+    /// <summary>
+    /// Refresh connectivity service with current configuration.
+    /// Called from SettingsForm after saving.
+    /// </summary>
+    public void RefreshConnectivityService()
+    {
+        const int panelWidth = 20;
+
+        if (_config.ConnectivityMonitorEnabled && !App.IsHeadless)
+        {
+            // Expand form and panel if needed
+            if (_connectivityPanel.Width == 0)
+            {
+                _connectivityPanel.Width = panelWidth;
+                Width += panelWidth;
+            }
+            _connectivityPanel.Visible = true;
+            _connectivityService.StatusChanged -= UpdateConnectivityDots;
+            _connectivityService.StatusChanged += UpdateConnectivityDots;
+            _connectivityService.Restart();
+        }
+        else
+        {
+            // Shrink form if panel was visible
+            if (_connectivityPanel.Width > 0 && _connectivityPanel.Visible)
+            {
+                Width -= _connectivityPanel.Width;
+                _connectivityPanel.Width = 0;
+            }
+            _connectivityService.Stop();
+            _connectivityPanel.Visible = false;
+        }
+    }
+
+    #endregion
 
     private async System.Threading.Tasks.Task CheckForUpdatesAsync()
     {
@@ -1039,8 +1269,16 @@ public class MainForm : Form
         }
 
         var count = _controller.CriticalStudies.Count;
-        _criticalPanel.Visible = _config.TrackCriticalStudies && count > 0;
+        bool shouldShow = _config.TrackCriticalStudies && count > 0;
+        bool wasVisible = _criticalPanel.Visible;
+        _criticalPanel.Visible = shouldShow;
         _criticalCountLabel.Text = count.ToString();
+
+        // Resize form to accommodate critical panel
+        if (shouldShow && !wasVisible)
+            Width += _criticalPanel.Width;
+        else if (!shouldShow && wasVisible)
+            Width -= _criticalPanel.Width;
 
         Logger.Trace($"UpdateCriticalIndicator: count={count}, visible={_criticalPanel.Visible}");
     }
@@ -1055,8 +1293,8 @@ public class MainForm : Form
             return;
         }
 
-        // Create and position popup below the indicator
-        var popupLocation = PointToScreen(new Point(_criticalPanel.Left, Height));
+        // Create and position popup below the indicator (offset +2 to avoid obscuring top entry)
+        var popupLocation = PointToScreen(new Point(_criticalPanel.Left, Height + 7));
         _criticalStudiesPopup = new CriticalStudiesPopup(_controller.CriticalStudies, popupLocation, _controller.Automation);
         _criticalStudiesPopup.Show();
     }
@@ -1124,6 +1362,9 @@ public class MainForm : Form
             _rvuTimer.Dispose();
             _rvuTimer = null;
         }
+
+        // Cleanup connectivity service
+        _connectivityService.Dispose();
 
         // Cleanup tray icon
         if (_trayIcon != null)

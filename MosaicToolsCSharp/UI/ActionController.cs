@@ -135,8 +135,8 @@ public class ActionController : IDisposable
         _actionThread.SetApartmentState(ApartmentState.STA);
         _actionThread.Start();
 
-        // 250ms heartbeat for registry sync (high frequency for "Instant ON")
-        _syncTimer = new System.Threading.Timer(OnSyncTimerCallback, null, 250, 250);
+        // 500ms heartbeat for registry sync (matches MicIndicator polling rate)
+        _syncTimer = new System.Threading.Timer(OnSyncTimerCallback, null, 500, 500);
     }
 
     private void ActionLoop()

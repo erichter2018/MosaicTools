@@ -37,6 +37,7 @@ public class PickListPopupForm : Form
     private string _builderAccumulatedText = "";
     private List<string> _builderSelections = new(); // Track selections for undo
     private bool _pendingAutoSelect = false; // Deferred auto-select for single-option categories
+    private List<string> _builderCompletedSentences = new(); // Accumulated completed sentences
 
     // Embedded builder state (when tree node references a builder list)
     private PickListConfig? _embeddedBuilderSourceList;  // The tree list we came from
@@ -44,6 +45,13 @@ public class PickListPopupForm : Form
     private Stack<string>? _savedBreadcrumbStack;
     private List<PickListNode>? _savedCurrentNodes;
     private string _treeAccumulatedText = "";  // Prefix text from tree node before builder
+
+    // Embedded tree state (when builder option references a tree pick list)
+    private PickListConfig? _embeddedTreeSourceList;  // The builder list we came from
+    private int _savedBuilderCategoryIndex;
+    private string _savedBuilderAccumulatedText = "";
+    private List<string> _savedBuilderSelections = new();
+    private List<string> _savedBuilderCompletedSentences = new();
 
     private TextBox _searchBox = null!;
     private ListBox _listBox = null!;
@@ -135,6 +143,7 @@ public class PickListPopupForm : Form
         };
         _headerLabel.MouseDown += Header_MouseDown;
         _headerLabel.MouseMove += Header_MouseMove;
+        _headerLabel.MouseUp += Header_MouseUp;
         innerPanel.Controls.Add(_headerLabel);
 
         // Close button (position will be adjusted based on width)
@@ -352,12 +361,14 @@ public class PickListPopupForm : Form
             styleSuffix = " [Structured]";
         }
 
+        var treePrefix = _embeddedTreeSourceList != null ? "[T] " : "";
+
         if (_breadcrumbStack.Count > 0)
         {
-            return _breadcrumbStack.Peek() + styleSuffix;
+            return treePrefix + _breadcrumbStack.Peek() + styleSuffix;
         }
 
-        return (_currentList?.Name ?? "Pick List") + styleSuffix;
+        return treePrefix + (_currentList?.Name ?? "Pick List") + styleSuffix;
     }
 
     private string GetBreadcrumbText()
@@ -409,12 +420,14 @@ public class PickListPopupForm : Form
         var isStructuredTreeMode = isTreeMode && _currentList?.TreeStyle == TreePickListStyle.Structured;
         var isFreeformTreeMode = isTreeMode && _currentList?.TreeStyle == TreePickListStyle.Freeform;
 
-        // Check if tree mode has accumulated selections
+        // Check if tree mode or builder mode has accumulated selections
         var hasTreeSelections = (isStructuredTreeMode && _structuredSelections.Count > 0) ||
                                 (isFreeformTreeMode && _freeformSelections.Count > 0);
+        var hasBuilderSentences = isBuilderMode && _builderCompletedSentences.Count > 0;
+        var hasAccumulatedSelections = hasTreeSelections || hasBuilderSentences;
 
         // Determine if we should show navigation buttons
-        var showNav = ShouldShowNavigation() || hasTreeSelections;
+        var showNav = ShouldShowNavigation() || hasAccumulatedSelections;
         _navPanel.Visible = showNav;
 
         // Update button states
@@ -424,9 +437,9 @@ public class PickListPopupForm : Form
             _backBtn.Visible = canGoBack;
             _cancelBtn.Visible = true;
 
-            // Show tree mode buttons when there are selections
-            _clearBtn.Visible = hasTreeSelections;
-            _insertAllBtn.Visible = hasTreeSelections;
+            // Show Insert All / Clear buttons when there are accumulated selections
+            _clearBtn.Visible = hasAccumulatedSelections;
+            _insertAllBtn.Visible = hasAccumulatedSelections;
         }
         else
         {
@@ -440,9 +453,26 @@ public class PickListPopupForm : Form
 
         if (isBuilderMode)
         {
-            _previewTitleLabel.Text = "Building:";
-            var displayText = string.IsNullOrEmpty(_builderAccumulatedText) ? "(empty)" : $"\"{_builderAccumulatedText}\"";
-            _previewLabel.Text = displayText;
+            _previewTitleLabel.Text = hasBuilderSentences ? "Accumulated:" : "Building:";
+            var parts = new List<string>();
+
+            // Show completed sentences (no numbering, separated by blank lines)
+            foreach (var sentence in _builderCompletedSentences)
+            {
+                parts.Add(sentence);
+            }
+
+            // Show in-progress sentence
+            if (!string.IsNullOrEmpty(_builderAccumulatedText))
+            {
+                parts.Add($"(building: \"{_builderAccumulatedText}\")");
+            }
+            else if (_builderCompletedSentences.Count == 0)
+            {
+                parts.Add("(empty)");
+            }
+
+            _previewLabel.Text = string.Join("\n\n", parts);
         }
         else if (isStructuredTreeMode)
         {
@@ -474,12 +504,13 @@ public class PickListPopupForm : Form
             if (_builderCategoryIndex < _currentList.Categories.Count)
             {
                 var category = _currentList.Categories[_builderCategoryIndex];
-                for (int i = 0; i < category.Options.Count && i < 9; i++)
+                for (int i = 0; i < category.Options.Count; i++)
                 {
                     var opt = category.Options[i];
-                    if (string.IsNullOrEmpty(searchTerm) || opt.ToUpperInvariant().Contains(searchTerm))
+                    var displayText = ResolveBuilderOptionText(opt);
+                    if (string.IsNullOrEmpty(searchTerm) || displayText.ToUpperInvariant().Contains(searchTerm))
                     {
-                        _listBox.Items.Add(new BuilderOptionEntry { Index = i, Text = opt });
+                        _listBox.Items.Add(new BuilderOptionEntry { Index = i, Text = displayText, Option = opt });
                     }
                 }
             }
@@ -487,7 +518,7 @@ public class PickListPopupForm : Form
         else
         {
             // Show current nodes (Tree mode)
-            for (int i = 0; i < _currentNodes.Count && i < 9; i++)
+            for (int i = 0; i < _currentNodes.Count; i++)
             {
                 var node = _currentNodes[i];
                 if (string.IsNullOrEmpty(searchTerm) ||
@@ -509,28 +540,38 @@ public class PickListPopupForm : Form
         var listWidth = 360;
         var previewWidth = 200;
 
-        // Adjust window width based on whether preview is shown (and not builder mode)
-        // Builder mode uses bottom preview, tree modes use side preview
-        if (showPreview && !isBuilderMode)
+        // Calculate dynamic height based on item count and monitor size
+        var screen = Screen.FromControl(this);
+        var maxHeight = (int)(screen.WorkingArea.Height * 0.9);
+        var maxWidth = (int)(screen.WorkingArea.Width * 0.9);
+
+        // Calculate needed height: items * itemHeight + header/search/nav overhead
+        var itemCount = 0;
+        if (_showingLists)
+            itemCount = _matchingLists.Count;
+        else if (_currentList?.Mode == PickListMode.Builder && _builderCategoryIndex < _currentList.Categories.Count)
+            itemCount = _currentList.Categories[_builderCategoryIndex].Options.Count;
+        else if (_currentList?.Mode == PickListMode.Tree)
+            itemCount = _currentNodes.Count;
+
+        var headerHeight = showNav ? 90 : 66; // header + search + optional nav
+        var neededListHeight = itemCount * 30 + 10; // 30px per item + padding
+        var totalNeededHeight = headerHeight + neededListHeight + 12;
+        var formHeight = Math.Min(Math.Max(totalNeededHeight, 200), maxHeight);
+
+        if (showPreview)
         {
-            // Wide layout with preview on right
-            Size = new Size(listWidth + previewWidth + padding * 3 + 2, 500);
+            // Wide layout with preview on right (all preview modes: tree and builder)
+            var totalWidth = Math.Min(listWidth + previewWidth + padding * 3 + 2, maxWidth);
+            Size = new Size(totalWidth, formHeight);
             _previewPanel.Location = new Point(listWidth + padding * 2, 36);
             _previewPanel.Size = new Size(previewWidth, Height - 50);
             _previewLabel.Size = new Size(previewWidth - 10, Height - 80);
         }
-        else if (showPreview && isBuilderMode)
-        {
-            // Narrow layout with preview at bottom (for builder mode)
-            Size = new Size(listWidth + padding * 2 + 2, 500);
-            _previewPanel.Location = new Point(padding, Height - 70);
-            _previewPanel.Size = new Size(listWidth, 55);
-            _previewLabel.Size = new Size(listWidth - 10, 30);
-        }
         else
         {
             // Narrow layout without preview
-            Size = new Size(listWidth + padding * 2 + 2, 500);
+            Size = new Size(Math.Min(listWidth + padding * 2 + 2, maxWidth), formHeight);
         }
 
         // Position close button
@@ -559,8 +600,7 @@ public class PickListPopupForm : Form
         _listBox.Top = _searchBox.Bottom + 6;
         _listBox.Width = listWidth;
 
-        var bottomMargin = (showPreview && isBuilderMode) ? 75 : 12;
-        _listBox.Height = Height - _listBox.Top - bottomMargin;
+        _listBox.Height = Height - _listBox.Top - 12;
     }
 
     // Entry classes
@@ -579,6 +619,7 @@ public class PickListPopupForm : Form
     {
         public int Index { get; set; }
         public string Text { get; set; } = "";
+        public BuilderOption? Option { get; set; }
     }
 
     private void ListBox_DrawItem(object? sender, DrawItemEventArgs e)
@@ -626,7 +667,9 @@ public class PickListPopupForm : Form
 
             // Determine node type and color
             Color numColor;
-            if (node.IsBuilderRef)
+            if (node.IsMacroRef)
+                numColor = Color.FromArgb(180, 150, 255);  // Purple for macro-ref
+            else if (node.IsBuilderRef)
                 numColor = Color.FromArgb(255, 180, 100);  // Orange for builder-ref
             else if (node.HasChildren)
                 numColor = Color.FromArgb(100, 180, 255);  // Blue for branch
@@ -644,7 +687,14 @@ public class PickListPopupForm : Form
             e.Graphics.DrawString(node.Label, e.Font!, textBrush, e.Bounds.X + 32, e.Bounds.Y + 6);
 
             // Indicator based on node type
-            if (node.IsBuilderRef)
+            if (node.IsMacroRef)
+            {
+                // Macro reference - show [M] indicator
+                using var macroBrush = new SolidBrush(Color.FromArgb(180, 150, 255));
+                using var macroFont = new Font("Segoe UI", 7, FontStyle.Bold);
+                e.Graphics.DrawString("[M]", macroFont, macroBrush, e.Bounds.Right - 30, e.Bounds.Y + 8);
+            }
+            else if (node.IsBuilderRef)
             {
                 // Builder reference - show [B] indicator
                 using var builderBrush = new SolidBrush(Color.FromArgb(255, 180, 100));
@@ -676,9 +726,15 @@ public class PickListPopupForm : Form
                              _builderCategoryIndex < _currentList.Categories.Count &&
                              _currentList.Categories[_builderCategoryIndex].IsTerminal(optEntry.Index);
 
-            // Number (different color for terminal)
+            var isMacroRef = optEntry.Option?.IsMacroRef == true;
+            var isTreeRef = optEntry.Option?.IsTreeRef == true;
+
+            // Number (different color for terminal/macro/tree)
             var numText = $"{optEntry.Index + 1}";
-            var numColor = isTerminal ? Color.FromArgb(255, 200, 100) : Color.FromArgb(100, 220, 150);
+            var numColor = isTerminal ? Color.FromArgb(255, 200, 100) :
+                           isMacroRef ? Color.FromArgb(180, 150, 255) :
+                           isTreeRef ? Color.FromArgb(100, 180, 255) :
+                           Color.FromArgb(100, 220, 150);
             using var numBrush = new SolidBrush(numColor);
             using var numFont = new Font("Consolas", 11, FontStyle.Bold);
             e.Graphics.DrawString(numText, numFont, numBrush, e.Bounds.X + 8, e.Bounds.Y + 5);
@@ -688,12 +744,24 @@ public class PickListPopupForm : Form
             var text = string.IsNullOrEmpty(optEntry.Text) ? "(empty)" : optEntry.Text;
             e.Graphics.DrawString(text, e.Font!, textBrush, e.Bounds.X + 32, e.Bounds.Y + 6);
 
-            // Terminal indicator
+            // Indicators
             if (isTerminal)
             {
                 using var endBrush = new SolidBrush(Color.FromArgb(255, 180, 100));
                 using var endFont = new Font("Segoe UI", 7);
                 e.Graphics.DrawString("[END]", endFont, endBrush, e.Bounds.Right - 40, e.Bounds.Y + 8);
+            }
+            else if (isMacroRef)
+            {
+                using var macroBrush = new SolidBrush(Color.FromArgb(180, 150, 255));
+                using var macroFont = new Font("Segoe UI", 7, FontStyle.Bold);
+                e.Graphics.DrawString("[M]", macroFont, macroBrush, e.Bounds.Right - 30, e.Bounds.Y + 8);
+            }
+            else if (isTreeRef)
+            {
+                using var treeBrush = new SolidBrush(Color.FromArgb(100, 180, 255));
+                using var treeFont = new Font("Segoe UI", 7, FontStyle.Bold);
+                e.Graphics.DrawString("[T]", treeFont, treeBrush, e.Bounds.Right - 25, e.Bounds.Y + 8);
             }
         }
     }
@@ -715,6 +783,7 @@ public class PickListPopupForm : Form
                 _builderCategoryIndex = 0;
                 _builderAccumulatedText = "";
                 _builderSelections.Clear();
+                _builderCompletedSentences.Clear();
 
                 _searchBox.Clear();
                 if (!AutoSelectSingleOptionCategories())
@@ -740,13 +809,47 @@ public class PickListPopupForm : Form
         {
             var node = nodeEntry.Node;
 
-            if (node.IsBuilderRef)
+            if (node.IsMacroRef)
+            {
+                // Macro reference node - resolve macro text and treat as leaf
+                var resolvedText = ResolveNodeText(node);
+
+                if (_embeddedTreeSourceList != null)
+                {
+                    // We're in embedded tree mode from a builder - return resolved text to builder
+                    ReturnToBuilderFromEmbeddedTree(resolvedText);
+                    return;
+                }
+
+                if (_currentList?.TreeStyle == TreePickListStyle.Structured)
+                {
+                    var topLevelLabel = GetCurrentTopLevelLabel();
+                    if (topLevelLabel != null)
+                        _structuredSelections[topLevelLabel] = (topLevelLabel, resolvedText);
+
+                    _navigationStack.Clear();
+                    _breadcrumbStack.Clear();
+                    _currentNodes = _currentList?.Nodes ?? new();
+                    _currentTopLevelLabel = null;
+                    _searchBox.Clear();
+                    RefreshList();
+                }
+                else
+                {
+                    _freeformSelections.Add(resolvedText);
+                    _navigationStack.Clear();
+                    _breadcrumbStack.Clear();
+                    _currentNodes = _currentList?.Nodes ?? new();
+                    _searchBox.Clear();
+                    RefreshList();
+                }
+            }
+            else if (node.IsBuilderRef)
             {
                 // Builder reference node - switch to embedded builder mode
                 var builderList = _config.PickLists.FirstOrDefault(p => p.Id == node.BuilderListId);
                 if (builderList == null || !builderList.Enabled || builderList.Mode != PickListMode.Builder)
                 {
-                    // Invalid or disabled builder reference - show error
                     System.Windows.Forms.MessageBox.Show(
                         "The referenced builder list is not available (deleted, disabled, or not a builder).",
                         "Builder Not Found",
@@ -792,18 +895,23 @@ public class PickListPopupForm : Form
             }
             else if (!string.IsNullOrEmpty(node.Text))
             {
-                // Leaf node selected - behavior depends on tree style
+                // Leaf node selected
+                var leafText = node.Text;
+
+                // If we're in embedded tree mode from a builder, return the text to the builder
+                if (_embeddedTreeSourceList != null)
+                {
+                    ReturnToBuilderFromEmbeddedTree(leafText);
+                    return;
+                }
+
+                // Normal tree behavior - depends on tree style
                 if (_currentList?.TreeStyle == TreePickListStyle.Structured)
                 {
-                    // STRUCTURED MODE: Accumulate selection for the top-level category
                     var topLevelLabel = GetCurrentTopLevelLabel();
                     if (topLevelLabel != null)
-                    {
-                        // Store/replace selection for this category (use label as key)
-                        _structuredSelections[topLevelLabel] = (topLevelLabel, node.Text);
-                    }
+                        _structuredSelections[topLevelLabel] = (topLevelLabel, leafText);
 
-                    // Go back to root level of this pick list (to select another category)
                     _navigationStack.Clear();
                     _breadcrumbStack.Clear();
                     _currentNodes = _currentList?.Nodes ?? new();
@@ -813,10 +921,7 @@ public class PickListPopupForm : Form
                 }
                 else
                 {
-                    // FREEFORM MODE: Accumulate selection
-                    _freeformSelections.Add(node.Text);
-
-                    // Go back to root level of this pick list (to select more items)
+                    _freeformSelections.Add(leafText);
                     _navigationStack.Clear();
                     _breadcrumbStack.Clear();
                     _currentNodes = _currentList?.Nodes ?? new();
@@ -831,29 +936,63 @@ public class PickListPopupForm : Form
 
             var category = _currentList.Categories[_builderCategoryIndex];
             var isTerminal = category.IsTerminal(optEntry.Index);
+            var option = optEntry.Option;
+
+            // Handle tree reference - enter embedded tree mode
+            if (option != null && option.IsTreeRef)
+            {
+                var treeList = _config.PickLists.FirstOrDefault(p => p.Id == option.TreeListId);
+                if (treeList == null || !treeList.Enabled || treeList.Mode != PickListMode.Tree)
+                {
+                    System.Windows.Forms.MessageBox.Show(
+                        "The referenced tree list is not available (deleted, disabled, or not a tree).",
+                        "Tree Not Found",
+                        System.Windows.Forms.MessageBoxButtons.OK,
+                        System.Windows.Forms.MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Save builder state
+                _embeddedTreeSourceList = _currentList;
+                _savedBuilderCategoryIndex = _builderCategoryIndex;
+                _savedBuilderAccumulatedText = _builderAccumulatedText;
+                _savedBuilderSelections = new List<string>(_builderSelections);
+                _savedBuilderCompletedSentences = new List<string>(_builderCompletedSentences);
+
+                // Switch to tree list
+                _currentList = treeList;
+                _currentNodes = treeList.Nodes;
+                _navigationStack.Clear();
+                _breadcrumbStack.Clear();
+                _structuredSelections.Clear();
+                _freeformSelections.Clear();
+                _currentTopLevelLabel = null;
+
+                _searchBox.Clear();
+                RefreshList();
+                return;
+            }
+
+            // Resolve text for macro refs
+            var resolvedText = optEntry.Text;
 
             // Add selection to accumulated text
-            _builderSelections.Add(optEntry.Text);
+            _builderSelections.Add(resolvedText);
 
             if (isTerminal)
             {
-                // Terminal option - complete sentence immediately without separator
-                _builderAccumulatedText += optEntry.Text;
+                _builderAccumulatedText += resolvedText;
                 CompleteBuilderAndInsert();
             }
             else
             {
-                // Normal option - add separator and continue
-                _builderAccumulatedText += optEntry.Text + category.Separator;
+                _builderAccumulatedText += resolvedText + category.Separator;
                 _builderCategoryIndex++;
 
-                // Auto-select any following single-option categories
                 if (!AutoSelectSingleOptionCategories())
                 {
-                    // Check if we've completed all categories
                     if (_builderCategoryIndex >= _currentList.Categories.Count)
                     {
-                        // Trim trailing separator from last category
                         var lastSep = _currentList.Categories.Last().Separator;
                         if (_builderAccumulatedText.EndsWith(lastSep))
                         {
@@ -872,15 +1011,18 @@ public class PickListPopupForm : Form
 
     /// <summary>
     /// Complete the builder and insert text. Handles both standalone and embedded builder modes.
+    /// Standalone: accumulates sentence into list for batch insert.
+    /// Embedded: inserts immediately back to tree context.
     /// </summary>
     private void CompleteBuilderAndInsert()
     {
-        SavePosition();
-        _onItemSelected(_builderAccumulatedText);
-
         // Check if we were in embedded builder mode (came from a tree node)
         if (_embeddedBuilderSourceList != null)
         {
+            // Embedded mode: insert immediately (original behavior)
+            SavePosition();
+            _onItemSelected(_builderAccumulatedText);
+
             // Return to tree mode - reset to root of the source tree list
             _currentList = _embeddedBuilderSourceList;
             _navigationStack.Clear();
@@ -894,8 +1036,13 @@ public class PickListPopupForm : Form
             _savedCurrentNodes = null;
             _treeAccumulatedText = "";
         }
+        else
+        {
+            // Standalone mode: accumulate sentence for batch insert
+            _builderCompletedSentences.Add(_builderAccumulatedText);
+        }
 
-        // Reset builder state for next use
+        // Reset builder state for next sentence
         _builderCategoryIndex = 0;
         _builderAccumulatedText = "";
         _builderSelections.Clear();
@@ -918,19 +1065,26 @@ public class PickListPopupForm : Form
             if (category.Options.Count != 1) break;
 
             var singleOption = category.Options[0];
+
+            // Don't auto-select tree refs (they need user navigation)
+            if (singleOption.IsTreeRef) break;
+
+            var resolvedText = singleOption.IsMacroRef
+                ? (_config.Macros.FirstOrDefault(m => m.Id == singleOption.MacroId)?.Text ?? "(macro not found)")
+                : singleOption.Text;
             var isTerminal = category.IsTerminal(0);
 
             // Track for undo
-            _builderSelections.Add(singleOption);
+            _builderSelections.Add(resolvedText);
 
             if (isTerminal)
             {
-                _builderAccumulatedText += singleOption;
+                _builderAccumulatedText += resolvedText;
                 CompleteBuilderAndInsert();
                 return true;
             }
 
-            _builderAccumulatedText += singleOption + category.Separator;
+            _builderAccumulatedText += resolvedText + category.Separator;
             _builderCategoryIndex++;
         }
 
@@ -998,22 +1152,43 @@ public class PickListPopupForm : Form
     }
 
     /// <summary>
-    /// Clear all accumulated tree selections (both freeform and structured).
+    /// Clear all accumulated selections (tree freeform/structured and builder sentences).
     /// </summary>
     private void ClearTreeSelections()
     {
         _structuredSelections.Clear();
         _freeformSelections.Clear();
         _currentTopLevelLabel = null;
+        _builderCompletedSentences.Clear();
         RefreshList();
     }
 
     /// <summary>
-    /// Insert all accumulated tree selections as formatted text.
+    /// Insert all accumulated selections as formatted text.
+    /// Handles tree mode (structured/freeform) and builder mode accumulated sentences.
     /// </summary>
     private void InsertAllTreeSelections()
     {
         string formattedText;
+
+        if (_currentList?.Mode == PickListMode.Builder)
+        {
+            // Builder mode: join accumulated sentences with space
+            if (_builderCompletedSentences.Count == 0) return;
+            formattedText = string.Join(" ", _builderCompletedSentences);
+
+            SavePosition();
+            _onItemSelected(formattedText);
+
+            // Reset builder state
+            _builderCompletedSentences.Clear();
+            _builderCategoryIndex = 0;
+            _builderAccumulatedText = "";
+            _builderSelections.Clear();
+            _searchBox.Clear();
+            RefreshList();
+            return;
+        }
 
         if (_currentList?.TreeStyle == TreePickListStyle.Structured)
         {
@@ -1071,6 +1246,26 @@ public class PickListPopupForm : Form
 
     private void GoBack()
     {
+        // If in embedded tree mode from builder, check if we should go back to builder
+        if (_embeddedTreeSourceList != null && _currentList?.Mode == PickListMode.Tree)
+        {
+            if (_navigationStack.Count > 0)
+            {
+                // Navigate up within the tree
+                _currentNodes = _navigationStack.Pop();
+                _breadcrumbStack.Pop();
+                _searchBox.Clear();
+                RefreshList();
+                return;
+            }
+            else
+            {
+                // At tree root - go back to builder
+                CancelAndReset();
+                return;
+            }
+        }
+
         if (_currentList?.Mode == PickListMode.Builder)
         {
             // Builder mode: undo last selection
@@ -1176,6 +1371,56 @@ public class PickListPopupForm : Form
         RefreshList();
     }
 
+    /// <summary>
+    /// Return to the builder from embedded tree mode, using the selected text as the category option.
+    /// </summary>
+    private void ReturnToBuilderFromEmbeddedTree(string selectedText)
+    {
+        if (_embeddedTreeSourceList == null) return;
+
+        // Restore builder state
+        _currentList = _embeddedTreeSourceList;
+        _builderCategoryIndex = _savedBuilderCategoryIndex;
+        _builderAccumulatedText = _savedBuilderAccumulatedText;
+        _builderSelections = new List<string>(_savedBuilderSelections);
+        _builderCompletedSentences = new List<string>(_savedBuilderCompletedSentences);
+
+        // Clear embedded tree state
+        _embeddedTreeSourceList = null;
+        _currentNodes = new();
+        _navigationStack.Clear();
+        _breadcrumbStack.Clear();
+        _structuredSelections.Clear();
+        _freeformSelections.Clear();
+        _currentTopLevelLabel = null;
+
+        // Now process the selected text as if it were the builder option selection
+        if (_currentList != null && _builderCategoryIndex < _currentList.Categories.Count)
+        {
+            var category = _currentList.Categories[_builderCategoryIndex];
+            // We don't check terminal here since tree refs can't be terminal
+            _builderSelections.Add(selectedText);
+            _builderAccumulatedText += selectedText + category.Separator;
+            _builderCategoryIndex++;
+
+            if (!AutoSelectSingleOptionCategories())
+            {
+                if (_builderCategoryIndex >= _currentList.Categories.Count)
+                {
+                    var lastSep = _currentList.Categories.Last().Separator;
+                    if (_builderAccumulatedText.EndsWith(lastSep))
+                    {
+                        _builderAccumulatedText = _builderAccumulatedText.Substring(0, _builderAccumulatedText.Length - lastSep.Length);
+                    }
+                    CompleteBuilderAndInsert();
+                }
+            }
+        }
+
+        _searchBox.Clear();
+        RefreshList();
+    }
+
     private void CancelBuilder()
     {
         // If in embedded builder mode, return to tree
@@ -1185,7 +1430,7 @@ public class PickListPopupForm : Form
             return;
         }
 
-        // Scrap current sentence and start over
+        // Scrap current sentence and start over (keep accumulated sentences)
         _builderCategoryIndex = 0;
         _builderAccumulatedText = "";
         _builderSelections.Clear();
@@ -1195,6 +1440,27 @@ public class PickListPopupForm : Form
 
     private void CancelAndReset()
     {
+        // If in embedded tree mode, return to builder first
+        if (_embeddedTreeSourceList != null)
+        {
+            // Restore builder state without adding any text
+            _currentList = _embeddedTreeSourceList;
+            _builderCategoryIndex = _savedBuilderCategoryIndex;
+            _builderAccumulatedText = _savedBuilderAccumulatedText;
+            _builderSelections = new List<string>(_savedBuilderSelections);
+            _builderCompletedSentences = new List<string>(_savedBuilderCompletedSentences);
+            _embeddedTreeSourceList = null;
+            _currentNodes = new();
+            _navigationStack.Clear();
+            _breadcrumbStack.Clear();
+            _structuredSelections.Clear();
+            _freeformSelections.Clear();
+            _currentTopLevelLabel = null;
+            _searchBox.Clear();
+            RefreshList();
+            return;
+        }
+
         // If in embedded builder mode, return to tree first
         if (_embeddedBuilderSourceList != null)
         {
@@ -1213,6 +1479,7 @@ public class PickListPopupForm : Form
             _builderCategoryIndex = 0;
             _builderAccumulatedText = "";
             _builderSelections.Clear();
+            _builderCompletedSentences.Clear();
             _structuredSelections.Clear();
             _freeformSelections.Clear();
             _currentTopLevelLabel = null;
@@ -1245,9 +1512,12 @@ public class PickListPopupForm : Form
         // Show nav when we're inside a list (not at list selection)
         if (_showingLists) return false;
 
-        // In Builder mode, show when we have selections, are embedded, or multiple lists
+        // Always show nav when in embedded tree mode from builder
+        if (_embeddedTreeSourceList != null) return true;
+
+        // In Builder mode, show when we have selections, accumulated sentences, are embedded, or multiple lists
         if (_currentList?.Mode == PickListMode.Builder)
-            return _builderSelections.Count > 0 || _embeddedBuilderSourceList != null || _matchingLists.Count > 1;
+            return _builderSelections.Count > 0 || _builderCompletedSentences.Count > 0 || _embeddedBuilderSourceList != null || _matchingLists.Count > 1;
 
         // In Tree mode
         if (_currentList?.Mode == PickListMode.Tree)
@@ -1425,10 +1695,49 @@ public class PickListPopupForm : Form
         }
     }
 
+    private void Header_MouseUp(object? sender, MouseEventArgs e)
+    {
+        _dragging = false;
+    }
+
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
         _dragging = false;
+    }
+
+    /// <summary>
+    /// Resolve a builder option's display text. Macro refs resolve to the macro's current text.
+    /// Tree refs show the referenced list name. Plain text returns as-is.
+    /// </summary>
+    private string ResolveBuilderOptionText(BuilderOption opt)
+    {
+        if (opt.IsMacroRef)
+        {
+            var macro = _config.Macros.FirstOrDefault(m => m.Id == opt.MacroId);
+            return macro?.Text ?? "(macro not found)";
+        }
+        if (opt.IsTreeRef)
+        {
+            // Tree refs don't have display text - they launch a tree pick list
+            var treeList = _config.PickLists.FirstOrDefault(p => p.Id == opt.TreeListId);
+            var name = treeList?.Name ?? "(tree not found)";
+            return string.IsNullOrEmpty(opt.Text) ? name : opt.Text;
+        }
+        return opt.Text;
+    }
+
+    /// <summary>
+    /// Resolve a tree node's text, handling macro references.
+    /// </summary>
+    private string ResolveNodeText(PickListNode node)
+    {
+        if (node.IsMacroRef)
+        {
+            var macro = _config.Macros.FirstOrDefault(m => m.Id == node.MacroId);
+            return macro?.Text ?? "(macro not found)";
+        }
+        return node.Text;
     }
 
     private void SavePosition()

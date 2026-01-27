@@ -281,6 +281,26 @@ Launch with `-headless` flag:
 - **HidSharp** - USB HID communication (NuGet: HidSharp)
 - **Windows.Media.Ocr** - Built-in Windows OCR API
 
+### Open in Clario (XML File Drop)
+The "Open in Clario" feature (double-click in Critical Studies popup) works by writing an XML file to a Fluency watch folder. Clario monitors this folder and opens the study.
+
+- **Folder:** `C:\MModal\FluencyForImaging\Reporting\XML\IN`
+- **Method:** `AutomationService.OpenStudyInClario(accession, mrn)` (line ~554)
+- **File format:** `openreport{unixTimestamp}.{pid}.xml`
+- **XML content:**
+  ```xml
+  <Message>
+    <Type>OpenReport</Type>
+    <AccessionNumbers>
+      <AccessionNumber>{accession}</AccessionNumber>
+    </AccessionNumbers>
+    <MedicalRecordNumber>{mrn}</MedicalRecordNumber>
+  </Message>
+  ```
+- **Requires:** Both accession and MRN (scraped from Mosaic UI by `AutomationService`)
+- **Availability check:** `IsXmlFolderAvailable()` checks if the IN folder exists
+- **Called from:** `CriticalStudiesPopup.ListBox_DoubleClick`
+
 ### Common Debugging
 - **Log file:** `mosaic_tools_log.txt` in exe directory
 - **Debug scrape:** Hold Win key + trigger Critical Findings → shows raw data dialog

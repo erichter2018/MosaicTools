@@ -136,7 +136,7 @@ public class MainForm : Form
                 {
                     anyClicked = true;
                     _skipCount++;
-                    Logger.Log($"Auto-skipped: {item.Procedure}");
+                    Logger.Log($"Auto-skipped: {item.Procedure} (matched rule: '{rule.Name}')");
                     System.Threading.Thread.Sleep(150);
                 }
             }

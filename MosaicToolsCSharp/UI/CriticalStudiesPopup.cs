@@ -95,8 +95,6 @@ public class CriticalStudiesPopup : Form
         closeBtn.MouseLeave += (s, e) => closeBtn.ForeColor = Color.Gray;
         headerPanel.Controls.Add(closeBtn);
 
-        innerPanel.Controls.Add(headerPanel);
-
         // List box
         _listBox = new ListBox
         {
@@ -127,7 +125,9 @@ public class CriticalStudiesPopup : Form
             }
         }
 
-        innerPanel.Controls.Add(_listBox);
+        // Add controls in correct dock order (WinForms docks in REVERSE order):
+        // Fill first (processed last), then Bottom, then Top
+        innerPanel.Controls.Add(_listBox);       // Fill - processed last
 
         // Footer hint (only if we have studies and automation service)
         if (studies.Count > 0 && automationService != null)
@@ -149,8 +149,10 @@ public class CriticalStudiesPopup : Form
                 TextAlign = ContentAlignment.MiddleCenter
             };
             footerPanel.Controls.Add(footerLabel);
-            innerPanel.Controls.Add(footerPanel);
+            innerPanel.Controls.Add(footerPanel);  // Bottom - processed second
         }
+
+        innerPanel.Controls.Add(headerPanel);      // Top - processed first
 
         // Handle click outside
         Deactivate += (s, e) =>

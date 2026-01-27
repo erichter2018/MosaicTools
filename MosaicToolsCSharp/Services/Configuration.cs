@@ -261,6 +261,19 @@ public class Configuration
     [JsonPropertyName("pick_list_editor_height")]
     public int PickListEditorHeight { get; set; } = 600;
 
+    // Connectivity Monitor Settings
+    [JsonPropertyName("connectivity_monitor_enabled")]
+    public bool ConnectivityMonitorEnabled { get; set; } = false;
+
+    [JsonPropertyName("connectivity_check_interval_seconds")]
+    public int ConnectivityCheckIntervalSeconds { get; set; } = 30;
+
+    [JsonPropertyName("connectivity_timeout_ms")]
+    public int ConnectivityTimeoutMs { get; set; } = 5000;
+
+    [JsonPropertyName("connectivity_servers")]
+    public List<ServerConfig> ConnectivityServers { get; set; } = new();
+
     // InteleViewer Window/Level Cycle Keystrokes
     // Keys sent to InteleViewer when Cycle Window/Level action is triggered
     [JsonPropertyName("window_level_keys")]
@@ -366,10 +379,59 @@ public class Configuration
             };
         }
         
+        // Ensure macros have IDs (migration for pre-ID macros)
+        foreach (var macro in Macros)
+        {
+            if (string.IsNullOrEmpty(macro.Id))
+                macro.Id = Guid.NewGuid().ToString("N")[..8];
+        }
+
+        // Migrate pick list category options from legacy format
+        foreach (var pickList in PickLists)
+        {
+            foreach (var category in pickList.Categories)
+            {
+                category.MigrateOptions();
+            }
+        }
+
         // Ensure floating buttons have defaults
         if (FloatingButtons.Buttons.Count == 0)
         {
             FloatingButtons = FloatingButtonsConfig.Default;
+        }
+
+        // Ensure connectivity servers have defaults
+        // Using public DNS servers as placeholders until real IPs are configured
+        var defaultServers = new List<(string Name, string Host)>
+        {
+            ("Mirth", "8.8.8.8"),           // Google DNS (placeholder)
+            ("Mosaic", "1.1.1.1"),          // Cloudflare DNS (placeholder)
+            ("Clario", "208.67.222.222"),   // OpenDNS (placeholder)
+            ("InteleViewer", "9.9.9.9")     // Quad9 DNS (placeholder)
+        };
+
+        if (ConnectivityServers.Count == 0)
+        {
+            ConnectivityServers = defaultServers.Select(s => new ServerConfig
+            {
+                Name = s.Name,
+                Host = s.Host,
+                Port = 0,
+                Enabled = true
+            }).ToList();
+        }
+        else
+        {
+            // Ensure existing servers have hosts (migrate from old empty configs)
+            foreach (var def in defaultServers)
+            {
+                var existing = ConnectivityServers.FirstOrDefault(s => s.Name == def.Name);
+                if (existing != null && string.IsNullOrWhiteSpace(existing.Host))
+                {
+                    existing.Host = def.Host;
+                }
+            }
         }
     }
     
@@ -405,6 +467,9 @@ public class ActionMapping
 /// </summary>
 public class MacroConfig
 {
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = Guid.NewGuid().ToString("N")[..8];
+
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; } = true;
 
@@ -636,6 +701,30 @@ public enum StructuredTextPlacement
 }
 
 /// <summary>
+/// A builder option that can be plain text, a macro reference, or a tree pick list reference.
+/// </summary>
+public class BuilderOption
+{
+    [JsonPropertyName("text")]
+    public string Text { get; set; } = "";
+
+    [JsonPropertyName("macro_id")]
+    public string? MacroId { get; set; }
+
+    [JsonPropertyName("tree_list_id")]
+    public string? TreeListId { get; set; }
+
+    [JsonIgnore]
+    public bool IsMacroRef => !string.IsNullOrEmpty(MacroId);
+
+    [JsonIgnore]
+    public bool IsTreeRef => !string.IsNullOrEmpty(TreeListId);
+
+    [JsonIgnore]
+    public bool IsPlainText => !IsMacroRef && !IsTreeRef;
+}
+
+/// <summary>
 /// A category in Builder mode pick lists. Each category has options to choose from.
 /// </summary>
 public class PickListCategory
@@ -647,11 +736,18 @@ public class PickListCategory
     public string Name { get; set; } = "";
 
     /// <summary>
-    /// Available options for this category. Max 9 options (keyboard shortcuts 1-9).
-    /// Each option is the text that gets appended to the sentence.
+    /// Legacy plain-text options. Kept for backwards compatibility during deserialization.
+    /// On load, if options_v2 is empty but options has items, they are migrated to options_v2.
     /// </summary>
     [JsonPropertyName("options")]
-    public List<string> Options { get; set; } = new();
+    public List<string> OptionsLegacy { get; set; } = new();
+
+    /// <summary>
+    /// Available options for this category (v2 format with reference support).
+    /// Max 9 options (keyboard shortcuts 1-9).
+    /// </summary>
+    [JsonPropertyName("options_v2")]
+    public List<BuilderOption> Options { get; set; } = new();
 
     /// <summary>
     /// Text appended after the selected option. Default is a single space.
@@ -671,6 +767,18 @@ public class PickListCategory
     /// Check if the option at the given index is terminal.
     /// </summary>
     public bool IsTerminal(int index) => TerminalOptions.Contains(index);
+
+    /// <summary>
+    /// Migrate legacy options to v2 format if needed.
+    /// </summary>
+    public void MigrateOptions()
+    {
+        if (Options.Count == 0 && OptionsLegacy.Count > 0)
+        {
+            Options = OptionsLegacy.Select(text => new BuilderOption { Text = text }).ToList();
+            OptionsLegacy.Clear();
+        }
+    }
 }
 
 /// <summary>
@@ -871,22 +979,35 @@ public class PickListNode
     public string? BuilderListId { get; set; }
 
     /// <summary>
+    /// Optional reference to a macro ID.
+    /// When set, selecting this node resolves the macro's current Text at runtime.
+    /// </summary>
+    [JsonPropertyName("macro_id")]
+    public string? MacroId { get; set; }
+
+    /// <summary>
     /// Returns true if this node has children (is a branch).
     /// </summary>
     [JsonIgnore]
     public bool HasChildren => Children.Count > 0;
 
     /// <summary>
-    /// Returns true if this node is a leaf (no children, just text, no builder reference).
+    /// Returns true if this node is a leaf (no children, just text, no builder or macro reference).
     /// </summary>
     [JsonIgnore]
-    public bool IsLeaf => Children.Count == 0 && string.IsNullOrEmpty(BuilderListId);
+    public bool IsLeaf => Children.Count == 0 && string.IsNullOrEmpty(BuilderListId) && string.IsNullOrEmpty(MacroId);
 
     /// <summary>
     /// Returns true if this node references a builder pick list.
     /// </summary>
     [JsonIgnore]
     public bool IsBuilderRef => !string.IsNullOrEmpty(BuilderListId);
+
+    /// <summary>
+    /// Returns true if this node references a macro.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsMacroRef => !string.IsNullOrEmpty(MacroId);
 
     /// <summary>
     /// Deep clone this node and all children.
@@ -898,6 +1019,7 @@ public class PickListNode
             Label = Label,
             Text = Text,
             BuilderListId = BuilderListId,
+            MacroId = MacroId,
             Children = Children.Select(c => c.Clone()).ToList()
         };
     }
@@ -909,6 +1031,27 @@ public class PickListNode
     {
         return Children.Count + Children.Sum(c => c.CountDescendants());
     }
+}
+
+/// <summary>
+/// Configuration for a server endpoint to monitor connectivity.
+/// </summary>
+public class ServerConfig
+{
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = "";
+
+    [JsonPropertyName("host")]
+    public string Host { get; set; } = "";
+
+    /// <summary>
+    /// Port to test TCP connectivity. 0 = ping only (ICMP).
+    /// </summary>
+    [JsonPropertyName("port")]
+    public int Port { get; set; } = 0;
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
 }
 
 /// <summary>
