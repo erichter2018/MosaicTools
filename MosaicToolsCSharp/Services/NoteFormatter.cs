@@ -137,6 +137,7 @@ public class NoteFormatter
             
             // 3. Extract Text Time and Timezone
             string finalTimeDisplay = "N/A";
+            string diffWarning = "";
             var textTimeMatch = Regex.Match(rawText, @"(?:at|@|\.|-)\s*(\d{1,2}:\d{2}\s*(?i:AM|PM))\s*([a-zA-Z\s]+)?", RegexOptions.IgnoreCase);
             
             if (textTimeMatch.Success && dtEnd.HasValue)
@@ -164,9 +165,9 @@ public class NoteFormatter
                     
                     // Always normalize to Central for the final display
                     finalTimeDisplay = $"{dtTextCt:h:mm tt} CST";
-                    
-                    if (timeDiffMin > 10)
-                        finalTimeDisplay += $" (? Diff: {(int)timeDiffMin}m)";
+
+                    if (timeDiffMin > 55)
+                        diffWarning = $"NOTE: Entry logged {(int)timeDiffMin} minutes after reported communication.\n";
                 }
                 else
                 {
@@ -179,10 +180,11 @@ public class NoteFormatter
             }
             
             string template = _template ?? "Critical findings were discussed with and acknowledged by {name} at {time} on {date}.";
-            return template
+            var result = template
                 .Replace("{name}", titleAndName)
                 .Replace("{time}", finalTimeDisplay)
                 .Replace("{date}", endDate);
+            return diffWarning + result;
         }
         catch (Exception ex)
         {

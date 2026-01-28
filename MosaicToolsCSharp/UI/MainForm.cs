@@ -367,6 +367,15 @@ public class MainForm : Form
             _rvuTimer = new System.Windows.Forms.Timer { Interval = 5000 }; // Update every 5 seconds
             _rvuTimer.Tick += (_, _) => UpdateRvuDisplay();
             _rvuTimer.Start();
+
+            // Subscribe to pipe shift info updates for immediate RVU display refresh
+            _controller.PipeService.ShiftInfoUpdated += () =>
+            {
+                if (InvokeRequired)
+                    BeginInvoke(UpdateRvuDisplay);
+                else
+                    UpdateRvuDisplay();
+            };
         }
 
         // Start connectivity monitor if enabled (skip in headless mode - no UI to display it)
@@ -414,8 +423,25 @@ public class MainForm : Form
             return;
         }
 
-        var shiftInfo = _rvuCounterService.GetCurrentShiftInfo();
-        Logger.Trace($"UpdateRvuDisplay: Got shift info = {(shiftInfo != null ? $"total={shiftInfo.TotalRvu:F1}" : "null")}");
+        // Prefer pipe shift info from RVUCounter over SQLite fallback
+        ShiftInfo? shiftInfo = null;
+        var pipeShift = _controller.PipeService.LatestShiftInfo;
+        if (_controller.PipeService.IsConnected && pipeShift != null && pipeShift.IsShiftActive)
+        {
+            shiftInfo = new ShiftInfo
+            {
+                TotalRvu = pipeShift.TotalRvu,
+                RecordCount = pipeShift.RecordCount,
+                ShiftStart = pipeShift.ShiftStart ?? "",
+                ShiftId = 0
+            };
+            Logger.Trace($"UpdateRvuDisplay: Using pipe shift info, total={shiftInfo.TotalRvu:F1}");
+        }
+        else
+        {
+            shiftInfo = _rvuCounterService.GetCurrentShiftInfo();
+            Logger.Trace($"UpdateRvuDisplay: Got SQLite shift info = {(shiftInfo != null ? $"total={shiftInfo.TotalRvu:F1}" : "null")}");
+        }
 
         if (shiftInfo != null)
         {
@@ -1030,6 +1056,9 @@ public class MainForm : Form
                 _clinicalHistoryWindow.SetClinicalHistoryFixCallbacks(
                     _controller.HasClinicalHistoryFixedForAccession,
                     _controller.MarkClinicalHistoryFixedForAccession);
+                // Wire up auto-fix completion callback (for Ignore Inpatient Drafted feature)
+                _clinicalHistoryWindow.SetAutoFixCompleteCallback(
+                    _controller.MarkAutoFixCompleteForCurrentAccession);
                 _clinicalHistoryWindow.Show();
             }
         }
@@ -1295,7 +1324,7 @@ public class MainForm : Form
 
         // Create and position popup below the indicator (offset +2 to avoid obscuring top entry)
         var popupLocation = PointToScreen(new Point(_criticalPanel.Left, Height + 7));
-        _criticalStudiesPopup = new CriticalStudiesPopup(_controller.CriticalStudies, popupLocation, _controller.Automation);
+        _criticalStudiesPopup = new CriticalStudiesPopup(_controller.CriticalStudies, popupLocation, _controller.Automation, entry => _controller.RemoveCriticalStudy(entry));
         _criticalStudiesPopup.Show();
     }
 

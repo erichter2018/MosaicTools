@@ -29,7 +29,10 @@ public class ActionController : IDisposable
     private NoteFormatter _noteFormatter;
     private readonly GetPriorService _getPriorService;
     private readonly OcrService _ocrService;
-    
+    private readonly PipeService _pipeService;
+
+    public PipeService PipeService => _pipeService;
+
     // Action Queue (Must be STA for Clipboard and SendKeys)
     private readonly ConcurrentQueue<ActionRequest> _actionQueue = new();
     private readonly AutoResetEvent _actionEvent = new(false);
@@ -87,12 +90,17 @@ public class ActionController : IDisposable
     private bool _strokeDetectedActive = false;
     private bool _clinicalHistoryVisible = false;
 
-    // Critical note tracking - which accession already has a critical note created
-    private string? _criticalNoteCreatedForAccession = null;
+    // Critical note tracking - session-scoped set of accessions that already have critical notes
+    private readonly HashSet<string> _criticalNoteCreatedForAccessions = new();
 
     // Session-wide tracking to prevent duplicate pastes on study reopen
     private readonly HashSet<string> _macrosInsertedForAccessions = new();
     private readonly HashSet<string> _clinicalHistoryFixedForAccessions = new();
+
+    // Ignore Inpatient Drafted - tracks completion of auto-insertions for Ctrl+A
+    private bool _macrosCompleteForCurrentAccession = false;
+    private bool _autoFixCompleteForCurrentAccession = false;
+    private bool _ctrlASentForCurrentAccession = false;
 
     // Critical studies tracker - studies where critical notes were placed this session
     private readonly List<CriticalStudyEntry> _criticalStudies = new();
@@ -130,6 +138,8 @@ public class ActionController : IDisposable
         _noteFormatter = new NoteFormatter(config.DoctorName, config.CriticalFindingsTemplate);
         _getPriorService = new GetPriorService();
         _ocrService = new OcrService();
+        _pipeService = new PipeService();
+        _pipeService.Start();
 
         _actionThread = new Thread(ActionLoop) { IsBackground = true };
         _actionThread.SetApartmentState(ApartmentState.STA);
@@ -846,6 +856,7 @@ public class ActionController : IDisposable
                 var msgType = hasCritical ? NativeWindows.MSG_STUDY_CLOSED_UNSIGNED_CRITICAL : NativeWindows.MSG_STUDY_CLOSED_UNSIGNED;
                 Logger.Trace($"RVUCounter: Sending {(hasCritical ? "CLOSED_UNSIGNED_CRITICAL" : "CLOSED_UNSIGNED")} (discard action) for '{accessionToDiscard}'");
                 NativeWindows.SendToRvuCounter(msgType, accessionToDiscard);
+                _pipeService.SendStudyEvent(new StudyEventMessage("study_event", "unsigned", accessionToDiscard, hasCritical));
 
                 // Clear state to prevent duplicate message from scrape loop
                 _lastNonEmptyAccession = null;
@@ -913,6 +924,8 @@ public class ActionController : IDisposable
         if (matchingMacros.Count == 0)
         {
             Logger.Trace($"Macros: No macros match study '{studyDescription}'");
+            // Mark macros as complete even when none match (for Ignore Inpatient Drafted)
+            MarkMacrosCompleteForCurrentAccession();
             return;
         }
 
@@ -1011,6 +1024,9 @@ public class ActionController : IDisposable
 
                 _mainForm.Invoke(() => _mainForm.ShowStatusToast(
                     count == 1 ? "Macro inserted" : $"{count} macros inserted", 2000));
+
+                // Mark macros complete for Ignore Inpatient Drafted feature
+                MarkMacrosCompleteForCurrentAccession();
             }
             catch (Exception ex)
             {
@@ -1402,6 +1418,14 @@ public class ActionController : IDisposable
         _mainForm.Invoke(() => CriticalStudiesChanged?.Invoke());
     }
 
+    public void RemoveCriticalStudy(CriticalStudyEntry entry)
+    {
+        if (entry == null) return;
+        _criticalStudies.Remove(entry);
+        Logger.Trace($"RemoveCriticalStudy: Manually removed entry for {entry.Accession}");
+        _mainForm.Invoke(() => CriticalStudiesChanged?.Invoke());
+    }
+
     // State for Report Popup Toggle
     private ReportPopupForm? _currentReportPopup;
 
@@ -1600,7 +1624,7 @@ public class ActionController : IDisposable
         bool success = _automationService.CreateCriticalCommunicationNote();
         if (success)
         {
-            _criticalNoteCreatedForAccession = accession;
+            _criticalNoteCreatedForAccessions.Add(accession);
 
             // Track critical study for session-based tracker
             TrackCriticalStudy();
@@ -1667,6 +1691,29 @@ public class ActionController : IDisposable
                 // Check for new study (non-empty accession different from last non-empty)
                 var currentAccession = _automationService.LastAccession;
 
+                // Clear stale Clario data when accession changes, before pipe send
+                if (!string.IsNullOrEmpty(currentAccession) && currentAccession != _lastNonEmptyAccession)
+                {
+                    _automationService.ClearStrokeState();
+                }
+
+                // Send study data over pipe (only sends when changed, record equality)
+                _pipeService.SendStudyData(new StudyDataMessage(
+                    Type: "study_data",
+                    Accession: currentAccession,
+                    Description: _automationService.LastDescription,
+                    TemplateName: _automationService.LastTemplateName,
+                    PatientName: _automationService.LastPatientName,
+                    PatientGender: _automationService.LastPatientGender,
+                    Mrn: _automationService.LastMrn,
+                    SiteCode: _automationService.LastSiteCode,
+                    ClarioPriority: _automationService.LastClarioPriority,
+                    ClarioClass: _automationService.LastClarioClass,
+                    Drafted: _automationService.LastDraftedState,
+                    HasCritical: !string.IsNullOrEmpty(currentAccession) && HasCriticalNoteForAccession(currentAccession),
+                    Timestamp: DateTime.UtcNow.ToString("o")
+                ));
+
                 // Check for discard dialog (RVUCounter integration)
                 // Must check BEFORE accession change detection - dialog disappears when user clicks YES
                 if (_automationService.IsDiscardDialogVisible())
@@ -1715,6 +1762,7 @@ public class ActionController : IDisposable
                             var msgType = hasCritical ? NativeWindows.MSG_STUDY_SIGNED_CRITICAL : NativeWindows.MSG_STUDY_SIGNED;
                             Logger.Trace($"RVUCounter: Sending SIGNED{criticalSuffix} (MosaicTools) for '{_lastNonEmptyAccession}'");
                             NativeWindows.SendToRvuCounter(msgType, _lastNonEmptyAccession);
+                            _pipeService.SendStudyEvent(new StudyEventMessage("study_event", "signed", _lastNonEmptyAccession, hasCritical));
                         }
                         else if (_discardDialogShownForCurrentAccession)
                         {
@@ -1722,6 +1770,7 @@ public class ActionController : IDisposable
                             var msgType = hasCritical ? NativeWindows.MSG_STUDY_CLOSED_UNSIGNED_CRITICAL : NativeWindows.MSG_STUDY_CLOSED_UNSIGNED;
                             Logger.Trace($"RVUCounter: Sending CLOSED_UNSIGNED{criticalSuffix} (dialog was shown) for '{_lastNonEmptyAccession}'");
                             NativeWindows.SendToRvuCounter(msgType, _lastNonEmptyAccession);
+                            _pipeService.SendStudyEvent(new StudyEventMessage("study_event", "unsigned", _lastNonEmptyAccession, hasCritical));
                         }
                         else
                         {
@@ -1729,6 +1778,7 @@ public class ActionController : IDisposable
                             var msgType = hasCritical ? NativeWindows.MSG_STUDY_SIGNED_CRITICAL : NativeWindows.MSG_STUDY_SIGNED;
                             Logger.Trace($"RVUCounter: Sending SIGNED{criticalSuffix} (manual) for '{_lastNonEmptyAccession}'");
                             NativeWindows.SendToRvuCounter(msgType, _lastNonEmptyAccession);
+                            _pipeService.SendStudyEvent(new StudyEventMessage("study_event", "signed", _lastNonEmptyAccession, hasCritical));
                         }
                     }
 
@@ -1736,7 +1786,8 @@ public class ActionController : IDisposable
                     _currentAccessionSigned = false;
                     _discardDialogShownForCurrentAccession = false;
                     _processReportPressedForCurrentAccession = false;
-                    _criticalNoteCreatedForAccession = null;
+                    // Note: _criticalNoteCreatedForAccessions is session-scoped, NOT reset on study change
+                    // This prevents duplicate notes caused by transient accession-null scrape glitches
                     _baselineReport = null;
                     _lastPopupReportText = null;
                     _needsBaselineCapture = _config.ShowReportChanges; // Will capture on next scrape with report text
@@ -1745,6 +1796,11 @@ public class ActionController : IDisposable
                     _templateMismatchActive = false;
                     _genderMismatchActive = false;
                     _strokeDetectedActive = false;
+
+                    // Reset Ignore Inpatient Drafted state
+                    _macrosCompleteForCurrentAccession = false;
+                    _autoFixCompleteForCurrentAccession = false;
+                    _ctrlASentForCurrentAccession = false;
 
                     // Update tracking - only update to new non-empty accession
                     if (!studyClosed)
@@ -1794,7 +1850,9 @@ public class ActionController : IDisposable
                         _searchingForImpression = false;
                         _impressionFromProcessReport = false;
 
-                        // Stroke detection - check Clario Priority/Class for stroke protocol
+                        // Always extract Clario Priority/Class for pipe broadcasts
+                        // Stroke detection UI logic only runs if that feature is enabled
+                        ExtractClarioPriorityAndClass(currentAccession);
                         if (_config.StrokeDetectionEnabled)
                         {
                             PerformStrokeDetection(currentAccession, reportText);
@@ -2080,28 +2138,29 @@ public class ActionController : IDisposable
         "NIH stroke scale", "NIHSS"
     };
 
-    private void PerformStrokeDetection(string? accession, string? reportText)
+    /// <summary>
+    /// Extract Clario Priority/Class for pipe broadcasts. Called on every study change.
+    /// </summary>
+    private void ExtractClarioPriorityAndClass(string? accession)
     {
-        bool isStroke = false;
-
-        // Check Clario Priority/Class for stroke protocol
         try
         {
             var priorityData = _automationService.ExtractClarioPriorityAndClass(accession);
             if (priorityData != null)
             {
-                Logger.Trace($"Stroke detection: Priority='{priorityData.Priority}', Class='{priorityData.Class}'");
-                isStroke = _automationService.IsStrokeStudy;
-            }
-            else
-            {
-                Logger.Trace("Stroke detection: Could not extract Clario Priority/Class");
+                Logger.Trace($"Extracted Clario Priority='{priorityData.Priority}', Class='{priorityData.Class}'");
             }
         }
         catch (Exception ex)
         {
-            Logger.Trace($"Stroke detection Clario error: {ex.Message}");
+            Logger.Trace($"ExtractClarioPriorityAndClass error: {ex.Message}");
         }
+    }
+
+    private void PerformStrokeDetection(string? accession, string? reportText)
+    {
+        // Use already-extracted values from ExtractClarioPriorityAndClass()
+        bool isStroke = _automationService.IsStrokeStudy;
 
         // Also check clinical history for stroke keywords if enabled
         if (!isStroke && _config.StrokeDetectionUseClinicalHistory && !string.IsNullOrEmpty(reportText))
@@ -2182,7 +2241,7 @@ public class ActionController : IDisposable
             return false;
         }
 
-        if (_criticalNoteCreatedForAccession == accession)
+        if (_criticalNoteCreatedForAccessions.Contains(accession))
         {
             Logger.Trace($"CreateStrokeCriticalNote: Note already created for {accession}");
             return false; // Already created
@@ -2191,7 +2250,11 @@ public class ActionController : IDisposable
         var success = _automationService.CreateCriticalCommunicationNote();
         if (success)
         {
-            _criticalNoteCreatedForAccession = accession;
+            _criticalNoteCreatedForAccessions.Add(accession);
+
+            // Track critical study for session-based tracker
+            TrackCriticalStudy();
+
             _mainForm.Invoke(() =>
             {
                 _mainForm.ShowStatusToast("Critical note created", 3000);
@@ -2206,7 +2269,7 @@ public class ActionController : IDisposable
     /// </summary>
     public bool HasCriticalNoteForAccession(string? accession)
     {
-        return accession != null && _criticalNoteCreatedForAccession == accession;
+        return accession != null && _criticalNoteCreatedForAccessions.Contains(accession);
     }
 
     #endregion
@@ -2253,6 +2316,64 @@ public class ActionController : IDisposable
 
     #endregion
 
+    #region Ignore Inpatient Drafted
+
+    /// <summary>
+    /// Check if both auto-insertions (macros and clinical history auto-fix) have completed
+    /// for an inpatient XR study, and if so, send Ctrl+A to select all text.
+    /// </summary>
+    private void TryTriggerIgnoreInpatientDrafted()
+    {
+        if (_ctrlASentForCurrentAccession) return;
+
+        // Wait for whichever features are enabled to complete
+        // If macros enabled, must be done. If auto-fix enabled, must be done.
+        if (_config.MacrosEnabled && !_macrosCompleteForCurrentAccession) return;
+        if (_config.AutoFixClinicalHistory && !_autoFixCompleteForCurrentAccession) return;
+
+        // Check if study matches criteria
+        if (!_config.ShouldIgnoreInpatientDrafted(
+                _automationService.LastClarioClass,
+                _automationService.LastDescription))
+            return;
+
+        _ctrlASentForCurrentAccession = true;
+        Logger.Trace("Ignore Inpatient Drafted: Sending Ctrl+A");
+
+        // Small delay to ensure paste operations settle
+        Thread.Sleep(100);
+
+        // Use paste lock to prevent race conditions
+        lock (PasteLock)
+        {
+            NativeWindows.ActivateMosaicForcefully();
+            Thread.Sleep(50);
+            NativeWindows.SendCtrlA();
+        }
+    }
+
+    /// <summary>
+    /// Mark that macros are complete for current accession (for Ignore Inpatient Drafted feature).
+    /// Call this after macros are inserted OR when no macros match the study.
+    /// </summary>
+    public void MarkMacrosCompleteForCurrentAccession()
+    {
+        _macrosCompleteForCurrentAccession = true;
+        TryTriggerIgnoreInpatientDrafted();
+    }
+
+    /// <summary>
+    /// Mark that clinical history auto-fix is complete for current accession (for Ignore Inpatient Drafted feature).
+    /// Call this after auto-fix pastes OR when auto-fix is not needed.
+    /// </summary>
+    public void MarkAutoFixCompleteForCurrentAccession()
+    {
+        _autoFixCompleteForCurrentAccession = true;
+        TryTriggerIgnoreInpatientDrafted();
+    }
+
+    #endregion
+
 
     public void Dispose()
     {
@@ -2264,5 +2385,6 @@ public class ActionController : IDisposable
         _hidService?.Dispose();
         _keyboardService?.Dispose();
         _automationService.Dispose();
+        _pipeService?.Dispose();
     }
 }

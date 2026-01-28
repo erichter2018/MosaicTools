@@ -45,6 +45,8 @@ public class PickListPopupForm : Form
     private Stack<string>? _savedBreadcrumbStack;
     private List<PickListNode>? _savedCurrentNodes;
     private string _treeAccumulatedText = "";  // Prefix text from tree node before builder
+    private string? _savedTopLevelLabel;  // Top-level label for structured mode accumulation
+    private TreePickListStyle _savedTreeStyle;  // Tree style of the source list
 
     // Embedded tree state (when builder option references a tree pick list)
     private PickListConfig? _embeddedTreeSourceList;  // The builder list we came from
@@ -864,6 +866,8 @@ public class PickListPopupForm : Form
                 _savedBreadcrumbStack = new Stack<string>(_breadcrumbStack.Reverse());
                 _savedCurrentNodes = _currentNodes;
                 _treeAccumulatedText = "";  // Builder refs don't use prefix text
+                _savedTopLevelLabel = GetCurrentTopLevelLabel();
+                _savedTreeStyle = _currentList?.TreeStyle ?? TreePickListStyle.Freeform;
 
                 // Switch to the builder list
                 _currentList = builderList;
@@ -1019,15 +1023,24 @@ public class PickListPopupForm : Form
         // Check if we were in embedded builder mode (came from a tree node)
         if (_embeddedBuilderSourceList != null)
         {
-            // Embedded mode: insert immediately (original behavior)
-            SavePosition();
-            _onItemSelected(_builderAccumulatedText);
+            // Embedded mode: accumulate result as part of tree selections
+            var resultText = _builderAccumulatedText;
+
+            if (_savedTreeStyle == TreePickListStyle.Structured && _savedTopLevelLabel != null)
+            {
+                _structuredSelections[_savedTopLevelLabel] = (_savedTopLevelLabel, resultText);
+            }
+            else
+            {
+                _freeformSelections.Add(resultText);
+            }
 
             // Return to tree mode - reset to root of the source tree list
             _currentList = _embeddedBuilderSourceList;
             _navigationStack.Clear();
             _breadcrumbStack.Clear();
             _currentNodes = _currentList.Nodes;
+            _currentTopLevelLabel = null;
 
             // Clear embedded state
             _embeddedBuilderSourceList = null;
@@ -1035,6 +1048,7 @@ public class PickListPopupForm : Form
             _savedBreadcrumbStack = null;
             _savedCurrentNodes = null;
             _treeAccumulatedText = "";
+            _savedTopLevelLabel = null;
         }
         else
         {
@@ -1126,12 +1140,12 @@ public class PickListPopupForm : Form
 
             var label = kvp.Value.label.ToUpperInvariant();
             if (_currentList?.StructuredTextPlacement == StructuredTextPlacement.BelowHeading)
-                lines.Add($"{label}:\n  {text}");
+                lines.Add($"{label}:\n{text}");
             else
                 lines.Add($"{label}: {text}");
         }
 
-        var separator = (_currentList?.StructuredBlankLines == true) ? "\n\n" : "\n";
+        var separator = (_currentList?.StructuredBlankLines == true) ? "\n \n" : "\n";
         _previewLabel.Text = string.Join(separator, lines);
     }
 
@@ -1202,12 +1216,12 @@ public class PickListPopupForm : Form
                 var text = kvp.Value.text;
 
                 if (_currentList.StructuredTextPlacement == StructuredTextPlacement.BelowHeading)
-                    lines.Add($"{label}:\n  {text}");
+                    lines.Add($"{label}:\n{text}");
                 else
                     lines.Add($"{label}: {text}");
             }
 
-            var separator = _currentList.StructuredBlankLines ? "\n\n" : "\n";
+            var separator = _currentList.StructuredBlankLines ? "\n \n" : "\n";
             formattedText = string.Join(separator, lines);
         }
         else

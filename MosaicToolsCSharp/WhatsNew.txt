@@ -1,3 +1,6 @@
+3.0.1
+- Mosaic 2.0.3 compatibility while maintaining 2.0.2 support
+
 3.0.0
 - Settings tooltips: hover over "?" icons for explanations of every feature
 - "Show tooltips" checkbox in General tab (on by default)

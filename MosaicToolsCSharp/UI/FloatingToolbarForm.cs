@@ -199,7 +199,14 @@ public class FloatingToolbarForm : Form
             btn.FlatAppearance.MouseOverBackColor = Color.FromArgb(51, 51, 51);
             
             var keystroke = btnCfg.Keystroke;
-            btn.Click += (_, _) => SendKeysToInteleViewer(keystroke);
+            var action = btnCfg.Action;
+            btn.Click += (_, _) =>
+            {
+                if (!string.IsNullOrEmpty(action) && action != Actions.None)
+                    _controller.TriggerAction(action, "FloatingToolbar");
+                else
+                    SendKeysToInteleViewer(keystroke);
+            };
             
             borderPanel.Padding = new Padding(1);
             borderPanel.Controls.Add(btn);

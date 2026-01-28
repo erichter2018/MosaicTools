@@ -56,6 +56,7 @@ public class ClinicalHistoryForm : Form
     // Session-wide clinical history fix tracking callbacks (set by MainForm)
     private Func<string?, bool>? _hasClinicalHistoryFixed;
     private Action<string?>? _markClinicalHistoryFixed;
+    private Action? _onAutoFixComplete;
 
     // Track displayed text and whether it was "fixed" from original
     private string? _currentDisplayedText;
@@ -327,19 +328,27 @@ public class ClinicalHistoryForm : Form
         if (!_config.AutoFixClinicalHistory)
         {
             Logger.Trace("Auto-fix: disabled in config");
+            // Mark auto-fix complete (it's not enabled, so nothing to wait for)
+            _onAutoFixComplete?.Invoke();
             return;
         }
 
         if (string.IsNullOrWhiteSpace(cleaned))
         {
             Logger.Trace("Auto-fix: cleaned is empty");
+            // Mark auto-fix complete (nothing to fix)
+            _onAutoFixComplete?.Invoke();
             return;
         }
 
         Logger.Trace($"Auto-fix check: wasFixed={wasFixed}, accession='{accession}', preCleaned='{preCleaned?.Substring(0, Math.Min(50, preCleaned?.Length ?? 0))}...'");
 
         if (!wasFixed)
+        {
+            // Mark auto-fix complete (text didn't need fixing)
+            _onAutoFixComplete?.Invoke();
             return;
+        }
 
         // Prevent loops: check session-wide tracking first (if callbacks set), then fall back to local
         if (_hasClinicalHistoryFixed != null)
@@ -348,6 +357,8 @@ public class ClinicalHistoryForm : Form
             if (_hasClinicalHistoryFixed(accession))
             {
                 Logger.Trace($"Auto-fix: already fixed accession {accession} (session tracking)");
+                // Mark auto-fix complete (already fixed earlier)
+                _onAutoFixComplete?.Invoke();
                 return;
             }
         }
@@ -357,6 +368,8 @@ public class ClinicalHistoryForm : Form
             if (!string.IsNullOrEmpty(accession) && string.Equals(_lastAutoFixedAccession, accession, StringComparison.Ordinal))
             {
                 Logger.Trace($"Auto-fix: already fixed accession {accession} (local tracking)");
+                // Mark auto-fix complete (already fixed earlier)
+                _onAutoFixComplete?.Invoke();
                 return;
             }
         }
@@ -670,6 +683,14 @@ public class ClinicalHistoryForm : Form
     }
 
     /// <summary>
+    /// Set callback to notify when auto-fix paste completes (for Ignore Inpatient Drafted feature).
+    /// </summary>
+    public void SetAutoFixCompleteCallback(Action callback)
+    {
+        _onAutoFixComplete = callback;
+    }
+
+    /// <summary>
     /// Returns whether currently showing an alert (as opposed to clinical history).
     /// </summary>
     public bool IsShowingAlert => _showingAlert;
@@ -932,6 +953,8 @@ public class ClinicalHistoryForm : Form
                     {
                         Invoke(() => SetHistoryFixInserted(true));
                         Invoke(() => ShowToast("Corrected history pasted"));
+                        // Notify that auto-fix paste is complete (for Ignore Inpatient Drafted)
+                        _onAutoFixComplete?.Invoke();
                     }
                     else
                     {

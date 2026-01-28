@@ -63,10 +63,10 @@ public static class NativeWindows
     }
     
     public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-    
+
     [DllImport("user32.dll")]
     public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-    
+
     #endregion
     
     #region Keyboard Simulation
@@ -112,6 +112,20 @@ public static class NativeWindows
         keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
         keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
         keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+    }
+
+    /// <summary>
+    /// Send Ctrl+A to select all text.
+    /// </summary>
+    public static void SendCtrlA()
+    {
+        keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(20);
+        keybd_event((byte)'A', 0, 0, UIntPtr.Zero);
+        Thread.Sleep(20);
+        keybd_event((byte)'A', 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        Thread.Sleep(10);
+        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
     }
 
     /// <summary>

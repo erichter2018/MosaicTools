@@ -121,6 +121,14 @@ public class MacroEditorForm : Form
         var cloneBtn = CreateButton("Clone", x + 140, y - 3, 50);
         cloneBtn.Click += (s, e) => CloneMacro();
         Controls.Add(cloneBtn);
+
+        var moveUpBtn = CreateButton("^", x + 195, y - 3, 26);
+        moveUpBtn.Click += (s, e) => MoveMacro(-1);
+        Controls.Add(moveUpBtn);
+
+        var moveDownBtn = CreateButton("v", x + 225, y - 3, 26);
+        moveDownBtn.Click += (s, e) => MoveMacro(1);
+        Controls.Add(moveDownBtn);
         y += 25;
 
         // List box
@@ -426,6 +434,19 @@ public class MacroEditorForm : Form
         RefreshListBox();
         if (_macros.Count > 0)
             _listBox.SelectedIndex = Math.Min(idx, _macros.Count - 1);
+    }
+
+    private void MoveMacro(int dir)
+    {
+        if (_selectedMacro == null) return;
+        var idx = _macros.IndexOf(_selectedMacro);
+        var newIdx = idx + dir;
+        if (newIdx < 0 || newIdx >= _macros.Count) return;
+
+        _macros.RemoveAt(idx);
+        _macros.Insert(newIdx, _selectedMacro);
+        RefreshListBox();
+        _listBox.SelectedIndex = newIdx;
     }
 
     private void CloneMacro()

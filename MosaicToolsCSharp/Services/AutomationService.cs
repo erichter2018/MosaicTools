@@ -56,8 +56,6 @@ public class AutomationService : IDisposable
     // Last scraped MRN (Medical Record Number) - required for XML file drop
     public string? LastMrn { get; private set; }
 
-    // Debug flag
-    private bool _hasLoggedDebugInfo = false;
     
     public AutomationService()
     {
@@ -619,155 +617,76 @@ public class AutomationService : IDisposable
 
         try
         {
-            // Step 1: Find and click "Create" button
-            FlaUI.Core.AutomationElements.AutomationElement? createBtn = null;
-
-            // Try finding "Create" element (any control type)
-            createBtn = clarioWindow.FindFirstDescendant(cf =>
+            // Step 1: Find and click "Create" button (targeted search)
+            var createBtn = clarioWindow.FindFirstDescendant(cf =>
                 cf.ByName("Create", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
 
-            if (createBtn != null)
+            if (createBtn == null)
             {
-                Logger.Trace($"CreateCriticalCommunicationNote: Found Create - Type={createBtn.ControlType}, Name='{createBtn.Name}'");
-            }
-            else
-            {
-                // Log elements to help debug
-                Logger.Trace("CreateCriticalCommunicationNote: Create button not found. Logging elements...");
-                var allElements = clarioWindow.FindAllDescendants();
-                var namedElements = new System.Collections.Generic.List<string>();
-                foreach (var elem in allElements)
-                {
-                    try
-                    {
-                        var name = elem.Name;
-                        if (!string.IsNullOrEmpty(name) && name.Length < 50)
-                            namedElements.Add($"'{name}'({elem.ControlType})");
-                    }
-                    catch { }
-                }
-                Logger.Trace($"CreateCriticalCommunicationNote: Elements ({namedElements.Count}): {string.Join(", ", namedElements.Take(50))}");
+                Logger.Trace("CreateCriticalCommunicationNote: Create button not found");
                 return false;
             }
 
-            // Click Create button
+            Logger.Trace($"CreateCriticalCommunicationNote: Found Create - Type={createBtn.ControlType}");
             ClickElement(createBtn, "Create");
-            Thread.Sleep(200); // Wait for menu/dialog to appear
+            Thread.Sleep(150); // Brief wait for menu to appear
 
-            // Step 2: Find and click "Communication Note" option from the menu
-            // The menu shows as a Group containing items like "Communication Note", "Patient Note", etc.
-            // We need to find the specific item, not the container Group
-            FlaUI.Core.AutomationElements.AutomationElement? commNoteBtn = null;
+            // Step 2: Find and click "Communication Note" (targeted search)
+            // Try Clario window first, then desktop (popup might be separate)
+            var commNoteBtn = clarioWindow.FindFirstDescendant(cf =>
+                cf.ByName("Communication Note"));
 
-            // Re-search the window for the menu items
-            var menuElements = clarioWindow.FindAllDescendants();
-
-            // Look for exact match "Communication Note" (not a group containing multiple items)
-            foreach (var elem in menuElements)
-            {
-                try
-                {
-                    var name = elem.Name?.Trim();
-                    if (name == "Communication Note")
-                    {
-                        commNoteBtn = elem;
-                        Logger.Trace($"CreateCriticalCommunicationNote: Found exact match - Type={elem.ControlType}, Name='{elem.Name}'");
-                        break;
-                    }
-                }
-                catch { }
-            }
-
-            // If not found, try desktop (popup might be separate window)
             if (commNoteBtn == null)
             {
+                // Try desktop - popup might be a separate window
                 var desktop = _automation.GetDesktop();
-                var desktopElements = desktop.FindAllDescendants();
-                foreach (var elem in desktopElements)
-                {
-                    try
-                    {
-                        var name = elem.Name?.Trim();
-                        if (name == "Communication Note")
-                        {
-                            commNoteBtn = elem;
-                            Logger.Trace($"CreateCriticalCommunicationNote: Found on desktop - Type={elem.ControlType}, Name='{elem.Name}'");
-                            break;
-                        }
-                    }
-                    catch { }
-                }
+                commNoteBtn = desktop.FindFirstDescendant(cf =>
+                    cf.ByName("Communication Note"));
             }
 
-            // If still not found, log what we see for debugging
             if (commNoteBtn == null)
             {
-                Logger.Trace("CreateCriticalCommunicationNote: Logging menu items after Create click...");
-                var menuItems = new System.Collections.Generic.List<string>();
-                foreach (var elem in menuElements)
-                {
-                    try
-                    {
-                        var name = elem.Name;
-                        if (!string.IsNullOrEmpty(name) &&
-                            (name.Contains("Note", StringComparison.OrdinalIgnoreCase) ||
-                             name.Contains("Communication", StringComparison.OrdinalIgnoreCase)))
-                        {
-                            menuItems.Add($"'{name}'({elem.ControlType})");
-                        }
-                    }
-                    catch { }
-                }
-                Logger.Trace($"CreateCriticalCommunicationNote: Note-related elements: {string.Join("; ", menuItems.Take(20))}");
-                Logger.Trace("CreateCriticalCommunicationNote: Communication Note option not found after clicking Create");
+                Logger.Trace("CreateCriticalCommunicationNote: Communication Note option not found");
                 return false;
             }
 
-            // Click Communication Note
+            Logger.Trace($"CreateCriticalCommunicationNote: Found Communication Note - Type={commNoteBtn.ControlType}");
             ClickElement(commNoteBtn, "Communication Note");
-            Thread.Sleep(500); // Wait for dialog to appear
+            Thread.Sleep(200); // Wait for dialog to appear
 
-            // Step 3: Find and click "Submit" button with retry
-            // Need to find the actual button, not a group containing "Submit" in its name
+            // Step 3: Find and click "Submit" button (targeted search with retry)
             FlaUI.Core.AutomationElements.AutomationElement? submitBtn = null;
 
-            // Retry a few times with short waits (dialog may take time to fully render)
-            for (int retry = 0; retry < 5 && submitBtn == null; retry++)
+            // Retry up to 3 times with short waits
+            for (int retry = 0; retry < 3 && submitBtn == null; retry++)
             {
-                if (retry > 0) Thread.Sleep(300);
+                if (retry > 0) Thread.Sleep(100);
 
-                var submitElements = clarioWindow.FindAllDescendants();
-                foreach (var elem in submitElements)
+                // Try finding Submit button directly
+                submitBtn = clarioWindow.FindFirstDescendant(cf =>
+                    cf.ByName("Submit").And(cf.ByControlType(FlaUI.Core.Definitions.ControlType.Button)));
+
+                // If not found as Button, try other control types
+                if (submitBtn == null)
                 {
-                    try
-                    {
-                        if (elem.Name?.Trim() == "Submit" &&
-                            (elem.ControlType == FlaUI.Core.Definitions.ControlType.Button ||
-                             elem.ControlType == FlaUI.Core.Definitions.ControlType.Hyperlink ||
-                             elem.ControlType == FlaUI.Core.Definitions.ControlType.Text))
-                        {
-                            submitBtn = elem;
-                            break;
-                        }
-                    }
-                    catch { }
+                    submitBtn = clarioWindow.FindFirstDescendant(cf =>
+                        cf.ByName("Submit").And(cf.ByControlType(FlaUI.Core.Definitions.ControlType.Hyperlink)));
                 }
 
-                if (submitBtn != null) break;
-                Logger.Trace($"CreateCriticalCommunicationNote: Submit not found on attempt {retry + 1}, retrying...");
+                if (submitBtn == null)
+                {
+                    submitBtn = clarioWindow.FindFirstDescendant(cf =>
+                        cf.ByName("Submit").And(cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text)));
+                }
             }
 
-            if (submitBtn != null)
-            {
-                Logger.Trace($"CreateCriticalCommunicationNote: Found Submit - Type={submitBtn.ControlType}, Name='{submitBtn.Name}'");
-            }
-            else
+            if (submitBtn == null)
             {
                 Logger.Trace("CreateCriticalCommunicationNote: Submit button not found after retries");
                 return false;
             }
 
-            // Click Submit
+            Logger.Trace($"CreateCriticalCommunicationNote: Found Submit - Type={submitBtn.ControlType}");
             ClickElement(submitBtn, "Submit");
 
             Logger.Trace("CreateCriticalCommunicationNote: SUCCESS - note created");
@@ -789,12 +708,12 @@ public class AutomationService : IDisposable
         if (invokePattern != null)
         {
             invokePattern.Invoke();
-            Logger.Trace($"CreateCriticalCommunicationNote: Clicked {name} via Invoke");
+            Logger.Trace($"ClickElement: Clicked {name} via Invoke");
         }
         else
         {
             element.Click();
-            Logger.Trace($"CreateCriticalCommunicationNote: Clicked {name} via Click()");
+            Logger.Trace($"ClickElement: Clicked {name} via Click()");
         }
     }
 
@@ -1020,7 +939,7 @@ public class AutomationService : IDisposable
                     _cachedSlimHubWindow = null;
                 }
             }
-            
+
             // Find Mosaic window if not cached
             if (_cachedSlimHubWindow == null)
             {
@@ -1071,31 +990,36 @@ public class AutomationService : IDisposable
 
                 if (currentStudyElement != null)
                 {
-                    // Get parent and find all Text children
+                    // Get parent and find all children (Text in 2.0.2, Button in 2.0.3)
                     var parent = currentStudyElement.Parent;
                     if (parent != null)
                     {
-                        var textElements = parent.FindAllChildren(cf =>
-                            cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
+                        var allChildren = parent.FindAllChildren();
 
                         bool foundCurrentStudy = false;
-                        foreach (var textEl in textElements)
+                        foreach (var child in allChildren)
                         {
-                            if (foundCurrentStudy)
+                            try
                             {
-                                // This is the element after "Current Study" - should be accession
-                                var accession = textEl.Name?.Trim();
-                                if (!string.IsNullOrWhiteSpace(accession) && accession != "Current Study")
+                                if (foundCurrentStudy)
                                 {
+                                    var accession = child.Name?.Trim();
+                                    // Skip status words and empty elements
+                                    if (string.IsNullOrWhiteSpace(accession) || accession == "Current Study" ||
+                                        accession == "DRAFTED" || accession == "UNDRAFTED" || accession == "SIGNED")
+                                    {
+                                        continue; // Keep looking for accession
+                                    }
                                     LastAccession = accession;
                                     Logger.Trace($"Found Accession: {LastAccession}");
+                                    break;
                                 }
-                                break;
+                                if (child.Name == "Current Study")
+                                {
+                                    foundCurrentStudy = true;
+                                }
                             }
-                            if (textEl.Name == "Current Study")
-                            {
-                                foundCurrentStudy = true;
-                            }
+                            catch { continue; }
                         }
                     }
                 }
@@ -1105,74 +1029,142 @@ public class AutomationService : IDisposable
                 Logger.Trace($"Accession extraction error: {ex.Message}");
             }
 
-            // Extract patient gender, patient name, and site code: look for patterns in text elements
+
+            // Extract patient info from all descendants in a single traversal.
+            // Handles both Mosaic 2.0.2 (combined Text "Description: XR CHEST") and
+            // 2.0.3 (separate Text "Description:" + Button "XR CHEST") in one pass.
+            // BEGIN Mosaic 2.0.2 compat: When 2.0.2 is retired, the pendingInfoField/Button
+            // logic becomes the only path and the Text-based regex extraction can be removed.
             try
             {
-                var textElements = _cachedSlimHubWindow.FindAllDescendants(cf =>
-                    cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
+                var allInfoElements = _cachedSlimHubWindow.FindAllDescendants();
+                string? pendingInfoField = null; // Tracks label→button pairs for 2.0.3
 
-                foreach (var textEl in textElements)
+                foreach (var el in allInfoElements)
                 {
-                    var text = textEl.Name ?? "";
-                    var textUpper = text.ToUpperInvariant();
-
-                    // Gender extraction
-                    if (LastPatientGender == null)
+                    try
                     {
-                        if (textUpper.StartsWith("MALE, AGE") || textUpper.StartsWith("MALE,AGE"))
+                        var ctrlType = el.ControlType;
+                        var name = el.Name ?? "";
+
+                        if (ctrlType == FlaUI.Core.Definitions.ControlType.Text)
                         {
-                            LastPatientGender = "Male";
-                            Logger.Trace($"Found Patient Gender: Male");
+                            var textUpper = name.ToUpperInvariant();
+
+                            // Gender extraction
+                            if (LastPatientGender == null)
+                            {
+                                if (textUpper.StartsWith("MALE, AGE") || textUpper.StartsWith("MALE,AGE"))
+                                {
+                                    LastPatientGender = "Male";
+                                    Logger.Trace($"Found Patient Gender: Male");
+                                }
+                                else if (textUpper.StartsWith("FEMALE, AGE") || textUpper.StartsWith("FEMALE,AGE"))
+                                {
+                                    LastPatientGender = "Female";
+                                    Logger.Trace($"Found Patient Gender: Female");
+                                }
+                            }
+
+                            // Site code extraction: pattern "Site Code: XXX" (2.0.2: value in same element)
+                            if (LastSiteCode == null)
+                            {
+                                var siteMatch = Regex.Match(name, @"Site\s*Code:\s*([A-Z]{2,5})", RegexOptions.IgnoreCase);
+                                if (siteMatch.Success)
+                                {
+                                    LastSiteCode = siteMatch.Groups[1].Value.ToUpperInvariant();
+                                    Logger.Trace($"Found Site Code: {LastSiteCode}");
+                                }
+                            }
+
+                            // MRN extraction: pattern "MRN: XXX" (2.0.2: value in same element)
+                            if (LastMrn == null)
+                            {
+                                var mrnMatch = Regex.Match(name, @"MRN:\s*([A-Z0-9]{5,20})", RegexOptions.IgnoreCase);
+                                if (mrnMatch.Success)
+                                {
+                                    LastMrn = mrnMatch.Groups[1].Value.ToUpperInvariant();
+                                    Logger.Trace($"Found MRN: {LastMrn}");
+                                }
+                            }
+
+                            // Patient name extraction
+                            if (LastPatientName == null && IsPatientNameCandidate(textUpper))
+                            {
+                                LastPatientName = ToTitleCase(textUpper);
+                                Logger.Trace($"Found Patient Name: {LastPatientName}");
+                            }
+
+                            // Description extraction (2.0.2: "Description: CT ABDOMEN PELVIS...")
+                            if (LastDescription == null && name.StartsWith("Description:", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var desc = name.Substring("Description:".Length).Trim();
+                                if (!string.IsNullOrEmpty(desc))
+                                {
+                                    LastDescription = desc;
+                                    Logger.Trace($"Found Description: {LastDescription}");
+                                }
+                            }
+
+                            // Mosaic 2.0.3: Track label-only Text elements for button-based extraction.
+                            // In 2.0.3, "Description:" is a separate element from the value Button.
+                            var trimmed = name.TrimEnd();
+                            if (string.IsNullOrEmpty(LastDescription) && trimmed.Equals("Description:", StringComparison.OrdinalIgnoreCase))
+                                pendingInfoField = "Description";
+                            else if (LastMrn == null && trimmed.Equals("MRN:", StringComparison.OrdinalIgnoreCase))
+                                pendingInfoField = "MRN";
+                            else if (LastSiteCode == null && trimmed.Equals("Site Code:", StringComparison.OrdinalIgnoreCase))
+                                pendingInfoField = "SiteCode";
+                            else
+                                pendingInfoField = null;
                         }
-                        else if (textUpper.StartsWith("FEMALE, AGE") || textUpper.StartsWith("FEMALE,AGE"))
+                        else if (ctrlType == FlaUI.Core.Definitions.ControlType.Button && pendingInfoField != null)
                         {
-                            LastPatientGender = "Female";
-                            Logger.Trace($"Found Patient Gender: Female");
+                            // Mosaic 2.0.3: Button value following a label Text element
+                            var value = name.Trim();
+                            if (!string.IsNullOrWhiteSpace(value))
+                            {
+                                switch (pendingInfoField)
+                                {
+                                    case "Description":
+                                        if (string.IsNullOrEmpty(LastDescription))
+                                        {
+                                            LastDescription = value;
+                                            Logger.Trace($"Found Description (v2.0.3): {value}");
+                                        }
+                                        break;
+                                    case "MRN":
+                                        if (LastMrn == null)
+                                        {
+                                            LastMrn = value.ToUpperInvariant();
+                                            Logger.Trace($"Found MRN (v2.0.3): {LastMrn}");
+                                        }
+                                        break;
+                                    case "SiteCode":
+                                        if (LastSiteCode == null)
+                                        {
+                                            LastSiteCode = value.ToUpperInvariant();
+                                            Logger.Trace($"Found Site Code (v2.0.3): {LastSiteCode}");
+                                        }
+                                        break;
+                                }
+                            }
+                            pendingInfoField = null;
                         }
-                    }
-
-                    // Site code extraction: pattern "Site Code: XXX"
-                    if (LastSiteCode == null)
-                    {
-                        var siteMatch = Regex.Match(text, @"Site\s*Code:\s*([A-Z]{2,5})", RegexOptions.IgnoreCase);
-                        if (siteMatch.Success)
+                        else
                         {
-                            LastSiteCode = siteMatch.Groups[1].Value.ToUpperInvariant();
-                            Logger.Trace($"Found Site Code: {LastSiteCode}");
+                            pendingInfoField = null; // Reset on non-Text/non-Button elements
                         }
                     }
-
-                    // MRN extraction: pattern "MRN: XXX" (alphanumeric, 5-20 chars)
-                    if (LastMrn == null)
-                    {
-                        var mrnMatch = Regex.Match(text, @"MRN:\s*([A-Z0-9]{5,20})", RegexOptions.IgnoreCase);
-                        if (mrnMatch.Success)
-                        {
-                            LastMrn = mrnMatch.Groups[1].Value.ToUpperInvariant();
-                            Logger.Trace($"Found MRN: {LastMrn}");
-                        }
-                    }
-
-                    // Patient name extraction: all-caps 2-4 word pattern (e.g., "LASTNAME FIRSTNAME" or "SMITH JOHN MICHAEL")
-                    if (LastPatientName == null && IsPatientNameCandidate(textUpper))
-                    {
-                        LastPatientName = ToTitleCase(textUpper);
-                        Logger.Trace($"Found Patient Name: {LastPatientName}");
-                    }
-
-                    // Description extraction: "Description: CT ABDOMEN PELVIS..."
-                    // IMPORTANT: Always extract this regardless of checkDraftedStatus - macros need it!
-                    if (LastDescription == null && text.StartsWith("Description:", StringComparison.OrdinalIgnoreCase))
-                    {
-                        LastDescription = text.Substring("Description:".Length).Trim();
-                        Logger.Trace($"Found Description: {LastDescription}");
-                    }
+                    catch { continue; }
                 }
             }
             catch (Exception ex)
             {
-                Logger.Trace($"Gender/PatientName/SiteCode/Description extraction error: {ex.Message}");
+                Logger.Trace($"Patient info extraction error: {ex.Message}");
             }
+
+            // END Mosaic 2.0.2 compat
 
             if (checkDraftedStatus)
             {
@@ -1206,8 +1198,12 @@ public class AutomationService : IDisposable
                              el.Name?.StartsWith("Description:", StringComparison.OrdinalIgnoreCase) == true)
                     {
                         // Extract just the description text after "Description: "
-                        LastDescription = el.Name.Substring("Description:".Length).Trim();
-                        Logger.Trace($"Found Description: {LastDescription}");
+                        var descVal = el.Name.Substring("Description:".Length).Trim();
+                        if (!string.IsNullOrEmpty(descVal))  // Mosaic 2.0.3: label is separate from value
+                        {
+                            LastDescription = descVal;
+                            Logger.Trace($"Found Description: {LastDescription}");
+                        }
                     }
                 }
             }
@@ -1219,12 +1215,47 @@ public class AutomationService : IDisposable
                     .And(cf.ByName("Report", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring)));
             }
 
+            // BEGIN Mosaic 2.0.2 compat: In 2.0.3, the Report Document is named
+            // "Report {id} | RADPAIR" instead of just "Report". The substring search above
+            // should match, but if it doesn't (e.g., cross-iframe accessibility issues),
+            // fall back to finding any non-SlimHub Document element.
+            // Remove this block when Mosaic 2.0.2 is fully retired.
+            if (reportDoc == null)
+            {
+                try
+                {
+                    var documents = _cachedSlimHubWindow.FindAllDescendants(cf =>
+                        cf.ByControlType(FlaUI.Core.Definitions.ControlType.Document));
+
+                    foreach (var doc in documents)
+                    {
+                        try
+                        {
+                            var docName = doc.Name ?? "";
+                            if (!docName.Equals("SlimHub", StringComparison.OrdinalIgnoreCase) &&
+                                !string.IsNullOrWhiteSpace(docName))
+                            {
+                                reportDoc = doc;
+                                Logger.Trace($"GetFinalReportFast: Found Report Document (v2.0.3 fallback): '{docName}'");
+                                break;
+                            }
+                        }
+                        catch { continue; }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Trace($"GetFinalReportFast: v2.0.3 Document search error: {ex.Message}");
+                }
+            }
+            // END Mosaic 2.0.2 compat
+
             if (reportDoc == null)
             {
                 Logger.Trace($"GetFinalReportFast: Report Document not found ({sw.ElapsedMilliseconds}ms)");
                 return null;
             }
-            
+
             // Strategy from Python: Look for ProseMirror editor
             // This is robust for Tiptap editors used in Mosaic
             var flowDoc = reportDoc; // Start search from the document
@@ -1259,6 +1290,28 @@ public class AutomationService : IDisposable
                         if (txtPattern != null) text = txtPattern.DocumentRange.GetText(-1);
                     }
 
+                    // Mosaic 2.0.3: ProseMirror Name is empty; content is in child Text elements
+                    if (string.IsNullOrWhiteSpace(text))
+                    {
+                        try
+                        {
+                            var childTexts = candidate.FindAllDescendants(cf =>
+                                cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
+                            if (childTexts.Length > 0)
+                            {
+                                var sb = new System.Text.StringBuilder();
+                                foreach (var ct in childTexts)
+                                {
+                                    var childName = ct.Name;
+                                    if (!string.IsNullOrWhiteSpace(childName))
+                                        sb.AppendLine(childName);
+                                }
+                                text = sb.ToString();
+                            }
+                        }
+                        catch { }
+                    }
+
                     if (string.IsNullOrWhiteSpace(text)) continue;
 
                     // MUST start with "EXAM:" to be the correct final report box
@@ -1287,8 +1340,72 @@ public class AutomationService : IDisposable
                     LastTemplateName = ExtractTemplateName(bestText);
                     return bestText;
                 }
+
+                // Mosaic 2.0.3 fallback: EXAM: heading may be absent (e.g., addendum view).
+                // Pick the ProseMirror with the most report keywords, ignoring EXAM: requirement.
+                if (maxScore <= 0)
+                {
+                    string bestFallback = "";
+                    int bestFallbackScore = 0;
+                    foreach (var candidate in candidates)
+                    {
+                        string text = candidate.Name ?? "";
+                        if (string.IsNullOrWhiteSpace(text))
+                        {
+                            try
+                            {
+                                var childTexts = candidate.FindAllDescendants(cf =>
+                                    cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
+                                if (childTexts.Length > 0)
+                                {
+                                    var sb = new System.Text.StringBuilder();
+                                    foreach (var ct in childTexts)
+                                    {
+                                        var childName = ct.Name;
+                                        if (!string.IsNullOrWhiteSpace(childName))
+                                            sb.AppendLine(childName);
+                                    }
+                                    text = sb.ToString();
+                                }
+                            }
+                            catch { continue; }
+                        }
+                        if (string.IsNullOrWhiteSpace(text) || text.Length < 50) continue;
+
+                        int score = 0;
+                        foreach (var kw in keywords)
+                        {
+                            if (text.Contains(kw, StringComparison.OrdinalIgnoreCase)) score++;
+                        }
+                        if (score > bestFallbackScore)
+                        {
+                            bestFallbackScore = score;
+                            bestFallback = text;
+                        }
+                    }
+
+                    if (!string.IsNullOrEmpty(bestFallback) && bestFallbackScore > 0)
+                    {
+                        sw.Stop();
+                        int lineCount = bestFallback.Split('\n').Length;
+                        Logger.Trace($"GetFinalReportFast: ProseMirror v2.0.3 fallback SUCCESS in {sw.ElapsedMilliseconds}ms, {lineCount} lines, Score={bestFallbackScore}");
+                        LastFinalReport = bestFallback;
+                        LastTemplateName = ExtractTemplateName(bestFallback);
+                        return bestFallback;
+                    }
+                }
             }
             
+            if (candidates.Length > 0)
+            {
+                try
+                {
+                    var sampleName = candidates[0].Name ?? "";
+                    if (sampleName.Length > 80) sampleName = sampleName.Substring(0, 80);
+                    Logger.Trace($"GetFinalReportFast: ProseMirror candidates found but no EXAM: match. First candidate: '{sampleName}'");
+                }
+                catch { }
+            }
             Logger.Trace($"GetFinalReportFast: ProseMirror search failed (Candidates={candidates.Length}). Proceeding to fallback...");
 
             // FALLBACK: Sibling/Fragment search

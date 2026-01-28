@@ -30,7 +30,10 @@
       "Bash(/c/Users/erik.richter/Desktop/dotnet/dotnet.exe build:*)",
       "Bash(ls:*)",
       "Bash(cmd.exe /c \"taskkill /PID 24256 /F\")",
-      "Bash(c:Userserik.richterDesktopdotnetdotnet.exe publish -c Release -r win-x64 --self-contained)"
+      "Bash(c:Userserik.richterDesktopdotnetdotnet.exe publish -c Release -r win-x64 --self-contained)",
+      "Bash(\"c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe\" build MosaicTools.csproj)",
+      "Bash(Select-Object -Last 15)",
+      "Bash(c:\\\\Users\\\\erik.richter\\\\Desktop\\\\dotnet\\\\dotnet.exe build:*)"
     ]
   }
 }

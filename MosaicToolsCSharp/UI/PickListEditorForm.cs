@@ -278,6 +278,14 @@ public class PickListEditorForm : Form
         var cloneBtn = CreateButton("Clone", x + 155, y - 3, 50);
         cloneBtn.Click += (s, e) => CloneList();
         Controls.Add(cloneBtn);
+
+        var moveListUpBtn = CreateButton("^", x + 210, y - 3, 26);
+        moveListUpBtn.Click += (s, e) => MoveList(-1);
+        Controls.Add(moveListUpBtn);
+
+        var moveListDownBtn = CreateButton("v", x + 240, y - 3, 26);
+        moveListDownBtn.Click += (s, e) => MoveList(1);
+        Controls.Add(moveListDownBtn);
         y += 25;
 
         // List box
@@ -884,8 +892,8 @@ public class PickListEditorForm : Form
         _terminalCheckBox.CheckedChanged += TerminalCheckBox_CheckedChanged;
         _builderModePanel.Controls.Add(_terminalCheckBox);
 
-        // 9-option limit hint
-        var limitHint = CreateLabel("(max 9 options per category)", optX, optPropY + 23);
+        // Option hint
+        var limitHint = CreateLabel("(keys 1-9 select first 9; click/arrow for rest)", optX, optPropY + 23);
         limitHint.ForeColor = Color.FromArgb(100, 100, 100);
         _builderModePanel.Controls.Add(limitHint);
     }
@@ -1008,7 +1016,7 @@ public class PickListEditorForm : Form
         // Hint label
         foreach (Control c in _builderModePanel.Controls)
         {
-            if (c is Label lbl && lbl.Text.StartsWith("(max 9"))
+            if (c is Label lbl && lbl.Text.StartsWith("(keys 1-9"))
                 lbl.Location = new Point(optX, optPropY + 95);
         }
     }
@@ -1218,35 +1226,41 @@ public class PickListEditorForm : Form
     {
         if (_selectedList == null) return;
         _suppressEvents = true;
-        _listEnabledCheck.Checked = _selectedList.Enabled;
-        _listNameBox.Text = _selectedList.Name;
-        _modeCombo.SelectedIndex = _selectedList.Mode == PickListMode.Builder ? 1 : 0;
-        _freeformStyleRadio.Checked = _selectedList.TreeStyle == TreePickListStyle.Freeform;
-        _structuredStyleRadio.Checked = _selectedList.TreeStyle == TreePickListStyle.Structured;
-        _textPlacementCombo.SelectedIndex = _selectedList.StructuredTextPlacement == StructuredTextPlacement.BelowHeading ? 1 : 0;
-        _blankLinesCheck.Checked = _selectedList.StructuredBlankLines;
-        _structuredOptionsPanel.Visible = _selectedList.Mode == PickListMode.Tree && _selectedList.TreeStyle == TreePickListStyle.Structured;
-        _listCriteriaRequiredBox.Text = _selectedList.CriteriaRequired;
-        _listCriteriaAnyOfBox.Text = _selectedList.CriteriaAnyOf;
-        _listCriteriaExcludeBox.Text = _selectedList.CriteriaExclude;
-        _suppressEvents = false;
+        try
+        {
+            _listEnabledCheck.Checked = _selectedList.Enabled;
+            _listNameBox.Text = _selectedList.Name;
+            _modeCombo.SelectedIndex = _selectedList.Mode == PickListMode.Builder ? 1 : 0;
+            _freeformStyleRadio.Checked = _selectedList.TreeStyle == TreePickListStyle.Freeform;
+            _structuredStyleRadio.Checked = _selectedList.TreeStyle == TreePickListStyle.Structured;
+            _textPlacementCombo.SelectedIndex = _selectedList.StructuredTextPlacement == StructuredTextPlacement.BelowHeading ? 1 : 0;
+            _blankLinesCheck.Checked = _selectedList.StructuredBlankLines;
+            _structuredOptionsPanel.Visible = _selectedList.Mode == PickListMode.Tree && _selectedList.TreeStyle == TreePickListStyle.Structured;
+            _listCriteriaRequiredBox.Text = _selectedList.CriteriaRequired;
+            _listCriteriaAnyOfBox.Text = _selectedList.CriteriaAnyOf;
+            _listCriteriaExcludeBox.Text = _selectedList.CriteriaExclude;
+        }
+        finally { _suppressEvents = false; }
         UpdateStructuredTooltip();
     }
 
     private void ClearListProperties()
     {
         _suppressEvents = true;
-        _listEnabledCheck.Checked = false;
-        _listNameBox.Text = "";
-        _modeCombo.SelectedIndex = 0;
-        _freeformStyleRadio.Checked = true;
-        _textPlacementCombo.SelectedIndex = 0;
-        _blankLinesCheck.Checked = false;
-        _structuredOptionsPanel.Visible = false;
-        _listCriteriaRequiredBox.Text = "";
-        _listCriteriaAnyOfBox.Text = "";
-        _listCriteriaExcludeBox.Text = "";
-        _suppressEvents = false;
+        try
+        {
+            _listEnabledCheck.Checked = false;
+            _listNameBox.Text = "";
+            _modeCombo.SelectedIndex = 0;
+            _freeformStyleRadio.Checked = true;
+            _textPlacementCombo.SelectedIndex = 0;
+            _blankLinesCheck.Checked = false;
+            _structuredOptionsPanel.Visible = false;
+            _listCriteriaRequiredBox.Text = "";
+            _listCriteriaAnyOfBox.Text = "";
+            _listCriteriaExcludeBox.Text = "";
+        }
+        finally { _suppressEvents = false; }
     }
 
     #endregion
@@ -1328,39 +1342,44 @@ public class PickListEditorForm : Form
     {
         if (_selectedNode == null) return;
         _suppressEvents = true;
-        _nodeLabelBox.Text = _selectedNode.Label;
-        _nodeTextBox.Text = _selectedNode.Text;
-        _breadcrumbLabel.Text = GetBreadcrumb();
+        try
+        {
+            _nodeLabelBox.Text = _selectedNode.Label;
+            _nodeTextBox.Text = _selectedNode.Text;
+            _breadcrumbLabel.Text = GetBreadcrumb();
 
-        // Set node type radio buttons
-        if (_selectedNode.IsMacroRef)
-        {
-            _nodeTypeMacroRadio.Checked = true;
-            PopulateMacroRefCombo();
+            // Set node type radio buttons
+            if (_selectedNode.IsMacroRef)
+            {
+                _nodeTypeMacroRadio.Checked = true;
+                PopulateMacroRefCombo();
+            }
+            else if (_selectedNode.IsBuilderRef)
+            {
+                _nodeTypeBuilderRadio.Checked = true;
+                PopulateBuilderRefCombo();
+            }
+            else
+            {
+                _nodeTypeTextRadio.Checked = true;
+            }
         }
-        else if (_selectedNode.IsBuilderRef)
-        {
-            _nodeTypeBuilderRadio.Checked = true;
-            PopulateBuilderRefCombo();
-        }
-        else
-        {
-            _nodeTypeTextRadio.Checked = true;
-        }
-
-        _suppressEvents = false;
+        finally { _suppressEvents = false; }
         UpdateNodeTypeUI();
     }
 
     private void ClearNodeProperties()
     {
         _suppressEvents = true;
-        _nodeLabelBox.Text = "";
-        _nodeTextBox.Text = "";
-        _breadcrumbLabel.Text = "";
-        _nodeTypeTextRadio.Checked = true;
-        _nodeRefCombo.Items.Clear();
-        _suppressEvents = false;
+        try
+        {
+            _nodeLabelBox.Text = "";
+            _nodeTextBox.Text = "";
+            _breadcrumbLabel.Text = "";
+            _nodeTypeTextRadio.Checked = true;
+            _nodeRefCombo.Items.Clear();
+        }
+        finally { _suppressEvents = false; }
         UpdateNodeTypeUI();
     }
 
@@ -1656,19 +1675,25 @@ public class PickListEditorForm : Form
     {
         if (_selectedCategory == null) return;
         _suppressEvents = true;
-        _categoryNameBox.Text = _selectedCategory.Name;
-        _separatorBox.Text = _selectedCategory.Separator;
-        _optionsHeader.Text = $"OPTIONS IN: \"{_selectedCategory.Name}\"";
-        _suppressEvents = false;
+        try
+        {
+            _categoryNameBox.Text = _selectedCategory.Name;
+            _separatorBox.Text = _selectedCategory.Separator;
+            _optionsHeader.Text = $"OPTIONS IN: \"{_selectedCategory.Name}\"";
+        }
+        finally { _suppressEvents = false; }
     }
 
     private void ClearCategoryProperties()
     {
         _suppressEvents = true;
-        _categoryNameBox.Text = "";
-        _separatorBox.Text = " ";
-        _optionsHeader.Text = "OPTIONS IN: (select category)";
-        _suppressEvents = false;
+        try
+        {
+            _categoryNameBox.Text = "";
+            _separatorBox.Text = " ";
+            _optionsHeader.Text = "OPTIONS IN: (select category)";
+        }
+        finally { _suppressEvents = false; }
     }
 
     private void CategoryNameBox_TextChanged(object? sender, EventArgs e)
@@ -1790,39 +1815,44 @@ public class PickListEditorForm : Form
     {
         if (_selectedCategory == null || _selectedOptionIndex < 0) return;
         _suppressEvents = true;
-        var opt = _selectedCategory.Options[_selectedOptionIndex];
-        _optionTextBox.Text = opt.Text;
-        _terminalCheckBox.Checked = _selectedCategory.IsTerminal(_selectedOptionIndex);
+        try
+        {
+            var opt = _selectedCategory.Options[_selectedOptionIndex];
+            _optionTextBox.Text = opt.Text;
+            _terminalCheckBox.Checked = _selectedCategory.IsTerminal(_selectedOptionIndex);
 
-        // Set option type radio
-        if (opt.IsMacroRef)
-        {
-            _optTypeMacroRadio.Checked = true;
-            PopulateOptMacroRefCombo();
+            // Set option type radio
+            if (opt.IsMacroRef)
+            {
+                _optTypeMacroRadio.Checked = true;
+                PopulateOptMacroRefCombo();
+            }
+            else if (opt.IsTreeRef)
+            {
+                _optTypeTreeRadio.Checked = true;
+                PopulateOptTreeRefCombo();
+            }
+            else
+            {
+                _optTypeTextRadio.Checked = true;
+            }
         }
-        else if (opt.IsTreeRef)
-        {
-            _optTypeTreeRadio.Checked = true;
-            PopulateOptTreeRefCombo();
-        }
-        else
-        {
-            _optTypeTextRadio.Checked = true;
-        }
-
-        _suppressEvents = false;
+        finally { _suppressEvents = false; }
         UpdateOptTypeUI();
     }
 
     private void ClearOptionProperties()
     {
         _suppressEvents = true;
-        _optionTextBox.Text = "";
-        _terminalCheckBox.Checked = false;
-        _optTypeTextRadio.Checked = true;
-        _optMacroRefCombo.Items.Clear();
-        _optTreeRefCombo.Items.Clear();
-        _suppressEvents = false;
+        try
+        {
+            _optionTextBox.Text = "";
+            _terminalCheckBox.Checked = false;
+            _optTypeTextRadio.Checked = true;
+            _optMacroRefCombo.Items.Clear();
+            _optTreeRefCombo.Items.Clear();
+        }
+        finally { _suppressEvents = false; }
         UpdateOptTypeUI();
     }
 
@@ -2014,9 +2044,7 @@ public class PickListEditorForm : Form
         _moveCategoryUpBtn.Enabled = hasCat && _categoryListBox.SelectedIndex > 0;
         _moveCategoryDownBtn.Enabled = hasCat && _selectedList != null && _categoryListBox.SelectedIndex < _selectedList.Categories.Count - 1;
 
-        // 9-option limit
-        var canAddOption = hasCat && _selectedCategory!.Options.Count < 9;
-        _addOptionBtn.Enabled = canAddOption;
+        _addOptionBtn.Enabled = hasCat;
         _removeOptionBtn.Enabled = hasOpt;
         _moveOptionUpBtn.Enabled = hasOpt && _selectedOptionIndex > 0;
         _moveOptionDownBtn.Enabled = hasOpt && _selectedCategory != null && _selectedOptionIndex < _selectedCategory.Options.Count - 1;
@@ -2063,7 +2091,7 @@ public class PickListEditorForm : Form
 
     private void AddOption()
     {
-        if (_selectedCategory == null || _selectedCategory.Options.Count >= 9) return;
+        if (_selectedCategory == null) return;
 
         _selectedCategory.Options.Add(new BuilderOption { Text = "New option" });
         RefreshOptionsList();
@@ -2142,7 +2170,7 @@ public class PickListEditorForm : Form
 
             var name = line.Substring(0, colonIdx).Trim();
             var optionsStr = line.Substring(colonIdx + 1).Trim();
-            var options = optionsStr.Split('/').Select(o => o.Trim()).Where(o => !string.IsNullOrEmpty(o)).Take(9)
+            var options = optionsStr.Split('/').Select(o => o.Trim()).Where(o => !string.IsNullOrEmpty(o))
                 .Select(text => new BuilderOption { Text = text }).ToList();
 
             if (options.Count == 0) continue;
@@ -2191,14 +2219,9 @@ public class PickListEditorForm : Form
         }
 
         // Tree mode button states
-        var siblingCount = GetSiblingCount();
-        var childCount = _selectedNode?.Children.Count ?? 0;
-        var canAddSibling = hasList && siblingCount < 9;
-        var canAddChild = hasNode && childCount < 9;
-
-        _addNodeBtn.Enabled = canAddSibling;
-        _addChildBtn.Enabled = canAddChild;
-        _cloneNodeBtn.Enabled = hasNode && canAddSibling;
+        _addNodeBtn.Enabled = hasList;
+        _addChildBtn.Enabled = hasNode;
+        _cloneNodeBtn.Enabled = hasNode;
         _removeNodeBtn.Enabled = hasNode;
         _nodeLabelBox.Enabled = hasNode;
 
@@ -2226,25 +2249,12 @@ public class PickListEditorForm : Form
         if (hasNode && !isLeaf && _nodeTextBox.Visible)
         {
             _suppressEvents = true;
-            _nodeTextBox.Text = "(Branch nodes don't have text - select a leaf node)";
-            _suppressEvents = false;
+            try { _nodeTextBox.Text = "(Branch nodes don't have text - select a leaf node)"; }
+            finally { _suppressEvents = false; }
         }
 
         _moveUpBtn.Enabled = hasNode && CanMove(-1);
         _moveDownBtn.Enabled = hasNode && CanMove(1);
-    }
-
-    private int GetSiblingCount()
-    {
-        if (_selectedList == null) return 0;
-        if (_treeView.SelectedNode == null) return _selectedList.Nodes.Count;
-
-        var tn = _treeView.SelectedNode;
-        if (tn.Parent == null)
-            return _selectedList.Nodes.Count;
-
-        var parent = tn.Parent.Tag as PickListNode;
-        return parent?.Children.Count ?? 0;
     }
 
     private bool CanMove(int dir)
@@ -2278,6 +2288,19 @@ public class PickListEditorForm : Form
         RefreshListBox();
         if (_pickLists.Count > 0)
             _listBox.SelectedIndex = Math.Min(idx, _pickLists.Count - 1);
+    }
+
+    private void MoveList(int dir)
+    {
+        if (_selectedList == null) return;
+        var idx = _pickLists.IndexOf(_selectedList);
+        var newIdx = idx + dir;
+        if (newIdx < 0 || newIdx >= _pickLists.Count) return;
+
+        _pickLists.RemoveAt(idx);
+        _pickLists.Insert(newIdx, _selectedList);
+        RefreshListBox();
+        _listBox.SelectedIndex = newIdx;
     }
 
     private void CloneList()
@@ -2475,7 +2498,6 @@ public class PickListEditorForm : Form
 
         if (asChild && _selectedNode != null)
         {
-            if (_selectedNode.Children.Count >= 9) return;
             _selectedNode.Children.Add(newNode);
         }
         else if (_selectedNode != null && _treeView.SelectedNode != null)
@@ -2483,7 +2505,6 @@ public class PickListEditorForm : Form
             var tn = _treeView.SelectedNode;
             if (tn.Parent == null)
             {
-                if (_selectedList.Nodes.Count >= 9) return;
                 var idx = _selectedList.Nodes.IndexOf(_selectedNode);
                 _selectedList.Nodes.Insert(idx + 1, newNode);
             }
@@ -2492,7 +2513,6 @@ public class PickListEditorForm : Form
                 var parent = tn.Parent.Tag as PickListNode;
                 if (parent != null)
                 {
-                    if (parent.Children.Count >= 9) return;
                     var idx = parent.Children.IndexOf(_selectedNode);
                     parent.Children.Insert(idx + 1, newNode);
                 }
@@ -2500,7 +2520,6 @@ public class PickListEditorForm : Form
         }
         else
         {
-            if (_selectedList.Nodes.Count >= 9) return;
             _selectedList.Nodes.Add(newNode);
         }
 
@@ -2552,7 +2571,6 @@ public class PickListEditorForm : Form
         var tn = _treeView.SelectedNode;
         var siblings = tn.Parent == null ? _selectedList.Nodes : ((PickListNode)tn.Parent.Tag).Children;
 
-        if (siblings.Count >= 9) return;
 
         var clone = _selectedNode.Clone();
         clone.Label += " (Copy)";

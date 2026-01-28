@@ -11,8 +11,8 @@ namespace MosaicTools.Services;
 /// </summary>
 public class HidService : IDisposable
 {
-    // Nuance / Dictaphone Vendor IDs
-    private static readonly int[] VendorIds = { 0x0554, 0x0558 };
+    // Nuance / Dictaphone Vendor IDs + Philips (0x0911)
+    private static readonly int[] VendorIds = { 0x0554, 0x0558, 0x0911 };
     
     // Button byte patterns [byte0, byte1, byte2]
     public static readonly Dictionary<string, byte[]> ButtonDefinitions = new()
@@ -40,6 +40,7 @@ public class HidService : IDisposable
     private HidStream? _stream;
     private Thread? _listenerThread;
     private volatile bool _running;
+    private bool _isPhilips;
     private DateTime _lastSyncTime = DateTime.Now;
     
     public event Action<string>? ButtonPressed;
@@ -68,7 +69,8 @@ public class HidService : IDisposable
     {
         bool lastRecordDown = false;
         byte[] lastData = new byte[4];
-        
+        byte lastPhilipsButton = 0;
+
         while (_running)
         {
             try
@@ -82,11 +84,11 @@ public class HidService : IDisposable
                         continue;
                     }
                 }
-                
+
                 // Read data (non-blocking with timeout)
                 var buffer = new byte[64];
                 int bytesRead = 0;
-                
+
                 try
                 {
                     bytesRead = _stream!.Read(buffer, 0, buffer.Length);
@@ -102,72 +104,124 @@ public class HidService : IDisposable
                     Disconnect();
                     continue;
                 }
-                
-                if (bytesRead < 3) continue;
-                
-                var btnData = new byte[] { 
-                    buffer[0], 
-                    buffer[1], 
-                    buffer[2], 
-                    bytesRead > 3 ? buffer[3] : (byte)0 
-                };
-                
-                // Debounce
-                if (btnData[0] == lastData[0] && btnData[1] == lastData[1] && 
-                    btnData[2] == lastData[2] && btnData[3] == lastData[3])
-                {
-                    Thread.Sleep(10);
-                    continue;
-                }
-                Array.Copy(btnData, lastData, 4);
-                
-                // Track Record Button state for PTT (bit 0x04 in byte 2 - shifted by ReportID)
-                bool recordDown = (btnData[2] & 0x04) != 0;
-                if (recordDown != lastRecordDown)
-                {
-                    Logger.Trace($"PTT State: {(recordDown ? "DOWN" : "UP")}");
-                    RecordButtonStateChanged?.Invoke(recordDown);
-                    lastRecordDown = recordDown;
-                }
-                
-                // Only fire action if at least one button bit is set in ANY potential data byte (1, 2, or 3)
-                if (btnData[1] == 0 && btnData[2] == 0 && btnData[3] == 0)
-                {
-                    continue;
-                }
-                
-                // Match button pattern using bitwise priority across ALL data bytes
-                string? matchedButton = null;
 
-                // Byte 3: Right Button and Checkmark
-                if ((btnData[3] & 0x02) != 0) matchedButton = "Right Button";
-                else if ((btnData[3] & 0x40) != 0) matchedButton = "Right Button";
-                else if ((btnData[3] & 0x01) != 0) matchedButton = "Checkmark";
-                
-                // Byte 2: Core navigation and record
-                else if ((btnData[2] & 0x80) != 0) matchedButton = "Left Button";
-                else if ((btnData[2] & 0x20) != 0) matchedButton = "Fast Forward";
-                else if ((btnData[2] & 0x10) != 0) matchedButton = "Rewind";
-                else if ((btnData[2] & 0x08) != 0) matchedButton = "Skip Forward";
-                else if ((btnData[2] & 0x04) != 0) matchedButton = "Record Button";
-                else if ((btnData[2] & 0x02) != 0) matchedButton = "Skip Back";
-                else if ((btnData[2] & 0x01) != 0) matchedButton = "T Button";
-                else if ((btnData[2] & 0x40) != 0) matchedButton = "Stop/Play";
-                
-                // Byte 1: Support Tab key (alternate mapping)
-                else if ((btnData[1] & 0x01) != 0) matchedButton = "T Button";
-                
-                if (matchedButton != null)
+                if (_isPhilips)
                 {
-                    Logger.Trace($"HID Button Match: {matchedButton} (Data: {BitConverter.ToString(btnData)})");
-                    ButtonPressed?.Invoke(matchedButton);
+                    // Philips SpeechMike: 9-byte reports, button bitmask in byte[8]
+                    if (bytesRead < 9) continue;
+                    if (buffer[0] != 0x80) continue; // Only process button reports (ignore 0x9E motion etc.)
+
+                    byte btn = buffer[8];
+
+                    // Debounce
+                    if (btn == lastPhilipsButton)
+                    {
+                        Thread.Sleep(10);
+                        continue;
+                    }
+                    lastPhilipsButton = btn;
+
+                    // Track Record button state for PTT
+                    bool recordDown = (btn & 0x01) != 0;
+                    if (recordDown != lastRecordDown)
+                    {
+                        Logger.Trace($"PTT State: {(recordDown ? "DOWN" : "UP")}");
+                        RecordButtonStateChanged?.Invoke(recordDown);
+                        lastRecordDown = recordDown;
+                    }
+
+                    // Release (no buttons held)
+                    if (btn == 0x00) continue;
+
+                    // Match Philips buttons by bitmask → existing button names
+                    string? matchedButton = null;
+                    if ((btn & 0x01) != 0) matchedButton = "Record Button";
+                    else if ((btn & 0x04) != 0) matchedButton = "Stop/Play";
+                    else if ((btn & 0x08) != 0) matchedButton = "Skip Forward";
+                    else if ((btn & 0x10) != 0) matchedButton = "Skip Back";
+                    else if ((btn & 0x20) != 0) matchedButton = "Checkmark";
+                    else if ((btn & 0x40) != 0) matchedButton = "T Button";
+                    else if ((btn & 0x80) != 0) matchedButton = "Left Button";
+
+                    if (matchedButton != null)
+                    {
+                        Logger.Trace($"HID Button Match: {matchedButton} (Philips byte: 0x{btn:X2})");
+                        ButtonPressed?.Invoke(matchedButton);
+                    }
+                    else
+                    {
+                        Logger.Trace($"HID Activity (Unknown Philips): (Len: {bytesRead}, Data: {BitConverter.ToString(buffer, 0, bytesRead)})");
+                    }
                 }
                 else
                 {
-                   // Log any non-zero pattern that didn't match
-                   Logger.Trace($"HID Activity (Unknown Map): (Len: {bytesRead}, Data: {BitConverter.ToString(buffer, 0, bytesRead)})");
+                    // PowerMic path (unchanged)
+                    if (bytesRead < 3) continue;
+
+                    var btnData = new byte[] {
+                        buffer[0],
+                        buffer[1],
+                        buffer[2],
+                        bytesRead > 3 ? buffer[3] : (byte)0
+                    };
+
+                    // Debounce
+                    if (btnData[0] == lastData[0] && btnData[1] == lastData[1] &&
+                        btnData[2] == lastData[2] && btnData[3] == lastData[3])
+                    {
+                        Thread.Sleep(10);
+                        continue;
+                    }
+                    Array.Copy(btnData, lastData, 4);
+
+                    // Track Record Button state for PTT (bit 0x04 in byte 2 - shifted by ReportID)
+                    bool recordDown = (btnData[2] & 0x04) != 0;
+                    if (recordDown != lastRecordDown)
+                    {
+                        Logger.Trace($"PTT State: {(recordDown ? "DOWN" : "UP")}");
+                        RecordButtonStateChanged?.Invoke(recordDown);
+                        lastRecordDown = recordDown;
+                    }
+
+                    // Only fire action if at least one button bit is set in ANY potential data byte (1, 2, or 3)
+                    if (btnData[1] == 0 && btnData[2] == 0 && btnData[3] == 0)
+                    {
+                        continue;
+                    }
+
+                    // Match button pattern using bitwise priority across ALL data bytes
+                    string? matchedButton = null;
+
+                    // Byte 3: Right Button and Checkmark
+                    if ((btnData[3] & 0x02) != 0) matchedButton = "Right Button";
+                    else if ((btnData[3] & 0x40) != 0) matchedButton = "Right Button";
+                    else if ((btnData[3] & 0x01) != 0) matchedButton = "Checkmark";
+
+                    // Byte 2: Core navigation and record
+                    else if ((btnData[2] & 0x80) != 0) matchedButton = "Left Button";
+                    else if ((btnData[2] & 0x20) != 0) matchedButton = "Fast Forward";
+                    else if ((btnData[2] & 0x10) != 0) matchedButton = "Rewind";
+                    else if ((btnData[2] & 0x08) != 0) matchedButton = "Skip Forward";
+                    else if ((btnData[2] & 0x04) != 0) matchedButton = "Record Button";
+                    else if ((btnData[2] & 0x02) != 0) matchedButton = "Skip Back";
+                    else if ((btnData[2] & 0x01) != 0) matchedButton = "T Button";
+                    else if ((btnData[2] & 0x40) != 0) matchedButton = "Stop/Play";
+
+                    // Byte 1: Support Tab key (alternate mapping)
+                    else if ((btnData[1] & 0x01) != 0) matchedButton = "T Button";
+
+                    if (matchedButton != null)
+                    {
+                        Logger.Trace($"HID Button Match: {matchedButton} (Data: {BitConverter.ToString(btnData)})");
+                        ButtonPressed?.Invoke(matchedButton);
+                    }
+                    else
+                    {
+                       // Log any non-zero pattern that didn't match
+                       Logger.Trace($"HID Activity (Unknown Map): (Len: {bytesRead}, Data: {BitConverter.ToString(buffer, 0, bytesRead)})");
+                    }
                 }
-                
+
                 Thread.Sleep(10);
             }
             catch (Exception ex)
@@ -197,8 +251,9 @@ public class HidService : IDisposable
                     
                     _device = device;
                     _stream = stream;
-                    
-                    var name = device.GetProductName() ?? "PowerMic";
+                    _isPhilips = device.VendorID == 0x0911;
+
+                    var name = device.GetProductName() ?? (_isPhilips ? "SpeechMike" : "PowerMic");
                     Logger.Trace($"HID Connection Successful: {name}");
                     DeviceConnected?.Invoke($"Connected to {name}");
                     
@@ -223,6 +278,7 @@ public class HidService : IDisposable
         _stream?.Dispose();
         _stream = null;
         _device = null;
+        _isPhilips = false;
     }
     
     public void Dispose()

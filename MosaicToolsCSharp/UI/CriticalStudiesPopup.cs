@@ -14,14 +14,16 @@ public class CriticalStudiesPopup : Form
 {
     private readonly IReadOnlyList<CriticalStudyEntry> _studies;
     private readonly AutomationService? _automationService;
+    private readonly Action<CriticalStudyEntry>? _onRemoveStudy;
     private readonly ListBox _listBox;
     private bool _allowDeactivateClose = false;
     private int _hoveredIndex = -1;
 
-    public CriticalStudiesPopup(IReadOnlyList<CriticalStudyEntry> studies, Point location, AutomationService? automationService = null)
+    public CriticalStudiesPopup(IReadOnlyList<CriticalStudyEntry> studies, Point location, AutomationService? automationService = null, Action<CriticalStudyEntry>? onRemoveStudy = null)
     {
         _studies = studies;
         _automationService = automationService;
+        _onRemoveStudy = onRemoveStudy;
 
         // Form setup
         FormBorderStyle = FormBorderStyle.None;
@@ -111,6 +113,26 @@ public class CriticalStudiesPopup : Form
         _listBox.MouseLeave += (s, e) => { _hoveredIndex = -1; _listBox.Invalidate(); };
         _listBox.DoubleClick += ListBox_DoubleClick;
         _listBox.Cursor = Cursors.Hand;
+
+        // Right-click context menu for removing entries
+        if (onRemoveStudy != null)
+        {
+            _listBox.MouseDown += (s, e) =>
+            {
+                if (e.Button == MouseButtons.Right)
+                {
+                    var index = _listBox.IndexFromPoint(e.Location);
+                    if (index >= 0 && index < _listBox.Items.Count && _listBox.Items[index] is CriticalStudyEntry)
+                    {
+                        _listBox.SelectedIndex = index;
+                        var menu = new ContextMenuStrip();
+                        var removeItem = menu.Items.Add("Remove");
+                        removeItem.Click += (ms, me) => RemoveSelectedEntry();
+                        menu.Show(_listBox, e.Location);
+                    }
+                }
+            };
+        }
 
         // Populate list
         if (studies.Count == 0)
@@ -271,6 +293,22 @@ public class CriticalStudiesPopup : Form
         if (string.IsNullOrEmpty(desc)) return "Unknown";
         if (desc.Length <= maxLen) return desc;
         return desc.Substring(0, maxLen - 3) + "...";
+    }
+
+    private void RemoveSelectedEntry()
+    {
+        if (_listBox.SelectedIndex < 0) return;
+        var item = _listBox.Items[_listBox.SelectedIndex];
+        if (item is CriticalStudyEntry entry)
+        {
+            _listBox.Items.RemoveAt(_listBox.SelectedIndex);
+            _onRemoveStudy?.Invoke(entry);
+
+            if (_listBox.Items.Count == 0)
+            {
+                Close();
+            }
+        }
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
