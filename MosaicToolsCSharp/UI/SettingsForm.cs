@@ -18,6 +18,10 @@ public class SettingsForm : Form
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
     private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
 
+    // Dark scrollbar support for native controls
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    private static extern int SetWindowTheme(IntPtr hWnd, string? pszSubAppName, string? pszSubIdList);
+
     private readonly Configuration _config;
     private readonly ActionController _controller;
     private readonly MainForm _mainForm;
@@ -42,6 +46,11 @@ public class SettingsForm : Form
     private TextBox _seriesTemplateBox = null!;
     private CheckBox _autoUpdateCheck = null!;
     private CheckBox _hideIndicatorWhenNoStudyCheck = null!;
+    private CheckBox _showTooltipsCheck = null!;
+
+    // Tooltip system
+    private ToolTip _settingsToolTip = null!;
+    private List<Label> _tooltipLabels = new();
 
     // Advanced tab controls
     private CheckBox _restoreFocusCheck = null!;
@@ -65,6 +74,9 @@ public class SettingsForm : Form
     private NumericUpDown _scrollThreshold1 = null!;
     private NumericUpDown _scrollThreshold2 = null!;
     private NumericUpDown _scrollThreshold3 = null!;
+    private CheckBox _ignoreInpatientDraftedCheck = null!;
+    private RadioButton _ignoreInpatientAllXrRadio = null!;
+    private RadioButton _ignoreInpatientChestOnlyRadio = null!;
 
     // InteleViewer Window/Level keys (null in headless mode)
     private TextBox? _windowLevelKeysBox;
@@ -100,6 +112,9 @@ public class SettingsForm : Form
 
         InitializeUI();
         LoadSettings();
+
+        // Apply dark scrollbar theme to all controls after UI is built
+        ApplyDarkScrollbars(this);
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -112,6 +127,31 @@ public class SettingsForm : Form
             DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref value, sizeof(int));
         }
         catch { /* Ignore on older Windows versions */ }
+    }
+
+    /// <summary>
+    /// Recursively applies the Windows dark mode scrollbar theme to all controls.
+    /// </summary>
+    private void ApplyDarkScrollbars(Control parent)
+    {
+        foreach (Control c in parent.Controls)
+        {
+            try
+            {
+                if (c.IsHandleCreated)
+                    SetWindowTheme(c.Handle, "DarkMode_Explorer", null);
+                else
+                    c.HandleCreated += (_, _) =>
+                    {
+                        try { SetWindowTheme(c.Handle, "DarkMode_Explorer", null); }
+                        catch { }
+                    };
+            }
+            catch { }
+
+            if (c.Controls.Count > 0)
+                ApplyDarkScrollbars(c);
+        }
     }
     
     private void InitializeUI()
@@ -127,7 +167,16 @@ public class SettingsForm : Form
         MinimizeBox = false;
         BackColor = Color.FromArgb(30, 30, 30);
         ForeColor = Color.White;
-        
+
+        // Initialize tooltip system
+        _settingsToolTip = new ToolTip
+        {
+            AutoPopDelay = 15000,
+            InitialDelay = 300,
+            ReshowDelay = 100,
+            ShowAlways = true
+        };
+
         // Tab control with owner-drawn dark theme
         _tabControl = new DarkTabControl
         {
@@ -244,14 +293,15 @@ public class SettingsForm : Form
         };
         tab.Controls.Add(profileGroup);
 
-        profileGroup.Controls.Add(new Label
+        var doctorNameLabel = new Label
         {
             Text = "Doctor Name:",
             Location = new Point(15, 25),
             AutoSize = true,
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9)
-        });
+        };
+        profileGroup.Controls.Add(doctorNameLabel);
         _doctorNameBox = new TextBox
         {
             Location = new Point(120, 22),
@@ -260,6 +310,20 @@ public class SettingsForm : Form
             ForeColor = Color.White
         };
         profileGroup.Controls.Add(_doctorNameBox);
+        CreateTooltipLabel(profileGroup, _doctorNameBox, "Your name as it appears in Clario. Used to filter your own notes\nfrom Critical Findings results so the contact person is identified.");
+
+        // Show Tooltips checkbox
+        _showTooltipsCheck = new CheckBox
+        {
+            Text = "Show tooltips",
+            Location = new Point(340, 24),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9),
+            Checked = _config.ShowTooltips
+        };
+        _showTooltipsCheck.CheckedChanged += (s, e) => UpdateTooltipVisibility();
+        profileGroup.Controls.Add(_showTooltipsCheck);
 
         y += 70;
 
@@ -304,6 +368,7 @@ public class SettingsForm : Form
             _ivHotkeyBox.Width = 120;
             SetupHotkeyCapture(_ivHotkeyBox);
             desktopGroup.Controls.Add(_ivHotkeyBox);
+            CreateTooltipLabel(desktopGroup, _ivHotkeyBox, "Hotkey to copy report from InteleViewer.\nClick to capture a new key combination.");
             dy += 30;
 
             // Recording Indicator
@@ -312,6 +377,7 @@ public class SettingsForm : Form
             _indicatorCheck.ForeColor = Color.White;
             _indicatorCheck.Font = new Font("Segoe UI", 9);
             desktopGroup.Controls.Add(_indicatorCheck);
+            CreateTooltipLabel(desktopGroup, _indicatorCheck, "Shows a small colored rectangle indicating dictation state\n(red = recording, gray = stopped).");
             dy += 22;
 
             _hideIndicatorWhenNoStudyCheck.Text = "Hide when no study open";
@@ -324,6 +390,7 @@ public class SettingsForm : Form
                 _mainForm.UpdateIndicatorVisibility();
             };
             desktopGroup.Controls.Add(_hideIndicatorWhenNoStudyCheck);
+            CreateTooltipLabel(desktopGroup, _hideIndicatorWhenNoStudyCheck, "Hides the recording indicator when no study\nis open in Mosaic.");
             dy += 25;
 
             // Auto-Stop Dictation
@@ -332,6 +399,7 @@ public class SettingsForm : Form
             _autoStopCheck.ForeColor = Color.White;
             _autoStopCheck.Font = new Font("Segoe UI", 9);
             desktopGroup.Controls.Add(_autoStopCheck);
+            CreateTooltipLabel(desktopGroup, _autoStopCheck, "Automatically stops dictation when you press\nProcess Report.");
             dy += 30;
 
             // Audio Feedback section header
@@ -359,6 +427,7 @@ public class SettingsForm : Form
 
             _startVolLabel.Location = new Point(275, dy + 3);
             desktopGroup.Controls.Add(_startVolLabel);
+            CreateTooltipLabelAt(desktopGroup, 310, dy + 3, "Plays an audio beep when dictation starts.\nSlider adjusts volume (0-100%).");
             dy += 40;
 
             // Stop Beep row
@@ -375,6 +444,7 @@ public class SettingsForm : Form
 
             _stopVolLabel.Location = new Point(275, dy + 3);
             desktopGroup.Controls.Add(_stopVolLabel);
+            CreateTooltipLabelAt(desktopGroup, 310, dy + 3, "Plays an audio beep when dictation stops.\nSlider adjusts volume (0-100%).");
             dy += 40;
 
             // Dictation pause
@@ -389,14 +459,16 @@ public class SettingsForm : Form
             _dictationPauseNum.Location = new Point(155, dy);
             _dictationPauseNum.Width = 70;
             desktopGroup.Controls.Add(_dictationPauseNum);
-            desktopGroup.Controls.Add(new Label
+            var msLabel = new Label
             {
                 Text = "ms",
                 Location = new Point(230, dy + 2),
                 AutoSize = true,
                 ForeColor = Color.Gray,
                 Font = new Font("Segoe UI", 9)
-            });
+            };
+            desktopGroup.Controls.Add(msLabel);
+            CreateTooltipLabel(desktopGroup, msLabel, "Delay before playing start beep, to avoid\nfalse triggers. Recommended: 800-1200ms.");
 
             y += 300;
         }
@@ -432,6 +504,7 @@ public class SettingsForm : Form
         };
         configureLink.Click += (s, e) => _tabControl.SelectedIndex = 2;
         optionsGroup.Controls.Add(configureLink);
+        CreateTooltipLabel(optionsGroup, configureLink, "Shows configurable buttons for InteleViewer shortcuts\n(window/level presets, zoom, etc.).");
 
         _deadManCheck = new CheckBox
         {
@@ -442,6 +515,7 @@ public class SettingsForm : Form
             Font = new Font("Segoe UI", 9)
         };
         optionsGroup.Controls.Add(_deadManCheck);
+        CreateTooltipLabel(optionsGroup, _deadManCheck, "Hold the Record button to dictate, release to stop.\nDead man's switch style dictation.");
 
         y += 80;
 
@@ -466,6 +540,7 @@ public class SettingsForm : Form
             Font = new Font("Segoe UI", 9)
         };
         updatesGroup.Controls.Add(_autoUpdateCheck);
+        CreateTooltipLabel(updatesGroup, _autoUpdateCheck, "Automatically check for and install updates\non startup.");
 
         var checkUpdatesBtn = new Button
         {
@@ -496,6 +571,7 @@ public class SettingsForm : Form
             }
         };
         updatesGroup.Controls.Add(checkUpdatesBtn);
+        CreateTooltipLabel(updatesGroup, checkUpdatesBtn, "Manually check for available updates now.");
 
         return tab;
     }
@@ -518,6 +594,24 @@ public class SettingsForm : Form
         tab.Controls.Add(CreateLabel("Mic Button", App.IsHeadless ? 180 : 310, y, 120));
         y += 30;
         
+        // Action descriptions for tooltips
+        var actionDescriptions = new Dictionary<string, string>
+        {
+            [Actions.SystemBeep] = "Plays an audio beep to indicate dictation state change.",
+            [Actions.GetPrior] = "Extract prior study from InteleViewer, format, and paste to Mosaic.",
+            [Actions.CriticalFindings] = "Scrape Clario for exam note, extract contact info, and paste to Mosaic.\nHold Win key for debug mode.",
+            [Actions.ShowReport] = "Copy current report from Mosaic and display in popup window.",
+            [Actions.CaptureSeries] = "Use OCR to read series/image numbers from InteleViewer and paste to Mosaic.",
+            [Actions.ToggleRecord] = "Toggle dictation on/off in Mosaic (sends Alt+R).",
+            [Actions.ProcessReport] = "Process report with RadPair (sends Alt+P to Mosaic).",
+            [Actions.SignReport] = "Sign/finalize the report (sends Alt+F to Mosaic).",
+            [Actions.CreateImpression] = "Click the Create Impression button in Mosaic.",
+            [Actions.DiscardStudy] = "Close current study without signing.",
+            [Actions.ShowPickLists] = "Open pick list popup for quick text insertion.",
+            [Actions.CycleWindowLevel] = "Cycle through window/level presets in InteleViewer.",
+            [Actions.CreateCriticalNote] = "Create Critical Communication Note in Clario for current study."
+        };
+
         foreach (var action in Actions.All)
         {
             if (action == Actions.None) continue;
@@ -525,8 +619,21 @@ public class SettingsForm : Form
             // Hide Cycle Window/Level entirely in headless mode
             if (App.IsHeadless && action == Actions.CycleWindowLevel) continue;
 
-            var lbl = CreateLabel(action, 20, y, 150);
+            // Use AutoSize label so tooltip appears right after text
+            var lbl = new Label
+            {
+                Text = action,
+                Location = new Point(20, y),
+                AutoSize = true,
+                ForeColor = Color.White
+            };
             tab.Controls.Add(lbl);
+
+            // Add tooltip for action description right after the label text
+            if (actionDescriptions.TryGetValue(action, out var desc))
+            {
+                CreateTooltipLabel(tab, lbl, desc, 2, 2);
+            }
 
             var hotkeyBox = new TextBox
             {
@@ -598,6 +705,8 @@ public class SettingsForm : Form
     private ComboBox _iconCombo = null!;
     private TextBox _labelBox = null!;
     private TextBox _keystrokeBox = null!;
+    private Button _recButton = null!;
+    private ComboBox _actionCombo = null!;
     private bool _updatingEditor = false;  // Guard flag to prevent feedback loop
     
     private static readonly string[] IconLibrary = {
@@ -620,7 +729,7 @@ public class SettingsForm : Form
         
         // Deep copy buttons config for editing
         _studioButtons = _config.FloatingButtons.Buttons
-            .Select(b => new FloatingButtonDef { Type = b.Type, Icon = b.Icon, Label = b.Label, Keystroke = b.Keystroke })
+            .Select(b => new FloatingButtonDef { Type = b.Type, Icon = b.Icon, Label = b.Label, Keystroke = b.Keystroke, Action = b.Action })
             .ToList();
         _studioColumns = _config.FloatingButtons.Columns;
         _selectedButtonIdx = 0;
@@ -652,7 +761,8 @@ public class SettingsForm : Form
             RenderPreview();
         };
         topPanel.Controls.Add(columnsNum);
-        
+        CreateTooltipLabel(topPanel, columnsNum, "Number of button columns (1-3).\nMaximum 9 buttons total.");
+
         var maxLabel = CreateLabel("(max 9 buttons)", 125, 5, 120);
         maxLabel.ForeColor = Color.Gray;
         maxLabel.Font = new Font(maxLabel.Font.FontFamily, 8, FontStyle.Italic);
@@ -735,7 +845,7 @@ public class SettingsForm : Form
         {
             Text = "Button Editor",
             Location = new Point(260, 45),
-            Size = new Size(210, 260),
+            Size = new Size(210, 295),
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
@@ -754,6 +864,7 @@ public class SettingsForm : Form
         _typeWideRadio = new RadioButton { Text = "Wide", Location = new Point(135, ey - 2), AutoSize = true, ForeColor = Color.White };
         _typeWideRadio.CheckedChanged += (_, _) => { if (!_updatingEditor && _typeWideRadio.Checked) ApplyEditorChanges(); };
         editorPanel.Controls.Add(_typeWideRadio);
+        CreateTooltipLabel(editorPanel, _typeWideRadio, "Square: small button, good for icons.\nWide: full-width, good for text labels.");
         ey += 30;
         
         // Icon - button that opens grid picker
@@ -834,17 +945,40 @@ public class SettingsForm : Form
         SetupHotkeyCapture(_keystrokeBox);
         editorPanel.Controls.Add(_keystrokeBox);
         
-        var recBtn = new Button { Text = "Rec", Location = new Point(150, ey - 3), Width = 40, Height = 23, FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
-        recBtn.Click += (_, _) => _keystrokeBox.Focus();
-        editorPanel.Controls.Add(recBtn);
+        _recButton = new Button { Text = "Rec", Location = new Point(150, ey - 3), Width = 40, Height = 23, FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
+        _recButton.Click += (_, _) => _keystrokeBox.Focus();
+        editorPanel.Controls.Add(_recButton);
+        ey += 30;
+
+        // Action
+        var actionLabel = new Label { Text = "Action:", Location = new Point(10, ey + 2), Width = 50, ForeColor = Color.White, Font = new Font("Segoe UI", 9) };
+        editorPanel.Controls.Add(actionLabel);
+
+        _actionCombo = new ComboBox
+        {
+            Location = new Point(65, ey - 1),
+            Width = 125,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _actionCombo.Items.Add("(keystroke)");
+        foreach (var a in Actions.All)
+        {
+            if (a != Actions.None) _actionCombo.Items.Add(a);
+        }
+        _actionCombo.SelectedIndex = 0;
+        _actionCombo.SelectedIndexChanged += (_, _) => { if (!_updatingEditor) ApplyEditorChanges(); };
+        editorPanel.Controls.Add(_actionCombo);
         ey += 35;
-        
+
         // Hint
         var hintLabel = new Label
         {
-            Text = "Use saved shortcuts for\nInteleViewer - Utilities |\nUser Preferences",
+            Text = "Action overrides keystroke.\nKeystroke sends to InteleViewer.",
             Location = new Point(10, ey),
-            Size = new Size(180, 45),
+            Size = new Size(180, 35),
             ForeColor = Color.Gray,
             Font = new Font("Segoe UI", 8)
         };
@@ -1005,6 +1139,22 @@ public class SettingsForm : Form
             _iconButton.Text = btn.Icon ?? "";
             _labelBox.Text = btn.Label ?? "";
             _keystrokeBox.Text = btn.Keystroke ?? "";
+
+            var action = btn.Action ?? "";
+            if (!string.IsNullOrEmpty(action) && action != Actions.None)
+            {
+                var idx = _actionCombo.Items.IndexOf(action);
+                _actionCombo.SelectedIndex = idx >= 0 ? idx : 0;
+            }
+            else
+            {
+                _actionCombo.SelectedIndex = 0; // (keystroke)
+            }
+
+            // Disable keystroke controls when an action is selected (action overrides keystroke)
+            var actionSelected = _actionCombo.SelectedIndex > 0;
+            _keystrokeBox.Enabled = !actionSelected;
+            _recButton.Enabled = !actionSelected;
         }
         finally
         {
@@ -1022,7 +1172,13 @@ public class SettingsForm : Form
         btn.Icon = _iconButton.Text;
         btn.Label = _labelBox.Text;
         btn.Keystroke = _keystrokeBox.Text;
-        
+        btn.Action = _actionCombo.SelectedIndex > 0 ? _actionCombo.SelectedItem?.ToString() ?? "" : "";
+
+        // Disable keystroke controls when an action is selected (action overrides keystroke)
+        var actionSelected = _actionCombo.SelectedIndex > 0;
+        _keystrokeBox.Enabled = !actionSelected;
+        _recButton.Enabled = !actionSelected;
+
         // Preserve scroll position
         var scrollPos = _previewPanel.AutoScrollPosition;
         RenderPreview();
@@ -1166,7 +1322,7 @@ public class SettingsForm : Form
     {
         var defaults = FloatingButtonsConfig.Default;
         _studioButtons = defaults.Buttons
-            .Select(b => new FloatingButtonDef { Type = b.Type, Icon = b.Icon, Label = b.Label, Keystroke = b.Keystroke })
+            .Select(b => new FloatingButtonDef { Type = b.Type, Icon = b.Icon, Label = b.Label, Keystroke = b.Keystroke, Action = b.Action })
             .ToList();
         _studioColumns = defaults.Columns;
         _selectedButtonIdx = 0;
@@ -1239,14 +1395,16 @@ public class SettingsForm : Form
         templatesGroup.Controls.Add(_criticalTemplateBox);
         ty += 55;
 
-        templatesGroup.Controls.Add(new Label
+        var criticalPlaceholdersLabel = new Label
         {
             Text = "Placeholders: {name}, {time}, {date}",
             Location = new Point(10, ty),
             AutoSize = true,
             ForeColor = Color.Gray,
             Font = new Font("Segoe UI", 8, FontStyle.Italic)
-        });
+        };
+        templatesGroup.Controls.Add(criticalPlaceholdersLabel);
+        CreateTooltipLabel(templatesGroup, criticalPlaceholdersLabel, "Template for pasting critical findings.\n{name} = contact person, {time} = time, {date} = date.", 2, 0);
         ty += 20;
 
         templatesGroup.Controls.Add(new Label
@@ -1271,14 +1429,16 @@ public class SettingsForm : Form
         templatesGroup.Controls.Add(_seriesTemplateBox);
         ty += 28;
 
-        templatesGroup.Controls.Add(new Label
+        var seriesPlaceholdersLabel = new Label
         {
             Text = "Placeholders: {series}, {image}",
             Location = new Point(10, ty),
             AutoSize = true,
             ForeColor = Color.Gray,
             Font = new Font("Segoe UI", 8, FontStyle.Italic)
-        });
+        };
+        templatesGroup.Controls.Add(seriesPlaceholdersLabel);
+        CreateTooltipLabel(templatesGroup, seriesPlaceholdersLabel, "Template for series capture.\n{series} = series number, {image} = image number.", 2, 0);
 
         y += 190;
 
@@ -1336,6 +1496,7 @@ public class SettingsForm : Form
             Font = new Font("Segoe UI", 8)
         };
         macrosGroup.Controls.Add(_macrosCountLabel);
+        CreateTooltipLabel(macrosGroup, _macrosCountLabel, "Auto-insert text snippets based on study description.\nRequires Scrape Mosaic to be enabled.", 2, 0);
         my += 25;
 
         _macrosBlankLinesCheck = new CheckBox
@@ -1348,6 +1509,7 @@ public class SettingsForm : Form
             Checked = _config.MacrosBlankLinesBefore
         };
         macrosGroup.Controls.Add(_macrosBlankLinesCheck);
+        CreateTooltipLabel(macrosGroup, _macrosBlankLinesCheck, "Add 10 blank lines before macro text\nfor dictation space.");
 
         UpdateMacroStates();
 
@@ -1400,6 +1562,7 @@ public class SettingsForm : Form
             Font = new Font("Segoe UI", 8)
         };
         pickListsGroup.Controls.Add(_pickListsCountLabel);
+        CreateTooltipLabel(pickListsGroup, _pickListsCountLabel, "Show pick list popup for studies matching\nconfigured triggers.", 2, 0);
         py += 25;
 
         _pickListSkipSingleMatchCheck = new CheckBox
@@ -1412,6 +1575,7 @@ public class SettingsForm : Form
             Checked = _config.PickListSkipSingleMatch
         };
         pickListsGroup.Controls.Add(_pickListSkipSingleMatchCheck);
+        CreateTooltipLabel(pickListsGroup, _pickListSkipSingleMatchCheck, "Automatically select if only one pick list\nmatches the study.");
         py += 22;
 
         _pickListKeepOpenCheck = new CheckBox
@@ -1424,6 +1588,7 @@ public class SettingsForm : Form
             Checked = _config.PickListKeepOpen
         };
         pickListsGroup.Controls.Add(_pickListKeepOpenCheck);
+        CreateTooltipLabel(pickListsGroup, _pickListKeepOpenCheck, "Keep pick list visible after inserting\n(use number keys for quick selection).");
         py += 22;
 
         pickListsGroup.Controls.Add(new Label
@@ -1540,6 +1705,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             Font = new Font("Segoe UI", 9)
         };
         criticalTrackerGroup.Controls.Add(_trackCriticalStudiesCheck);
+        CreateTooltipLabel(criticalTrackerGroup, _trackCriticalStudiesCheck, "Show badge count of critical notes created\nthis session. Click badge to see list.");
 
         criticalTrackerGroup.Controls.Add(new Label
         {
@@ -1575,6 +1741,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         _showClinicalHistoryCheck.CheckedChanged += (s, e) => UpdateNotificationBoxStates();
         notificationGroup.Controls.Add(_showClinicalHistoryCheck);
+        CreateTooltipLabel(notificationGroup, _showClinicalHistoryCheck, "Floating window showing clinical history and alerts.\nRequires Scrape Mosaic to be enabled.");
         ny += 22;
 
         notificationGroup.Controls.Add(new Label
@@ -1598,6 +1765,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         _alwaysShowClinicalHistoryCheck.CheckedChanged += (s, e) => UpdateNotificationBoxStates();
         notificationGroup.Controls.Add(_alwaysShowClinicalHistoryCheck);
+        CreateTooltipLabel(notificationGroup, _alwaysShowClinicalHistoryCheck, "Display clinical history text.\nUnchecked = alerts-only mode.");
         ny += 22;
 
         notificationGroup.Controls.Add(new Label
@@ -1624,6 +1792,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             _mainForm.UpdateClinicalHistoryVisibility();
         };
         notificationGroup.Controls.Add(_hideClinicalHistoryWhenNoStudyCheck);
+        CreateTooltipLabel(notificationGroup, _hideClinicalHistoryWhenNoStudyCheck, "Hide notification box when no study\nis open in Mosaic.");
         ny += 22;
 
         _autoFixClinicalHistoryCheck = new CheckBox
@@ -1635,6 +1804,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             Font = new Font("Segoe UI", 9)
         };
         notificationGroup.Controls.Add(_autoFixClinicalHistoryCheck);
+        CreateTooltipLabel(notificationGroup, _autoFixClinicalHistoryCheck, "Automatically paste corrected clinical history\nto Mosaic when malformed text is detected.");
         ny += 22;
 
         _showDraftedIndicatorCheck = new CheckBox
@@ -1647,14 +1817,16 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         notificationGroup.Controls.Add(_showDraftedIndicatorCheck);
 
-        notificationGroup.Controls.Add(new Label
+        var greenBorderLabel = new Label
         {
             Text = "(green border)",
             Location = new Point(220, ny + 2),
             AutoSize = true,
             ForeColor = Color.FromArgb(100, 180, 100),
             Font = new Font("Segoe UI", 8)
-        });
+        };
+        notificationGroup.Controls.Add(greenBorderLabel);
+        CreateTooltipLabel(notificationGroup, greenBorderLabel, "Green border when report has IMPRESSION section\n(indicates draft in progress).");
 
         y += 205;
 
@@ -1692,14 +1864,16 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         alertsGroup.Controls.Add(_showTemplateMismatchCheck);
 
-        alertsGroup.Controls.Add(new Label
+        var redBorderLabel = new Label
         {
             Text = "(red border)",
             Location = new Point(170, ay + 2),
             AutoSize = true,
             ForeColor = Color.FromArgb(220, 100, 100),
             Font = new Font("Segoe UI", 8)
-        });
+        };
+        alertsGroup.Controls.Add(redBorderLabel);
+        CreateTooltipLabel(alertsGroup, redBorderLabel, "Red border when report template doesn't\nmatch study type.");
         ay += 22;
 
         // Gender Check
@@ -1713,14 +1887,16 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         alertsGroup.Controls.Add(_genderCheckEnabledCheck);
 
-        alertsGroup.Controls.Add(new Label
+        var flashingRedLabel = new Label
         {
             Text = "(flashing red)",
             Location = new Point(170, ay + 2),
             AutoSize = true,
             ForeColor = Color.FromArgb(255, 100, 100),
             Font = new Font("Segoe UI", 8)
-        });
+        };
+        alertsGroup.Controls.Add(flashingRedLabel);
+        CreateTooltipLabel(alertsGroup, flashingRedLabel, "Flashing red border for gender-specific terms\nin wrong patient.");
         ay += 22;
 
         // Stroke Detection
@@ -1735,14 +1911,16 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         _strokeDetectionEnabledCheck.CheckedChanged += (s, e) => UpdateNotificationBoxStates();
         alertsGroup.Controls.Add(_strokeDetectionEnabledCheck);
 
-        alertsGroup.Controls.Add(new Label
+        var purpleBorderLabel = new Label
         {
             Text = "(purple border)",
             Location = new Point(170, ay + 2),
             AutoSize = true,
             ForeColor = Color.FromArgb(180, 130, 220),
             Font = new Font("Segoe UI", 8)
-        });
+        };
+        alertsGroup.Controls.Add(purpleBorderLabel);
+        CreateTooltipLabel(alertsGroup, purpleBorderLabel, "Purple border for stroke-related studies.");
         ay += 22;
 
         _strokeDetectionUseClinicalHistoryCheck = new CheckBox
@@ -1769,6 +1947,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         editKeywordsBtn.FlatAppearance.BorderColor = Color.Gray;
         editKeywordsBtn.Click += OnEditStrokeKeywordsClick;
         alertsGroup.Controls.Add(editKeywordsBtn);
+        CreateTooltipLabel(alertsGroup, editKeywordsBtn, "Also check clinical history for stroke keywords.");
         ay += 22;
 
         _strokeClickToCreateNoteCheck = new CheckBox
@@ -1780,6 +1959,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             Font = new Font("Segoe UI", 9)
         };
         alertsGroup.Controls.Add(_strokeClickToCreateNoteCheck);
+        CreateTooltipLabel(alertsGroup, _strokeClickToCreateNoteCheck, "Click purple alert to create Clario\ncommunication note.");
         ay += 22;
 
         _strokeAutoCreateNoteCheck = new CheckBox
@@ -1791,6 +1971,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             Font = new Font("Segoe UI", 9)
         };
         alertsGroup.Controls.Add(_strokeAutoCreateNoteCheck);
+        CreateTooltipLabel(alertsGroup, _strokeAutoCreateNoteCheck, "Automatically create note when pressing\nProcess Report for stroke cases.");
 
         return tab;
     }
@@ -1851,14 +2032,16 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         monitoringGroup.Controls.Add(_scrapeIntervalUpDown);
 
-        monitoringGroup.Controls.Add(new Label
+        var secondsLabel = new Label
         {
             Text = "seconds",
             Location = new Point(215, my),
             AutoSize = true,
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9)
-        });
+        };
+        monitoringGroup.Controls.Add(secondsLabel);
+        CreateTooltipLabel(monitoringGroup, secondsLabel, "Poll Mosaic for report changes.\nRequired for most features.");
         my += 25;
 
         monitoringGroup.Controls.Add(new Label
@@ -1880,6 +2063,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             Font = new Font("Segoe UI", 9)
         };
         monitoringGroup.Controls.Add(_restoreFocusCheck);
+        CreateTooltipLabel(monitoringGroup, _restoreFocusCheck, "Return focus to previous window\nafter actions complete.");
 
         y += 105;
 
@@ -1906,6 +2090,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         _scrollToBottomCheck.CheckedChanged += (s, e) => UpdateThresholdStates();
         processingGroup.Controls.Add(_scrollToBottomCheck);
+        CreateTooltipLabel(processingGroup, _scrollToBottomCheck, "Scroll report to bottom after Process Report\nto show IMPRESSION section.");
         py += 22;
 
         _showLineCountToastCheck = new CheckBox
@@ -1917,6 +2102,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             Font = new Font("Segoe UI", 9)
         };
         processingGroup.Controls.Add(_showLineCountToastCheck);
+        CreateTooltipLabel(processingGroup, _showLineCountToastCheck, "Toast showing number of lines\nafter Process Report.");
         py += 25;
 
         // Smart Scroll Thresholds (compact horizontal layout)
@@ -1965,6 +2151,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             ForeColor = Color.White
         };
         processingGroup.Controls.Add(_scrollThreshold3);
+        CreateTooltipLabel(processingGroup, _scrollThreshold3, "Lines at which to add Page Down presses.\n1-2-3 PgDn at each threshold.");
         py += 30;
 
         // Threshold constraints
@@ -1995,6 +2182,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             Font = new Font("Segoe UI", 9)
         };
         processingGroup.Controls.Add(_showImpressionCheck);
+        CreateTooltipLabel(processingGroup, _showImpressionCheck, "Display impression text after Process Report.\nClicks to dismiss, auto-hides on sign.");
 
         y += 180;
 
@@ -2031,6 +2219,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
                 Font = new Font("Segoe UI", 9)
             };
             inteleviewerGroup.Controls.Add(_windowLevelKeysBox);
+            CreateTooltipLabel(inteleviewerGroup, _windowLevelKeysBox, "Keys sent to InteleViewer for\nwindow/level cycling.");
             iy += 25;
 
             inteleviewerGroup.Controls.Add(new Label
@@ -2055,114 +2244,287 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             y += 105;
         }
 
-        // ========== NETWORK MONITOR SECTION ==========
-        var networkGroup = new GroupBox
+        // ========== REPORT CHANGES SECTION ==========
+        var reportChangesGroup = new GroupBox
         {
-            Text = "Network Monitor",
+            Text = "Report Changes Highlighting",
             Location = new Point(10, y),
-            Size = new Size(groupWidth, 130),
+            Size = new Size(groupWidth, 90),
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
-        tab.Controls.Add(networkGroup);
+        tab.Controls.Add(reportChangesGroup);
 
-        int ny = 20;
+        int rcy = 20;
 
-        _connectivityMonitorEnabledCheck = new CheckBox
+        _showReportChangesCheck = new CheckBox
         {
-            Text = "Enable connectivity monitoring",
-            Location = new Point(10, ny),
+            Text = "Highlight report changes",
+            Location = new Point(10, rcy),
             AutoSize = true,
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9)
         };
-        _connectivityMonitorEnabledCheck.CheckedChanged += (s, e) => UpdateNetworkSettingsStates();
-        networkGroup.Controls.Add(_connectivityMonitorEnabledCheck);
-        ny += 25;
+        reportChangesGroup.Controls.Add(_showReportChangesCheck);
 
-        networkGroup.Controls.Add(new Label
+        _reportChangesColorPanel = new Panel
         {
-            Text = "Check every:",
-            Location = new Point(30, ny + 2),
-            AutoSize = true,
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 9)
-        });
-        _connectivityIntervalUpDown = new NumericUpDown
+            Location = new Point(190, rcy - 2),
+            Size = new Size(40, 20),
+            BorderStyle = BorderStyle.FixedSingle,
+            Cursor = Cursors.Hand,
+            BackColor = Color.FromArgb(144, 238, 144)
+        };
+        _reportChangesColorPanel.Click += OnReportChangesColorClick;
+        reportChangesGroup.Controls.Add(_reportChangesColorPanel);
+
+        _reportChangesAlphaSlider = new TrackBar
         {
-            Location = new Point(120, ny),
-            Width = 50,
-            Minimum = 10,
-            Maximum = 120,
+            Location = new Point(240, rcy - 2),
+            Size = new Size(100, 20),
+            Minimum = 5,
+            Maximum = 100,
+            TickStyle = TickStyle.None,
             Value = 30,
-            BackColor = Color.FromArgb(50, 50, 50),
-            ForeColor = Color.White
+            BackColor = Color.FromArgb(45, 45, 48),
+            AutoSize = false
         };
-        networkGroup.Controls.Add(_connectivityIntervalUpDown);
-        networkGroup.Controls.Add(new Label
-        {
-            Text = "seconds",
-            Location = new Point(175, ny + 2),
-            AutoSize = true,
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 9)
-        });
+        _reportChangesAlphaSlider.ValueChanged += (s, e) => { _reportChangesAlphaLabel.Text = $"{_reportChangesAlphaSlider.Value}%"; UpdateReportChangesPreview(); };
+        reportChangesGroup.Controls.Add(_reportChangesAlphaSlider);
 
-        networkGroup.Controls.Add(new Label
+        _reportChangesAlphaLabel = new Label
         {
-            Text = "Timeout:",
-            Location = new Point(250, ny + 2),
+            Text = "30%",
+            Location = new Point(345, rcy),
+            AutoSize = true,
+            ForeColor = Color.Gray
+        };
+        reportChangesGroup.Controls.Add(_reportChangesAlphaLabel);
+        CreateTooltipLabel(reportChangesGroup, _reportChangesAlphaLabel, "Highlight new text in report popup with color.\nClick color box to pick, slider for transparency.");
+        rcy += 25;
+
+        _reportChangesPreview = new RichTextBox
+        {
+            Location = new Point(10, rcy),
+            Size = new Size(420, 40),
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            ReadOnly = true,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+        reportChangesGroup.Controls.Add(_reportChangesPreview);
+        UpdateReportChangesPreview();
+
+        y += 100;
+
+        // ========== RVUCOUNTER SECTION ==========
+        var rvuGroup = new GroupBox
+        {
+            Text = "RVUCounter Integration",
+            Location = new Point(10, y),
+            Size = new Size(groupWidth, 115),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(rvuGroup);
+
+        int ry = 20;
+
+        _rvuCounterEnabledCheck = new CheckBox
+        {
+            Text = "Send study events to RVUCounter",
+            Location = new Point(10, ry),
             AutoSize = true,
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9)
-        });
-        _connectivityTimeoutUpDown = new NumericUpDown
+        };
+        _rvuCounterEnabledCheck.CheckedChanged += (s, e) =>
         {
-            Location = new Point(310, ny),
-            Width = 50,
-            Minimum = 1,
-            Maximum = 10,
-            Value = 5,
+            if (!_rvuCounterEnabledCheck.Checked)
+            {
+                var result = MessageBox.Show(
+                    "Warning: Disabling RVUCounter integration will prevent MosaicTools from tracking your RVU counts.\n\n" +
+                    "Only disable this if you know what you're doing and don't use RVUCounter.\n\n" +
+                    "Are you sure you want to disable it?",
+                    "Disable RVUCounter?",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+                if (result == DialogResult.No)
+                {
+                    _rvuCounterEnabledCheck.Checked = true;
+                }
+            }
+        };
+        rvuGroup.Controls.Add(_rvuCounterEnabledCheck);
+        CreateTooltipLabel(rvuGroup, _rvuCounterEnabledCheck, "When enabled, sends signed study events to RVUCounter\nso it can track your RVU productivity.");
+
+        var rvuDisplayLabel = new Label
+        {
+            Text = "Display:",
+            Location = new Point(260, ry + 2),
+            AutoSize = true,
+            ForeColor = Color.LightGray
+        };
+        rvuGroup.Controls.Add(rvuDisplayLabel);
+
+        _rvuDisplayModeCombo = new ComboBox
+        {
+            Location = new Point(310, ry - 2),
+            Size = new Size(90, 22),
+            DropDownStyle = ComboBoxStyle.DropDownList,
             BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _rvuDisplayModeCombo.Items.AddRange(new object[] { "Total", "RVU/h", "Both" });
+        rvuGroup.Controls.Add(_rvuDisplayModeCombo);
+        CreateTooltipLabel(rvuGroup, _rvuDisplayModeCombo, "How to show RVU count on widget bar:\nTotal = shift total, RVU/h = per hour rate, Both = both values.");
+        ry += 22;
+
+        _rvuGoalEnabledCheck = new CheckBox
+        {
+            Text = "Goal:",
+            Location = new Point(30, ry),
+            AutoSize = true,
             ForeColor = Color.White
         };
-        networkGroup.Controls.Add(_connectivityTimeoutUpDown);
-        networkGroup.Controls.Add(new Label
+        rvuGroup.Controls.Add(_rvuGoalEnabledCheck);
+
+        _rvuGoalValueBox = new NumericUpDown
         {
-            Text = "sec",
-            Location = new Point(365, ny + 2),
+            Location = new Point(85, ry - 2),
+            Size = new Size(55, 20),
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            Minimum = 1,
+            Maximum = 100,
+            DecimalPlaces = 1,
+            Increment = 0.5m,
+            Value = 10
+        };
+        rvuGroup.Controls.Add(_rvuGoalValueBox);
+
+        var rvuGoalSuffixLabel = new Label
+        {
+            Text = "/h",
+            Location = new Point(142, ry + 2),
             AutoSize = true,
-            ForeColor = Color.Gray,
+            ForeColor = Color.Gray
+        };
+        rvuGroup.Controls.Add(rvuGoalSuffixLabel);
+        CreateTooltipLabel(rvuGroup, rvuGoalSuffixLabel, "Target RVU per hour. Widget bar color shows progress:\nblue = meeting goal, red = below goal.");
+        ry += 24;
+
+        _rvuCounterPathBox = new TextBox
+        {
+            Location = new Point(30, ry),
+            Size = new Size(300, 20),
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.LightGray,
+            ReadOnly = true
+        };
+        rvuGroup.Controls.Add(_rvuCounterPathBox);
+
+        var findRvuBtn = new Button
+        {
+            Text = "Find",
+            Location = new Point(340, ry - 2),
+            Size = new Size(45, 22),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        findRvuBtn.Click += OnFindRvuCounterClick;
+        rvuGroup.Controls.Add(findRvuBtn);
+        CreateTooltipLabel(rvuGroup, findRvuBtn, "Auto-search common locations for RVUCounter database\n(AppData, Desktop, Documents).");
+
+        var browseRvuBtn = new Button
+        {
+            Text = "...",
+            Location = new Point(390, ry - 2),
+            Size = new Size(30, 22),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        browseRvuBtn.Click += OnBrowseDatabaseClick;
+        rvuGroup.Controls.Add(browseRvuBtn);
+        CreateTooltipLabel(rvuGroup, browseRvuBtn, "Manually browse to select RVUCounter database file.");
+        ry += 25;
+
+        _rvuCounterStatusLabel = new Label
+        {
+            Text = "",
+            Location = new Point(30, ry),
+            Size = new Size(300, 18),
+            ForeColor = Color.Gray
+        };
+        rvuGroup.Controls.Add(_rvuCounterStatusLabel);
+
+        y += 125;
+
+        // ========== INPATIENT XR HANDLING SECTION ==========
+        var inpatientGroup = new GroupBox
+        {
+            Text = "Inpatient XR Handling",
+            Location = new Point(10, y),
+            Size = new Size(groupWidth, 85),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(inpatientGroup);
+
+        int ipy = 20;
+
+        _ignoreInpatientDraftedCheck = new CheckBox
+        {
+            Text = "Ignore Inpatient Drafted (select all after auto-insertions)",
+            Location = new Point(10, ipy),
+            AutoSize = true,
+            ForeColor = Color.White,
             Font = new Font("Segoe UI", 9)
-        });
-        ny += 28;
-
-        networkGroup.Controls.Add(new Label
+        };
+        _ignoreInpatientDraftedCheck.CheckedChanged += (s, e) =>
         {
-            Text = "Shows 4 status dots in the widget bar (currently using placeholder IPs).",
-            Location = new Point(30, ny),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(120, 120, 120),
-            Font = new Font("Segoe UI", 8, FontStyle.Italic)
-        });
-        ny += 18;
-        networkGroup.Controls.Add(new Label
-        {
-            Text = "Mirth=8.8.8.8, Mosaic=1.1.1.1, Clario=208.67.222.222, IV=9.9.9.9",
-            Location = new Point(30, ny),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(100, 100, 100),
-            Font = new Font("Segoe UI", 7)
-        });
+            _ignoreInpatientAllXrRadio.Enabled = _ignoreInpatientDraftedCheck.Checked;
+            _ignoreInpatientChestOnlyRadio.Enabled = _ignoreInpatientDraftedCheck.Checked;
+        };
+        inpatientGroup.Controls.Add(_ignoreInpatientDraftedCheck);
+        CreateTooltipLabel(inpatientGroup, _ignoreInpatientDraftedCheck, "Auto-select all text for inpatient XR studies\nafter macro/clinical history insertions.");
+        ipy += 25;
 
-        y += 140;
+        _ignoreInpatientAllXrRadio = new RadioButton
+        {
+            Text = "All Inpatient XR",
+            Location = new Point(30, ipy),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9),
+            Checked = true,
+            Enabled = false
+        };
+        inpatientGroup.Controls.Add(_ignoreInpatientAllXrRadio);
+
+        _ignoreInpatientChestOnlyRadio = new RadioButton
+        {
+            Text = "Inpatient Chest XR only",
+            Location = new Point(170, ipy),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9),
+            Enabled = false
+        };
+        inpatientGroup.Controls.Add(_ignoreInpatientChestOnlyRadio);
+        CreateTooltipLabel(inpatientGroup, _ignoreInpatientChestOnlyRadio, "Apply to all inpatient X-ray studies\nor only inpatient chest X-rays.");
+
+        y += 95;
 
         // ========== EXPERIMENTAL SECTION ==========
         var experimentalGroup = new GroupBox
         {
             Text = "Experimental",
             Location = new Point(10, y),
-            Size = new Size(groupWidth, 210),
+            Size = new Size(groupWidth, 140),
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
@@ -2180,176 +2542,85 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         });
         ey += 22;
 
-        // Report Changes Highlighting (moved above RVU Counter)
-        _showReportChangesCheck = new CheckBox
+        // Network Monitor (experimental)
+        _connectivityMonitorEnabledCheck = new CheckBox
         {
-            Text = "Highlight report changes",
+            Text = "Network Monitor - show connectivity status dots",
             Location = new Point(10, ey),
             AutoSize = true,
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9)
         };
-        experimentalGroup.Controls.Add(_showReportChangesCheck);
-
-        _reportChangesColorPanel = new Panel
-        {
-            Location = new Point(190, ey - 2),
-            Size = new Size(40, 20),
-            BorderStyle = BorderStyle.FixedSingle,
-            Cursor = Cursors.Hand,
-            BackColor = Color.FromArgb(144, 238, 144)
-        };
-        _reportChangesColorPanel.Click += OnReportChangesColorClick;
-        experimentalGroup.Controls.Add(_reportChangesColorPanel);
-
-        _reportChangesAlphaSlider = new TrackBar
-        {
-            Location = new Point(240, ey - 2),
-            Size = new Size(100, 20),
-            Minimum = 5,
-            Maximum = 100,
-            TickStyle = TickStyle.None,
-            Value = 30,
-            BackColor = Color.FromArgb(45, 45, 48),
-            AutoSize = false
-        };
-        _reportChangesAlphaSlider.ValueChanged += (s, e) => { _reportChangesAlphaLabel.Text = $"{_reportChangesAlphaSlider.Value}%"; UpdateReportChangesPreview(); };
-        experimentalGroup.Controls.Add(_reportChangesAlphaSlider);
-
-        _reportChangesAlphaLabel = new Label
-        {
-            Text = "30%",
-            Location = new Point(345, ey),
-            AutoSize = true,
-            ForeColor = Color.Gray
-        };
-        experimentalGroup.Controls.Add(_reportChangesAlphaLabel);
+        _connectivityMonitorEnabledCheck.CheckedChanged += (s, e) => UpdateNetworkSettingsStates();
+        experimentalGroup.Controls.Add(_connectivityMonitorEnabledCheck);
+        CreateTooltipLabel(experimentalGroup, _connectivityMonitorEnabledCheck, "Show connectivity dots in widget bar\n(experimental).");
         ey += 25;
 
-        // Preview area
-        _reportChangesPreview = new RichTextBox
+        experimentalGroup.Controls.Add(new Label
         {
-            Location = new Point(10, ey),
-            Size = new Size(420, 40),
-            BackColor = Color.FromArgb(50, 50, 50),
-            ForeColor = Color.White,
-            ReadOnly = true,
-            BorderStyle = BorderStyle.FixedSingle
-        };
-        experimentalGroup.Controls.Add(_reportChangesPreview);
-        UpdateReportChangesPreview();
-        ey += 50;
-
-        // RVU Counter
-        _rvuCounterEnabledCheck = new CheckBox
-        {
-            Text = "RVUCounter integration",
-            Location = new Point(10, ey),
+            Text = "Check every:",
+            Location = new Point(30, ey + 2),
             AutoSize = true,
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9)
-        };
-        experimentalGroup.Controls.Add(_rvuCounterEnabledCheck);
-
-        var rvuDisplayLabel = new Label
+        });
+        _connectivityIntervalUpDown = new NumericUpDown
         {
-            Text = "Display:",
-            Location = new Point(200, ey + 2),
-            AutoSize = true,
-            ForeColor = Color.LightGray
-        };
-        experimentalGroup.Controls.Add(rvuDisplayLabel);
-
-        _rvuDisplayModeCombo = new ComboBox
-        {
-            Location = new Point(250, ey - 2),
-            Size = new Size(90, 22),
-            DropDownStyle = ComboBoxStyle.DropDownList,
+            Location = new Point(120, ey),
+            Width = 50,
+            Minimum = 10,
+            Maximum = 120,
+            Value = 30,
             BackColor = Color.FromArgb(50, 50, 50),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat
-        };
-        _rvuDisplayModeCombo.Items.AddRange(new object[] { "Total", "RVU/h", "Both" });
-        experimentalGroup.Controls.Add(_rvuDisplayModeCombo);
-        ey += 22;
-
-        // Goal setting
-        _rvuGoalEnabledCheck = new CheckBox
-        {
-            Text = "Goal:",
-            Location = new Point(30, ey),
-            AutoSize = true,
             ForeColor = Color.White
         };
-        experimentalGroup.Controls.Add(_rvuGoalEnabledCheck);
-
-        _rvuGoalValueBox = new NumericUpDown
+        experimentalGroup.Controls.Add(_connectivityIntervalUpDown);
+        experimentalGroup.Controls.Add(new Label
         {
-            Location = new Point(85, ey - 2),
-            Size = new Size(55, 20),
-            BackColor = Color.FromArgb(50, 50, 50),
-            ForeColor = Color.White,
-            Minimum = 1,
-            Maximum = 100,
-            DecimalPlaces = 1,
-            Increment = 0.5m,
-            Value = 10
-        };
-        experimentalGroup.Controls.Add(_rvuGoalValueBox);
-
-        var rvuGoalSuffixLabel = new Label
-        {
-            Text = "/h",
-            Location = new Point(142, ey + 2),
+            Text = "sec",
+            Location = new Point(175, ey + 2),
             AutoSize = true,
-            ForeColor = Color.Gray
-        };
-        experimentalGroup.Controls.Add(rvuGoalSuffixLabel);
-        ey += 24;
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 9)
+        });
 
-        _rvuCounterPathBox = new TextBox
+        experimentalGroup.Controls.Add(new Label
         {
-            Location = new Point(30, ey),
-            Size = new Size(300, 20),
+            Text = "Timeout:",
+            Location = new Point(220, ey + 2),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        });
+        _connectivityTimeoutUpDown = new NumericUpDown
+        {
+            Location = new Point(280, ey),
+            Width = 50,
+            Minimum = 1,
+            Maximum = 10,
+            Value = 5,
             BackColor = Color.FromArgb(50, 50, 50),
-            ForeColor = Color.LightGray,
-            ReadOnly = true
+            ForeColor = Color.White
         };
-        experimentalGroup.Controls.Add(_rvuCounterPathBox);
-
-        var findRvuBtn = new Button
+        experimentalGroup.Controls.Add(_connectivityTimeoutUpDown);
+        experimentalGroup.Controls.Add(new Label
         {
-            Text = "Find",
-            Location = new Point(340, ey - 2),
-            Size = new Size(45, 22),
-            BackColor = Color.FromArgb(60, 60, 60),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat
-        };
-        findRvuBtn.Click += OnFindRvuCounterClick;
-        experimentalGroup.Controls.Add(findRvuBtn);
+            Text = "sec",
+            Location = new Point(335, ey + 2),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 9)
+        });
+        ey += 28;
 
-        var browseRvuBtn = new Button
+        experimentalGroup.Controls.Add(new Label
         {
-            Text = "...",
-            Location = new Point(390, ey - 2),
-            Size = new Size(30, 22),
-            BackColor = Color.FromArgb(60, 60, 60),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat
-        };
-        browseRvuBtn.Click += OnBrowseDatabaseClick;
-        experimentalGroup.Controls.Add(browseRvuBtn);
-        ey += 25;
-
-        _rvuCounterStatusLabel = new Label
-        {
-            Text = "",
+            Text = "Shows 4 status dots: Mirth, Mosaic, Clario, InteleViewer (placeholder IPs)",
             Location = new Point(30, ey),
-            Size = new Size(300, 18),
-            ForeColor = Color.Gray
-        };
-        experimentalGroup.Controls.Add(_rvuCounterStatusLabel);
+            AutoSize = true,
+            ForeColor = Color.FromArgb(100, 100, 100),
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        });
 
         return tab;
     }
@@ -3081,6 +3352,60 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
     }
 
+    /// <summary>
+    /// Creates a "?" tooltip label positioned to the right of the anchor control.
+    /// </summary>
+    private Label CreateTooltipLabel(Control parent, Control anchor, string tooltip, int offsetX = 2, int offsetY = 0)
+    {
+        var label = new Label
+        {
+            Text = "?",
+            Size = new Size(14, 14),
+            Location = new Point(anchor.Right + offsetX, anchor.Top + offsetY),
+            ForeColor = Color.FromArgb(100, 150, 200),
+            Font = new Font("Segoe UI", 7, FontStyle.Bold),
+            Cursor = Cursors.Help,
+            Visible = _config.ShowTooltips
+        };
+        parent.Controls.Add(label);
+        _settingsToolTip.SetToolTip(label, tooltip);
+        _tooltipLabels.Add(label);
+        return label;
+    }
+
+    /// <summary>
+    /// Creates a "?" tooltip label at an absolute position.
+    /// </summary>
+    private Label CreateTooltipLabelAt(Control parent, int x, int y, string tooltip)
+    {
+        var label = new Label
+        {
+            Text = "?",
+            Size = new Size(14, 14),
+            Location = new Point(x, y),
+            ForeColor = Color.FromArgb(100, 150, 200),
+            Font = new Font("Segoe UI", 7, FontStyle.Bold),
+            Cursor = Cursors.Help,
+            Visible = _config.ShowTooltips
+        };
+        parent.Controls.Add(label);
+        _settingsToolTip.SetToolTip(label, tooltip);
+        _tooltipLabels.Add(label);
+        return label;
+    }
+
+    /// <summary>
+    /// Updates visibility of all tooltip labels based on the ShowTooltips setting.
+    /// </summary>
+    private void UpdateTooltipVisibility()
+    {
+        bool visible = _showTooltipsCheck?.Checked ?? _config.ShowTooltips;
+        foreach (var label in _tooltipLabels)
+        {
+            label.Visible = visible;
+        }
+    }
+
     private void SetupHotkeyCapture(TextBox tb)
     {
         tb.KeyDown += (s, e) =>
@@ -3201,7 +3526,14 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         _connectivityTimeoutUpDown.Value = Math.Clamp(_config.ConnectivityTimeoutMs / 1000, 1, 10);
         UpdateNetworkSettingsStates();
 
-        // Experimental tab
+        // Ignore Inpatient Drafted
+        _ignoreInpatientDraftedCheck.Checked = _config.IgnoreInpatientDrafted;
+        _ignoreInpatientAllXrRadio.Checked = _config.IgnoreInpatientDraftedMode == 0;
+        _ignoreInpatientChestOnlyRadio.Checked = _config.IgnoreInpatientDraftedMode == 1;
+        _ignoreInpatientAllXrRadio.Enabled = _config.IgnoreInpatientDrafted;
+        _ignoreInpatientChestOnlyRadio.Enabled = _config.IgnoreInpatientDrafted;
+
+        // RVUCounter and Report Changes (no longer in Experimental section)
         _rvuCounterEnabledCheck.Checked = _config.RvuCounterEnabled;
         _rvuDisplayModeCombo.SelectedIndex = (int)_config.RvuDisplayMode;
         _rvuGoalEnabledCheck.Checked = _config.RvuGoalEnabled;
@@ -3410,16 +3742,6 @@ Available placeholders:
 Example template:
 ""Critical findings were discussed with and acknowledged by {name} at {time} on {date}.""
 
-Result:
-""Critical findings were discussed with and acknowledged by Dr. Jones at 2:30 PM EST on 01/15/2026.""
-
-DEBUGGING CRITICAL FINDINGS
-If the critical findings aren't being extracted correctly:
-1. Hold the Windows key on your keyboard
-2. While holding Win, trigger Critical Findings (mic button or hotkey)
-3. Debug mode activates - a window shows the raw scraped text and formatted result
-4. This helps identify if the note format is different than expected
-
 SERIES/IMAGE TEMPLATE
 ═════════════════════
 This template is used when you trigger ""Capture Series/Image"". The tool uses OCR to read the series and image numbers from your screen.
@@ -3428,15 +3750,27 @@ Available placeholders:
 • {series} - The series number
 • {image} - The image number
 
-Example template:
-""(series {series}, image {image})""
+Example: ""(series {series}, image {image})"" → ""(series 3, image 142)""
 
-Result:
-""(series 3, image 142)""
+MACROS
+══════
+Macros are text snippets automatically inserted when you open a new study. This saves time for common report sections.
+
+• Enable Macros: Turn macros on/off globally. Requires ""Scrape Mosaic"" to be enabled.
+• Add blank lines: Insert 10 blank lines before macro text for dictation space.
+• Click Edit to manage your macros. Each macro can match based on required terms and optional ""any of"" terms in the study description.
+
+PICK LISTS
+══════════
+Pick lists provide quick text insertion via popup menus. Assign ""Show Pick Lists"" to a hotkey or mic button to trigger.
+
+• Enable Pick Lists: Turn pick lists on/off.
+• Skip single match: Auto-select when only one pick list matches the study.
+• Keep window open: Leave the popup visible after inserting (use number keys for quick selection).
 
 TIPS
-• Position the yellow selection box in InteleViewer so the series/image info is visible in the header area.
-• The OCR looks for patterns like ""S: 3"" or ""Series: 3"" and ""I: 142"" or ""Image: 142"".";
+• Hold Win key while triggering Critical Findings for debug mode.
+• Macros can reference pick lists using syntax like {picklist:Name}.";
                 break;
 
             case 4: // Alerts
@@ -3444,35 +3778,37 @@ TIPS
                 content = @"ALERTS
 ═══════════════════════════════════════
 
-Macros are text snippets that are automatically inserted when you open a new study. This saves time for common report sections you frequently type.
+This tab configures the notification box and visual alerts that appear while reading studies.
 
-ENABLE MACROS
-Turn macros on or off globally.
+CRITICAL STUDIES TRACKER
+═══════════════════════════
+Track critical studies this session - shows a count badge on the main widget bar when you create critical communication notes. Click the badge to see a list of all critical studies and double-click to open them in Clario.
 
-ADD BLANK LINES BEFORE MACROS
-When enabled, inserts 10 blank lines before your macro text. This gives you space to dictate above the macro content.
+NOTIFICATION BOX
+════════════════
+A floating window that shows clinical history and alerts. Requires ""Scrape Mosaic"" to be enabled in the Behavior tab.
 
-CREATING MACROS
-Click + to add a new macro. Each macro has:
+• Enable Notification Box: Turn the floating window on/off.
+• Show clinical history: Display the clinical history text. When unchecked, the window only appears when alerts are triggered (alerts-only mode).
+• Hide when no study open: Hide the window when no study is active in Mosaic.
+• Auto-paste corrected history: Automatically paste cleaned/corrected clinical history when malformed text is detected.
+• Show Drafted indicator: Green border when report has IMPRESSION section (draft in progress).
 
-• Name: A label to identify the macro (e.g., ""CT Abdomen Template"")
+ALERT TRIGGERS
+══════════════
+These alerts appear as colored borders around the notification box, even in alerts-only mode:
 
-• Required: Comma-separated terms that must ALL appear in the study description.
-  Example: ""CT, abdomen"" matches ""CT ABDOMEN PELVIS WITH CONTRAST""
+• Template mismatch (red border): The report template doesn't match the study description. For example, ordered ""CT Chest Abdomen Pelvis"" but template is ""CT Abdomen Pelvis"".
 
-• Any of: Comma-separated terms where at least ONE must appear.
-  Example: ""head, brain"" matches studies with either term.
+• Gender check (flashing red): Report contains gender-specific terms (uterus, prostate, etc.) that don't match the patient's documented gender.
 
-• Macro Text: The actual text to insert.
+• Stroke detection (purple border): Study appears to be stroke-related based on description or clinical history keywords.
 
-MATCHING LOGIC
-• Both criteria blank = Global macro (applies to all studies)
-• Required only = All terms must match
-• Any of only = At least one term must match
-• Both = All Required terms AND at least one Any of term
-
-MULTIPLE MACROS
-Multiple macros can match the same study. All matching macros are inserted together. Blank lines (if enabled) are added only once.";
+STROKE ALERT OPTIONS
+────────────────────
+• Also use clinical history keywords: Check clinical history text for stroke-related terms in addition to the study description.
+• Click alert to create Clario note: Click the purple border to automatically create a Critical Communication Note in Clario.
+• Auto-create on Process Report: Automatically create the Clario note when you press Process Report for stroke cases.";
                 break;
 
             case 5: // Behavior
@@ -3712,6 +4048,7 @@ SETTINGS FILE
     {
         // General settings
         _config.DoctorName = _doctorNameBox.Text.Trim();
+        _config.ShowTooltips = _showTooltipsCheck.Checked;
         _config.StartBeepEnabled = _startBeepCheck.Checked;
         _config.StopBeepEnabled = _stopBeepCheck.Checked;
         _config.StartBeepVolume = SliderToVolume(_startVolumeSlider.Value);
@@ -3765,7 +4102,11 @@ SETTINGS FILE
         _config.ConnectivityCheckIntervalSeconds = (int)_connectivityIntervalUpDown.Value;
         _config.ConnectivityTimeoutMs = (int)_connectivityTimeoutUpDown.Value * 1000;
 
-        // Experimental
+        // Ignore Inpatient Drafted
+        _config.IgnoreInpatientDrafted = _ignoreInpatientDraftedCheck.Checked;
+        _config.IgnoreInpatientDraftedMode = _ignoreInpatientChestOnlyRadio.Checked ? 1 : 0;
+
+        // RVUCounter and Report Changes
         _config.RvuCounterEnabled = _rvuCounterEnabledCheck.Checked;
         _config.RvuDisplayMode = (RvuDisplayMode)_rvuDisplayModeCombo.SelectedIndex;
         _config.RvuGoalEnabled = _rvuGoalEnabledCheck.Checked;
@@ -3805,7 +4146,7 @@ SETTINGS FILE
         // Button Studio - save full config from working copy
         _config.FloatingButtons.Columns = _studioColumns;
         _config.FloatingButtons.Buttons = _studioButtons
-            .Select(b => new FloatingButtonDef { Type = b.Type, Icon = b.Icon, Label = b.Label, Keystroke = b.Keystroke })
+            .Select(b => new FloatingButtonDef { Type = b.Type, Icon = b.Icon, Label = b.Label, Keystroke = b.Keystroke, Action = b.Action })
             .ToList();
         
         // Save
@@ -3835,8 +4176,8 @@ public class DarkTabControl : TabControl
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.DoubleBuffer, true);
         DrawMode = TabDrawMode.OwnerDrawFixed;
         SizeMode = TabSizeMode.Fixed;
-        ItemSize = new Size(70, 26);
-        Padding = new Point(6, 3);
+        ItemSize = new Size(62, 26);
+        Padding = new Point(4, 3);
     }
 
     protected override void OnPaint(PaintEventArgs e)

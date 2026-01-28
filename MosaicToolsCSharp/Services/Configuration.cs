@@ -126,6 +126,14 @@ public class Configuration
     [JsonPropertyName("track_critical_studies")]
     public bool TrackCriticalStudies { get; set; } = true;
 
+    // Ignore Inpatient Drafted - auto-select all text after insertions for matching studies
+    [JsonPropertyName("ignore_inpatient_drafted")]
+    public bool IgnoreInpatientDrafted { get; set; } = false;
+
+    // 0 = All Inpatient XR, 1 = Inpatient Chest XR only
+    [JsonPropertyName("ignore_inpatient_drafted_mode")]
+    public int IgnoreInpatientDraftedMode { get; set; } = 0;
+
     [JsonPropertyName("stroke_clinical_history_keywords")]
     public List<string> StrokeClinicalHistoryKeywords { get; set; } = new()
     {
@@ -206,9 +214,9 @@ public class Configuration
     [JsonPropertyName("macros")]
     public List<MacroConfig> Macros { get; set; } = new();
 
-    // RVUCounter Integration (Experimental)
+    // RVUCounter Integration
     [JsonPropertyName("rvucounter_enabled")]
-    public bool RvuCounterEnabled { get; set; } = false;
+    public bool RvuCounterEnabled { get; set; } = true;
 
     [JsonPropertyName("rvucounter_path")]
     public string RvuCounterPath { get; set; } = "";
@@ -222,7 +230,7 @@ public class Configuration
     [JsonPropertyName("rvu_goal_per_hour")]
     public double RvuGoalPerHour { get; set; } = 10.0;
 
-    // Report Changes Highlighting (Experimental)
+    // Report Changes Highlighting
     [JsonPropertyName("show_report_changes")]
     public bool ShowReportChanges { get; set; } = false;
 
@@ -273,6 +281,10 @@ public class Configuration
 
     [JsonPropertyName("connectivity_servers")]
     public List<ServerConfig> ConnectivityServers { get; set; } = new();
+
+    // UI Options
+    [JsonPropertyName("show_tooltips")]
+    public bool ShowTooltips { get; set; } = true;
 
     // InteleViewer Window/Level Cycle Keystrokes
     // Keys sent to InteleViewer when Cycle Window/Level action is triggered
@@ -435,6 +447,32 @@ public class Configuration
         }
     }
     
+    /// <summary>
+    /// Check if a study matches the Ignore Inpatient Drafted criteria.
+    /// Returns true if the study is inpatient XR (or inpatient chest XR if mode=1).
+    /// </summary>
+    public bool ShouldIgnoreInpatientDrafted(string? clarioClass, string? description)
+    {
+        if (!IgnoreInpatientDrafted) return false;
+        if (string.IsNullOrEmpty(clarioClass) || string.IsNullOrEmpty(description)) return false;
+
+        // Check inpatient
+        var classLower = clarioClass.ToLowerInvariant();
+        if (!classLower.Contains("inpatient") && !classLower.Contains(" ip") && !classLower.StartsWith("ip ") && classLower != "ip") return false;
+
+        // Check XR
+        var descLower = description.ToLowerInvariant();
+        bool isXr = descLower.Contains("xr") || descLower.Contains("x-ray") || descLower.Contains("xray");
+        if (!isXr) return false;
+
+        // Mode 0 = All Inpatient XR, Mode 1 = Chest only
+        if (IgnoreInpatientDraftedMode == 1)
+        {
+            return descLower.Contains("chest");
+        }
+        return true;
+    }
+
     public void Save()
     {
         try
@@ -619,6 +657,9 @@ public class FloatingButtonDef
     
     [JsonPropertyName("keystroke")]
     public string Keystroke { get; set; } = "";
+
+    [JsonPropertyName("action")]
+    public string Action { get; set; } = "";
 }
 
 /// <summary>
@@ -744,7 +785,7 @@ public class PickListCategory
 
     /// <summary>
     /// Available options for this category (v2 format with reference support).
-    /// Max 9 options (keyboard shortcuts 1-9).
+    /// Keys 1-9 select first 9 options; additional options selectable by click/arrow.
     /// </summary>
     [JsonPropertyName("options_v2")]
     public List<BuilderOption> Options { get; set; } = new();

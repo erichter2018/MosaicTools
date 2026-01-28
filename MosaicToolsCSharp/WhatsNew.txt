@@ -1,3 +1,9 @@
+3.0.0
+- Settings tooltips: hover over "?" icons for explanations of every feature
+- "Show tooltips" checkbox in General tab (on by default)
+- Updated help text for all Settings tabs
+- Comprehensive documentation for RVUCounter integration
+
 2.8.1
 - Pick list references: tree nodes can reference macros, builder options can reference macros or tree lists
 - Live macro resolution in pick lists (text updates when macro changes)
