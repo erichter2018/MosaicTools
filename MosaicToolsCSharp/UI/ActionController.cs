@@ -179,7 +179,7 @@ public class ActionController : IDisposable
                 catch (Exception ex)
                 {
                     Logger.Trace($"Action loop error ({req.Action}): {ex.Message}");
-                    _mainForm.Invoke(() => _mainForm.ShowStatusToast($"Error: {ex.Message}"));
+                    _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"Error: {ex.Message}"));
                 }
                 finally
                 {
@@ -191,7 +191,7 @@ public class ActionController : IDisposable
                         NativeWindows.RestorePreviousFocus(50);
                     }
                     
-                    _mainForm.Invoke(() => _mainForm.EnsureWindowsOnTop());
+                    _mainForm.BeginInvoke(() => _mainForm.EnsureWindowsOnTop());
                 }
             }
         }
@@ -203,7 +203,7 @@ public class ActionController : IDisposable
         _hidService.ButtonPressed += OnMicButtonPressed;
         _hidService.RecordButtonStateChanged += OnRecordButtonStateChanged;
         _hidService.DeviceConnected += msg => 
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast(msg));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(msg));
         _hidService.Start();
         
         // Register hotkeys (skip in headless mode)
@@ -474,7 +474,7 @@ public class ActionController : IDisposable
 
         // 3. Update internal state and UI
         _dictationActive = startingActive;
-        _mainForm.Invoke(() => _mainForm.UpdateIndicatorState(_dictationActive));
+        _mainForm.BeginInvoke(() => _mainForm.UpdateIndicatorState(_dictationActive));
         Logger.Trace($"System Beep: State toggled to {(_dictationActive ? "ON" : "OFF")}");
 
         // 4. Reality Check (Python Parity)
@@ -496,7 +496,7 @@ public class ActionController : IDisposable
             {
                 Logger.Trace("SYNC FIX: System is recording, but app state was OFF. Syncing to ON.");
                 _dictationActive = true;
-                _mainForm.Invoke(() => _mainForm.UpdateIndicatorState(_dictationActive));
+                _mainForm.BeginInvoke(() => _mainForm.UpdateIndicatorState(_dictationActive));
             }
             else if (isRealActive == false && _dictationActive)
             {
@@ -519,7 +519,7 @@ public class ActionController : IDisposable
             if (active)
             {
                 _consecutiveInactiveCount = 0;
-                _mainForm.Invoke(() => _mainForm.UpdateIndicatorState(true));
+                _mainForm.BeginInvoke(() => _mainForm.UpdateIndicatorState(true));
             }
             else
             {
@@ -527,7 +527,7 @@ public class ActionController : IDisposable
                 _consecutiveInactiveCount++;
                 if (_consecutiveInactiveCount >= 3)
                 {
-                    _mainForm.Invoke(() => _mainForm.UpdateIndicatorState(false));
+                    _mainForm.BeginInvoke(() => _mainForm.UpdateIndicatorState(false));
                 }
             }
 
@@ -770,7 +770,7 @@ public class ActionController : IDisposable
         _impressionSearchStartTime = DateTime.Now; // Track when we started - wait 2s before showing
 
         // Show the impression window with waiting message
-        _mainForm.Invoke(() => _mainForm.ShowImpressionWindow());
+        _mainForm.BeginInvoke(() => _mainForm.ShowImpressionWindow());
 
         // Switch to fast scrape rate (1 second)
         RestartScrapeTimer(_fastScrapeIntervalMs);
@@ -782,7 +782,7 @@ public class ActionController : IDisposable
         _searchingForImpression = false;
 
         // Update the impression window with content
-        _mainForm.Invoke(() => _mainForm.UpdateImpression(impression));
+        _mainForm.BeginInvoke(() => _mainForm.UpdateImpression(impression));
 
         // Switch to slow scrape rate (3 seconds)
         RestartScrapeTimer(_postImpressionScrapeIntervalMs);
@@ -801,7 +801,7 @@ public class ActionController : IDisposable
         // Close report popup if open
         if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
         {
-            _mainForm.Invoke(() =>
+            _mainForm.BeginInvoke(() =>
             {
                 try { _currentReportPopup?.Close(); } catch { }
                 _currentReportPopup = null;
@@ -839,7 +839,7 @@ public class ActionController : IDisposable
         {
             _searchingForImpression = false;
             _impressionFromProcessReport = false; // Clear manual trigger flag
-            _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
+            _mainForm.BeginInvoke(() => _mainForm.HideImpressionWindow());
 
             // Restore normal scrape rate
             RestartScrapeTimer(NormalScrapeIntervalMs);
@@ -853,7 +853,7 @@ public class ActionController : IDisposable
         // Close report popup if open
         if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
         {
-            _mainForm.Invoke(() =>
+            _mainForm.BeginInvoke(() =>
             {
                 try { _currentReportPopup?.Close(); } catch { }
                 _currentReportPopup = null;
@@ -873,7 +873,7 @@ public class ActionController : IDisposable
 
         if (success)
         {
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Study discarded", 2000));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Study discarded", 2000));
 
             // Send CLOSED_UNSIGNED immediately after successful discard
             if (!string.IsNullOrEmpty(accessionToDiscard))
@@ -893,18 +893,18 @@ public class ActionController : IDisposable
             // Hide clinical history window if configured to hide when no study
             if (_config.HideClinicalHistoryWhenNoStudy && _config.ShowClinicalHistory)
             {
-                _mainForm.Invoke(() => _mainForm.ToggleClinicalHistory(false));
+                _mainForm.BeginInvoke(() => _mainForm.ToggleClinicalHistory(false));
             }
 
             // Hide indicator window if configured to hide when no study
             if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
             {
-                _mainForm.Invoke(() => _mainForm.ToggleIndicator(false));
+                _mainForm.BeginInvoke(() => _mainForm.ToggleIndicator(false));
             }
         }
         else
         {
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Discard failed - try manually", 3000));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Discard failed - try manually", 3000));
         }
 
         // Close impression window on discard (same as sign)
@@ -912,7 +912,7 @@ public class ActionController : IDisposable
         {
             _searchingForImpression = false;
             _impressionFromProcessReport = false;
-            _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
+            _mainForm.BeginInvoke(() => _mainForm.HideImpressionWindow());
             RestartScrapeTimer(NormalScrapeIntervalMs);
         }
     }
@@ -924,11 +924,11 @@ public class ActionController : IDisposable
         var success = _automationService.ClickCreateImpression();
         if (success)
         {
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Create Impression", 1500));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Create Impression", 1500));
         }
         else
         {
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Create Impression button not found", 2500));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Create Impression button not found", 2500));
         }
     }
 
@@ -1026,7 +1026,7 @@ public class ActionController : IDisposable
         if (IsAddendumOpen())
         {
             Logger.Trace("InsertMacros: Blocked - addendum is open");
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
             return;
         }
 
@@ -1063,7 +1063,7 @@ public class ActionController : IDisposable
                     TrimTrackingSets();
                 }
 
-                _mainForm.Invoke(() => _mainForm.ShowStatusToast(
+                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(
                     count == 1 ? "Macro inserted" : $"{count} macros inserted", 2000));
 
                 // Mark macros complete for Ignore Inpatient Drafted feature
@@ -1098,14 +1098,14 @@ public class ActionController : IDisposable
         // Check if pick lists are enabled
         if (!_config.PickListsEnabled)
         {
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Pick lists are disabled", 2000));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Pick lists are disabled", 2000));
             return;
         }
 
         // Check if there are any pick lists
         if (_config.PickLists.Count == 0)
         {
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("No pick lists configured", 2000));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No pick lists configured", 2000));
             return;
         }
 
@@ -1120,7 +1120,7 @@ public class ActionController : IDisposable
         if (matchingLists.Count == 0)
         {
             var studyInfo = string.IsNullOrEmpty(studyDescription) ? "no study" : $"'{studyDescription}'";
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast($"No pick lists match {studyInfo}", 2500));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"No pick lists match {studyInfo}", 2500));
             return;
         }
 
@@ -1129,7 +1129,7 @@ public class ActionController : IDisposable
         // If keep-open is enabled and popup exists, just bring it to front
         if (_config.PickListKeepOpen && _currentPickListPopup != null && !_currentPickListPopup.IsDisposed)
         {
-            _mainForm.Invoke(() =>
+            _mainForm.BeginInvoke(() =>
             {
                 _currentPickListPopup?.Activate();
                 _currentPickListPopup?.Focus();
@@ -1140,7 +1140,7 @@ public class ActionController : IDisposable
         // Close existing popup if open (and keep-open is disabled)
         if (_currentPickListPopup != null && !_currentPickListPopup.IsDisposed)
         {
-            _mainForm.Invoke(() =>
+            _mainForm.BeginInvoke(() =>
             {
                 try { _currentPickListPopup?.Close(); } catch { }
                 _currentPickListPopup = null;
@@ -1148,7 +1148,7 @@ public class ActionController : IDisposable
         }
 
         // Show popup on UI thread
-        _mainForm.Invoke(() =>
+        _mainForm.BeginInvoke(() =>
         {
             _currentPickListPopup = new PickListPopupForm(_config, matchingLists, studyDescription, OnPickListItemSelected);
             _currentPickListPopup.FormClosed += (s, e) => _currentPickListPopup = null;
@@ -1175,7 +1175,7 @@ public class ActionController : IDisposable
         if (IsAddendumOpen())
         {
             Logger.Trace("InsertPickListText: Blocked - addendum is open");
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
             return;
         }
 
@@ -1205,12 +1205,12 @@ public class ActionController : IDisposable
                 NativeWindows.SendHotkey("ctrl+v");
                 Thread.Sleep(100);
 
-                _mainForm.Invoke(() => _mainForm.ShowStatusToast("Pick list item inserted", 1500));
+                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Pick list item inserted", 1500));
             }
             catch (Exception ex)
             {
                 Logger.Trace($"InsertPickListText error: {ex.Message}");
-                _mainForm.Invoke(() => _mainForm.ShowStatusToast($"Error: {ex.Message}", 2500));
+                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"Error: {ex.Message}", 2500));
             }
             finally
             {
@@ -1234,12 +1234,12 @@ public class ActionController : IDisposable
         if (IsAddendumOpen())
         {
             Logger.Trace("GetPrior: Blocked - addendum is open");
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
             _isUserActive = false;
             return;
         }
 
-        _mainForm.Invoke(() => _mainForm.ShowStatusToast("Extracting Prior..."));
+        _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Extracting Prior..."));
 
         try
         {
@@ -1249,7 +1249,7 @@ public class ActionController : IDisposable
             
             if (!activeTitle.Contains("inteleviewer"))
             {
-                _mainForm.Invoke(() => _mainForm.ShowStatusToast("InteleViewer must be active!"));
+                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("InteleViewer must be active!"));
                 return;
             }
             
@@ -1299,7 +1299,7 @@ public class ActionController : IDisposable
             if (string.IsNullOrEmpty(rawText) || rawText.Length < 5)
             {
                 Logger.Trace("GetPrior: Failed to retrieve text after 3 attempts.");
-                _mainForm.Invoke(() => _mainForm.ShowStatusToast("No text retrieved"));
+                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No text retrieved"));
                 return;
             }
             
@@ -1309,7 +1309,7 @@ public class ActionController : IDisposable
             var formatted = _getPriorService.ProcessPriorText(rawText);
             if (string.IsNullOrEmpty(formatted))
             {
-                _mainForm.Invoke(() => _mainForm.ShowStatusToast("Could not parse prior"));
+                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Could not parse prior"));
                 return;
             }
             
@@ -1321,7 +1321,7 @@ public class ActionController : IDisposable
             NativeWindows.SendHotkey("ctrl+v");
 
             Logger.Trace($"Get Prior complete: {formatted}");
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Prior inserted"));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Prior inserted"));
         }
         finally
         {
@@ -1337,22 +1337,22 @@ public class ActionController : IDisposable
         {
             // Debug mode: scrape but show dialog instead of pasting
             Logger.Trace("Critical Findings DEBUG MODE");
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Debug mode: Scraping Clario...", 2000));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Debug mode: Scraping Clario...", 2000));
 
             try
             {
                 var rawNote = _automationService.PerformClarioScrape(msg =>
                 {
-                    _mainForm.Invoke(() => _mainForm.ShowStatusToast(msg));
+                    _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(msg));
                 });
 
                 // Update clinical history window if visible
-                _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(rawNote));
+                _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistory(rawNote));
 
                 var formatted = rawNote != null ? _noteFormatter.FormatNote(rawNote) : "No note found";
 
                 _mainForm.ShowDebugResults(rawNote ?? "None", formatted);
-                _mainForm.Invoke(() => _mainForm.ShowStatusToast(
+                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(
                     "Debug complete. Review the raw data above to troubleshoot extraction.", 10000));
             }
             finally
@@ -1364,24 +1364,24 @@ public class ActionController : IDisposable
 
         // Normal mode: scrape and paste
         Logger.Trace("Critical Findings (Clario Scrape)");
-        _mainForm.Invoke(() => _mainForm.ShowStatusToast("Scraping Clario..."));
+        _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Scraping Clario..."));
 
         try
         {
             // Scrape with repeating toast callback
             var rawNote = _automationService.PerformClarioScrape(msg =>
             {
-                _mainForm.Invoke(() => _mainForm.ShowStatusToast(msg));
+                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(msg));
             });
 
             if (string.IsNullOrEmpty(rawNote))
             {
-                _mainForm.Invoke(() => _mainForm.ShowStatusToast("No EXAM NOTE found"));
+                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No EXAM NOTE found"));
                 return;
             }
 
             // Update clinical history window if visible
-            _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(rawNote));
+            _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistory(rawNote));
 
             // Format
             var formatted = _noteFormatter.FormatNote(rawNote);
@@ -1398,7 +1398,7 @@ public class ActionController : IDisposable
             // Remove from critical studies tracker (user has dealt with this study)
             UntrackCriticalStudy();
 
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast(
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(
                 "Critical findings inserted.\nHold Win key and trigger again to debug.", 20000));
         }
         finally
@@ -1443,7 +1443,7 @@ public class ActionController : IDisposable
         Logger.Trace($"TrackCriticalStudy: Added entry for {accession} ({entry.PatientName} @ {entry.SiteCode}, MRN={entry.Mrn})");
 
         // Notify UI
-        _mainForm.Invoke(() => CriticalStudiesChanged?.Invoke());
+        _mainForm.BeginInvoke(() => CriticalStudiesChanged?.Invoke());
     }
 
     /// <summary>
@@ -1472,7 +1472,7 @@ public class ActionController : IDisposable
         Logger.Trace($"UntrackCriticalStudy: Removed entry for {accession}");
 
         // Notify UI
-        _mainForm.Invoke(() => CriticalStudiesChanged?.Invoke());
+        _mainForm.BeginInvoke(() => CriticalStudiesChanged?.Invoke());
     }
 
     public void RemoveCriticalStudy(CriticalStudyEntry entry)
@@ -1480,7 +1480,7 @@ public class ActionController : IDisposable
         if (entry == null) return;
         _criticalStudies.Remove(entry);
         Logger.Trace($"RemoveCriticalStudy: Manually removed entry for {entry.Accession}");
-        _mainForm.Invoke(() => CriticalStudiesChanged?.Invoke());
+        _mainForm.BeginInvoke(() => CriticalStudiesChanged?.Invoke());
     }
 
     // State for Report Popup Toggle
@@ -1493,7 +1493,7 @@ public class ActionController : IDisposable
         // Toggle Logic: If open, close it and return
         if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
         {
-            _mainForm.Invoke(() =>
+            _mainForm.BeginInvoke(() =>
             {
                try { _currentReportPopup.Close(); } catch {}
                _currentReportPopup = null;
@@ -1509,7 +1509,7 @@ public class ActionController : IDisposable
 
             if (string.IsNullOrEmpty(reportText))
             {
-                 _mainForm.Invoke(() => _mainForm.ShowStatusToast("No report available (scraping may be disabled)"));
+                 _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No report available (scraping may be disabled)"));
                  return;
             }
 
@@ -1524,7 +1524,7 @@ public class ActionController : IDisposable
                 Logger.Trace($"ShowReport: Passing baseline for diff ({baselineForDiff.Length} chars)");
             }
 
-            _mainForm.Invoke(() =>
+            _mainForm.BeginInvoke(() =>
             {
                 _currentReportPopup = new ReportPopupForm(_config, reportText, baselineForDiff);
                 _lastPopupReportText = reportText;
@@ -1542,7 +1542,7 @@ public class ActionController : IDisposable
         catch (Exception ex)
         {
              Logger.Trace($"ShowReport error: {ex.Message}");
-             _mainForm.Invoke(() => _mainForm.ShowStatusToast("Error showing report"));
+             _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Error showing report"));
         }
     }
     
@@ -1553,13 +1553,13 @@ public class ActionController : IDisposable
         if (IsAddendumOpen())
         {
             Logger.Trace("CaptureSeries: Blocked - addendum is open");
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
             _isUserActive = false;
             return;
         }
 
         Logger.Trace("Capture Series/Image");
-        _mainForm.Invoke(() => _mainForm.ShowStatusToast("Capturing..."));
+        _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Capturing..."));
         
         try
         {
@@ -1591,7 +1591,7 @@ public class ActionController : IDisposable
             
             if (string.IsNullOrEmpty(result))
             {
-                _mainForm.Invoke(() => _mainForm.ShowStatusToast("Could not extract series/image"));
+                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Could not extract series/image"));
                 return;
             }
             
@@ -1609,12 +1609,12 @@ public class ActionController : IDisposable
             
             NativeWindows.SendHotkey("ctrl+v");
             
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast($"Inserted: {result}"));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"Inserted: {result}"));
         }
         catch (Exception ex)
         {
             Logger.Trace($"CaptureSeries error: {ex.Message}");
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast($"OCR Error: {ex.Message}"));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"OCR Error: {ex.Message}"));
         }
         finally
         {
@@ -1687,13 +1687,13 @@ public class ActionController : IDisposable
         var accession = _automationService.LastAccession;
         if (string.IsNullOrEmpty(accession))
         {
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("No study loaded", 2000));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No study loaded", 2000));
             return;
         }
 
         if (HasCriticalNoteForAccession(accession))
         {
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Critical note already created", 2000));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Critical note already created", 2000));
             return;
         }
 
@@ -1705,7 +1705,7 @@ public class ActionController : IDisposable
             // Track critical study for session-based tracker
             TrackCriticalStudy();
 
-            _mainForm.Invoke(() =>
+            _mainForm.BeginInvoke(() =>
             {
                 _mainForm.ShowStatusToast("Critical note created", 3000);
                 _mainForm.SetNoteCreatedState(true);
@@ -1713,7 +1713,7 @@ public class ActionController : IDisposable
         }
         else
         {
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Failed to create critical note - Clario may not be open", 3000));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Failed to create critical note - Clario may not be open", 3000));
         }
     }
 
@@ -1733,7 +1733,7 @@ public class ActionController : IDisposable
                 if (state.HasValue && state.Value != _dictationActive)
                 {
                     _dictationActive = state.Value;
-                    _mainForm.Invoke(() => _mainForm.UpdateIndicatorState(_dictationActive));
+                    _mainForm.BeginInvoke(() => _mainForm.UpdateIndicatorState(_dictationActive));
                 }
             }
             catch { }
@@ -1946,20 +1946,20 @@ public class ActionController : IDisposable
 
                         // Show toast (disabled - too noisy)
                         // Logger.Trace($"Showing New Study toast for {currentAccession}");
-                        // _mainForm.Invoke(() => _mainForm.ShowStatusToast($"New Study: {currentAccession}", 3000));
+                        // _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"New Study: {currentAccession}", 3000));
 
                         // Re-show clinical history window if it was hidden due to no study
                         // (only in always-show mode; alerts-only mode will show when alert triggers)
                         if (_config.HideClinicalHistoryWhenNoStudy && _config.ShowClinicalHistory && _config.AlwaysShowClinicalHistory)
                         {
-                            _mainForm.Invoke(() => _mainForm.ToggleClinicalHistory(true));
+                            _mainForm.BeginInvoke(() => _mainForm.ToggleClinicalHistory(true));
                             _clinicalHistoryVisible = true;
                         }
 
                         // Re-show indicator window if it was hidden due to no study
                         if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
                         {
-                            _mainForm.Invoke(() => _mainForm.ToggleIndicator(true));
+                            _mainForm.BeginInvoke(() => _mainForm.ToggleIndicator(true));
                         }
 
                         // Queue macros for insertion - they'll be inserted when clinical history is visible
@@ -1973,9 +1973,9 @@ public class ActionController : IDisposable
                         }
 
                         // Reset clinical history state on study change
-                        _mainForm.Invoke(() => _mainForm.OnClinicalHistoryStudyChanged());
+                        _mainForm.BeginInvoke(() => _mainForm.OnClinicalHistoryStudyChanged());
                         // Hide impression window on new study
-                        _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
+                        _mainForm.BeginInvoke(() => _mainForm.HideImpressionWindow());
                         _searchingForImpression = false;
                         _impressionFromProcessReport = false;
 
@@ -1997,14 +1997,14 @@ public class ActionController : IDisposable
                         // (or always hide in alerts-only mode when no alerts)
                         if (_config.ShowClinicalHistory && (_config.HideClinicalHistoryWhenNoStudy || !_config.AlwaysShowClinicalHistory))
                         {
-                            _mainForm.Invoke(() => _mainForm.ToggleClinicalHistory(false));
+                            _mainForm.BeginInvoke(() => _mainForm.ToggleClinicalHistory(false));
                             _clinicalHistoryVisible = false;
                         }
 
                         // Hide indicator window if configured to hide when no study
                         if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
                         {
-                            _mainForm.Invoke(() => _mainForm.ToggleIndicator(false));
+                            _mainForm.BeginInvoke(() => _mainForm.ToggleIndicator(false));
                         }
                     }
                 }
@@ -2028,7 +2028,7 @@ public class ActionController : IDisposable
                 {
                     Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
                     _lastPopupReportText = reportText;
-                    _mainForm.Invoke(() => _currentReportPopup?.UpdateReport(reportText, _baselineReport));
+                    _mainForm.BeginInvoke(() => _currentReportPopup?.UpdateReport(reportText, _baselineReport));
                 }
 
                 // Check for pending macros - insert when clinical history becomes visible
@@ -2096,28 +2096,28 @@ public class ActionController : IDisposable
                         // Only update if we have content - don't clear during brief processing gaps
                         if (!string.IsNullOrWhiteSpace(reportText))
                         {
-                            _mainForm.Invoke(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
-                            _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryTextColor(reportText));
+                            _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
+                            _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistoryTextColor(reportText));
                         }
 
                         // Update template mismatch state
-                        _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
+                        _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
 
                         // Update drafted state (green border when drafted) if enabled
                         if (_config.ShowDraftedIndicator)
                         {
                             bool isDrafted = _automationService.LastDraftedState;
-                            _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryDraftedState(isDrafted));
+                            _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistoryDraftedState(isDrafted));
                         }
 
                         // Update gender check
                         if (_config.GenderCheckEnabled)
                         {
-                            _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
+                            _mainForm.BeginInvoke(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
                         }
                         else
                         {
-                            _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(null, null));
+                            _mainForm.BeginInvoke(() => _mainForm.UpdateGenderCheck(null, null));
                         }
                     }
                     else
@@ -2150,7 +2150,7 @@ public class ActionController : IDisposable
                             // Show notification box with alert
                             if (!_clinicalHistoryVisible)
                             {
-                                _mainForm.Invoke(() => _mainForm.ToggleClinicalHistory(true));
+                                _mainForm.BeginInvoke(() => _mainForm.ToggleClinicalHistory(true));
                                 _clinicalHistoryVisible = true;
                             }
 
@@ -2158,28 +2158,28 @@ public class ActionController : IDisposable
                             if (alertToShow == AlertType.GenderMismatch)
                             {
                                 // Gender mismatch uses the blinking display
-                                _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
+                                _mainForm.BeginInvoke(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
                             }
                             else if (alertToShow.HasValue)
                             {
                                 // Clear gender warning if not active
-                                _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(null, null));
+                                _mainForm.BeginInvoke(() => _mainForm.UpdateGenderCheck(null, null));
                                 // Show the alert
-                                _mainForm.Invoke(() => _mainForm.ShowAlertOnly(alertToShow.Value, alertDetails));
+                                _mainForm.BeginInvoke(() => _mainForm.ShowAlertOnly(alertToShow.Value, alertDetails));
                             }
 
                             // Also update template mismatch border (for non-gender alerts)
                             if (alertToShow != AlertType.GenderMismatch)
                             {
-                                _mainForm.Invoke(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
+                                _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
                             }
                         }
                         else if (_clinicalHistoryVisible)
                         {
                             // No alerts active - hide the notification box
-                            _mainForm.Invoke(() => _mainForm.UpdateGenderCheck(null, null));
-                            _mainForm.Invoke(() => _mainForm.ClearAlert());
-                            _mainForm.Invoke(() => _mainForm.ToggleClinicalHistory(false));
+                            _mainForm.BeginInvoke(() => _mainForm.UpdateGenderCheck(null, null));
+                            _mainForm.BeginInvoke(() => _mainForm.ClearAlert());
+                            _mainForm.BeginInvoke(() => _mainForm.ToggleClinicalHistory(false));
                             _clinicalHistoryVisible = false;
                         }
                     }
@@ -2214,14 +2214,14 @@ public class ActionController : IDisposable
                         // Don't auto-hide, just update if we have new content
                         if (!string.IsNullOrEmpty(impression))
                         {
-                            _mainForm.Invoke(() => _mainForm.UpdateImpression(impression));
+                            _mainForm.BeginInvoke(() => _mainForm.UpdateImpression(impression));
                         }
                     }
                     else if (isDrafted && !string.IsNullOrEmpty(impression))
                     {
                         // Auto-show impression when study is drafted (passive mode)
                         // Only show window if not already visible to avoid flashing
-                        _mainForm.Invoke(() =>
+                        _mainForm.BeginInvoke(() =>
                         {
                             _mainForm.ShowImpressionWindowIfNotVisible();
                             _mainForm.UpdateImpression(impression);
@@ -2231,7 +2231,7 @@ public class ActionController : IDisposable
                     {
                         // Hide impression window when study is not drafted (only for auto-shown)
                         // Don't hide if it was manually triggered by Process Report
-                        _mainForm.Invoke(() => _mainForm.HideImpressionWindow());
+                        _mainForm.BeginInvoke(() => _mainForm.HideImpressionWindow());
                     }
                 }
             }
@@ -2325,18 +2325,18 @@ public class ActionController : IDisposable
             Logger.Trace($"Stroke study detected for accession {accession}");
 
             // Auto-show clinical history if stroke detected (even if setting is off)
-            _mainForm.Invoke(() =>
+            _mainForm.BeginInvoke(() =>
             {
                 _mainForm.ToggleClinicalHistory(true);
                 _clinicalHistoryVisible = true;
                 _mainForm.SetStrokeState(true);
             });
 
-            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Stroke Protocol Detected", 4000));
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Stroke Protocol Detected", 4000));
         }
         else
         {
-            _mainForm.Invoke(() => _mainForm.SetStrokeState(false));
+            _mainForm.BeginInvoke(() => _mainForm.SetStrokeState(false));
         }
     }
 
@@ -2395,7 +2395,7 @@ public class ActionController : IDisposable
             // Track critical study for session-based tracker
             TrackCriticalStudy();
 
-            _mainForm.Invoke(() =>
+            _mainForm.BeginInvoke(() =>
             {
                 _mainForm.ShowStatusToast("Critical note created", 3000);
                 _mainForm.SetNoteCreatedState(true);

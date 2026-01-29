@@ -1,3 +1,6 @@
+3.0.3
+- Fix app freeze caused by UI thread deadlock (Invoke → BeginInvoke)
+
 3.0.2
 - Fix triple macro paste caused by accession flapping during study transitions
 - Accession flap debounce prevents false study close/reopen cycles
