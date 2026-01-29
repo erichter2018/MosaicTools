@@ -80,7 +80,13 @@ public class Configuration
 
     [JsonPropertyName("series_image_template")]
     public string SeriesImageTemplate { get; set; } = "(series {series}, image {image})";
-    
+
+    [JsonPropertyName("comparison_template")]
+    public string ComparisonTemplate { get; set; } = "COMPARISON: {date} {time} {description}. {noimages}";
+
+    [JsonPropertyName("separate_pasted_items")]
+    public bool SeparatePastedItems { get; set; } = true;
+
     [JsonPropertyName("restore_focus_after_action")]
     public bool RestoreFocusAfterAction { get; set; } = true;
     

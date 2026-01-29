@@ -1,3 +1,12 @@
+3.0.2
+- Fix triple macro paste caused by accession flapping during study transitions
+- Accession flap debounce prevents false study close/reopen cycles
+- Separate pasted items with line break (checkbox in Text tab)
+- Block macro/paste actions during addendums (except Critical Findings)
+- Replace SharpHook with native Win32 keyboard hook for reliable hotkeys
+- Fix clinical history auto-fix race condition with Mosaic's self-correction
+- Fix template name extraction for templates without date lines
+
 3.0.1
 - Mosaic 2.0.3 compatibility while maintaining 2.0.2 support
 

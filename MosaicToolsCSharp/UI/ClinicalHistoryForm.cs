@@ -57,6 +57,7 @@ public class ClinicalHistoryForm : Form
     private Func<string?, bool>? _hasClinicalHistoryFixed;
     private Action<string?>? _markClinicalHistoryFixed;
     private Action? _onAutoFixComplete;
+    private Func<bool>? _isAddendumOpen;
 
     // Track displayed text and whether it was "fixed" from original
     private string? _currentDisplayedText;
@@ -374,16 +375,47 @@ public class ClinicalHistoryForm : Form
             }
         }
 
-        // All conditions met - trigger auto-fix
-        Logger.Trace($"Auto-fix triggered for accession '{accession}': preCleaned='{preCleaned}' -> cleaned='{cleaned}'");
+        // All conditions met - but wait and recheck in case Mosaic self-corrects
+        Logger.Trace($"Auto-fix: malformed clinical history detected for '{accession}', waiting to recheck...");
 
-        // Mark as fixed in both local and session-wide tracking
+        // Mark immediately to prevent duplicate triggers from subsequent scrape cycles
         _lastAutoFixedAccession = accession;
-        _lastAutoFixTime = DateTime.Now;
         _markClinicalHistoryFixed?.Invoke(accession);
 
-        // Trigger the paste (this runs on background thread)
-        PasteClinicalHistoryToMosaic(showYellowCheckmark: true);
+        var capturedAccession = accession;
+
+        // Delay on a background thread, then recheck
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                // Wait for Mosaic to potentially self-correct
+                Thread.Sleep(2000);
+
+                // Recheck: the scrape timer will have updated us if Mosaic fixed itself.
+                // If the displayed text is still the fixed version (meaning the raw text
+                // is still malformed), proceed with the paste.
+                bool stillFixed = false;
+                Invoke(() => { stillFixed = _currentTextWasFixed; });
+
+                if (!stillFixed)
+                {
+                    Logger.Trace($"Auto-fix: Mosaic self-corrected for '{capturedAccession}', skipping paste");
+                    _onAutoFixComplete?.Invoke();
+                    return;
+                }
+
+                Logger.Trace($"Auto-fix: still malformed after recheck for '{capturedAccession}', pasting fix");
+                _lastAutoFixTime = DateTime.Now;
+
+                // Trigger the paste
+                PasteClinicalHistoryToMosaic(showYellowCheckmark: true);
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"Auto-fix recheck error: {ex.Message}");
+            }
+        });
     }
 
     /// <summary>
@@ -673,6 +705,14 @@ public class ClinicalHistoryForm : Form
     }
 
     /// <summary>
+    /// Set the callback to check if an addendum is currently open.
+    /// </summary>
+    public void SetAddendumCheckCallback(Func<bool> callback)
+    {
+        _isAddendumOpen = callback;
+    }
+
+    /// <summary>
     /// Set callbacks for session-wide clinical history fix tracking.
     /// This prevents duplicate auto-fixes when a study is reopened.
     /// </summary>
@@ -911,6 +951,13 @@ public class ClinicalHistoryForm : Form
             showYellowCheckmark = true;
         }
 
+        // Block paste when addendum is open
+        if (_isAddendumOpen?.Invoke() == true)
+        {
+            ShowToast("Cannot paste into addendum");
+            return;
+        }
+
         // Format the text with leading and trailing newline for cleaner paste
         // Trim trailing spaces/periods to avoid " .." when we append our period
         var trimmedText = text.TrimEnd(' ', '.');
@@ -930,7 +977,8 @@ public class ClinicalHistoryForm : Form
 
                     // Set clipboard on UI thread (STA required for clipboard operations)
                     Logger.Trace($"Clinical history paste: setting clipboard to '{formatted.Substring(0, Math.Min(50, formatted.Length))}...'");
-                    Invoke(() => Clipboard.SetText(formatted));
+                    var textToPaste = (_config.SeparatePastedItems && !formatted.StartsWith("\n")) ? "\n" + formatted : formatted;
+                    Invoke(() => Clipboard.SetText(textToPaste));
                     System.Threading.Thread.Sleep(50);
 
                     if (!NativeWindows.ActivateMosaicForcefully())

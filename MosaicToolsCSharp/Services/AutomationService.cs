@@ -23,6 +23,9 @@ public class AutomationService : IDisposable
     // Last scraped final report (public for external access)
     public string? LastFinalReport { get; private set; }
 
+    // Addendum detection: set during scraping when any ProseMirror candidate starts with "Addendum"
+    public bool IsAddendumDetected { get; private set; }
+
     // Last detected drafted state
     public bool LastDraftedState { get; private set; }
 
@@ -1267,7 +1270,9 @@ public class AutomationService : IDisposable
             if (candidates.Length > 0)
             {
                 Logger.Trace($"GetFinalReportFast: Found {candidates.Length} ProseMirror candidates");
-                
+
+                IsAddendumDetected = false;
+
                 string bestText = "";
                 int maxScore = -1;
                 string[] keywords = { "TECHNIQUE", "CLINICAL HISTORY", "FINDINGS", "IMPRESSION", "EXAM" };
@@ -1275,19 +1280,28 @@ public class AutomationService : IDisposable
                 foreach (var candidate in candidates)
                 {
                     string text = candidate.Name ?? "";
+                    bool hasReplChar = text.Contains('\uFFFC');
 
                     // Try ValuePattern (common for edit controls)
                     if (string.IsNullOrWhiteSpace(text))
                     {
                         var valPattern = candidate.Patterns.Value.PatternOrDefault;
-                        if (valPattern != null) text = valPattern.Value.Value;
+                        if (valPattern != null)
+                        {
+                            text = valPattern.Value.Value;
+                            hasReplChar = hasReplChar || text.Contains('\uFFFC');
+                        }
                     }
 
                     // Try TextPattern (rich edit controls)
                     if (string.IsNullOrWhiteSpace(text))
                     {
                         var txtPattern = candidate.Patterns.Text.PatternOrDefault;
-                        if (txtPattern != null) text = txtPattern.DocumentRange.GetText(-1);
+                        if (txtPattern != null)
+                        {
+                            text = txtPattern.DocumentRange.GetText(-1);
+                            hasReplChar = hasReplChar || text.Contains('\uFFFC');
+                        }
                     }
 
                     // Mosaic 2.0.3: ProseMirror Name is empty; content is in child Text elements
@@ -1314,6 +1328,13 @@ public class AutomationService : IDisposable
 
                     if (string.IsNullOrWhiteSpace(text)) continue;
 
+                    // Detect addendum (check before EXAM: filter since addendums don't start with EXAM:)
+                    if (!IsAddendumDetected && text.TrimStart().StartsWith("Addendum", StringComparison.OrdinalIgnoreCase))
+                    {
+                        IsAddendumDetected = true;
+                        Logger.Trace("GetFinalReportFast: Addendum detected in ProseMirror candidate");
+                    }
+
                     // MUST start with "EXAM:" to be the correct final report box
                     if (!text.TrimStart().StartsWith("EXAM:", StringComparison.OrdinalIgnoreCase))
                         continue;
@@ -1324,6 +1345,11 @@ public class AutomationService : IDisposable
                         if (text.Contains(kw, StringComparison.OrdinalIgnoreCase)) score++;
                     }
 
+                    // Mosaic 2.0.3: The final report editor contains U+FFFC (object replacement
+                    // characters) while the transcript window does not. Strongly prefer candidates
+                    // with U+FFFC to avoid picking the transcript when it has similar keywords.
+                    if (hasReplChar) score += 100;
+
                     if (score > maxScore)
                     {
                         maxScore = score;
@@ -1333,6 +1359,15 @@ public class AutomationService : IDisposable
 
                 if (!string.IsNullOrEmpty(bestText) && maxScore > 0)
                 {
+                    // Mosaic 2.0.3 has multiple ProseMirrors (report + transcript).
+                    // If the winner lacks U+FFFC, it's the transcript (the real report editor
+                    // is temporarily empty, e.g. right after Process Report). Keep previous report.
+                    if (candidates.Length > 1 && maxScore < 100 && LastFinalReport != null)
+                    {
+                        Logger.Trace("GetFinalReportFast: Primary candidate lacks U+FFFC, keeping previous report");
+                        return LastFinalReport;
+                    }
+
                     sw.Stop();
                     int lineCount = bestText.Split('\n').Length;
                     Logger.Trace($"GetFinalReportFast: ProseMirror SUCCESS in {sw.ElapsedMilliseconds}ms, {lineCount} lines, Score={maxScore}");
@@ -1350,6 +1385,7 @@ public class AutomationService : IDisposable
                     foreach (var candidate in candidates)
                     {
                         string text = candidate.Name ?? "";
+                        bool hasReplChar2 = text.Contains('\uFFFC');
                         if (string.IsNullOrWhiteSpace(text))
                         {
                             try
@@ -1372,11 +1408,20 @@ public class AutomationService : IDisposable
                         }
                         if (string.IsNullOrWhiteSpace(text) || text.Length < 50) continue;
 
+                        // Detect addendum in fallback path too
+                        if (!IsAddendumDetected && text.TrimStart().StartsWith("Addendum", StringComparison.OrdinalIgnoreCase))
+                        {
+                            IsAddendumDetected = true;
+                            Logger.Trace("GetFinalReportFast: Addendum detected in fallback candidate");
+                        }
+
                         int score = 0;
                         foreach (var kw in keywords)
                         {
                             if (text.Contains(kw, StringComparison.OrdinalIgnoreCase)) score++;
                         }
+                        // Prefer final report editor (has U+FFFC) over transcript
+                        if (hasReplChar2) score += 100;
                         if (score > bestFallbackScore)
                         {
                             bestFallbackScore = score;
@@ -1386,6 +1431,14 @@ public class AutomationService : IDisposable
 
                     if (!string.IsNullOrEmpty(bestFallback) && bestFallbackScore > 0)
                     {
+                        // Mosaic 2.0.3: if the winner lacks U+FFFC, it's the transcript.
+                        // Keep previous report to avoid flashing transcript content.
+                        if (candidates.Length > 1 && bestFallbackScore < 100 && LastFinalReport != null)
+                        {
+                            Logger.Trace("GetFinalReportFast: Fallback candidate lacks U+FFFC, keeping previous report");
+                            return LastFinalReport;
+                        }
+
                         sw.Stop();
                         int lineCount = bestFallback.Split('\n').Length;
                         Logger.Trace($"GetFinalReportFast: ProseMirror v2.0.3 fallback SUCCESS in {sw.ElapsedMilliseconds}ms, {lineCount} lines, Score={bestFallbackScore}");
@@ -1662,20 +1715,37 @@ public class AutomationService : IDisposable
     /// <summary>
     /// Extract the template name from the final report (2nd line after EXAM:).
     /// </summary>
+    // Matches a line starting with a date, optionally followed by a time
+    // e.g., "01/28/2026", "1/28/2026 10:17:09 PM", "January 28, 2026"
+    private static readonly Regex DateLineRegex = new(
+        @"^\s*(\d{1,2}/\d{1,2}/\d{2,4}|(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{2,4})",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public static string? ExtractTemplateName(string? reportText)
     {
         if (string.IsNullOrWhiteSpace(reportText)) return null;
 
-        var lines = reportText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        // Split on newlines and U+FFFC (object replacement char used by ProseMirror in 2.0.3)
+        var lines = reportText.Split(new[] { '\r', '\n', '\uFFFC' }, StringSplitOptions.RemoveEmptyEntries);
 
         for (int i = 0; i < lines.Length; i++)
         {
             if (lines[i].Trim().StartsWith("EXAM:", StringComparison.OrdinalIgnoreCase))
             {
-                // The template name is the next line after EXAM:
-                if (i + 1 < lines.Length)
+                // Collect all lines after EXAM: until we hit a date line or a section header
+                var parts = new List<string>();
+                for (int j = i + 1; j < lines.Length; j++)
                 {
-                    return lines[i + 1].Trim();
+                    var line = lines[j].Trim();
+                    if (string.IsNullOrEmpty(line)) continue;
+                    if (DateLineRegex.IsMatch(line)) break;
+                    // Stop at all-caps section headers (e.g., "CLINICAL HISTORY:", "TECHNIQUE:")
+                    if (line.Length > 2 && line == line.ToUpperInvariant() && line.Contains(':')) break;
+                    parts.Add(line);
+                }
+                if (parts.Count > 0)
+                {
+                    return string.Join(" ", parts);
                 }
             }
         }
@@ -1712,14 +1782,20 @@ public class AutomationService : IDisposable
 
         var upperText = text.ToUpperInvariant();
 
-        // Check for "CT ANGIOGRAPHY" and normalize to CTA
-        if (upperText.Contains("CT ANGIOGRAPHY") || upperText.Contains("CT ANGIO"))
+        // Check for CT angiography in various forms:
+        // "CT ANGIOGRAPHY", "CT ANGIO", "CTA", or "CT ... ANGIO" (e.g., "CT CHEST ANGIO")
+        bool hasCT = upperText.Contains("CT ");
+        bool hasAngio = upperText.Contains("ANGIO");
+        if (upperText.Contains("CT ANGIOGRAPHY") || upperText.Contains("CT ANGIO") ||
+            (hasCT && hasAngio))
         {
             result.Add("CTA");
         }
 
-        // Check for "MR ANGIOGRAPHY" and normalize to MRA
-        if (upperText.Contains("MR ANGIOGRAPHY") || upperText.Contains("MR ANGIO"))
+        // Check for MR angiography in various forms
+        bool hasMR = upperText.Contains("MR ") || upperText.Contains("MRI");
+        if (upperText.Contains("MR ANGIOGRAPHY") || upperText.Contains("MR ANGIO") ||
+            (hasMR && hasAngio))
         {
             result.Add("MRA");
         }
@@ -1836,7 +1912,9 @@ public class AutomationService : IDisposable
         "HEAD", "NECK", "CHEST", "ABDOMEN", "PELVIS", "SPINE", "BRAIN",
         "WITHOUT", "WITH", "CONTRAST", "IV", "ORAL", "PROTOCOL",
         "MY", "MACROS", "MY MACROS", "TEMPLATES", "MY TEMPLATES", "FAVORITES",
-        "MY FAVORITES", "QUICK", "PICK", "PICK LIST", "TOOLS", "SETTINGS"
+        "MY FAVORITES", "QUICK", "PICK", "PICK LIST", "TOOLS", "SETTINGS",
+        "ALL", "STUDIES", "NEW", "ALL STUDIES", "ALL STUDIES NEW",
+        "WORKLIST", "SEARCH", "FILTER", "SORT", "VIEW", "OPEN", "CLOSE"
     };
 
     /// <summary>

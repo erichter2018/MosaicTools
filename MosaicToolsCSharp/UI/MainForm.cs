@@ -399,7 +399,7 @@ public class MainForm : Form
         {
             RvuDisplayMode.Total => 75,    // "999.9 RVU"
             RvuDisplayMode.PerHour => 60,  // "99.9/h"
-            RvuDisplayMode.Both => 105,    // "999 | 99.9/h"
+            RvuDisplayMode.Both => 120,    // "999 | 99.9/h"
             _ => 75
         };
     }
@@ -676,6 +676,40 @@ public class MainForm : Form
         var popupLocation = PointToScreen(new Point(_connectivityPanel.Left, Height));
         _connectivityDetailsPopup = new ConnectivityDetailsForm(_connectivityService, popupLocation);
         _connectivityDetailsPopup.Show();
+    }
+
+    /// <summary>
+    /// Refresh RVU panel size and form width based on current display mode.
+    /// Called from SettingsForm after saving.
+    /// </summary>
+    public void RefreshRvuLayout()
+    {
+        int newWidth = GetRvuPanelWidth();
+        int oldWidth = _rvuPanel.Width;
+        if (newWidth != oldWidth)
+        {
+            _rvuPanel.Width = newWidth;
+            Width += (newWidth - oldWidth);
+        }
+        _rvuPanel.Visible = _config.RvuCounterEnabled;
+
+        // Restart or stop timer
+        if (_config.RvuCounterEnabled && !App.IsHeadless)
+        {
+            if (_rvuTimer == null)
+            {
+                _rvuTimer = new System.Windows.Forms.Timer { Interval = 5000 };
+                _rvuTimer.Tick += (_, _) => UpdateRvuDisplay();
+                _rvuTimer.Start();
+            }
+            UpdateRvuDisplay();
+        }
+        else if (_rvuTimer != null)
+        {
+            _rvuTimer.Stop();
+            _rvuTimer.Dispose();
+            _rvuTimer = null;
+        }
     }
 
     /// <summary>
@@ -1059,6 +1093,9 @@ public class MainForm : Form
                 // Wire up auto-fix completion callback (for Ignore Inpatient Drafted feature)
                 _clinicalHistoryWindow.SetAutoFixCompleteCallback(
                     _controller.MarkAutoFixCompleteForCurrentAccession);
+                // Wire up addendum check callback (block paste when addendum is open)
+                _clinicalHistoryWindow.SetAddendumCheckCallback(
+                    _controller.IsAddendumOpen);
                 _clinicalHistoryWindow.Show();
             }
         }

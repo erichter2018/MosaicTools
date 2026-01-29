@@ -1,290 +1,243 @@
 using System;
-using System.Windows.Forms;
-using System.Runtime.InteropServices;
-using SharpHook;
-using SharpHook.Native;
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace MosaicTools.Services;
 
 /// <summary>
-/// Global keyboard hook service using SharpHook.
-/// Matches Python's keyboard library usage.
+/// Global keyboard hook service using Win32 WH_KEYBOARD_LL.
 /// </summary>
 public class KeyboardService : IDisposable
 {
-    private TaskPoolGlobalHook? _hook;
+    // Win32 interop
+    private const int WH_KEYBOARD_LL = 13;
+    private const int WM_KEYDOWN = 0x0100;
+    private const int WM_SYSKEYDOWN = 0x0104;
+
+    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetModuleHandle(string? lpModuleName);
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KBDLLHOOKSTRUCT
+    {
+        public uint vkCode;
+        public uint scanCode;
+        public uint flags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+    private const int VK_LCONTROL = 0xA2, VK_RCONTROL = 0xA3;
+    private const int VK_LSHIFT = 0xA0, VK_RSHIFT = 0xA1;
+    private const int VK_LMENU = 0xA4, VK_RMENU = 0xA5;
+    private const int VK_LWIN = 0x5B, VK_RWIN = 0x5C;
+
+    private IntPtr _hookId = IntPtr.Zero;
+    private LowLevelKeyboardProc? _hookProc; // prevent GC of delegate
     private readonly ConcurrentDictionary<string, Action> _hotkeyActions = new();
-    private readonly ConcurrentDictionary<string, Action> _directHotkeyActions = new(); // Execute immediately, no ThreadPool
-    private readonly HashSet<KeyCode> _pressedModifiers = new();
+    private readonly ConcurrentDictionary<string, Action> _directHotkeyActions = new();
     private volatile bool _isRecording = false;
     private Action<string>? _recordCallback;
     private readonly ConcurrentDictionary<string, DateTime> _lastTriggers = new();
-    
+
     public event Action<string>? HotkeyTriggered;
-    
+
     public void Start()
     {
-        if (_hook != null) return;
-        
+        if (_hookId != IntPtr.Zero) return;
+
         try
         {
-            _hook = new TaskPoolGlobalHook();
-            _hook.KeyPressed += OnKeyPressed;
-            _hook.KeyReleased += OnKeyReleased;
-            _hook.RunAsync();
-            
-            Logger.Trace("Keyboard hook started");
+            _hookProc = HookCallback;
+            using var curProcess = Process.GetCurrentProcess();
+            using var curModule = curProcess.MainModule!;
+            _hookId = SetWindowsHookEx(WH_KEYBOARD_LL, _hookProc, GetModuleHandle(curModule.ModuleName), 0);
+
+            if (_hookId == IntPtr.Zero)
+            {
+                var error = Marshal.GetLastWin32Error();
+                Logger.Trace($"Keyboard hook failed: SetWindowsHookEx error={error}");
+            }
+            else
+            {
+                Logger.Trace("Keyboard hook started (Win32)");
+            }
         }
         catch (Exception ex)
         {
             Logger.Trace($"Keyboard hook failed: {ex.Message}");
         }
     }
-    
+
     public void Stop()
     {
-        _hook?.Dispose();
-        _hook = null;
+        if (_hookId != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_hookId);
+            _hookId = IntPtr.Zero;
+        }
     }
-    
-    /// <summary>
-    /// Register a hotkey with an action.
-    /// Format: "ctrl+shift+f1" or "alt+g"
-    /// </summary>
+
     public void RegisterHotkey(string hotkey, Action action)
     {
         if (string.IsNullOrWhiteSpace(hotkey)) return;
-
         var normalized = NormalizeHotkey(hotkey);
         _hotkeyActions[normalized] = action;
         Logger.Trace($"Registered hotkey: {normalized}");
     }
 
-    /// <summary>
-    /// Register a hotkey that executes immediately on the hook thread (no ThreadPool delay).
-    /// Use only for very fast actions that won't block.
-    /// </summary>
     public void RegisterDirectHotkey(string hotkey, Action action)
     {
         if (string.IsNullOrWhiteSpace(hotkey)) return;
-
         var normalized = NormalizeHotkey(hotkey);
         _directHotkeyActions[normalized] = action;
         Logger.Trace($"Registered direct hotkey: {normalized}");
     }
-    
-    /// <summary>
-    /// Unregister all hotkeys.
-    /// </summary>
+
     public void ClearHotkeys()
     {
         _hotkeyActions.Clear();
         _directHotkeyActions.Clear();
     }
 
-    /// <summary>
-    /// Check if Windows key is currently held down.
-    /// Used for modifier-based debug modes.
-    /// </summary>
     public bool IsWinKeyHeld()
     {
-        return _pressedModifiers.Contains(KeyCode.VcLeftMeta) ||
-               _pressedModifiers.Contains(KeyCode.VcRightMeta);
+        return IsKeyDown(VK_LWIN) || IsKeyDown(VK_RWIN);
     }
 
-    /// <summary>
-    /// Start recording a hotkey (for settings UI).
-    /// </summary>
     public void StartRecording(Action<string> callback)
     {
         _isRecording = true;
         _recordCallback = callback;
-        _pressedModifiers.Clear();
     }
-    
-    private void OnKeyPressed(object? sender, KeyboardHookEventArgs e)
+
+    private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        try
+        if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN))
         {
-            var code = e.Data.KeyCode;
-            var mask = e.RawEvent.Mask;
-            
-            // Track modifiers (keep manual tracking as fallback for recording mode)
-            if (IsModifier(code))
+            try
             {
-                _pressedModifiers.Add(code);
-                return;
-            }
-            
-            // Recording mode
-            if (_isRecording && _recordCallback != null)
-            {
-                var recorded = BuildHotkeyString(code, mask);
-                _isRecording = false;
-                _recordCallback(recorded);
-                _recordCallback = null;
-                return;
-            }
-            
-            // 2. Build hotkey string and check for matches
-            var now = DateTime.UtcNow;
-            var hotkeyStr = BuildHotkeyString(code, mask);
+                var hookStruct = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+                var vk = (int)hookStruct.vkCode;
 
-            // Check direct hotkeys first (execute immediately, minimal cooldown)
-            if (_directHotkeyActions.TryGetValue(hotkeyStr, out var directAction))
-            {
-                // 100ms cooldown for direct hotkeys
-                if (_lastTriggers.TryGetValue(hotkeyStr, out var lastTime) && (now - lastTime).TotalMilliseconds < 100)
+                if (IsModifierVK(vk))
+                    return CallNextHookEx(_hookId, nCode, wParam, lParam);
+
+                bool ctrl = IsKeyDown(VK_LCONTROL) || IsKeyDown(VK_RCONTROL);
+                bool shift = IsKeyDown(VK_LSHIFT) || IsKeyDown(VK_RSHIFT);
+                bool alt = IsKeyDown(VK_LMENU) || IsKeyDown(VK_RMENU);
+                bool win = IsKeyDown(VK_LWIN) || IsKeyDown(VK_RWIN);
+
+                var keyName = VKToName(vk);
+                if (string.IsNullOrEmpty(keyName))
+                    return CallNextHookEx(_hookId, nCode, wParam, lParam);
+
+                var hotkeyStr = BuildHotkeyString(keyName, ctrl, shift, alt, win);
+
+                // Recording mode (settings UI hotkey capture)
+                if (_isRecording && _recordCallback != null)
                 {
-                    return;
+                    _isRecording = false;
+                    var cb = _recordCallback;
+                    _recordCallback = null;
+                    cb(hotkeyStr);
+                    return CallNextHookEx(_hookId, nCode, wParam, lParam);
                 }
-                _lastTriggers[hotkeyStr] = now;
 
-                try
+                var now = DateTime.UtcNow;
+
+                // Direct hotkeys (execute immediately on hook thread)
+                if (_directHotkeyActions.TryGetValue(hotkeyStr, out var directAction))
                 {
-                    directAction();
+                    if (_lastTriggers.TryGetValue(hotkeyStr, out var lastDirect) && (now - lastDirect).TotalMilliseconds < 100)
+                        return CallNextHookEx(_hookId, nCode, wParam, lParam);
+                    _lastTriggers[hotkeyStr] = now;
+                    Logger.Trace($"Direct hotkey triggered: {hotkeyStr}");
+                    try { directAction(); }
+                    catch (Exception ex) { Logger.Trace($"Direct hotkey error: {ex.Message}"); }
+                    return CallNextHookEx(_hookId, nCode, wParam, lParam);
                 }
-                catch { }
-                return;
-            }
 
-            // Check registered hotkeys (run on ThreadPool)
-            if (_hotkeyActions.TryGetValue(hotkeyStr, out var action))
-            {
-                // 300ms cooldown for normal hotkeys
-                if (_lastTriggers.TryGetValue(hotkeyStr, out var lastTime) && (now - lastTime).TotalMilliseconds < 300)
+                // Normal hotkeys (run on ThreadPool)
+                if (_hotkeyActions.TryGetValue(hotkeyStr, out var action))
                 {
-                    Logger.Trace($"Ignoring rapid repeat: {hotkeyStr}");
-                    return;
-                }
-                _lastTriggers[hotkeyStr] = now;
-
-                Logger.Trace($"Hotkey triggered: {hotkeyStr}");
-                HotkeyTriggered?.Invoke(hotkeyStr);
-
-                // Run action on thread pool to not block hook
-                ThreadPool.QueueUserWorkItem(_ =>
-                {
-                    try
+                    if (_lastTriggers.TryGetValue(hotkeyStr, out var lastNormal) && (now - lastNormal).TotalMilliseconds < 300)
+                        return CallNextHookEx(_hookId, nCode, wParam, lParam);
+                    _lastTriggers[hotkeyStr] = now;
+                    Logger.Trace($"Hotkey triggered: {hotkeyStr}");
+                    HotkeyTriggered?.Invoke(hotkeyStr);
+                    ThreadPool.QueueUserWorkItem(_ =>
                     {
-                        action();
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Trace($"Hotkey action error: {ex.Message}");
-                    }
-                });
+                        try { action(); }
+                        catch (Exception ex) { Logger.Trace($"Hotkey action error: {ex.Message}"); }
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"Hook callback error: {ex.Message}");
             }
         }
-        catch (Exception ex)
-        {
-            Logger.Trace($"Key pressed handler error: {ex.Message}");
-        }
+
+        return CallNextHookEx(_hookId, nCode, wParam, lParam);
     }
-    
-    private void OnKeyReleased(object? sender, KeyboardHookEventArgs e)
-    {
-        if (IsModifier(e.Data.KeyCode))
-        {
-            _pressedModifiers.Remove(e.Data.KeyCode);
-        }
-    }
-    
-    private bool IsModifier(KeyCode code)
-    {
-        return code is KeyCode.VcLeftControl or KeyCode.VcRightControl
-            or KeyCode.VcLeftShift or KeyCode.VcRightShift
-            or KeyCode.VcLeftAlt or KeyCode.VcRightAlt
-            or KeyCode.VcLeftMeta or KeyCode.VcRightMeta;
-    }
-    
-    private string BuildHotkeyString(KeyCode mainKey, ModifierMask mask)
+
+    private static bool IsKeyDown(int vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
+
+    private static bool IsModifierVK(int vk) =>
+        vk is VK_LCONTROL or VK_RCONTROL or VK_LSHIFT or VK_RSHIFT
+           or VK_LMENU or VK_RMENU or VK_LWIN or VK_RWIN;
+
+    private static string BuildHotkeyString(string keyName, bool ctrl, bool shift, bool alt, bool win)
     {
         var parts = new List<string>();
-        
-        // Add modifiers in order: ctrl, shift, alt, win
-        bool ctrl = mask.HasFlag(ModifierMask.LeftCtrl) || mask.HasFlag(ModifierMask.RightCtrl) || 
-                   _pressedModifiers.Contains(KeyCode.VcLeftControl) || _pressedModifiers.Contains(KeyCode.VcRightControl);
-        bool shift = mask.HasFlag(ModifierMask.LeftShift) || mask.HasFlag(ModifierMask.RightShift) ||
-                    _pressedModifiers.Contains(KeyCode.VcLeftShift) || _pressedModifiers.Contains(KeyCode.VcRightShift);
-        bool alt = mask.HasFlag(ModifierMask.LeftAlt) || mask.HasFlag(ModifierMask.RightAlt) ||
-                  _pressedModifiers.Contains(KeyCode.VcLeftAlt) || _pressedModifiers.Contains(KeyCode.VcRightAlt);
-        bool win = mask.HasFlag(ModifierMask.LeftMeta) || mask.HasFlag(ModifierMask.RightMeta) ||
-                  _pressedModifiers.Contains(KeyCode.VcLeftMeta) || _pressedModifiers.Contains(KeyCode.VcRightMeta);
-
         if (ctrl) parts.Add("ctrl");
         if (shift) parts.Add("shift");
         if (alt) parts.Add("alt");
         if (win) parts.Add("win");
-        
-        // Add main key
-        var keyName = KeyCodeToName(mainKey);
-        if (!string.IsNullOrEmpty(keyName))
-            parts.Add(keyName);
-        
+        parts.Add(keyName);
         return string.Join("+", parts);
     }
-    
-    private static string KeyCodeToName(KeyCode code)
+
+    private static string VKToName(int vk) => vk switch
     {
-        // SharpHook (libuiohook) KeyCodes are not contiguous ASCII/VirtualKey offsets.
-        // Mapping common ones explicitly.
-        return code switch
-        {
-            KeyCode.VcA => "a", KeyCode.VcB => "b", KeyCode.VcC => "c", KeyCode.VcD => "d",
-            KeyCode.VcE => "e", KeyCode.VcF => "f", KeyCode.VcG => "g", KeyCode.VcH => "h",
-            KeyCode.VcI => "i", KeyCode.VcJ => "j", KeyCode.VcK => "k", KeyCode.VcL => "l",
-            KeyCode.VcM => "m", KeyCode.VcN => "n", KeyCode.VcO => "o", KeyCode.VcP => "p",
-            KeyCode.VcQ => "q", KeyCode.VcR => "r", KeyCode.VcS => "s", KeyCode.VcT => "t",
-            KeyCode.VcU => "u", KeyCode.VcV => "v", KeyCode.VcW => "w", KeyCode.VcX => "x",
-            KeyCode.VcY => "y", KeyCode.VcZ => "z",
-            KeyCode.Vc1 => "1", KeyCode.Vc2 => "2", KeyCode.Vc3 => "3", KeyCode.Vc4 => "4",
-            KeyCode.Vc5 => "5", KeyCode.Vc6 => "6", KeyCode.Vc7 => "7", KeyCode.Vc8 => "8",
-            KeyCode.Vc9 => "9", KeyCode.Vc0 => "0",
-            KeyCode.VcF1 => "f1", KeyCode.VcF2 => "f2", KeyCode.VcF3 => "f3", KeyCode.VcF4 => "f4",
-            KeyCode.VcF5 => "f5", KeyCode.VcF6 => "f6", KeyCode.VcF7 => "f7", KeyCode.VcF8 => "f8",
-            KeyCode.VcF9 => "f9", KeyCode.VcF10 => "f10", KeyCode.VcF11 => "f11", KeyCode.VcF12 => "f12",
-            KeyCode.VcSpace => "space",
-            KeyCode.VcEnter => "enter",
-            KeyCode.VcEscape => "escape",
-            KeyCode.VcBackspace => "backspace",
-            KeyCode.VcTab => "tab",
-            KeyCode.VcCapsLock => "capslock",
-            KeyCode.VcPrintScreen => "printscreen",
-            KeyCode.VcScrollLock => "scrolllock",
-            KeyCode.VcPause => "pause",
-            KeyCode.VcInsert => "insert",
-            KeyCode.VcDelete => "delete",
-            KeyCode.VcHome => "home",
-            KeyCode.VcEnd => "end",
-            KeyCode.VcPageUp => "pageup",
-            KeyCode.VcPageDown => "pagedown",
-            KeyCode.VcUp => "up",
-            KeyCode.VcDown => "down",
-            KeyCode.VcLeft => "left",
-            KeyCode.VcRight => "right",
-            KeyCode.VcMinus => "-",
-            KeyCode.VcEquals => "=",
-            KeyCode.VcOpenBracket => "[",
-            KeyCode.VcCloseBracket => "]",
-            KeyCode.VcBackslash => "\\",
-            KeyCode.VcSemicolon => ";",
-            KeyCode.VcQuote => "'",
-            KeyCode.VcComma => ",",
-            KeyCode.VcPeriod => ".",
-            KeyCode.VcSlash => "/",
-            KeyCode.VcBackQuote => "`",
-            _ => ""
-        };
-    }
-    
+        >= 0x41 and <= 0x5A => ((char)(vk + 32)).ToString(), // A-Z → a-z
+        >= 0x30 and <= 0x39 => ((char)vk).ToString(),        // 0-9
+        >= 0x70 and <= 0x7B => $"f{vk - 0x6F}",              // F1-F12
+        0x20 => "space", 0x0D => "enter", 0x1B => "escape",
+        0x08 => "backspace", 0x09 => "tab", 0x14 => "capslock",
+        0x2C => "printscreen", 0x91 => "scrolllock", 0x13 => "pause",
+        0x2D => "insert", 0x2E => "delete", 0x24 => "home", 0x23 => "end",
+        0x21 => "pageup", 0x22 => "pagedown",
+        0x26 => "up", 0x28 => "down", 0x25 => "left", 0x27 => "right",
+        0xBD => "-", 0xBB => "=", 0xDB => "[", 0xDD => "]", 0xDC => "\\",
+        0xBA => ";", 0xDE => "'", 0xBC => ",", 0xBE => ".", 0xBF => "/",
+        0xC0 => "`",
+        _ => ""
+    };
+
     private static string NormalizeHotkey(string hotkey)
     {
         var parts = hotkey.ToLowerInvariant().Split('+', StringSplitOptions.RemoveEmptyEntries);
         var mods = new List<string>();
         var keys = new List<string>();
-        
+
         foreach (var p in parts)
         {
             var trimmed = p.Trim();
@@ -294,17 +247,16 @@ public class KeyboardService : IDisposable
             else if (trimmed is "win" or "windows" or "meta") mods.Add("win");
             else keys.Add(trimmed);
         }
-        
-        // Sort modifiers
+
         mods.Sort((a, b) =>
         {
             var order = new[] { "ctrl", "shift", "alt", "win" };
             return Array.IndexOf(order, a).CompareTo(Array.IndexOf(order, b));
         });
-        
+
         return string.Join("+", mods.Concat(keys));
     }
-    
+
     public void Dispose()
     {
         Stop();

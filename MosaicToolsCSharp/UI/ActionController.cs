@@ -27,7 +27,7 @@ public class ActionController : IDisposable
     private readonly KeyboardService _keyboardService;
     private readonly AutomationService _automationService;
     private NoteFormatter _noteFormatter;
-    private readonly GetPriorService _getPriorService;
+    private GetPriorService _getPriorService;
     private readonly OcrService _ocrService;
     private readonly PipeService _pipeService;
 
@@ -62,6 +62,11 @@ public class ActionController : IDisposable
     // Accession tracking - only track non-empty accessions
     private string? _lastNonEmptyAccession;
 
+    // Accession flap debounce - prevent false "study closed" events
+    // When accession goes empty, we defer the close and wait for it to stabilize
+    private string? _pendingCloseAccession;   // The accession that went empty
+    private int _pendingCloseTickCount;        // How many scrape ticks it's been empty
+
     /// <summary>
     /// Returns true if a study is currently open (has a non-empty accession).
     /// </summary>
@@ -91,11 +96,12 @@ public class ActionController : IDisposable
     private bool _clinicalHistoryVisible = false;
 
     // Critical note tracking - session-scoped set of accessions that already have critical notes
-    private readonly HashSet<string> _criticalNoteCreatedForAccessions = new();
+    private readonly ConcurrentDictionary<string, byte> _criticalNoteCreatedForAccessions = new();
 
     // Session-wide tracking to prevent duplicate pastes on study reopen
-    private readonly HashSet<string> _macrosInsertedForAccessions = new();
-    private readonly HashSet<string> _clinicalHistoryFixedForAccessions = new();
+    // Use ConcurrentDictionary for thread safety (scrape timer reads, STA thread writes)
+    private readonly ConcurrentDictionary<string, byte> _macrosInsertedForAccessions = new();
+    private readonly ConcurrentDictionary<string, byte> _clinicalHistoryFixedForAccessions = new();
 
     // Ignore Inpatient Drafted - tracks completion of auto-insertions for Ctrl+A
     private bool _macrosCompleteForCurrentAccession = false;
@@ -136,7 +142,7 @@ public class ActionController : IDisposable
         _keyboardService = new KeyboardService();
         _automationService = new AutomationService();
         _noteFormatter = new NoteFormatter(config.DoctorName, config.CriticalFindingsTemplate);
-        _getPriorService = new GetPriorService();
+        _getPriorService = new GetPriorService(_config.ComparisonTemplate);
         _ocrService = new OcrService();
         _pipeService = new PipeService();
         _pipeService.Start();
@@ -233,6 +239,7 @@ public class ActionController : IDisposable
         Logger.Trace("Refreshing ActionController services...");
         // Recreate services that depend on config
         _noteFormatter = new NoteFormatter(_config.DoctorName, _config.CriticalFindingsTemplate);
+        _getPriorService = new GetPriorService(_config.ComparisonTemplate);
         RegisterHotkeys();
         
         // Toggle scraper based on setting
@@ -416,6 +423,25 @@ public class ActionController : IDisposable
     #region Action Implementations
     
     private int _syncCheckToken = 0;
+    private string PrepareTextForPaste(string text)
+    {
+        if (_config.SeparatePastedItems && !text.StartsWith("\n"))
+            return "\n" + text;
+        return text;
+    }
+
+    public bool IsAddendumOpen()
+    {
+        // Primary: check the flag set during ProseMirror scanning (works even when
+        // LastFinalReport is stale due to the U+FFFC fallback logic)
+        if (_automationService.IsAddendumDetected)
+            return true;
+
+        // Fallback: check LastFinalReport text directly
+        var report = _automationService.LastFinalReport;
+        return !string.IsNullOrEmpty(report) && report.TrimStart().StartsWith("Addendum", StringComparison.OrdinalIgnoreCase);
+    }
+
     private void PerformBeep()
     {
         // 1. Determine STARTING state (The state we are moving TO)
@@ -908,9 +934,17 @@ public class ActionController : IDisposable
 
     private void InsertMacrosForStudy(string? studyDescription)
     {
+        // Don't insert macros into addendums
+        if (IsAddendumOpen())
+        {
+            Logger.Trace("Macros: Blocked - addendum is open");
+            MarkMacrosCompleteForCurrentAccession();
+            return;
+        }
+
         // Session-wide check: don't re-insert macros for a study that was already processed
         var accession = _automationService.LastAccession;
-        if (!string.IsNullOrEmpty(accession) && _macrosInsertedForAccessions.Contains(accession))
+        if (!string.IsNullOrEmpty(accession) && _macrosInsertedForAccessions.ContainsKey(accession))
         {
             Logger.Trace($"Macros: Already inserted for accession {accession} this session, skipping");
             return;
@@ -989,6 +1023,13 @@ public class ActionController : IDisposable
 
         if (string.IsNullOrEmpty(text)) return;
 
+        if (IsAddendumOpen())
+        {
+            Logger.Trace("InsertMacros: Blocked - addendum is open");
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
+            return;
+        }
+
         Logger.Trace($"InsertMacros: Pasting {count} macro(s)");
 
         // Use paste lock to prevent race conditions with clinical history auto-fix
@@ -1004,7 +1045,7 @@ public class ActionController : IDisposable
             try
             {
                 // Copy macro text to clipboard
-                ClipboardService.SetText(text);
+                ClipboardService.SetText(PrepareTextForPaste(text));
                 Thread.Sleep(50);
 
                 // Activate Mosaic and paste
@@ -1018,7 +1059,7 @@ public class ActionController : IDisposable
                 // Mark this accession as having had macros inserted (session-wide tracking)
                 if (!string.IsNullOrEmpty(accessionToMark))
                 {
-                    _macrosInsertedForAccessions.Add(accessionToMark);
+                    _macrosInsertedForAccessions.TryAdd(accessionToMark, 0);
                     TrimTrackingSets();
                 }
 
@@ -1131,6 +1172,13 @@ public class ActionController : IDisposable
 
         if (string.IsNullOrEmpty(text)) return;
 
+        if (IsAddendumOpen())
+        {
+            Logger.Trace("InsertPickListText: Blocked - addendum is open");
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
+            return;
+        }
+
         Logger.Trace($"InsertPickListText: Pasting {text.Length} chars");
 
         // Use paste lock to prevent race conditions
@@ -1146,7 +1194,7 @@ public class ActionController : IDisposable
             try
             {
                 // Copy text to clipboard
-                ClipboardService.SetText(text);
+                ClipboardService.SetText(PrepareTextForPaste(text));
                 Thread.Sleep(50);
 
                 // Activate Mosaic and paste
@@ -1182,8 +1230,17 @@ public class ActionController : IDisposable
     {
         _isUserActive = true;
         Logger.Trace("Get Prior");
+
+        if (IsAddendumOpen())
+        {
+            Logger.Trace("GetPrior: Blocked - addendum is open");
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
+            _isUserActive = false;
+            return;
+        }
+
         _mainForm.Invoke(() => _mainForm.ShowStatusToast("Extracting Prior..."));
-        
+
         try
         {
             // Check if InteleViewer is active
@@ -1257,7 +1314,7 @@ public class ActionController : IDisposable
             }
             
             // Paste into Mosaic (with leading and trailing newline for cleaner insertion)
-            ClipboardService.SetText("\n" + formatted + "\n");
+            ClipboardService.SetText(PrepareTextForPaste(formatted + "\n"));
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(200);
 
@@ -1492,6 +1549,15 @@ public class ActionController : IDisposable
     private void PerformCaptureSeries()
     {
         _isUserActive = true;
+
+        if (IsAddendumOpen())
+        {
+            Logger.Trace("CaptureSeries: Blocked - addendum is open");
+            _mainForm.Invoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
+            _isUserActive = false;
+            return;
+        }
+
         Logger.Trace("Capture Series/Image");
         _mainForm.Invoke(() => _mainForm.ShowStatusToast("Capturing..."));
         
@@ -1560,7 +1626,11 @@ public class ActionController : IDisposable
     {
         // Check if we have any keys configured
         var keys = _config.WindowLevelKeys;
-        if (keys == null || keys.Count == 0) return;
+        if (keys == null || keys.Count == 0)
+        {
+            Logger.Trace("CycleWindowLevel: No keys configured");
+            return;
+        }
 
         // Check if InteleViewer is the active window (fast title check)
         var foreground = NativeWindows.GetForegroundWindow();
@@ -1568,7 +1638,8 @@ public class ActionController : IDisposable
 
         if (!title.Contains("InteleViewer", StringComparison.OrdinalIgnoreCase))
         {
-            return; // Silent ignore
+            Logger.Trace($"CycleWindowLevel: Not InteleViewer (title='{title.Substring(0, Math.Min(60, title.Length))}')");
+            return;
         }
 
         // Release modifiers without delay (F-keys work fine even if modifiers briefly held)
@@ -1585,6 +1656,11 @@ public class ActionController : IDisposable
         {
             NativeWindows.keybd_event(vk, 0, 0, UIntPtr.Zero);
             NativeWindows.keybd_event(vk, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+            Logger.Trace($"CycleWindowLevel: Sent {keyName} (VK=0x{vk:X2})");
+        }
+        else
+        {
+            Logger.Trace($"CycleWindowLevel: Unknown key '{keyName}'");
         }
     }
 
@@ -1624,7 +1700,7 @@ public class ActionController : IDisposable
         bool success = _automationService.CreateCriticalCommunicationNote();
         if (success)
         {
-            _criticalNoteCreatedForAccessions.Add(accession);
+            _criticalNoteCreatedForAccessions.TryAdd(accession, 0);
 
             // Track critical study for session-based tracker
             TrackCriticalStudy();
@@ -1722,23 +1798,76 @@ public class ActionController : IDisposable
                     Logger.Trace("RVUCounter: Discard dialog detected for current accession");
                 }
 
-                // Detect study change: either new accession OR accession went empty (study closed)
+                // Detect study change with flap debounce
+                // Mosaic briefly sets accession to empty during study transitions.
+                // Without debounce, each flap triggers a full study close + reopen cycle,
+                // causing duplicate macro inserts and false RVU counter events.
                 bool accessionChanged = false;
                 bool studyClosed = false;
 
                 if (!string.IsNullOrEmpty(currentAccession))
                 {
-                    // New non-empty accession
-                    if (currentAccession != _lastNonEmptyAccession)
+                    // Non-empty accession — cancel any pending close since accession came back
+                    if (_pendingCloseAccession != null)
                     {
+                        if (currentAccession == _pendingCloseAccession)
+                        {
+                            // Same accession returned after brief empty — this was a flap, ignore it
+                            Logger.Trace($"Accession flap cancelled: '{currentAccession}' returned after {_pendingCloseTickCount} tick(s)");
+                            _pendingCloseAccession = null;
+                            _pendingCloseTickCount = 0;
+                            // Don't process as a study change — nothing actually changed
+                        }
+                        else
+                        {
+                            // Different accession appeared — process the pending close first, then the new study
+                            // The pending close's RVU event and state reset will happen as part of the new study change
+                            _pendingCloseAccession = null;
+                            _pendingCloseTickCount = 0;
+                            accessionChanged = true;
+                        }
+                    }
+                    else if (currentAccession != _lastNonEmptyAccession)
+                    {
+                        // New non-empty accession (direct transition, no empty gap)
                         accessionChanged = true;
                     }
                 }
                 else if (!string.IsNullOrEmpty(_lastNonEmptyAccession))
                 {
-                    // Accession went from non-empty to empty (study closed without opening new one)
-                    accessionChanged = true;
-                    studyClosed = true;
+                    // Accession just went empty — start debounce, don't process yet
+                    if (_pendingCloseAccession == null)
+                    {
+                        _pendingCloseAccession = _lastNonEmptyAccession;
+                        _pendingCloseTickCount = 1;
+                        Logger.Trace($"Accession went empty, deferring close for '{_pendingCloseAccession}' (tick 1)");
+                    }
+                    else
+                    {
+                        _pendingCloseTickCount++;
+                        if (_pendingCloseTickCount >= 3)
+                        {
+                            // Empty for 3+ ticks — this is a real close, not a flap
+                            Logger.Trace($"Accession confirmed closed after {_pendingCloseTickCount} ticks: '{_pendingCloseAccession}'");
+                            accessionChanged = true;
+                            studyClosed = true;
+                            _pendingCloseAccession = null;
+                            _pendingCloseTickCount = 0;
+                        }
+                    }
+                }
+                else if (_pendingCloseAccession != null)
+                {
+                    // Still empty and we have a pending close — increment tick count
+                    _pendingCloseTickCount++;
+                    if (_pendingCloseTickCount >= 3)
+                    {
+                        Logger.Trace($"Accession confirmed closed after {_pendingCloseTickCount} ticks: '{_pendingCloseAccession}'");
+                        accessionChanged = true;
+                        studyClosed = true;
+                        _pendingCloseAccession = null;
+                        _pendingCloseTickCount = 0;
+                    }
                 }
 
                 if (accessionChanged)
@@ -1909,10 +2038,21 @@ public class ActionController : IDisposable
                     !string.IsNullOrWhiteSpace(reportText) &&
                     reportText.Contains("CLINICAL HISTORY", StringComparison.OrdinalIgnoreCase))
                 {
-                    Logger.Trace($"Macros: Clinical history now visible, inserting for {_pendingMacroAccession}");
-                    InsertMacrosForStudy(_pendingMacroDescription);
-                    _pendingMacroAccession = null;
-                    _pendingMacroDescription = null;
+                    // Don't insert macros into addendums
+                    if (reportText.TrimStart().StartsWith("Addendum", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.Trace($"Macros: Blocked pending insert - addendum detected for {_pendingMacroAccession}");
+                        MarkMacrosCompleteForCurrentAccession();
+                        _pendingMacroAccession = null;
+                        _pendingMacroDescription = null;
+                    }
+                    else
+                    {
+                        Logger.Trace($"Macros: Clinical history now visible, inserting for {_pendingMacroAccession}");
+                        InsertMacrosForStudy(_pendingMacroDescription);
+                        _pendingMacroAccession = null;
+                        _pendingMacroDescription = null;
+                    }
                 }
 
                 // Update clinical history / notification box from Mosaic report
@@ -2241,7 +2381,7 @@ public class ActionController : IDisposable
             return false;
         }
 
-        if (_criticalNoteCreatedForAccessions.Contains(accession))
+        if (_criticalNoteCreatedForAccessions.ContainsKey(accession))
         {
             Logger.Trace($"CreateStrokeCriticalNote: Note already created for {accession}");
             return false; // Already created
@@ -2250,7 +2390,7 @@ public class ActionController : IDisposable
         var success = _automationService.CreateCriticalCommunicationNote();
         if (success)
         {
-            _criticalNoteCreatedForAccessions.Add(accession);
+            _criticalNoteCreatedForAccessions.TryAdd(accession, 0);
 
             // Track critical study for session-based tracker
             TrackCriticalStudy();
@@ -2269,7 +2409,7 @@ public class ActionController : IDisposable
     /// </summary>
     public bool HasCriticalNoteForAccession(string? accession)
     {
-        return accession != null && _criticalNoteCreatedForAccessions.Contains(accession);
+        return accession != null && _criticalNoteCreatedForAccessions.ContainsKey(accession);
     }
 
     #endregion
@@ -2281,7 +2421,7 @@ public class ActionController : IDisposable
     /// </summary>
     public bool HasClinicalHistoryFixedForAccession(string? accession)
     {
-        return accession != null && _clinicalHistoryFixedForAccessions.Contains(accession);
+        return accession != null && _clinicalHistoryFixedForAccessions.ContainsKey(accession);
     }
 
     /// <summary>
@@ -2291,7 +2431,7 @@ public class ActionController : IDisposable
     {
         if (!string.IsNullOrEmpty(accession))
         {
-            _clinicalHistoryFixedForAccessions.Add(accession);
+            _clinicalHistoryFixedForAccessions.TryAdd(accession, 0);
             TrimTrackingSets();
         }
     }

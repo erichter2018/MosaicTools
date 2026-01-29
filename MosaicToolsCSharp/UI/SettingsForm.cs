@@ -44,6 +44,8 @@ public class SettingsForm : Form
     private TextBox _ivHotkeyBox = null!;
     private TextBox _criticalTemplateBox = null!;
     private TextBox _seriesTemplateBox = null!;
+    private TextBox _comparisonTemplateBox = null!;
+    private CheckBox _separatePastedItemsCheck = null!;
     private CheckBox _autoUpdateCheck = null!;
     private CheckBox _hideIndicatorWhenNoStudyCheck = null!;
     private CheckBox _showTooltipsCheck = null!;
@@ -1359,12 +1361,24 @@ public class SettingsForm : Form
         int y = 10;
         int groupWidth = 445;
 
+        // Separate pasted items checkbox
+        _separatePastedItemsCheck = new CheckBox
+        {
+            Text = "Separate pasted items with line break",
+            Location = new Point(10, y),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        tab.Controls.Add(_separatePastedItemsCheck);
+        y += 30;
+
         // ========== TEMPLATES SECTION ==========
         var templatesGroup = new GroupBox
         {
             Text = "Templates",
             Location = new Point(10, y),
-            Size = new Size(groupWidth, 180),
+            Size = new Size(groupWidth, 295),
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
@@ -1439,8 +1453,44 @@ public class SettingsForm : Form
         };
         templatesGroup.Controls.Add(seriesPlaceholdersLabel);
         CreateTooltipLabel(templatesGroup, seriesPlaceholdersLabel, "Template for series capture.\n{series} = series number, {image} = image number.", 2, 0);
+        ty += 20;
 
-        y += 190;
+        templatesGroup.Controls.Add(new Label
+        {
+            Text = "Get Prior Comparison:",
+            Location = new Point(10, ty),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        });
+        ty += 18;
+
+        _comparisonTemplateBox = new TextBox
+        {
+            Location = new Point(10, ty),
+            Width = 420,
+            Height = 50,
+            Multiline = true,
+            ScrollBars = ScrollBars.Vertical,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        templatesGroup.Controls.Add(_comparisonTemplateBox);
+        ty += 55;
+
+        var comparisonPlaceholdersLabel = new Label
+        {
+            Text = "Placeholders: {date}, {time}, {description}, {noimages}",
+            Location = new Point(10, ty),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        };
+        templatesGroup.Controls.Add(comparisonPlaceholdersLabel);
+        CreateTooltipLabel(templatesGroup, comparisonPlaceholdersLabel, "Template for Get Prior comparison line.\n{date} = study date, {time} = time (if recent),\n{description} = modality text, {noimages} = 'No Prior Images.' if applicable.", 2, 0);
+
+        y += 305;
 
         // ========== MACROS SECTION ==========
         var macrosGroup = new GroupBox
@@ -3492,7 +3542,9 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         _hideIndicatorWhenNoStudyCheck.Checked = _config.HideIndicatorWhenNoStudy;
         _criticalTemplateBox.Text = _config.CriticalFindingsTemplate;
         _seriesTemplateBox.Text = _config.SeriesImageTemplate;
-        
+        _comparisonTemplateBox.Text = _config.ComparisonTemplate;
+        _separatePastedItemsCheck.Checked = _config.SeparatePastedItems;
+
         // Advanced tab
         _restoreFocusCheck.Checked = _config.RestoreFocusAfterAction;
         _scrollToBottomCheck.Checked = _config.ScrollToBottomOnProcess;
@@ -4063,7 +4115,9 @@ SETTINGS FILE
         _config.HideIndicatorWhenNoStudy = _hideIndicatorWhenNoStudyCheck.Checked;
         _config.CriticalFindingsTemplate = _criticalTemplateBox.Text.Trim();
         _config.SeriesImageTemplate = _seriesTemplateBox.Text.Trim();
-        
+        _config.ComparisonTemplate = _comparisonTemplateBox.Text.Trim();
+        _config.SeparatePastedItems = _separatePastedItemsCheck.Checked;
+
         // Advanced tab
         _config.RestoreFocusAfterAction = _restoreFocusCheck.Checked;
         _config.ScrollToBottomOnProcess = _scrollToBottomCheck.Checked;
@@ -4160,6 +4214,7 @@ SETTINGS FILE
         _mainForm.UpdateIndicatorVisibility();  // Respects "hide when no study" setting
         _mainForm.UpdateClinicalHistoryVisibility();  // Respects "hide when no study" setting
         _mainForm.RefreshFloatingToolbar(_config.FloatingButtons);
+        _mainForm.RefreshRvuLayout();  // Apply RVU display mode / enable changes
         _mainForm.RefreshConnectivityService();  // Apply network monitor settings
 
         Close();

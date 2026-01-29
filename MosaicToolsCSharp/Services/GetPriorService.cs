@@ -10,6 +10,13 @@ namespace MosaicTools.Services;
 /// </summary>
 public class GetPriorService
 {
+    private readonly string? _template;
+
+    public GetPriorService(string? template = null)
+    {
+        _template = template;
+    }
+
     /// <summary>
     /// Extract prior study info from clipboard text and format it.
     /// Returns the formatted COMPARISON string.
@@ -110,8 +117,13 @@ public class GetPriorService
                 }
             }
             
-            var timeComponent = includeTime ? " " + priorTimeFormatted : "";
-            var finalText = $" COMPARISON: {priorDate}{timeComponent} {priorDescript1}. {priorImages}";
+            string template = _template ?? "COMPARISON: {date} {time} {description}. {noimages}";
+            var timeValue = includeTime ? priorTimeFormatted : "";
+            var finalText = " " + template
+                .Replace("{date}", priorDate)
+                .Replace("{time}", timeValue)
+                .Replace("{description}", priorDescript1)
+                .Replace("{noimages}", priorImages);
             finalText = Regex.Replace(finalText, @" {2,}", " ").Replace(" .", ".").Trim();
             
             return finalText;
