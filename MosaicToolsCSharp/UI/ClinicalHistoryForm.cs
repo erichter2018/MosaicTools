@@ -52,6 +52,7 @@ public class ClinicalHistoryForm : Form
     // Auto-fix tracking - local fallback, but prefer session-wide callbacks if set
     private string? _lastAutoFixedAccession;
     private DateTime _lastAutoFixTime = DateTime.MinValue;
+    private volatile bool _autoFixInProgress = false; // Prevents concurrent auto-fix attempts
 
     // Session-wide clinical history fix tracking callbacks (set by MainForm)
     private Func<string?, bool>? _hasClinicalHistoryFixed;
@@ -376,11 +377,18 @@ public class ClinicalHistoryForm : Form
         }
 
         // All conditions met - but wait and recheck in case Mosaic self-corrects
+        // Prevent concurrent auto-fix attempts (fast scrape can trigger multiple before the 2s delay completes)
+        if (_autoFixInProgress)
+        {
+            Logger.Trace($"Auto-fix: already in progress for '{accession}', skipping");
+            return;
+        }
+        _autoFixInProgress = true;
+
         Logger.Trace($"Auto-fix: malformed clinical history detected for '{accession}', waiting to recheck...");
 
-        // Mark immediately to prevent duplicate triggers from subsequent scrape cycles
+        // Mark locally to prevent duplicate triggers within this form instance
         _lastAutoFixedAccession = accession;
-        _markClinicalHistoryFixed?.Invoke(accession);
 
         var capturedAccession = accession;
 
@@ -389,18 +397,20 @@ public class ClinicalHistoryForm : Form
         {
             try
             {
-                // Wait for Mosaic to potentially self-correct
-                Thread.Sleep(2000);
+                // Wait for Mosaic to potentially self-correct (5s = multiple scrape cycles at 1s interval)
+                Thread.Sleep(5000);
 
                 // Recheck: the scrape timer will have updated us if Mosaic fixed itself.
                 // If the displayed text is still the fixed version (meaning the raw text
                 // is still malformed), proceed with the paste.
                 bool stillFixed = false;
+                if (IsDisposed || !IsHandleCreated) { _autoFixInProgress = false; return; }
                 Invoke(() => { stillFixed = _currentTextWasFixed; });
 
                 if (!stillFixed)
                 {
                     Logger.Trace($"Auto-fix: Mosaic self-corrected for '{capturedAccession}', skipping paste");
+                    _autoFixInProgress = false;
                     _onAutoFixComplete?.Invoke();
                     return;
                 }
@@ -408,12 +418,17 @@ public class ClinicalHistoryForm : Form
                 Logger.Trace($"Auto-fix: still malformed after recheck for '{capturedAccession}', pasting fix");
                 _lastAutoFixTime = DateTime.Now;
 
+                // Mark session-wide only after confirming we're about to paste
+                _markClinicalHistoryFixed?.Invoke(capturedAccession);
+
                 // Trigger the paste
                 PasteClinicalHistoryToMosaic(showYellowCheckmark: true);
+                _autoFixInProgress = false;
             }
             catch (Exception ex)
             {
                 Logger.Trace($"Auto-fix recheck error: {ex.Message}");
+                _autoFixInProgress = false;
             }
         });
     }
@@ -424,6 +439,7 @@ public class ClinicalHistoryForm : Form
     public void ResetAutoFixTracking()
     {
         _lastAutoFixedAccession = null;
+        _autoFixInProgress = false;
     }
 
     /// <summary>
@@ -978,12 +994,14 @@ public class ClinicalHistoryForm : Form
                     // Set clipboard on UI thread (STA required for clipboard operations)
                     Logger.Trace($"Clinical history paste: setting clipboard to '{formatted.Substring(0, Math.Min(50, formatted.Length))}...'");
                     var textToPaste = (_config.SeparatePastedItems && !formatted.StartsWith("\n")) ? "\n" + formatted : formatted;
+                    if (IsDisposed || !IsHandleCreated) return;
                     Invoke(() => Clipboard.SetText(textToPaste));
                     System.Threading.Thread.Sleep(50);
 
                     if (!NativeWindows.ActivateMosaicForcefully())
                     {
-                        Invoke(() => ShowToast("Mosaic not found"));
+                        if (!IsDisposed && IsHandleCreated)
+                            Invoke(() => ShowToast("Mosaic not found"));
                         return;
                     }
 
@@ -999,14 +1017,18 @@ public class ClinicalHistoryForm : Form
                     // Show yellow checkmark if corrected clinical history was inserted
                     if (showYellowCheckmark)
                     {
-                        Invoke(() => SetHistoryFixInserted(true));
-                        Invoke(() => ShowToast("Corrected history pasted"));
+                        if (!IsDisposed && IsHandleCreated)
+                        {
+                            Invoke(() => SetHistoryFixInserted(true));
+                            Invoke(() => ShowToast("Corrected history pasted"));
+                        }
                         // Notify that auto-fix paste is complete (for Ignore Inpatient Drafted)
                         _onAutoFixComplete?.Invoke();
                     }
                     else
                     {
-                        Invoke(() => ShowToast("Pasted to Mosaic"));
+                        if (!IsDisposed && IsHandleCreated)
+                            Invoke(() => ShowToast("Pasted to Mosaic"));
                     }
                 }
                 catch (Exception ex)

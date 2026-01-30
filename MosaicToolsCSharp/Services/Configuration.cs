@@ -204,6 +204,12 @@ public class Configuration
     [JsonPropertyName("report_popup_width")]
     public int ReportPopupWidth { get; set; } = 750;
 
+    [JsonPropertyName("report_popup_font_family")]
+    public string ReportPopupFontFamily { get; set; } = "Consolas";
+
+    [JsonPropertyName("report_popup_font_size")]
+    public float ReportPopupFontSize { get; set; } = 11f;
+
     [JsonPropertyName("settings_x")]
     public int SettingsX { get; set; } = 200;
 
@@ -245,6 +251,12 @@ public class Configuration
 
     [JsonPropertyName("report_changes_alpha")]
     public int ReportChangesAlpha { get; set; } = 25; // 0-100 percent opacity
+
+    [JsonPropertyName("correlation_enabled")]
+    public bool CorrelationEnabled { get; set; } = false;
+
+    [JsonPropertyName("show_report_after_process")]
+    public bool ShowReportAfterProcess { get; set; } = false;
 
     // Version tracking for What's New popup
     [JsonPropertyName("last_seen_version")]

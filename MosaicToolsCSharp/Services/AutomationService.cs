@@ -19,9 +19,16 @@ public class AutomationService : IDisposable
     
     // Cached window for fast repeated scrapes
     private AutomationElement? _cachedSlimHubWindow;
+
+    // Cached report document name (detected once, reused for fast lookups)
+    // e.g., "RADPAIR" on Mosaic 2.0.3+, or contains "Report" on older versions
+    private string? _cachedReportDocName;
     
     // Last scraped final report (public for external access)
     public string? LastFinalReport { get; private set; }
+
+    /// <summary>Clear cached report text (call on accession change to prevent stale data).</summary>
+    public void ClearLastReport() => LastFinalReport = null;
 
     // Addendum detection: set during scraping when any ProseMirror candidate starts with "Addendum"
     public bool IsAddendumDetected { get; private set; }
@@ -1169,6 +1176,9 @@ public class AutomationService : IDisposable
 
             // END Mosaic 2.0.2 compat
 
+            // Use cached document name if available (avoids fallback search on every scrape)
+            var reportDocSearchName = _cachedReportDocName ?? "Report";
+
             if (checkDraftedStatus)
             {
                 // Search for DRAFTED, Report doc, and Description in one traversal using OR condition
@@ -1177,7 +1187,7 @@ public class AutomationService : IDisposable
                     .And(_cachedSlimHubWindow.ConditionFactory.ByName("DRAFTED"));
                 var reportCondition = _cachedSlimHubWindow.ConditionFactory
                     .ByControlType(FlaUI.Core.Definitions.ControlType.Document)
-                    .And(_cachedSlimHubWindow.ConditionFactory.ByName("Report", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+                    .And(_cachedSlimHubWindow.ConditionFactory.ByName(reportDocSearchName, FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
                 var descriptionCondition = _cachedSlimHubWindow.ConditionFactory
                     .ByControlType(FlaUI.Core.Definitions.ControlType.Text)
                     .And(_cachedSlimHubWindow.ConditionFactory.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
@@ -1193,7 +1203,7 @@ public class AutomationService : IDisposable
                         LastDraftedState = true;
                     }
                     else if (el.ControlType == FlaUI.Core.Definitions.ControlType.Document &&
-                             el.Name?.Contains("Report") == true && reportDoc == null)
+                             el.Name?.Contains(reportDocSearchName) == true && reportDoc == null)
                     {
                         reportDoc = el;
                     }
@@ -1215,7 +1225,7 @@ public class AutomationService : IDisposable
                 // Just find the Report document
                 reportDoc = _cachedSlimHubWindow.FindFirstDescendant(cf =>
                     cf.ByControlType(FlaUI.Core.Definitions.ControlType.Document)
-                    .And(cf.ByName("Report", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring)));
+                    .And(cf.ByName(reportDocSearchName, FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring)));
             }
 
             // BEGIN Mosaic 2.0.2 compat: In 2.0.3, the Report Document is named
@@ -1239,7 +1249,13 @@ public class AutomationService : IDisposable
                                 !string.IsNullOrWhiteSpace(docName))
                             {
                                 reportDoc = doc;
-                                Logger.Trace($"GetFinalReportFast: Found Report Document (v2.0.3 fallback): '{docName}'");
+                                // Cache the document name so future scrapes skip the fallback
+                                if (_cachedReportDocName == null)
+                                {
+                                    _cachedReportDocName = docName;
+                                    Logger.Trace($"GetFinalReportFast: Cached report document name: '{docName}'");
+                                }
+                                Logger.Trace($"GetFinalReportFast: Found Report Document (fallback): '{docName}'");
                                 break;
                             }
                         }

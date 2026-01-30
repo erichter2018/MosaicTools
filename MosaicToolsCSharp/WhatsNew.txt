@@ -1,3 +1,10 @@
+3.0.4
+- Rainbow Mode: color-codes matching concepts between Findings and Impression
+- Report popup click cycle: Changes → Rainbow → Close
+- Show Report overlay option after Process Report (once per accession)
+- Clear stale report on study change (no more old report flashing on new study)
+- Fix clinical history auto-fix pasting when Mosaic self-corrects (alerts-only mode fix, longer recheck delay)
+
 3.0.3
 - Fix app freeze caused by UI thread deadlock (Invoke → BeginInvoke)
 

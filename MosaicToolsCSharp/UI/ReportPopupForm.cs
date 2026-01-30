@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -11,9 +13,19 @@ using DiffPlex.DiffBuilder.Model;
 namespace MosaicTools.UI;
 
 /// <summary>
+/// Display mode for the report popup click cycle.
+/// </summary>
+public enum ReportDisplayMode
+{
+    Changes,
+    Rainbow
+}
+
+/// <summary>
 /// Report popup window.
 /// Matches Python's ReportPopupWindow.
 /// Supports diff highlighting when baseline is provided.
+/// Supports Rainbow Mode for findings-impression correlation.
 /// </summary>
 public class ReportPopupForm : Form
 {
@@ -22,6 +34,13 @@ public class ReportPopupForm : Form
     private string? _baselineReport;
     private string _currentReportText;
 
+    // Display mode for click cycle
+    private ReportDisplayMode _displayMode;
+    private readonly bool _changesEnabled;
+    private readonly bool _correlationEnabled;
+    private CorrelationResult? _correlationResult;
+    private readonly Label _modeLabel;
+
     // Drag state
     private Point _dragStart;
     private bool _dragging;
@@ -29,11 +48,23 @@ public class ReportPopupForm : Form
     // Resize prevention
     private bool _isResizing;
 
-    public ReportPopupForm(Configuration config, string reportText, string? baselineReport = null)
+    public ReportPopupForm(Configuration config, string reportText, string? baselineReport = null,
+        bool changesEnabled = false, bool correlationEnabled = false)
     {
         _config = config;
         _baselineReport = baselineReport;
         _currentReportText = reportText;
+        _changesEnabled = changesEnabled;
+        _correlationEnabled = correlationEnabled;
+
+        // Determine initial display mode
+        // Changes mode first when enabled (even without baseline — just shows plain text)
+        if (_changesEnabled)
+            _displayMode = ReportDisplayMode.Changes;
+        else if (_correlationEnabled)
+            _displayMode = ReportDisplayMode.Rainbow;
+        else
+            _displayMode = ReportDisplayMode.Changes; // plain view (no highlighting)
 
         // Form properties
         FormBorderStyle = FormBorderStyle.None;
@@ -56,7 +87,7 @@ public class ReportPopupForm : Form
             Location = new Point(padding, padding),
             BackColor = Color.FromArgb(30, 30, 30),
             ForeColor = Color.White,
-            Font = new Font("Consolas", 11),
+            Font = new Font(_config.ReportPopupFontFamily, _config.ReportPopupFontSize),
             Cursor = Cursors.Hand,
             ReadOnly = true,
             BorderStyle = BorderStyle.None,
@@ -75,6 +106,20 @@ public class ReportPopupForm : Form
         _richTextBox.Text = FormatReportText(reportText);
 
         Controls.Add(_richTextBox);
+
+        // Mode indicator label in top-right corner
+        _modeLabel = new Label
+        {
+            AutoSize = true,
+            ForeColor = Color.FromArgb(140, 140, 140),
+            BackColor = Color.FromArgb(30, 30, 30),
+            Font = new Font("Segoe UI", 8f),
+            Text = "",
+            Cursor = Cursors.Hand
+        };
+        Controls.Add(_modeLabel);
+        _modeLabel.BringToFront();
+        UpdateModeLabel();
 
         // Initial Layout (fallback)
         this.ClientSize = new Size(width, 200); // Temporary size
@@ -100,12 +145,97 @@ public class ReportPopupForm : Form
             this.Activate();
             ActiveControl = null; // Hide caret
 
-            // Format keywords and diff highlighting AFTER load to ensure layout context
-            ApplyFormattingAndDiff();
+            // Apply formatting based on current display mode
+            ApplyCurrentModeFormatting();
 
             // Force Resize Calculation manually
             PerformResize();
         };
+
+        this.Resize += (s, e) =>
+        {
+            // Keep mode label in top-right
+            PositionModeLabel();
+        };
+    }
+
+    private void UpdateModeLabel()
+    {
+        // Show label when both modes are available (user can cycle)
+        if (_changesEnabled && _correlationEnabled)
+        {
+            _modeLabel.Text = _displayMode == ReportDisplayMode.Changes ? "Changes" : "Rainbow";
+            _modeLabel.Visible = true;
+        }
+        else
+        {
+            _modeLabel.Visible = false;
+        }
+        PositionModeLabel();
+    }
+
+    private void PositionModeLabel()
+    {
+        if (_modeLabel != null && _modeLabel.Visible)
+        {
+            _modeLabel.Location = new Point(this.ClientSize.Width - _modeLabel.Width - 8, 4);
+        }
+    }
+
+    /// <summary>
+    /// Handle click cycle: Changes -> Rainbow -> Close (or fewer steps if only one mode enabled).
+    /// Returns true if handled (don't close), false if should close.
+    /// </summary>
+    public bool HandleClickCycle()
+    {
+        Logger.Trace($"HandleClickCycle: mode={_displayMode}, changesEnabled={_changesEnabled}, correlationEnabled={_correlationEnabled}");
+
+        if (_displayMode == ReportDisplayMode.Changes && _correlationEnabled)
+        {
+            // Switch to Rainbow mode
+            _displayMode = ReportDisplayMode.Rainbow;
+            Logger.Trace("Switching to Rainbow mode");
+            UpdateModeLabel();
+            ResetAndReapplyFormatting();
+            return true; // don't close
+        }
+
+        Logger.Trace("Click cycle: closing");
+        // Close
+        return false;
+    }
+
+    private void ResetAndReapplyFormatting()
+    {
+        // Reset all formatting
+        _richTextBox.Text = FormatReportText(_currentReportText);
+        _richTextBox.SelectAll();
+        _richTextBox.SelectionFont = _richTextBox.Font;
+        _richTextBox.SelectionColor = Color.Gainsboro;
+        _richTextBox.SelectionBackColor = _richTextBox.BackColor;
+        _richTextBox.Select(0, 0);
+
+        ApplyCurrentModeFormatting();
+        PerformResize();
+    }
+
+    private void ApplyCurrentModeFormatting()
+    {
+        // Always format section keywords
+        FormatKeywords(_richTextBox, new[] { "IMPRESSION:", "FINDINGS:" });
+
+        if (_displayMode == ReportDisplayMode.Changes)
+        {
+            // Apply diff highlighting if baseline provided
+            if (!string.IsNullOrEmpty(_baselineReport))
+            {
+                ApplyDiffHighlighting(_richTextBox, _baselineReport, _currentReportText);
+            }
+        }
+        else if (_displayMode == ReportDisplayMode.Rainbow)
+        {
+            ApplyCorrelationHighlighting();
+        }
     }
 
     /// <summary>
@@ -120,6 +250,15 @@ public class ReportPopupForm : Form
             _baselineReport = baseline;
         }
 
+        // Reset to initial display mode
+        if (_changesEnabled)
+            _displayMode = ReportDisplayMode.Changes;
+        else if (_correlationEnabled)
+            _displayMode = ReportDisplayMode.Rainbow;
+
+        // Clear cached correlation
+        _correlationResult = null;
+
         // Reset all formatting first
         _richTextBox.Text = FormatReportText(newReportText);
         _richTextBox.SelectAll();
@@ -128,24 +267,70 @@ public class ReportPopupForm : Form
         _richTextBox.SelectionBackColor = _richTextBox.BackColor;
         _richTextBox.Select(0, 0);
 
-        // Re-apply formatting and diff
-        ApplyFormattingAndDiff();
+        // Re-apply formatting based on mode
+        UpdateModeLabel();
+        ApplyCurrentModeFormatting();
 
         // Force resize
         PerformResize();
 
-        Logger.Trace($"ReportPopup updated: {newReportText.Length} chars, baseline={_baselineReport?.Length ?? 0} chars");
+        Logger.Trace($"ReportPopup updated: {newReportText.Length} chars, baseline={_baselineReport?.Length ?? 0} chars, mode={_displayMode}");
     }
 
-    private void ApplyFormattingAndDiff()
+    private void ApplyCorrelationHighlighting()
     {
-        // Format keywords
-        FormatKeywords(_richTextBox, new[] { "IMPRESSION:", "FINDINGS:" });
-
-        // Apply diff highlighting if baseline provided
-        if (!string.IsNullOrEmpty(_baselineReport))
+        try
         {
-            ApplyDiffHighlighting(_richTextBox, _baselineReport, _currentReportText);
+            // Compute correlation using the formatted text (what's displayed in the RTB)
+            _correlationResult ??= CorrelationService.Correlate(_richTextBox.Text);
+
+            if (_correlationResult.Items.Count == 0)
+            {
+                Logger.Trace("Rainbow mode: No correlations found");
+                return;
+            }
+
+            var rtbText = _richTextBox.Text;
+            var bg = BackColor;
+            int highlightCount = 0;
+
+            foreach (var item in _correlationResult.Items)
+            {
+                var paletteColor = CorrelationService.Palette[item.ColorIndex];
+                var blended = CorrelationService.BlendWithBackground(paletteColor, bg);
+
+                // Highlight impression text
+                int impressionIdx = rtbText.IndexOf(item.ImpressionText, StringComparison.Ordinal);
+                if (impressionIdx >= 0)
+                {
+                    _richTextBox.Select(impressionIdx, item.ImpressionText.Length);
+                    _richTextBox.SelectionBackColor = blended;
+                    highlightCount++;
+                }
+
+                // Highlight matched findings
+                foreach (var finding in item.MatchedFindings)
+                {
+                    // Skip subsection headers - only highlight content
+                    var content = finding;
+                    if (IsSectionHeading(content)) continue;
+
+                    int findingIdx = rtbText.IndexOf(content, StringComparison.Ordinal);
+                    if (findingIdx >= 0)
+                    {
+                        _richTextBox.Select(findingIdx, content.Length);
+                        _richTextBox.SelectionBackColor = blended;
+                        highlightCount++;
+                    }
+                }
+            }
+
+            _richTextBox.Select(0, 0);
+            Logger.Trace($"Rainbow mode: {_correlationResult.Items.Count} correlations, {highlightCount} regions highlighted");
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Rainbow mode error: {ex.Message}");
         }
     }
 
@@ -467,6 +652,9 @@ public class ReportPopupForm : Form
         {
             _richTextBox.Height = rtbHeight;
         }
+
+        // Reposition mode label
+        PositionModeLabel();
     }
 
     private void SetupInteractions(Control control)
@@ -488,10 +676,11 @@ public class ReportPopupForm : Form
                     NativeMethods.SendMessage(this.Handle, NativeMethods.WM_NCLBUTTONDOWN, NativeMethods.HT_CAPTION, 0);
 
                     // After WM_NCLBUTTONDOWN returns (drag ended), check if form moved
-                    // If it didn't move, it was a click - close the form
+                    // If it didn't move, it was a click - handle click cycle
                     if (this.Location == formPosOnMouseDown)
                     {
-                        Close();
+                        if (!HandleClickCycle())
+                            Close();
                     }
                     _dragging = false;
                 }
@@ -522,7 +711,8 @@ public class ReportPopupForm : Form
                 // Check if form moved - if not, it was a click
                 if (this.Location == formPosOnMouseDown)
                 {
-                    Close();
+                    if (!HandleClickCycle())
+                        Close();
                 }
             }
             _dragging = false;

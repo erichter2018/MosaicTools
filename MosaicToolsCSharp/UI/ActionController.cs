@@ -40,7 +40,7 @@ public class ActionController : IDisposable
     
     // State
     private bool _dictationActive = false;
-    private bool _isUserActive = false;
+    private volatile bool _isUserActive = false;
     private volatile bool _stopThread = false;
 
     // Impression search state
@@ -49,7 +49,7 @@ public class ActionController : IDisposable
     private DateTime _impressionSearchStartTime; // When we started searching - used for initial delay
     private int NormalScrapeIntervalMs => _config.ScrapeIntervalSeconds * 1000;
     private int _fastScrapeIntervalMs = 1000;
-    private int _postImpressionScrapeIntervalMs = 3000;
+    private int _studyLoadScrapeIntervalMs = 500;
 
     // PTT (Push-to-talk) state
     private bool _pttBusy = false;
@@ -64,7 +64,7 @@ public class ActionController : IDisposable
 
     // Accession flap debounce - prevent false "study closed" events
     // When accession goes empty, we defer the close and wait for it to stabilize
-    private string? _pendingCloseAccession;   // The accession that went empty
+    private volatile string? _pendingCloseAccession;   // The accession that went empty
     private int _pendingCloseTickCount;        // How many scrape ticks it's been empty
 
     /// <summary>
@@ -78,6 +78,8 @@ public class ActionController : IDisposable
     // Report changes tracking - baseline report for diff highlighting
     private string? _baselineReport;
     private bool _processReportPressedForCurrentAccession = false;
+    private bool _draftedAutoProcessDetected = false; // Set true when drafted study's report changes from baseline
+    private bool _autoShowReportDoneForAccession = false; // Only auto-show report overlay once per accession
     private bool _needsBaselineCapture = false; // Set true on new study, cleared when baseline captured
     private string? _lastPopupReportText; // Track what's currently displayed in popup for change detection
 
@@ -110,11 +112,15 @@ public class ActionController : IDisposable
 
     // Critical studies tracker - studies where critical notes were placed this session
     private readonly List<CriticalStudyEntry> _criticalStudies = new();
+    private readonly object _criticalStudiesLock = new();
 
     /// <summary>
     /// List of studies where critical notes were placed this session.
     /// </summary>
-    public IReadOnlyList<CriticalStudyEntry> CriticalStudies => _criticalStudies;
+    public IReadOnlyList<CriticalStudyEntry> CriticalStudies
+    {
+        get { lock (_criticalStudiesLock) return _criticalStudies.ToList(); }
+    }
 
     /// <summary>
     /// Automation service for UI automation tasks (exposed for critical studies popup).
@@ -748,6 +754,14 @@ public class ActionController : IDisposable
             StartImpressionSearch();
         }
 
+        // Auto-show report overlay if enabled (only first time per accession)
+        if (_config.ShowReportAfterProcess && !_autoShowReportDoneForAccession)
+        {
+            _autoShowReportDoneForAccession = true;
+            Logger.Trace("Process Report: Auto-showing report overlay (first time for accession)");
+            PerformShowReport();
+        }
+
         // Auto-create critical note for stroke cases if enabled
         if (_config.StrokeAutoCreateNote && _strokeDetectedActive)
         {
@@ -784,8 +798,8 @@ public class ActionController : IDisposable
         // Update the impression window with content
         _mainForm.BeginInvoke(() => _mainForm.UpdateImpression(impression));
 
-        // Switch to slow scrape rate (3 seconds)
-        RestartScrapeTimer(_postImpressionScrapeIntervalMs);
+        // Revert to configured scrape rate
+        RestartScrapeTimer(NormalScrapeIntervalMs);
     }
 
     private void RestartScrapeTimer(int intervalMs)
@@ -1423,24 +1437,27 @@ public class ActionController : IDisposable
         }
 
         // Avoid duplicate entries for the same accession
-        if (_criticalStudies.Any(s => s.Accession == accession))
+        lock (_criticalStudiesLock)
         {
-            Logger.Trace($"TrackCriticalStudy: Already tracking accession {accession}");
-            return;
+            if (_criticalStudies.Any(s => s.Accession == accession))
+            {
+                Logger.Trace($"TrackCriticalStudy: Already tracking accession {accession}");
+                return;
+            }
+
+            var entry = new CriticalStudyEntry
+            {
+                Accession = accession,
+                PatientName = _automationService.LastPatientName ?? "Unknown",
+                SiteCode = _automationService.LastSiteCode ?? "???",
+                Description = _automationService.LastDescription ?? "Unknown",
+                Mrn = _automationService.LastMrn ?? "",
+                CriticalNoteTime = DateTime.Now
+            };
+
+            _criticalStudies.Add(entry);
+            Logger.Trace($"TrackCriticalStudy: Added entry for {accession} ({entry.PatientName} @ {entry.SiteCode}, MRN={entry.Mrn})");
         }
-
-        var entry = new CriticalStudyEntry
-        {
-            Accession = accession,
-            PatientName = _automationService.LastPatientName ?? "Unknown",
-            SiteCode = _automationService.LastSiteCode ?? "???",
-            Description = _automationService.LastDescription ?? "Unknown",
-            Mrn = _automationService.LastMrn ?? "",
-            CriticalNoteTime = DateTime.Now
-        };
-
-        _criticalStudies.Add(entry);
-        Logger.Trace($"TrackCriticalStudy: Added entry for {accession} ({entry.PatientName} @ {entry.SiteCode}, MRN={entry.Mrn})");
 
         // Notify UI
         _mainForm.BeginInvoke(() => CriticalStudiesChanged?.Invoke());
@@ -1461,15 +1478,18 @@ public class ActionController : IDisposable
             return;
         }
 
-        var entry = _criticalStudies.FirstOrDefault(s => s.Accession == accession);
-        if (entry == null)
+        lock (_criticalStudiesLock)
         {
-            Logger.Trace($"UntrackCriticalStudy: Accession {accession} not in tracker");
-            return;
-        }
+            var entry = _criticalStudies.FirstOrDefault(s => s.Accession == accession);
+            if (entry == null)
+            {
+                Logger.Trace($"UntrackCriticalStudy: Accession {accession} not in tracker");
+                return;
+            }
 
-        _criticalStudies.Remove(entry);
-        Logger.Trace($"UntrackCriticalStudy: Removed entry for {accession}");
+            _criticalStudies.Remove(entry);
+            Logger.Trace($"UntrackCriticalStudy: Removed entry for {accession}");
+        }
 
         // Notify UI
         _mainForm.BeginInvoke(() => CriticalStudiesChanged?.Invoke());
@@ -1478,7 +1498,10 @@ public class ActionController : IDisposable
     public void RemoveCriticalStudy(CriticalStudyEntry entry)
     {
         if (entry == null) return;
-        _criticalStudies.Remove(entry);
+        lock (_criticalStudiesLock)
+        {
+            _criticalStudies.Remove(entry);
+        }
         Logger.Trace($"RemoveCriticalStudy: Manually removed entry for {entry.Accession}");
         _mainForm.BeginInvoke(() => CriticalStudiesChanged?.Invoke());
     }
@@ -1490,14 +1513,25 @@ public class ActionController : IDisposable
     {
         Logger.Trace("Show Report (scrape method)");
 
-        // Toggle Logic: If open, close it and return
+        // Toggle Logic: If open, try click cycle first, then close
         if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
         {
             _mainForm.BeginInvoke(() =>
             {
-               try { _currentReportPopup.Close(); } catch {}
-               _currentReportPopup = null;
-               _lastPopupReportText = null;
+                try
+                {
+                    if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && !_currentReportPopup.HandleClickCycle())
+                    {
+                        _currentReportPopup.Close();
+                        _currentReportPopup = null;
+                        _lastPopupReportText = null;
+                    }
+                }
+                catch
+                {
+                    _currentReportPopup = null;
+                    _lastPopupReportText = null;
+                }
             });
             return;
         }
@@ -1513,12 +1547,12 @@ public class ActionController : IDisposable
                  return;
             }
 
-            // Pass baseline for diff highlighting if: feature enabled AND process report was pressed
-            string? baselineForDiff = (_config.ShowReportChanges && _processReportPressedForCurrentAccession)
+            // Pass baseline for diff highlighting if: feature enabled AND (process report was pressed OR drafted study auto-processed)
+            string? baselineForDiff = (_config.ShowReportChanges && (_processReportPressedForCurrentAccession || _draftedAutoProcessDetected))
                 ? _baselineReport
                 : null;
 
-            Logger.Trace($"ShowReport: {reportText.Length} chars, ShowReportChanges={_config.ShowReportChanges}, ProcessPressed={_processReportPressedForCurrentAccession}, BaselineLen={_baselineReport?.Length ?? 0}");
+            Logger.Trace($"ShowReport: {reportText.Length} chars, ShowReportChanges={_config.ShowReportChanges}, ProcessPressed={_processReportPressedForCurrentAccession}, DraftedAutoProcess={_draftedAutoProcessDetected}, BaselineLen={_baselineReport?.Length ?? 0}");
             if (baselineForDiff != null)
             {
                 Logger.Trace($"ShowReport: Passing baseline for diff ({baselineForDiff.Length} chars)");
@@ -1526,7 +1560,9 @@ public class ActionController : IDisposable
 
             _mainForm.BeginInvoke(() =>
             {
-                _currentReportPopup = new ReportPopupForm(_config, reportText, baselineForDiff);
+                _currentReportPopup = new ReportPopupForm(_config, reportText, baselineForDiff,
+                    changesEnabled: _config.ShowReportChanges,
+                    correlationEnabled: _config.CorrelationEnabled);
                 _lastPopupReportText = reportText;
 
                 // Handle closure to clear references
@@ -1721,9 +1757,11 @@ public class ActionController : IDisposable
 
     #region Dictation Sync
     
+    private System.Threading.Timer? _dictationSyncTimer;
+
     private void StartDictationSync()
     {
-        var timer = new System.Threading.Timer(_ =>
+        _dictationSyncTimer = new System.Threading.Timer(_ =>
         {
             if (_isUserActive) return; // Don't check during user actions
             
@@ -1915,11 +1953,24 @@ public class ActionController : IDisposable
                     _currentAccessionSigned = false;
                     _discardDialogShownForCurrentAccession = false;
                     _processReportPressedForCurrentAccession = false;
+                    _draftedAutoProcessDetected = false;
+                    _autoShowReportDoneForAccession = false;
                     // Note: _criticalNoteCreatedForAccessions is session-scoped, NOT reset on study change
                     // This prevents duplicate notes caused by transient accession-null scrape glitches
                     _baselineReport = null;
                     _lastPopupReportText = null;
+                    _automationService.ClearLastReport();
+                    // Close stale report popup from prior study
+                    if (_currentReportPopup != null && !_currentReportPopup.IsDisposed)
+                    {
+                        var stalePopup = _currentReportPopup;
+                        _currentReportPopup = null;
+                        _mainForm.BeginInvoke(() => { try { stalePopup.Close(); } catch { } });
+                    }
                     _needsBaselineCapture = _config.ShowReportChanges; // Will capture on next scrape with report text
+                    // Speed up scraping to catch template flash before auto-processing
+                    if (_needsBaselineCapture && !_searchingForImpression)
+                        RestartScrapeTimer(_studyLoadScrapeIntervalMs);
 
                     // Reset alert state tracking
                     _templateMismatchActive = false;
@@ -2010,25 +2061,55 @@ public class ActionController : IDisposable
                 }
 
                 // Capture baseline if needed (deferred from study change detection)
-                // Wait for impression to appear before capturing - that's when report is fully generated
                 if (_needsBaselineCapture && !string.IsNullOrEmpty(reportText) && !_processReportPressedForCurrentAccession)
                 {
-                    var impression = ImpressionForm.ExtractImpression(reportText);
-                    if (!string.IsNullOrEmpty(impression))
+                    if (_automationService.LastDraftedState)
                     {
+                        // Drafted studies: capture immediately - the template flashes complete before auto-processing
                         _needsBaselineCapture = false;
                         _baselineReport = reportText;
-                        Logger.Trace($"Captured baseline from scrape ({reportText.Length} chars)");
+                        Logger.Trace($"Captured baseline from scrape (DRAFTED, immediate): {reportText.Length} chars, drafted={_automationService.LastDraftedState}");
+                        Logger.Trace($"Baseline content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
+                        // Revert to normal scrape interval now that baseline is captured
+                        if (!_searchingForImpression)
+                            RestartScrapeTimer(NormalScrapeIntervalMs);
+                    }
+                    else
+                    {
+                        // Non-drafted: wait for impression to appear - report is generated top-to-bottom after Process Report
+                        var impression = ImpressionForm.ExtractImpression(reportText);
+                        if (!string.IsNullOrEmpty(impression))
+                        {
+                            _needsBaselineCapture = false;
+                            _baselineReport = reportText;
+                            Logger.Trace($"Captured baseline from scrape ({reportText.Length} chars)");
+                            // Revert to normal scrape interval now that baseline is captured
+                            if (!_searchingForImpression)
+                                RestartScrapeTimer(NormalScrapeIntervalMs);
+                        }
                     }
                 }
 
+                // Detect auto-processing on drafted studies: if baseline was captured and report changed, enable diff
+                if (!_draftedAutoProcessDetected && !_processReportPressedForCurrentAccession
+                    && _config.ShowReportChanges && _baselineReport != null
+                    && _automationService.LastDraftedState
+                    && !string.IsNullOrEmpty(reportText) && reportText != _baselineReport)
+                {
+                    _draftedAutoProcessDetected = true;
+                    Logger.Trace($"Drafted study auto-process detected: report changed from baseline ({_baselineReport.Length} → {reportText.Length} chars)");
+                    Logger.Trace($"Post-process content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
+
+                }
+
                 // Auto-update popup when report text changes (continuous updates with diff highlighting)
-                if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible &&
+                var popup = _currentReportPopup;
+                if (popup != null && !popup.IsDisposed && popup.Visible &&
                     !string.IsNullOrEmpty(reportText) && reportText != _lastPopupReportText)
                 {
                     Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
                     _lastPopupReportText = reportText;
-                    _mainForm.BeginInvoke(() => _currentReportPopup?.UpdateReport(reportText, _baselineReport));
+                    _mainForm.BeginInvoke(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport); });
                 }
 
                 // Check for pending macros - insert when clinical history becomes visible
@@ -2123,6 +2204,13 @@ public class ActionController : IDisposable
                     else
                     {
                         // ALERTS-ONLY MODE: Window only appears when an alert triggers
+
+                        // Always update clinical history text even in alerts-only mode
+                        // (needed for auto-fix recheck to detect Mosaic self-corrections)
+                        if (!string.IsNullOrWhiteSpace(reportText))
+                        {
+                            _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
+                        }
 
                         // Determine highest priority alert to show
                         AlertType? alertToShow = null;
@@ -2521,6 +2609,7 @@ public class ActionController : IDisposable
         _actionEvent.Set();
         _actionThread.Join(500);
         _syncTimer?.Dispose();
+        _dictationSyncTimer?.Dispose();
         _scrapeTimer?.Dispose();
         _hidService?.Dispose();
         _keyboardService?.Dispose();

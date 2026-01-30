@@ -46,6 +46,8 @@ public class SettingsForm : Form
     private TextBox _seriesTemplateBox = null!;
     private TextBox _comparisonTemplateBox = null!;
     private CheckBox _separatePastedItemsCheck = null!;
+    private ComboBox _reportFontFamilyCombo = null!;
+    private NumericUpDown _reportFontSizeNumeric = null!;
     private CheckBox _autoUpdateCheck = null!;
     private CheckBox _hideIndicatorWhenNoStudyCheck = null!;
     private CheckBox _showTooltipsCheck = null!;
@@ -72,6 +74,7 @@ public class SettingsForm : Form
     private CheckBox _strokeAutoCreateNoteCheck = null!;
     private CheckBox _trackCriticalStudiesCheck = null!;
     private CheckBox _showImpressionCheck = null!;
+    private CheckBox _showReportAfterProcessCheck = null!;
     private CheckBox _showLineCountToastCheck = null!;
     private NumericUpDown _scrollThreshold1 = null!;
     private NumericUpDown _scrollThreshold2 = null!;
@@ -91,6 +94,7 @@ public class SettingsForm : Form
     private TextBox _rvuCounterPathBox = null!;
     private Label _rvuCounterStatusLabel = null!;
     private CheckBox _showReportChangesCheck = null!;
+    private CheckBox _correlationEnabledCheck = null!;
     private CheckBox _pickListsEnabledCheck = null!;
     private CheckBox _pickListSkipSingleMatchCheck = null!;
     private CheckBox _pickListKeepOpenCheck = null!;
@@ -1361,6 +1365,81 @@ public class SettingsForm : Form
         int y = 10;
         int groupWidth = 445;
 
+        // ========== REPORT POPUP FONT SECTION ==========
+        var fontGroup = new GroupBox
+        {
+            Text = "Report Popup Font",
+            Location = new Point(10, y),
+            Size = new Size(groupWidth, 55),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        };
+        tab.Controls.Add(fontGroup);
+
+        fontGroup.Controls.Add(new Label
+        {
+            Text = "Font:",
+            Location = new Point(10, 22),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        });
+
+        _reportFontFamilyCombo = new ComboBox
+        {
+            Location = new Point(50, 19),
+            Width = 150,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9),
+            FlatStyle = FlatStyle.Flat
+        };
+        _reportFontFamilyCombo.Items.AddRange(new object[] { "Consolas", "Courier New", "Cascadia Mono", "Lucida Console", "Segoe UI", "Calibri", "Arial" });
+        fontGroup.Controls.Add(_reportFontFamilyCombo);
+
+        fontGroup.Controls.Add(new Label
+        {
+            Text = "Size:",
+            Location = new Point(215, 22),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        });
+
+        _reportFontSizeNumeric = new NumericUpDown
+        {
+            Location = new Point(255, 19),
+            Width = 60,
+            Minimum = 7,
+            Maximum = 24,
+            DecimalPlaces = 1,
+            Increment = 0.5m,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        fontGroup.Controls.Add(_reportFontSizeNumeric);
+
+        var resetFontBtn = new Button
+        {
+            Text = "Reset",
+            Location = new Point(325, 18),
+            Size = new Size(55, 24),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 8)
+        };
+        resetFontBtn.Click += (s, e) =>
+        {
+            _reportFontFamilyCombo.SelectedItem = "Consolas";
+            _reportFontSizeNumeric.Value = 11;
+        };
+        fontGroup.Controls.Add(resetFontBtn);
+
+        y += 65;
+
         // Separate pasted items checkbox
         _separatePastedItemsCheck = new CheckBox
         {
@@ -2122,7 +2201,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         {
             Text = "Report Processing",
             Location = new Point(10, y),
-            Size = new Size(groupWidth, 170),
+            Size = new Size(groupWidth, 165),
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
@@ -2233,8 +2312,20 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         processingGroup.Controls.Add(_showImpressionCheck);
         CreateTooltipLabel(processingGroup, _showImpressionCheck, "Display impression text after Process Report.\nClicks to dismiss, auto-hides on sign.");
+        py += 22;
 
-        y += 180;
+        _showReportAfterProcessCheck = new CheckBox
+        {
+            Text = "Show Report overlay after Process Report",
+            Location = new Point(10, py),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        processingGroup.Controls.Add(_showReportAfterProcessCheck);
+        CreateTooltipLabel(processingGroup, _showReportAfterProcessCheck, "Automatically open report popup after Process Report.\nShows Changes or Rainbow highlighting if enabled.");
+
+        y += 175;
 
         // ========== INTELEVIEWER SECTION ========== (skip in headless mode)
         if (!App.IsHeadless)
@@ -2299,7 +2390,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         {
             Text = "Report Changes Highlighting",
             Location = new Point(10, y),
-            Size = new Size(groupWidth, 90),
+            Size = new Size(groupWidth, 115),
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
@@ -2364,8 +2455,20 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         reportChangesGroup.Controls.Add(_reportChangesPreview);
         UpdateReportChangesPreview();
+        rcy += 42;
 
-        y += 100;
+        _correlationEnabledCheck = new CheckBox
+        {
+            Text = "Rainbow Mode (findings-impression correlation)",
+            Location = new Point(10, rcy),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        reportChangesGroup.Controls.Add(_correlationEnabledCheck);
+        CreateTooltipLabel(reportChangesGroup, _correlationEnabledCheck, "Color-codes matching concepts between Findings and Impression.\nEach impression item and its related findings are highlighted in the same color.\nClick report popup to cycle between Changes and Rainbow modes.");
+
+        y += 125;
 
         // ========== RVUCOUNTER SECTION ==========
         var rvuGroup = new GroupBox
@@ -3544,6 +3647,9 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         _seriesTemplateBox.Text = _config.SeriesImageTemplate;
         _comparisonTemplateBox.Text = _config.ComparisonTemplate;
         _separatePastedItemsCheck.Checked = _config.SeparatePastedItems;
+        _reportFontFamilyCombo.SelectedItem = _config.ReportPopupFontFamily;
+        if (_reportFontFamilyCombo.SelectedIndex < 0) _reportFontFamilyCombo.SelectedIndex = 0;
+        _reportFontSizeNumeric.Value = (decimal)Math.Clamp(_config.ReportPopupFontSize, 7f, 24f);
 
         // Advanced tab
         _restoreFocusCheck.Checked = _config.RestoreFocusAfterAction;
@@ -3564,6 +3670,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         _strokeAutoCreateNoteCheck.Checked = _config.StrokeAutoCreateNote;
         _trackCriticalStudiesCheck.Checked = _config.TrackCriticalStudies;
         _showImpressionCheck.Checked = _config.ShowImpression;
+        _showReportAfterProcessCheck.Checked = _config.ShowReportAfterProcess;
         _scrollThreshold1.Value = _config.ScrollThreshold1;
         _scrollThreshold2.Value = _config.ScrollThreshold2;
         _scrollThreshold3.Value = _config.ScrollThreshold3;
@@ -3592,6 +3699,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         _rvuGoalValueBox.Value = (decimal)Math.Clamp(_config.RvuGoalPerHour, 1, 100);
         _rvuCounterPathBox.Text = _config.RvuCounterPath;
         _showReportChangesCheck.Checked = _config.ShowReportChanges;
+        _correlationEnabledCheck.Checked = _config.CorrelationEnabled;
         try
         {
             _reportChangesColorPanel.BackColor = ColorTranslator.FromHtml(_config.ReportChangesColor);
@@ -4117,6 +4225,8 @@ SETTINGS FILE
         _config.SeriesImageTemplate = _seriesTemplateBox.Text.Trim();
         _config.ComparisonTemplate = _comparisonTemplateBox.Text.Trim();
         _config.SeparatePastedItems = _separatePastedItemsCheck.Checked;
+        _config.ReportPopupFontFamily = _reportFontFamilyCombo.SelectedItem?.ToString() ?? "Consolas";
+        _config.ReportPopupFontSize = (float)_reportFontSizeNumeric.Value;
 
         // Advanced tab
         _config.RestoreFocusAfterAction = _restoreFocusCheck.Checked;
@@ -4137,6 +4247,7 @@ SETTINGS FILE
         _config.StrokeAutoCreateNote = _strokeAutoCreateNoteCheck.Checked;
         _config.TrackCriticalStudies = _trackCriticalStudiesCheck.Checked;
         _config.ShowImpression = _showImpressionCheck.Checked;
+        _config.ShowReportAfterProcess = _showReportAfterProcessCheck.Checked;
         _config.ScrollThreshold1 = (int)_scrollThreshold1.Value;
         _config.ScrollThreshold2 = (int)_scrollThreshold2.Value;
         _config.ScrollThreshold3 = (int)_scrollThreshold3.Value;
@@ -4167,6 +4278,7 @@ SETTINGS FILE
         _config.RvuGoalPerHour = (double)_rvuGoalValueBox.Value;
         _config.RvuCounterPath = _rvuCounterPathBox.Text;
         _config.ShowReportChanges = _showReportChangesCheck.Checked;
+        _config.CorrelationEnabled = _correlationEnabledCheck.Checked;
         _config.ReportChangesColor = ColorTranslator.ToHtml(_reportChangesColorPanel.BackColor);
         _config.ReportChangesAlpha = _reportChangesAlphaSlider.Value;
         _config.PickListsEnabled = _pickListsEnabledCheck.Checked;

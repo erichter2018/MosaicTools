@@ -56,8 +56,6 @@ public class KeyboardService : IDisposable
     private Action<string>? _recordCallback;
     private readonly ConcurrentDictionary<string, DateTime> _lastTriggers = new();
 
-    public event Action<string>? HotkeyTriggered;
-
     public void Start()
     {
         if (_hookId != IntPtr.Zero) return;
@@ -169,8 +167,12 @@ public class KeyboardService : IDisposable
                         return CallNextHookEx(_hookId, nCode, wParam, lParam);
                     _lastTriggers[hotkeyStr] = now;
                     Logger.Trace($"Direct hotkey triggered: {hotkeyStr}");
-                    try { directAction(); }
-                    catch (Exception ex) { Logger.Trace($"Direct hotkey error: {ex.Message}"); }
+                    var action2 = directAction;
+                    ThreadPool.QueueUserWorkItem(_ =>
+                    {
+                        try { action2(); }
+                        catch (Exception ex) { Logger.Trace($"Direct hotkey error: {ex.Message}"); }
+                    });
                     return CallNextHookEx(_hookId, nCode, wParam, lParam);
                 }
 
@@ -181,7 +183,6 @@ public class KeyboardService : IDisposable
                         return CallNextHookEx(_hookId, nCode, wParam, lParam);
                     _lastTriggers[hotkeyStr] = now;
                     Logger.Trace($"Hotkey triggered: {hotkeyStr}");
-                    HotkeyTriggered?.Invoke(hotkeyStr);
                     ThreadPool.QueueUserWorkItem(_ =>
                     {
                         try { action(); }
