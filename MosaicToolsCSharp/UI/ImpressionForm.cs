@@ -1,5 +1,8 @@
 using System;
 using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Drawing.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using MosaicTools.Services;
@@ -9,11 +12,28 @@ namespace MosaicTools.UI;
 /// <summary>
 /// Floating window displaying the Impression from the report.
 /// Shown after ProcessReport, hidden on SignReport.
+/// Supports transparent (layered window) and opaque (standard controls) rendering modes.
 /// </summary>
 public class ImpressionForm : Form
 {
     private readonly Configuration _config;
     private readonly Label _contentLabel;
+    private readonly bool _useLayeredWindow;
+    private readonly int _backgroundAlpha;
+    private readonly Font _contentFont;
+
+    // Transparent mode
+    private ContextMenuStrip? _dragBarMenu;
+    private Point _formPosOnMouseDown;
+
+    // Layout constants
+    private const int BorderWidth = 2;
+    private const int DragBarHeight = 16;
+    private const int ContentMarginLeft = 10;
+    private const int ContentMarginRight = 10;
+    private const int ContentMarginTop = 5;
+    private const int ContentMarginBottom = 15;
+    private const int MaxContentWidth = 500;
 
     // Drag state
     private Point _dragStart;
@@ -22,17 +42,72 @@ public class ImpressionForm : Form
     // For center-based positioning
     private bool _initialPositionSet = false;
 
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            if (_useLayeredWindow)
+                cp.ExStyle |= LayeredWindowHelper.WS_EX_LAYERED;
+            return cp;
+        }
+    }
+
     public ImpressionForm(Configuration config)
     {
         _config = config;
+        _useLayeredWindow = config.ReportPopupTransparent;
+        _backgroundAlpha = Math.Clamp((int)Math.Round(config.ReportPopupTransparency / 100.0 * 255), 30, 255);
+        _contentFont = new Font("Segoe UI", 11, FontStyle.Bold);
 
-        // Form properties - frameless, topmost, black background
+        // Form properties - frameless, topmost
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
         BackColor = Color.FromArgb(60, 60, 60); // Border color
         StartPosition = FormStartPosition.Manual;
-        Padding = new Padding(1); // 1px border
+
+        // Content label - always created (data holder in transparent mode, visible in opaque)
+        _contentLabel = new Label
+        {
+            Text = "(Waiting for impression...)",
+            Font = _contentFont,
+            ForeColor = Color.FromArgb(128, 128, 128),
+            BackColor = Color.Black,
+            AutoSize = true,
+            Margin = new Padding(ContentMarginLeft, ContentMarginTop, ContentMarginRight, ContentMarginBottom),
+            MaximumSize = new Size(MaxContentWidth, 0)
+        };
+
+        if (_useLayeredWindow)
+            SetupTransparentMode();
+        else
+            SetupOpaqueMode();
+    }
+
+    #region Setup
+
+    private void SetupTransparentMode()
+    {
+        AutoSize = false;
+        Padding = Padding.Empty;
+
+        _dragBarMenu = new ContextMenuStrip();
+        _dragBarMenu.Items.Add("Close", null, (_, _) => Close());
+
+        MouseDown += OnTransparentMouseDown;
+
+        var (fw, fh) = MeasureFormSize(_contentLabel.Text);
+        Size = new Size(fw, fh);
+
+        Shown += (_, _) => PositionFromCenter();
+        SizeChanged += (_, _) => { if (_initialPositionSet) RepositionToCenter(); };
+        Load += (_, _) => RenderTransparent();
+    }
+
+    private void SetupOpaqueMode()
+    {
+        Padding = new Padding(1);
 
         // Use TableLayoutPanel for proper auto-sizing
         var layout = new TableLayoutPanel
@@ -47,8 +122,8 @@ public class ImpressionForm : Form
             Margin = new Padding(0)
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 16)); // Drag bar
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Content
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, DragBarHeight));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Controls.Add(layout);
 
         // Drag bar
@@ -68,17 +143,7 @@ public class ImpressionForm : Form
         dragBar.MouseUp += OnDragEnd;
         layout.Controls.Add(dragBar, 0, 0);
 
-        // Content label - bold, allows multiple lines
-        _contentLabel = new Label
-        {
-            Text = "(Waiting for impression...)",
-            Font = new Font("Segoe UI", 11, FontStyle.Bold),
-            ForeColor = Color.FromArgb(200, 200, 200),
-            BackColor = Color.Black,
-            AutoSize = true,
-            Margin = new Padding(10, 5, 10, 15),
-            MaximumSize = new Size(500, 0) // Limit width, allow height to grow
-        };
+        // Content label
         layout.Controls.Add(_contentLabel, 0, 1);
 
         // Make form auto-size to content
@@ -98,9 +163,10 @@ public class ImpressionForm : Form
         SizeChanged += (_, _) => { if (_initialPositionSet) RepositionToCenter(); };
     }
 
-    /// <summary>
-    /// Position the form so its center is at the saved coordinates.
-    /// </summary>
+    #endregion
+
+    #region Positioning
+
     private void PositionFromCenter()
     {
         Location = new Point(
@@ -110,9 +176,6 @@ public class ImpressionForm : Form
         _initialPositionSet = true;
     }
 
-    /// <summary>
-    /// When size changes, keep the center in the same place.
-    /// </summary>
     private void RepositionToCenter()
     {
         if (_dragging) return;
@@ -121,6 +184,10 @@ public class ImpressionForm : Form
             _config.ImpressionY - Height / 2
         );
     }
+
+    #endregion
+
+    #region Public Methods
 
     /// <summary>
     /// Update the displayed impression text.
@@ -143,25 +210,29 @@ public class ImpressionForm : Form
             _contentLabel.Text = text;
             _contentLabel.ForeColor = Color.FromArgb(200, 200, 200);
         }
+
+        if (_useLayeredWindow && IsHandleCreated && !IsDisposed)
+        {
+            var (fw, fh) = MeasureFormSize(_contentLabel.Text);
+            if (fw != Width || fh != Height)
+                Size = new Size(fw, fh);
+            RenderTransparent();
+        }
     }
 
     /// <summary>
     /// Extract impression from raw report text.
-    /// Returns text after "IMPRESSION" up to the next ALL-CAPS section or end.
     /// </summary>
     public static string? ExtractImpression(string? rawText)
     {
         if (string.IsNullOrWhiteSpace(rawText))
             return null;
 
-        // Check if IMPRESSION exists in the text
         if (!rawText.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase))
             return null;
 
-        // Common section headers that might follow IMPRESSION
         var sectionHeaders = @"TECHNIQUE|FINDINGS|CLINICAL HISTORY|COMPARISON|EXAM|PROCEDURE|INDICATION|CONCLUSION|RECOMMENDATION|SIGNATURE|ELECTRONICALLY SIGNED";
 
-        // Find "IMPRESSION" section - look for content until next section header or end
         var match = Regex.Match(rawText,
             $@"IMPRESSION[:\s]*\n?(.+?)(?=\n\s*({sectionHeaders})\s*[:\n]|$)",
             RegexOptions.Singleline | RegexOptions.IgnoreCase);
@@ -170,30 +241,199 @@ public class ImpressionForm : Form
             return null;
 
         var content = match.Groups[1].Value.Trim();
-
         if (string.IsNullOrWhiteSpace(content))
             return null;
 
-        // Collapse whitespace to single spaces, clean special characters
         content = Regex.Replace(content, @"[\r\n\t ]+", " ").Trim();
         content = CleanText(content);
-
-        // Add line breaks before consecutive numbered items (1., 2., 3., etc.)
         content = FormatNumberedItems(content);
 
         return content;
     }
 
-    /// <summary>
-    /// Insert line breaks before consecutively numbered items.
-    /// Only breaks on expected next number to avoid breaking on things like "2.5 cm".
-    /// </summary>
+    public void EnsureOnTop()
+    {
+        if (InvokeRequired)
+        {
+            Invoke(EnsureOnTop);
+            return;
+        }
+        NativeWindows.ForceTopMost(this.Handle);
+    }
+
+    #endregion
+
+    #region Transparent Mode - Rendering
+
+    private void RenderTransparent()
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        int w = Width, h = Height;
+        if (w <= 0 || h <= 0) return;
+
+        string text = _contentLabel.Text;
+        Color textColor = _contentLabel.ForeColor;
+
+        // Layer 1: semi-transparent background
+        using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.Clear(Color.FromArgb(0, 0, 0, 0));
+            int bw = BorderWidth;
+            // Inner area - semi-transparent (draw first, border drawn on top)
+            using var innerBrush = new SolidBrush(Color.FromArgb(_backgroundAlpha, 0, 0, 0));
+            g.FillRectangle(innerBrush, bw, bw, w - bw * 2, h - bw * 2);
+            // Border strips - fully opaque so it's always visible
+            using var borderBrush = new SolidBrush(Color.FromArgb(255, 60, 60, 60));
+            g.FillRectangle(borderBrush, 0, 0, w, bw);           // top
+            g.FillRectangle(borderBrush, 0, h - bw, w, bw);      // bottom
+            g.FillRectangle(borderBrush, 0, bw, bw, h - bw);     // left
+            g.FillRectangle(borderBrush, w - bw, bw, bw, h - bw); // right
+        }
+
+        // Layer 2: ClearType text on opaque black
+        using var textLayer = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(textLayer))
+        {
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+            g.Clear(Color.FromArgb(255, 0, 0, 0));
+
+            // Drag bar "⋯"
+            using var dragFont = new Font("Segoe UI", 8);
+            using var dragBrush = new SolidBrush(Color.FromArgb(102, 102, 102));
+            using var dragSf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            g.DrawString("⋯", dragFont, dragBrush,
+                new RectangleF(BorderWidth, BorderWidth, w - BorderWidth * 2, DragBarHeight), dragSf);
+
+            // Content text
+            float textX = BorderWidth + ContentMarginLeft;
+            float textY = BorderWidth + DragBarHeight + ContentMarginTop;
+            using var sf = new StringFormat(StringFormat.GenericTypographic) { Trimming = StringTrimming.Word };
+            using var brush = new SolidBrush(textColor);
+            g.DrawString(text, _contentFont, brush,
+                new RectangleF(textX, textY, MaxContentWidth, h - textY), sf);
+        }
+
+        LayeredWindowHelper.MergeTextLayer(bmp, textLayer);
+        LayeredWindowHelper.PremultiplyBitmapAlpha(bmp);
+        LayeredWindowHelper.SetBitmap(this, bmp);
+    }
+
+    private (int width, int height) MeasureFormSize(string text)
+    {
+        using var bmp = new Bitmap(1, 1);
+        using var g = Graphics.FromImage(bmp);
+        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        using var sf = new StringFormat(StringFormat.GenericTypographic) { Trimming = StringTrimming.Word };
+
+        var measured = g.MeasureString(text, _contentFont, MaxContentWidth, sf);
+
+        int contentWidth = Math.Max((int)Math.Ceiling(measured.Width), 50);
+        int contentHeight = Math.Max((int)Math.Ceiling(measured.Height), _contentFont.Height);
+
+        int formWidth = BorderWidth * 2 + ContentMarginLeft + contentWidth + ContentMarginRight;
+        int formHeight = BorderWidth * 2 + DragBarHeight + ContentMarginTop + contentHeight + ContentMarginBottom;
+
+        return (Math.Max(formWidth, 100), Math.Max(formHeight, 50));
+    }
+
+    #endregion
+
+    #region Transparent Mode - Mouse Handling
+
+    private void OnTransparentMouseDown(object? sender, MouseEventArgs e)
+    {
+        bool inDragBar = e.Y < BorderWidth + DragBarHeight;
+
+        if (e.Button == MouseButtons.Right)
+        {
+            if (inDragBar)
+                _dragBarMenu?.Show(this, e.Location);
+            else
+                CopyDebugInfoToClipboard();
+            return;
+        }
+
+        if (e.Button == MouseButtons.Left)
+        {
+            if (inDragBar)
+            {
+                _formPosOnMouseDown = Location;
+                LayeredWindowHelper.ReleaseCapture();
+                LayeredWindowHelper.SendMessage(Handle, LayeredWindowHelper.WM_NCLBUTTONDOWN, LayeredWindowHelper.HT_CAPTION, 0);
+                // SendMessage returns when drag ends
+                if (Location != _formPosOnMouseDown)
+                {
+                    _config.ImpressionX = Location.X + Width / 2;
+                    _config.ImpressionY = Location.Y + Height / 2;
+                    _config.Save();
+                }
+            }
+            else
+            {
+                // Content click - dismiss
+                Close();
+            }
+        }
+    }
+
+    #endregion
+
+    #region Opaque Mode - Mouse Handling
+
+    private void OnContentLabelMouseDown(object? sender, MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left)
+        {
+            Close();
+        }
+        else if (e.Button == MouseButtons.Right)
+        {
+            CopyDebugInfoToClipboard();
+        }
+    }
+
+    #endregion
+
+    #region Drag Logic (Opaque Mode)
+
+    private void OnDragStart(object? sender, MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left)
+        {
+            _dragging = true;
+            _dragStart = e.Location;
+        }
+    }
+
+    private void OnDragMove(object? sender, MouseEventArgs e)
+    {
+        if (_dragging)
+        {
+            Location = new Point(
+                Location.X + e.X - _dragStart.X,
+                Location.Y + e.Y - _dragStart.Y
+            );
+        }
+    }
+
+    private void OnDragEnd(object? sender, MouseEventArgs e)
+    {
+        _dragging = false;
+        _config.ImpressionX = Location.X + Width / 2;
+        _config.ImpressionY = Location.Y + Height / 2;
+        _config.Save();
+    }
+
+    #endregion
+
+    #region Text Utilities
+
     private static string FormatNumberedItems(string text)
     {
         if (string.IsNullOrEmpty(text))
             return text;
 
-        // Check if text starts with "1."
         if (!Regex.IsMatch(text, @"^\s*1\."))
             return text;
 
@@ -203,7 +443,6 @@ public class ImpressionForm : Form
 
         while (i < text.Length)
         {
-            // Look for the expected number pattern (e.g., "2." when expecting 2)
             string nextPattern = $"{expectedNumber}.";
 
             if (i + nextPattern.Length <= text.Length)
@@ -212,14 +451,12 @@ public class ImpressionForm : Form
 
                 if (substring == nextPattern)
                 {
-                    // Check that it's followed by a space or letter (not another digit like "2.5")
                     bool isValidNumberedItem = (i + nextPattern.Length >= text.Length) ||
                         char.IsWhiteSpace(text[i + nextPattern.Length]) ||
                         char.IsLetter(text[i + nextPattern.Length]);
 
                     if (isValidNumberedItem)
                     {
-                        // Add newline before this number (except for first item)
                         if (expectedNumber > 1)
                         {
                             result.Append('\n');
@@ -239,9 +476,6 @@ public class ImpressionForm : Form
         return result.ToString();
     }
 
-    /// <summary>
-    /// Remove non-printable and special characters from text.
-    /// </summary>
     private static string CleanText(string text)
     {
         if (string.IsNullOrEmpty(text)) return text;
@@ -249,7 +483,6 @@ public class ImpressionForm : Form
         var sb = new System.Text.StringBuilder();
         foreach (char c in text)
         {
-            // Keep letters, digits, basic punctuation, and spaces
             if (char.IsLetterOrDigit(c) || char.IsPunctuation(c) || c == ' ' || c == '-' || c == '/' || c == '\'')
             {
                 sb.Append(c);
@@ -258,31 +491,11 @@ public class ImpressionForm : Form
             {
                 sb.Append(' ');
             }
-            // Skip other weird unicode characters
         }
 
-        // Collapse multiple spaces
         return Regex.Replace(sb.ToString(), @" +", " ").Trim();
     }
 
-    /// <summary>
-    /// Handle mouse clicks on content label - left to dismiss, right to copy debug.
-    /// </summary>
-    private void OnContentLabelMouseDown(object? sender, MouseEventArgs e)
-    {
-        if (e.Button == MouseButtons.Left)
-        {
-            Close();
-        }
-        else if (e.Button == MouseButtons.Right)
-        {
-            CopyDebugInfoToClipboard();
-        }
-    }
-
-    /// <summary>
-    /// Copy impression debug info to clipboard.
-    /// </summary>
     private void CopyDebugInfoToClipboard()
     {
         var debugInfo = $"=== Impression Debug ===\r\n" +
@@ -300,9 +513,6 @@ public class ImpressionForm : Form
         }
     }
 
-    /// <summary>
-    /// Show a brief toast indicating debug info was copied.
-    /// </summary>
     private void ShowCopiedToast()
     {
         var toast = new Form
@@ -338,45 +548,18 @@ public class ImpressionForm : Form
         timer.Start();
     }
 
-    public void EnsureOnTop()
+    #endregion
+
+    #region Disposal
+
+    protected override void Dispose(bool disposing)
     {
-        if (InvokeRequired)
+        if (disposing)
         {
-            Invoke(EnsureOnTop);
-            return;
+            _contentFont?.Dispose();
+            _dragBarMenu?.Dispose();
         }
-        NativeWindows.ForceTopMost(this.Handle);
-    }
-
-    #region Drag Logic
-
-    private void OnDragStart(object? sender, MouseEventArgs e)
-    {
-        if (e.Button == MouseButtons.Left)
-        {
-            _dragging = true;
-            _dragStart = e.Location;
-        }
-    }
-
-    private void OnDragMove(object? sender, MouseEventArgs e)
-    {
-        if (_dragging)
-        {
-            Location = new Point(
-                Location.X + e.X - _dragStart.X,
-                Location.Y + e.Y - _dragStart.Y
-            );
-        }
-    }
-
-    private void OnDragEnd(object? sender, MouseEventArgs e)
-    {
-        _dragging = false;
-        // Save center coordinates, not top-left
-        _config.ImpressionX = Location.X + Width / 2;
-        _config.ImpressionY = Location.Y + Height / 2;
-        _config.Save();
+        base.Dispose(disposing);
     }
 
     #endregion

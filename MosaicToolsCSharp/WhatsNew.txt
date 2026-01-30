@@ -1,3 +1,8 @@
+3.0.5
+- Transparent overlay for clinical history and impression windows
+- Mosaic 2.0.4 compatibility: fix description, MRN, and site code scraping
+- Configurable overlay transparency slider in Settings
+
 3.0.4
 - Rainbow Mode: color-codes matching concepts between Findings and Impression
 - Report popup click cycle: Changes → Rainbow → Close

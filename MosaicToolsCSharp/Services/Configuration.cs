@@ -255,6 +255,12 @@ public class Configuration
     [JsonPropertyName("correlation_enabled")]
     public bool CorrelationEnabled { get; set; } = false;
 
+    [JsonPropertyName("report_popup_transparent")]
+    public bool ReportPopupTransparent { get; set; } = true;
+
+    [JsonPropertyName("report_popup_transparency")]
+    public int ReportPopupTransparency { get; set; } = 70; // 0-100%, maps to background alpha
+
     [JsonPropertyName("show_report_after_process")]
     public bool ShowReportAfterProcess { get; set; } = false;
 

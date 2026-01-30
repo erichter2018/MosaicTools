@@ -104,6 +104,9 @@ public class SettingsForm : Form
     private TrackBar _reportChangesAlphaSlider = null!;
     private Label _reportChangesAlphaLabel = null!;
     private RichTextBox _reportChangesPreview = null!;
+    private CheckBox _reportTransparentCheck = null!;
+    private TrackBar _reportTransparencySlider = null!;
+    private Label _reportTransparencyLabel = null!;
 
     // Network monitor controls
     private CheckBox _connectivityMonitorEnabledCheck = null!;
@@ -2390,7 +2393,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         {
             Text = "Report Changes Highlighting",
             Location = new Point(10, y),
-            Size = new Size(groupWidth, 115),
+            Size = new Size(groupWidth, 170),
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
@@ -2467,8 +2470,59 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         reportChangesGroup.Controls.Add(_correlationEnabledCheck);
         CreateTooltipLabel(reportChangesGroup, _correlationEnabledCheck, "Color-codes matching concepts between Findings and Impression.\nEach impression item and its related findings are highlighted in the same color.\nClick report popup to cycle between Changes and Rainbow modes.");
+        rcy += 25;
 
-        y += 125;
+        _reportTransparentCheck = new CheckBox
+        {
+            Text = "Transparent overlay (see image through report)",
+            Location = new Point(10, rcy),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        _reportTransparentCheck.CheckedChanged += (s, e) =>
+        {
+            _reportTransparencySlider.Enabled = _reportTransparentCheck.Checked;
+        };
+        reportChangesGroup.Controls.Add(_reportTransparentCheck);
+        CreateTooltipLabel(reportChangesGroup, _reportTransparentCheck, "When enabled, the report popup background is semi-transparent\nso the radiology image shows through. Text stays fully readable.\nWhen disabled, uses the original opaque dark background.");
+        rcy += 25;
+
+        var transparencyCaption = new Label
+        {
+            Text = "Overlay transparency:",
+            Location = new Point(30, rcy + 2),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        reportChangesGroup.Controls.Add(transparencyCaption);
+
+        _reportTransparencySlider = new TrackBar
+        {
+            Location = new Point(170, rcy - 2),
+            Size = new Size(175, 20),
+            Minimum = 10,
+            Maximum = 100,
+            TickStyle = TickStyle.None,
+            Value = 55,
+            BackColor = Color.FromArgb(45, 45, 48),
+            AutoSize = false
+        };
+        _reportTransparencySlider.ValueChanged += (s, e) => { _reportTransparencyLabel.Text = $"{_reportTransparencySlider.Value}%"; };
+        reportChangesGroup.Controls.Add(_reportTransparencySlider);
+
+        _reportTransparencyLabel = new Label
+        {
+            Text = "55%",
+            Location = new Point(350, rcy + 2),
+            AutoSize = true,
+            ForeColor = Color.Gray
+        };
+        reportChangesGroup.Controls.Add(_reportTransparencyLabel);
+        CreateTooltipLabel(reportChangesGroup, _reportTransparencyLabel, "Controls how see-through the report overlay is.\nLower values let more of the image show through.");
+
+        y += 180;
 
         // ========== RVUCOUNTER SECTION ==========
         var rvuGroup = new GroupBox
@@ -3710,6 +3764,10 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         }
         _reportChangesAlphaSlider.Value = Math.Clamp(_config.ReportChangesAlpha, 5, 100);
         _reportChangesAlphaLabel.Text = $"{_reportChangesAlphaSlider.Value}%";
+        _reportTransparentCheck.Checked = _config.ReportPopupTransparent;
+        _reportTransparencySlider.Value = Math.Clamp(_config.ReportPopupTransparency, 10, 100);
+        _reportTransparencyLabel.Text = $"{_reportTransparencySlider.Value}%";
+        _reportTransparencySlider.Enabled = _reportTransparentCheck.Checked;
         _pickListsEnabledCheck.Checked = _config.PickListsEnabled;
         _pickListSkipSingleMatchCheck.Checked = _config.PickListSkipSingleMatch;
         _pickListKeepOpenCheck.Checked = _config.PickListKeepOpen;
@@ -4281,6 +4339,8 @@ SETTINGS FILE
         _config.CorrelationEnabled = _correlationEnabledCheck.Checked;
         _config.ReportChangesColor = ColorTranslator.ToHtml(_reportChangesColorPanel.BackColor);
         _config.ReportChangesAlpha = _reportChangesAlphaSlider.Value;
+        _config.ReportPopupTransparent = _reportTransparentCheck.Checked;
+        _config.ReportPopupTransparency = _reportTransparencySlider.Value;
         _config.PickListsEnabled = _pickListsEnabledCheck.Checked;
         _config.PickListSkipSingleMatch = _pickListSkipSingleMatchCheck.Checked;
         _config.PickListKeepOpen = _pickListKeepOpenCheck.Checked;

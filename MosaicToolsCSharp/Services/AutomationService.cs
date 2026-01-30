@@ -1128,38 +1128,72 @@ public class AutomationService : IDisposable
                             else
                                 pendingInfoField = null;
                         }
-                        else if (ctrlType == FlaUI.Core.Definitions.ControlType.Button && pendingInfoField != null)
+                        else if (ctrlType == FlaUI.Core.Definitions.ControlType.Button)
                         {
-                            // Mosaic 2.0.3: Button value following a label Text element
-                            var value = name.Trim();
-                            if (!string.IsNullOrWhiteSpace(value))
+                            if (pendingInfoField != null)
                             {
-                                switch (pendingInfoField)
+                                // Mosaic 2.0.3: Button value following a label Text element
+                                var value = name.Trim();
+                                if (!string.IsNullOrWhiteSpace(value))
                                 {
-                                    case "Description":
-                                        if (string.IsNullOrEmpty(LastDescription))
-                                        {
-                                            LastDescription = value;
-                                            Logger.Trace($"Found Description (v2.0.3): {value}");
-                                        }
-                                        break;
-                                    case "MRN":
-                                        if (LastMrn == null)
-                                        {
-                                            LastMrn = value.ToUpperInvariant();
-                                            Logger.Trace($"Found MRN (v2.0.3): {LastMrn}");
-                                        }
-                                        break;
-                                    case "SiteCode":
-                                        if (LastSiteCode == null)
-                                        {
-                                            LastSiteCode = value.ToUpperInvariant();
-                                            Logger.Trace($"Found Site Code (v2.0.3): {LastSiteCode}");
-                                        }
-                                        break;
+                                    switch (pendingInfoField)
+                                    {
+                                        case "Description":
+                                            if (string.IsNullOrEmpty(LastDescription))
+                                            {
+                                                LastDescription = value;
+                                                Logger.Trace($"Found Description (v2.0.3): {value}");
+                                            }
+                                            break;
+                                        case "MRN":
+                                            if (LastMrn == null)
+                                            {
+                                                LastMrn = value.ToUpperInvariant();
+                                                Logger.Trace($"Found MRN (v2.0.3): {LastMrn}");
+                                            }
+                                            break;
+                                        case "SiteCode":
+                                            if (LastSiteCode == null)
+                                            {
+                                                LastSiteCode = value.ToUpperInvariant();
+                                                Logger.Trace($"Found Site Code (v2.0.3): {LastSiteCode}");
+                                            }
+                                            break;
+                                    }
+                                }
+                                pendingInfoField = null;
+                            }
+                            else
+                            {
+                                // Mosaic 2.0.4: Button with inline "Key: Value" (e.g., "Description: XR CHEST 1 VIEW")
+                                if (LastDescription == null && name.StartsWith("Description:", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var desc = name.Substring("Description:".Length).Trim();
+                                    if (!string.IsNullOrEmpty(desc))
+                                    {
+                                        LastDescription = desc;
+                                        Logger.Trace($"Found Description (v2.0.4): {desc}");
+                                    }
+                                }
+                                if (LastMrn == null && name.StartsWith("MRN:", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var mrnVal = name.Substring("MRN:".Length).Trim();
+                                    if (!string.IsNullOrWhiteSpace(mrnVal))
+                                    {
+                                        LastMrn = mrnVal.ToUpperInvariant();
+                                        Logger.Trace($"Found MRN (v2.0.4): {LastMrn}");
+                                    }
+                                }
+                                if (LastSiteCode == null && name.StartsWith("Site Code:", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var scVal = name.Substring("Site Code:".Length).Trim();
+                                    if (!string.IsNullOrWhiteSpace(scVal))
+                                    {
+                                        LastSiteCode = scVal.ToUpperInvariant();
+                                        Logger.Trace($"Found Site Code (v2.0.4): {LastSiteCode}");
+                                    }
                                 }
                             }
-                            pendingInfoField = null;
                         }
                         else
                         {
@@ -1188,10 +1222,14 @@ public class AutomationService : IDisposable
                 var reportCondition = _cachedSlimHubWindow.ConditionFactory
                     .ByControlType(FlaUI.Core.Definitions.ControlType.Document)
                     .And(_cachedSlimHubWindow.ConditionFactory.ByName(reportDocSearchName, FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
-                var descriptionCondition = _cachedSlimHubWindow.ConditionFactory
+                var descriptionTextCondition = _cachedSlimHubWindow.ConditionFactory
                     .ByControlType(FlaUI.Core.Definitions.ControlType.Text)
                     .And(_cachedSlimHubWindow.ConditionFactory.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
-                var combinedCondition = draftedCondition.Or(reportCondition).Or(descriptionCondition);
+                // Mosaic 2.0.4: Description is a Button with inline "Description: XR CHEST 1 VIEW"
+                var descriptionButtonCondition = _cachedSlimHubWindow.ConditionFactory
+                    .ByControlType(FlaUI.Core.Definitions.ControlType.Button)
+                    .And(_cachedSlimHubWindow.ConditionFactory.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+                var combinedCondition = draftedCondition.Or(reportCondition).Or(descriptionTextCondition).Or(descriptionButtonCondition);
 
                 var elements = _cachedSlimHubWindow.FindAllDescendants(combinedCondition);
 
@@ -1207,12 +1245,14 @@ public class AutomationService : IDisposable
                     {
                         reportDoc = el;
                     }
-                    else if (el.ControlType == FlaUI.Core.Definitions.ControlType.Text &&
+                    else if ((el.ControlType == FlaUI.Core.Definitions.ControlType.Text ||
+                              el.ControlType == FlaUI.Core.Definitions.ControlType.Button) &&
                              el.Name?.StartsWith("Description:", StringComparison.OrdinalIgnoreCase) == true)
                     {
-                        // Extract just the description text after "Description: "
+                        // Extract description text after "Description: "
+                        // Works for both Text (2.0.2/2.0.3) and Button (2.0.4) elements
                         var descVal = el.Name.Substring("Description:".Length).Trim();
-                        if (!string.IsNullOrEmpty(descVal))  // Mosaic 2.0.3: label is separate from value
+                        if (!string.IsNullOrEmpty(descVal))
                         {
                             LastDescription = descVal;
                             Logger.Trace($"Found Description: {LastDescription}");

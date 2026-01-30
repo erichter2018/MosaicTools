@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Drawing.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using MosaicTools.Services;
@@ -20,11 +23,15 @@ public enum AlertType
 /// <summary>
 /// Floating window displaying clinical history from Clario scrape.
 /// Can also operate in "alerts only" mode where it only appears when alerts trigger.
+/// Supports transparent (layered window) and opaque (standard controls) rendering modes.
 /// </summary>
 public class ClinicalHistoryForm : Form
 {
     private readonly Configuration _config;
     private readonly Label _contentLabel;
+    private readonly bool _useLayeredWindow;
+    private readonly int _backgroundAlpha;
+    private readonly Font _contentFont;
 
     // Drag state
     private Point _dragStart;
@@ -32,6 +39,14 @@ public class ClinicalHistoryForm : Form
 
     // For center-based positioning
     private bool _initialPositionSet = false;
+
+    // Layout constants (TransparentBorderWidth only affects transparent mode rendering)
+    private const int TransparentBorderWidth = 2;
+    private const int DragBarHeight = 16;
+    private const int ContentMarginLeft = 10;
+    private const int ContentMarginRight = 10;
+    private const int ContentMarginTop = 5;
+    private const int ContentMarginBottom = 15;
 
     // Border colors - Priority order: Green (drafted) < Purple (stroke) < Flashing Red (gender) < Solid Red (template mismatch)
     private static readonly Color NormalBorderColor = Color.FromArgb(60, 60, 60);
@@ -52,7 +67,7 @@ public class ClinicalHistoryForm : Form
     // Auto-fix tracking - local fallback, but prefer session-wide callbacks if set
     private string? _lastAutoFixedAccession;
     private DateTime _lastAutoFixTime = DateTime.MinValue;
-    private volatile bool _autoFixInProgress = false; // Prevents concurrent auto-fix attempts
+    private volatile bool _autoFixInProgress = false;
 
     // Session-wide clinical history fix tracking callbacks (set by MainForm)
     private Func<string?, bool>? _hasClinicalHistoryFixed;
@@ -65,17 +80,13 @@ public class ClinicalHistoryForm : Form
     private bool _currentTextWasFixed = false;
 
     // Gender check - terms that are impossible for the opposite gender
-    // Female-only terms (flag if patient is Male)
     private static readonly string[] FemaleOnlyTerms = {
-        // Anatomy
         "uterus", "uterine", "ovary", "ovaries", "ovarian",
         "fallopian", "endometrium", "endometrial",
         "vagina", "vaginal", "vulva", "vulvar",
         "adnexa", "adnexal", "cervix",
-        // Pregnancy
         "pregnancy", "pregnant", "gravid", "gestational",
         "placenta", "placental", "fetus", "fetal",
-        // Surgeries
         "hysterectomy", "myomectomy", "endometrial ablation",
         "oophorectomy", "salpingectomy", "salpingo-oophorectomy",
         "tubal ligation", "colposcopy", "conization", "cone biopsy", "LEEP",
@@ -84,14 +95,11 @@ public class ClinicalHistoryForm : Form
         "vulvectomy", "labiaplasty"
     };
 
-    // Male-only terms (flag if patient is Female)
     private static readonly string[] MaleOnlyTerms = {
-        // Anatomy
         "prostate", "prostatic", "seminal vesicle", "seminal vesicles",
         "testicle", "testis", "testes", "testicular",
         "scrotum", "scrotal", "epididymis", "epididymal",
         "spermatic cord", "penis", "penile", "vas deferens",
-        // Surgeries
         "prostatectomy", "orchiectomy", "vasectomy", "TURP",
         "transurethral resection of prostate"
     };
@@ -112,7 +120,7 @@ public class ClinicalHistoryForm : Form
     private bool _historyFixInserted = false;
     private Label? _historyFixedIndicator;
 
-    // Alert-only mode state (when AlwaysShowClinicalHistory is false)
+    // Alert-only mode state
     private bool _showingAlert = false;
     private AlertType? _currentAlertType = null;
 
@@ -122,22 +130,96 @@ public class ClinicalHistoryForm : Form
     // Callback for stroke note creation (set by MainForm)
     private Func<bool>? _onStrokeNoteClick;
 
-    // Callback for critical note creation (for any case, not just stroke)
+    // Callback for critical note creation
     private Action? _onCriticalNoteClick;
+
+    // Transparent mode mouse handling
+    private Point _formPosOnMouseDown;
+    private ContextMenuStrip? _transparentDragMenu;
+    private ContextMenuStrip? _transparentContentMenu;
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            if (_useLayeredWindow)
+                cp.ExStyle |= LayeredWindowHelper.WS_EX_LAYERED;
+            return cp;
+        }
+    }
 
     public ClinicalHistoryForm(Configuration config)
     {
         _config = config;
+        _useLayeredWindow = config.ReportPopupTransparent;
+        _backgroundAlpha = Math.Clamp((int)Math.Round(config.ReportPopupTransparency / 100.0 * 255), 30, 255);
+        _contentFont = new Font("Segoe UI", 11, FontStyle.Bold);
 
-        // Form properties - frameless, topmost, black background
+        // Form properties - frameless, topmost
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
-        BackColor = Color.FromArgb(60, 60, 60); // Border color
+        BackColor = NormalBorderColor;
         StartPosition = FormStartPosition.Manual;
-        Padding = new Padding(1); // 1px border
 
-        // Use TableLayoutPanel for proper auto-sizing
+        // Content label - always created (data holder in transparent mode, visible in opaque)
+        _contentLabel = new Label
+        {
+            Text = "(No clinical history)",
+            Font = _contentFont,
+            ForeColor = Color.FromArgb(200, 200, 200),
+            BackColor = Color.Black,
+            AutoSize = true,
+            Margin = new Padding(ContentMarginLeft, ContentMarginTop, ContentMarginRight, ContentMarginBottom),
+            MaximumSize = new Size(0, 0)
+        };
+
+        if (_useLayeredWindow)
+            SetupTransparentMode();
+        else
+            SetupOpaqueMode();
+
+        // Tooltip for border color explanation (shared)
+        _borderTooltip = new ToolTip
+        {
+            InitialDelay = 500,
+            AutoPopDelay = 10000,
+            ReshowDelay = 200
+        };
+        UpdateBorderTooltip();
+    }
+
+    #region Setup
+
+    private void SetupTransparentMode()
+    {
+        AutoSize = false;
+        Padding = Padding.Empty;
+
+        // Context menus for transparent mode (shown programmatically)
+        _transparentDragMenu = new ContextMenuStrip();
+        _transparentDragMenu.Items.Add("Close", null, (_, _) => Close());
+
+        _transparentContentMenu = new ContextMenuStrip();
+        _transparentContentMenu.Items.Add("Create Critical Note", null, (_, _) => _onCriticalNoteClick?.Invoke());
+        _transparentContentMenu.Items.Add(new ToolStripSeparator());
+        _transparentContentMenu.Items.Add("Copy Debug Info", null, (_, _) => CopyDebugInfoToClipboard());
+
+        MouseDown += OnTransparentMouseDown;
+
+        var (fw, fh) = MeasureFormSize();
+        Size = new Size(fw, fh);
+
+        Shown += (_, _) => PositionFromCenter();
+        SizeChanged += (_, _) => { if (_initialPositionSet) RepositionToCenter(); };
+        Load += (_, _) => RenderTransparent();
+    }
+
+    private void SetupOpaqueMode()
+    {
+        Padding = new Padding(1);
+
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -150,8 +232,8 @@ public class ClinicalHistoryForm : Form
             Margin = new Padding(0)
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 16)); // Drag bar
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // Content
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, DragBarHeight));
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         Controls.Add(layout);
 
         // Drag bar
@@ -171,20 +253,10 @@ public class ClinicalHistoryForm : Form
         dragBar.MouseUp += OnDragEnd;
         layout.Controls.Add(dragBar, 0, 0);
 
-        // Content label - bold
-        _contentLabel = new Label
-        {
-            Text = "(No clinical history)",
-            Font = new Font("Segoe UI", 11, FontStyle.Bold),
-            ForeColor = Color.FromArgb(200, 200, 200),
-            BackColor = Color.Black,
-            AutoSize = true,
-            Margin = new Padding(10, 5, 10, 15),
-            MaximumSize = new Size(0, 0) // No limit
-        };
+        // Content label
         layout.Controls.Add(_contentLabel, 0, 1);
 
-        // Note created indicator (purple checkmark) - positioned on the drag bar right side
+        // Note created indicator (purple checkmark)
         _noteCreatedIndicator = new Label
         {
             Text = "✓",
@@ -196,17 +268,15 @@ public class ClinicalHistoryForm : Form
             Cursor = Cursors.Default,
             Anchor = AnchorStyles.Top | AnchorStyles.Right
         };
-        // Add to the drag bar area, positioned to the right
         _noteCreatedIndicator.Location = new Point(dragBar.Width - 20, 0);
         dragBar.Controls.Add(_noteCreatedIndicator);
-        // Tooltip will be set after _borderTooltip is created
 
-        // History fixed indicator (yellow checkmark) - positioned next to purple one
+        // History fixed indicator (yellow checkmark)
         _historyFixedIndicator = new Label
         {
             Text = "✓",
             Font = new Font("Segoe UI", 10, FontStyle.Bold),
-            ForeColor = FixedTextColor,  // Yellow
+            ForeColor = FixedTextColor,
             BackColor = Color.Black,
             Size = new Size(18, 16),
             Visible = false,
@@ -220,38 +290,29 @@ public class ClinicalHistoryForm : Form
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
 
-        // Context menu for drag bar only (Close option)
+        // Context menu for drag bar
         var menu = new ContextMenuStrip();
         menu.Items.Add("Close", null, (_, _) => Close());
         dragBar.ContextMenuStrip = menu;
 
-        // Context menu for content label (Create Critical Note + Copy Debug Info)
+        // Context menu for content label
         var contentMenu = new ContextMenuStrip();
         contentMenu.Items.Add("Create Critical Note", null, (_, _) => _onCriticalNoteClick?.Invoke());
         contentMenu.Items.Add(new ToolStripSeparator());
         contentMenu.Items.Add("Copy Debug Info", null, (_, _) => CopyDebugInfoToClipboard());
         _contentLabel.ContextMenuStrip = contentMenu;
 
-        // Right-click on content label copies debug info
         _contentLabel.MouseDown += OnContentLabelMouseDown;
 
         // Position from center after form sizes itself
         Shown += (_, _) => PositionFromCenter();
         SizeChanged += (_, _) => { if (_initialPositionSet) RepositionToCenter(); };
-
-        // Tooltip for border color explanation
-        _borderTooltip = new ToolTip
-        {
-            InitialDelay = 500,
-            AutoPopDelay = 10000,
-            ReshowDelay = 200
-        };
-        UpdateBorderTooltip();
     }
 
-    /// <summary>
-    /// Position the form so its center is at the saved coordinates.
-    /// </summary>
+    #endregion
+
+    #region Positioning
+
     private void PositionFromCenter()
     {
         Location = new Point(
@@ -261,17 +322,208 @@ public class ClinicalHistoryForm : Form
         _initialPositionSet = true;
     }
 
-    /// <summary>
-    /// When size changes, keep the center in the same place.
-    /// </summary>
     private void RepositionToCenter()
     {
-        if (_dragging) return; // Don't reposition while dragging
+        if (_dragging) return;
         Location = new Point(
             _config.ClinicalHistoryX - Width / 2,
             _config.ClinicalHistoryY - Height / 2
         );
     }
+
+    #endregion
+
+    #region Transparent Mode - Rendering
+
+    private void RequestRender()
+    {
+        if (!_useLayeredWindow || !IsHandleCreated || IsDisposed) return;
+
+        var (fw, fh) = MeasureFormSize();
+        if (fw != Width || fh != Height)
+            Size = new Size(fw, fh);
+        RenderTransparent();
+    }
+
+    private void RenderTransparent()
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        int w = Width, h = Height;
+        if (w <= 0 || h <= 0) return;
+
+        Color borderColor = BackColor;
+        Color innerBg = _contentLabel.BackColor;
+        string text = _contentLabel.Text;
+        Color textColor = _contentLabel.ForeColor;
+
+        // Layer 1: semi-transparent background
+        using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.Clear(Color.FromArgb(0, 0, 0, 0));
+            int bw = TransparentBorderWidth;
+            // Inner area - semi-transparent (draw first, border drawn on top)
+            using var innerBrush = new SolidBrush(Color.FromArgb(_backgroundAlpha, innerBg.R, innerBg.G, innerBg.B));
+            g.FillRectangle(innerBrush, bw, bw, w - bw * 2, h - bw * 2);
+            // Border strips - fully opaque so state colors (green/purple/red) are always visible
+            using var borderBrush = new SolidBrush(Color.FromArgb(255, borderColor.R, borderColor.G, borderColor.B));
+            g.FillRectangle(borderBrush, 0, 0, w, bw);           // top
+            g.FillRectangle(borderBrush, 0, h - bw, w, bw);      // bottom
+            g.FillRectangle(borderBrush, 0, 0, bw, h);           // left
+            g.FillRectangle(borderBrush, w - bw, 0, bw, h);      // right
+        }
+
+        // Layer 2: ClearType text on opaque inner background
+        using var textLayer = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(textLayer))
+        {
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+            g.Clear(Color.FromArgb(255, innerBg.R, innerBg.G, innerBg.B));
+
+            // Drag bar "⋯"
+            using var dragFont = new Font("Segoe UI", 8);
+            using var dragBrush = new SolidBrush(Color.FromArgb(102, 102, 102));
+            using var dragSf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            g.DrawString("⋯", dragFont, dragBrush,
+                new RectangleF(TransparentBorderWidth, TransparentBorderWidth, w - TransparentBorderWidth * 2, DragBarHeight), dragSf);
+
+            // Checkmark indicators on drag bar (right side)
+            using var checkFont = new Font("Segoe UI", 10, FontStyle.Bold);
+
+            if (_noteCreated)
+            {
+                using var purpleBrush = new SolidBrush(StrokeBorderColor);
+                g.DrawString("✓", checkFont, purpleBrush, w - 22, TransparentBorderWidth);
+            }
+
+            if (_historyFixInserted)
+            {
+                using var yellowBrush = new SolidBrush(FixedTextColor);
+                int xOffset = _noteCreated ? 40 : 22;
+                g.DrawString("✓", checkFont, yellowBrush, w - xOffset, TransparentBorderWidth);
+            }
+
+            // Content text
+            float textX = TransparentBorderWidth + ContentMarginLeft;
+            float textY = TransparentBorderWidth + DragBarHeight + ContentMarginTop;
+            float maxWidth = w - TransparentBorderWidth * 2 - ContentMarginLeft - ContentMarginRight;
+            if (maxWidth < 10) maxWidth = 10;
+
+            using var sf = new StringFormat(StringFormat.GenericTypographic) { Trimming = StringTrimming.Word };
+            using var brush = new SolidBrush(textColor);
+            g.DrawString(text, _contentFont, brush,
+                new RectangleF(textX, textY, maxWidth, h - textY), sf);
+        }
+
+        LayeredWindowHelper.MergeTextLayer(bmp, textLayer, innerBg.R, innerBg.G, innerBg.B);
+        LayeredWindowHelper.PremultiplyBitmapAlpha(bmp);
+        LayeredWindowHelper.SetBitmap(this, bmp);
+    }
+
+    private (int width, int height) MeasureFormSize()
+    {
+        string text = _contentLabel.Text;
+        using var bmp = new Bitmap(1, 1);
+        using var g = Graphics.FromImage(bmp);
+        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        using var sf = new StringFormat(StringFormat.GenericTypographic) { Trimming = StringTrimming.Word };
+
+        // First measure single-line
+        var measured = g.MeasureString(text, _contentFont, int.MaxValue, sf);
+
+        int contentWidth = (int)Math.Ceiling(measured.Width);
+        int contentHeight = (int)Math.Ceiling(measured.Height);
+
+        // Cap to screen width
+        var screen = Screen.FromPoint(new Point(_config.ClinicalHistoryX, _config.ClinicalHistoryY));
+        int maxFormWidth = screen.WorkingArea.Width - 40;
+        int maxContentWidth = maxFormWidth - TransparentBorderWidth * 2 - ContentMarginLeft - ContentMarginRight;
+
+        if (contentWidth > maxContentWidth)
+        {
+            contentWidth = maxContentWidth;
+            measured = g.MeasureString(text, _contentFont, contentWidth, sf);
+            contentHeight = (int)Math.Ceiling(measured.Height);
+        }
+
+        contentWidth = Math.Max(contentWidth, 50);
+        contentHeight = Math.Max(contentHeight, _contentFont.Height);
+
+        int formWidth = TransparentBorderWidth * 2 + ContentMarginLeft + contentWidth + ContentMarginRight;
+        int formHeight = TransparentBorderWidth * 2 + DragBarHeight + ContentMarginTop + contentHeight + ContentMarginBottom;
+
+        return (Math.Max(formWidth, 80), Math.Max(formHeight, 40));
+    }
+
+    #endregion
+
+    #region Transparent Mode - Mouse Handling
+
+    private void OnTransparentMouseDown(object? sender, MouseEventArgs e)
+    {
+        bool inDragBar = e.Y < TransparentBorderWidth + DragBarHeight;
+
+        if (e.Button == MouseButtons.Right)
+        {
+            if (inDragBar)
+                _transparentDragMenu?.Show(this, e.Location);
+            else
+                _transparentContentMenu?.Show(this, e.Location);
+            return;
+        }
+
+        if (e.Button == MouseButtons.Left)
+        {
+            if (inDragBar)
+            {
+                _formPosOnMouseDown = Location;
+                LayeredWindowHelper.ReleaseCapture();
+                LayeredWindowHelper.SendMessage(Handle, LayeredWindowHelper.WM_NCLBUTTONDOWN, LayeredWindowHelper.HT_CAPTION, 0);
+                if (Location != _formPosOnMouseDown)
+                {
+                    _config.ClinicalHistoryX = Location.X + Width / 2;
+                    _config.ClinicalHistoryY = Location.Y + Height / 2;
+                    _config.Save();
+                }
+            }
+            else
+            {
+                // Content click - same logic as OnContentLabelMouseDown
+                HandleContentClick();
+            }
+        }
+    }
+
+    private void HandleContentClick()
+    {
+        // Ctrl+Click = create critical note
+        if (ModifierKeys.HasFlag(Keys.Control))
+        {
+            Services.Logger.Trace("ClinicalHistory: Ctrl+Click - invoking critical note callback");
+            _onCriticalNoteClick?.Invoke();
+            return;
+        }
+
+        Services.Logger.Trace($"ClinicalHistory click: strokeDetected={_strokeDetected}, clickToCreate={_config.StrokeClickToCreateNote}, callbackSet={_onStrokeNoteClick != null}");
+
+        // If stroke detected and click-to-create enabled, create note
+        if (_strokeDetected && _config.StrokeClickToCreateNote && _onStrokeNoteClick != null)
+        {
+            Services.Logger.Trace("ClinicalHistory: Invoking stroke note callback");
+            bool created = _onStrokeNoteClick.Invoke();
+            Services.Logger.Trace($"ClinicalHistory: Callback returned created={created}");
+            if (!created)
+                ShowAlreadyCreatedTooltip();
+            return;
+        }
+
+        // Default: paste clinical history
+        PasteClinicalHistoryToMosaic();
+    }
+
+    #endregion
+
+    #region Public Methods - State Updates
 
     /// <summary>
     /// Update the displayed clinical history text.
@@ -286,8 +538,6 @@ public class ClinicalHistoryForm : Form
 
         if (string.IsNullOrWhiteSpace(text))
         {
-            // If text is null, we couldn't find CLINICAL HISTORY section - persist old text
-            // If text is empty string, section exists but is empty - show "(No clinical history)"
             if (text == null && !string.IsNullOrWhiteSpace(_currentDisplayedText))
                 return;
 
@@ -301,14 +551,14 @@ public class ClinicalHistoryForm : Form
             _contentLabel.Text = text;
             _currentDisplayedText = text;
             _currentTextWasFixed = wasFixed;
-            // Set color based on fixed state - will be updated by UpdateTextColorFromFinalReport
             _contentLabel.ForeColor = wasFixed ? FixedTextColor : NormalTextColor;
         }
+
+        RequestRender();
     }
 
     /// <summary>
     /// Set clinical history with auto-fix support.
-    /// If auto-fix is enabled and the text was modified (malformed), automatically paste to Mosaic.
     /// </summary>
     public void SetClinicalHistoryWithAutoFix(string? preCleaned, string? cleaned, string? accession = null)
     {
@@ -318,19 +568,15 @@ public class ClinicalHistoryForm : Form
             return;
         }
 
-        // Check if text was actually fixed (preCleaned differs from cleaned)
         bool wasFixed = !string.IsNullOrWhiteSpace(preCleaned) &&
                         !string.IsNullOrWhiteSpace(cleaned) &&
                         !string.Equals(preCleaned, cleaned, StringComparison.Ordinal);
 
-        // Always update the display with fixed state
         SetClinicalHistory(cleaned, wasFixed);
 
-        // Check if auto-fix should trigger
         if (!_config.AutoFixClinicalHistory)
         {
             Logger.Trace("Auto-fix: disabled in config");
-            // Mark auto-fix complete (it's not enabled, so nothing to wait for)
             _onAutoFixComplete?.Invoke();
             return;
         }
@@ -338,7 +584,6 @@ public class ClinicalHistoryForm : Form
         if (string.IsNullOrWhiteSpace(cleaned))
         {
             Logger.Trace("Auto-fix: cleaned is empty");
-            // Mark auto-fix complete (nothing to fix)
             _onAutoFixComplete?.Invoke();
             return;
         }
@@ -347,37 +592,29 @@ public class ClinicalHistoryForm : Form
 
         if (!wasFixed)
         {
-            // Mark auto-fix complete (text didn't need fixing)
             _onAutoFixComplete?.Invoke();
             return;
         }
 
-        // Prevent loops: check session-wide tracking first (if callbacks set), then fall back to local
         if (_hasClinicalHistoryFixed != null)
         {
-            // Use session-wide tracking (preferred - survives study close/reopen)
             if (_hasClinicalHistoryFixed(accession))
             {
                 Logger.Trace($"Auto-fix: already fixed accession {accession} (session tracking)");
-                // Mark auto-fix complete (already fixed earlier)
                 _onAutoFixComplete?.Invoke();
                 return;
             }
         }
         else
         {
-            // Fall back to local tracking
             if (!string.IsNullOrEmpty(accession) && string.Equals(_lastAutoFixedAccession, accession, StringComparison.Ordinal))
             {
                 Logger.Trace($"Auto-fix: already fixed accession {accession} (local tracking)");
-                // Mark auto-fix complete (already fixed earlier)
                 _onAutoFixComplete?.Invoke();
                 return;
             }
         }
 
-        // All conditions met - but wait and recheck in case Mosaic self-corrects
-        // Prevent concurrent auto-fix attempts (fast scrape can trigger multiple before the 2s delay completes)
         if (_autoFixInProgress)
         {
             Logger.Trace($"Auto-fix: already in progress for '{accession}', skipping");
@@ -386,23 +623,14 @@ public class ClinicalHistoryForm : Form
         _autoFixInProgress = true;
 
         Logger.Trace($"Auto-fix: malformed clinical history detected for '{accession}', waiting to recheck...");
-
-        // Mark locally to prevent duplicate triggers within this form instance
         _lastAutoFixedAccession = accession;
-
         var capturedAccession = accession;
 
-        // Delay on a background thread, then recheck
         ThreadPool.QueueUserWorkItem(_ =>
         {
             try
             {
-                // Wait for Mosaic to potentially self-correct (5s = multiple scrape cycles at 1s interval)
                 Thread.Sleep(5000);
-
-                // Recheck: the scrape timer will have updated us if Mosaic fixed itself.
-                // If the displayed text is still the fixed version (meaning the raw text
-                // is still malformed), proceed with the paste.
                 bool stillFixed = false;
                 if (IsDisposed || !IsHandleCreated) { _autoFixInProgress = false; return; }
                 Invoke(() => { stillFixed = _currentTextWasFixed; });
@@ -417,11 +645,7 @@ public class ClinicalHistoryForm : Form
 
                 Logger.Trace($"Auto-fix: still malformed after recheck for '{capturedAccession}', pasting fix");
                 _lastAutoFixTime = DateTime.Now;
-
-                // Mark session-wide only after confirming we're about to paste
                 _markClinicalHistoryFixed?.Invoke(capturedAccession);
-
-                // Trigger the paste
                 PasteClinicalHistoryToMosaic(showYellowCheckmark: true);
                 _autoFixInProgress = false;
             }
@@ -433,19 +657,12 @@ public class ClinicalHistoryForm : Form
         });
     }
 
-    /// <summary>
-    /// Reset auto-fix tracking. Call when study changes to allow re-fixing.
-    /// </summary>
     public void ResetAutoFixTracking()
     {
         _lastAutoFixedAccession = null;
         _autoFixInProgress = false;
     }
 
-    /// <summary>
-    /// Called when study changes (accession changes). Resets all tracking state and clears display.
-    /// </summary>
-    /// <param name="isNewStudy">True if switching to a new study (show "Loading..."), false if no study (show "No clinical history")</param>
     public void OnStudyChanged(bool isNewStudy = true)
     {
         if (InvokeRequired)
@@ -456,11 +673,8 @@ public class ClinicalHistoryForm : Form
 
         Logger.Trace($"ClinicalHistoryForm: Study changed (isNewStudy={isNewStudy}) - resetting state");
 
-        // Reset auto-fix tracking
         _lastAutoFixedAccession = null;
         _lastAutoFixTime = DateTime.MinValue;
-
-        // Reset template mismatch, stroke state, note created state, and history fix state
         _templateMismatch = false;
         _strokeDetected = false;
         _noteCreated = false;
@@ -474,17 +688,15 @@ public class ClinicalHistoryForm : Form
         BackColor = NormalBorderColor;
         UpdateBorderTooltip();
 
-        // Clear displayed text immediately so old study's history doesn't persist
         _contentLabel.Text = isNewStudy ? "(Loading...)" : "(No clinical history)";
         _contentLabel.ForeColor = EmptyTextColor;
+        _contentLabel.BackColor = Color.Black;
         _currentDisplayedText = null;
         _currentTextWasFixed = false;
+
+        RequestRender();
     }
 
-    /// <summary>
-    /// Update text color based on whether displayed history matches the final report.
-    /// If they match, text is white. If different (we fixed it), text is yellow.
-    /// </summary>
     public void UpdateTextColorFromFinalReport(string? finalReportText)
     {
         if (InvokeRequired)
@@ -493,85 +705,32 @@ public class ClinicalHistoryForm : Form
             return;
         }
 
-        // If no displayed text or it wasn't fixed, nothing to do
         if (string.IsNullOrWhiteSpace(_currentDisplayedText))
             return;
 
-        // If it wasn't marked as fixed, keep normal color
         if (!_currentTextWasFixed)
         {
             _contentLabel.ForeColor = NormalTextColor;
+            RequestRender();
             return;
         }
 
-        // Extract clinical history from final report
         var reportHistory = ExtractClinicalHistoryFromReport(finalReportText);
-
-        // Compare with displayed text (normalize for comparison)
         bool matches = CompareHistoryText(_currentDisplayedText, reportHistory);
 
         if (matches)
         {
-            // Final report now has our fixed text - show white
             _contentLabel.ForeColor = NormalTextColor;
             Logger.Trace("Clinical history matches final report - text color: white");
         }
         else
         {
-            // Still different - show yellow
             _contentLabel.ForeColor = FixedTextColor;
         }
+
+        RequestRender();
     }
 
-    /// <summary>
-    /// Extract clinical history text from a final report.
-    /// </summary>
-    private static string? ExtractClinicalHistoryFromReport(string? reportText)
-    {
-        if (string.IsNullOrWhiteSpace(reportText))
-            return null;
-
-        // Look for CLINICAL HISTORY section
-        var match = Regex.Match(reportText,
-            @"CLINICAL HISTORY[:\s]*(.*?)(?=\b(?:TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|PROCEDURE|CONCLUSION|RECOMMENDATION)\b|$)",
-            RegexOptions.Singleline | RegexOptions.IgnoreCase);
-
-        if (!match.Success || match.Groups.Count < 2)
-            return null;
-
-        return match.Groups[1].Value.Trim();
-    }
-
-    /// <summary>
-    /// Compare two clinical history texts, normalizing whitespace and punctuation.
-    /// </summary>
-    private static bool CompareHistoryText(string? text1, string? text2)
-    {
-        if (string.IsNullOrWhiteSpace(text1) || string.IsNullOrWhiteSpace(text2))
-            return false;
-
-        // Normalize: lowercase, collapse whitespace, remove trailing punctuation
-        var norm1 = NormalizeForComparison(text1);
-        var norm2 = NormalizeForComparison(text2);
-
-        return string.Equals(norm1, norm2, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>
-    /// Normalize text for comparison - collapse whitespace, remove trailing punctuation.
-    /// </summary>
-    private static string NormalizeForComparison(string text)
-    {
-        // Collapse whitespace
-        var result = Regex.Replace(text, @"\s+", " ").Trim();
-        // Remove trailing period if present
-        result = result.TrimEnd('.', ',', ';', ' ');
-        return result;
-    }
-
-    /// <summary>
-    /// Set the drafted state - shows green border when true (unless template mismatch).
-    /// </summary>
     public void SetDraftedState(bool isDrafted)
     {
         if (InvokeRequired)
@@ -580,30 +739,17 @@ public class ClinicalHistoryForm : Form
             return;
         }
 
-        // Priority order: Green (drafted) < Purple (stroke) < Flashing Red (gender) < Solid Red (template mismatch)
-        // Note: Flashing red (gender warning) is handled by UpdateBlinkDisplay and overrides this
         if (_templateMismatch)
-        {
-            // Solid red - highest priority (except gender which handles itself)
             BackColor = TemplateMismatchBorderColor;
-        }
         else if (_strokeDetected)
-        {
-            // Purple - stroke case
             BackColor = StrokeBorderColor;
-        }
         else
-        {
-            // Green (drafted) or normal
             BackColor = isDrafted ? DraftedBorderColor : NormalBorderColor;
-        }
+
         UpdateBorderTooltip();
+        RequestRender();
     }
 
-    /// <summary>
-    /// Set the template mismatch state - shows red border when true.
-    /// This overrides the drafted (green) state.
-    /// </summary>
     public void SetTemplateMismatchState(bool isMismatch, string? description, string? templateName)
     {
         if (InvokeRequired)
@@ -616,19 +762,15 @@ public class ClinicalHistoryForm : Form
         _lastDescription = description;
         _lastTemplateName = templateName;
 
-        // Update border color immediately
         if (isMismatch)
         {
             BackColor = TemplateMismatchBorderColor;
             UpdateBorderTooltip();
         }
-        // If not mismatch, the border will be set by SetDraftedState
+
+        RequestRender();
     }
 
-    /// <summary>
-    /// Set the stroke detection state - shows purple border when true.
-    /// Overrides green (drafted) but is overridden by red (template mismatch) and flashing red (gender).
-    /// </summary>
     public void SetStrokeState(bool isStroke)
     {
         if (InvokeRequired)
@@ -639,23 +781,15 @@ public class ClinicalHistoryForm : Form
 
         _strokeDetected = isStroke;
 
-        // Update border color immediately if stroke detected and no higher priority state
         if (isStroke && !_templateMismatch && !_genderWarningActive)
-        {
             BackColor = StrokeBorderColor;
-        }
+
         UpdateBorderTooltip();
+        RequestRender();
     }
 
-    /// <summary>
-    /// Returns whether stroke is currently detected.
-    /// </summary>
     public bool IsStrokeDetected => _strokeDetected;
 
-    /// <summary>
-    /// Set the note created indicator state.
-    /// Shows a purple checkmark when a Critical Communication Note has been created.
-    /// </summary>
     public void SetNoteCreated(bool created)
     {
         if (InvokeRequired)
@@ -666,21 +800,14 @@ public class ClinicalHistoryForm : Form
 
         _noteCreated = created;
         if (_noteCreatedIndicator != null)
-        {
             _noteCreatedIndicator.Visible = created;
-        }
+
         UpdateBorderTooltip();
+        RequestRender();
     }
 
-    /// <summary>
-    /// Returns whether a note has been created for the current stroke case.
-    /// </summary>
     public bool IsNoteCreated => _noteCreated;
 
-    /// <summary>
-    /// Set the history fix inserted indicator state.
-    /// Shows a yellow checkmark when corrected clinical history has been inserted to Mosaic.
-    /// </summary>
     public void SetHistoryFixInserted(bool inserted)
     {
         if (InvokeRequired)
@@ -691,70 +818,50 @@ public class ClinicalHistoryForm : Form
 
         _historyFixInserted = inserted;
         if (_historyFixedIndicator != null)
-        {
             _historyFixedIndicator.Visible = inserted;
-        }
+
         UpdateBorderTooltip();
+        RequestRender();
     }
 
-    /// <summary>
-    /// Returns whether corrected clinical history has been inserted for this study.
-    /// </summary>
     public bool IsHistoryFixInserted => _historyFixInserted;
 
-    /// <summary>
-    /// Set the callback for creating a stroke critical note.
-    /// Called when user clicks the notification box during stroke case.
-    /// </summary>
+    #endregion
+
+    #region Callback Setters
+
     public void SetStrokeNoteClickCallback(Func<bool> callback)
     {
         _onStrokeNoteClick = callback;
     }
 
-    /// <summary>
-    /// Set the callback for creating a critical note (for any case, not just stroke).
-    /// Called when user Ctrl+clicks the notification box or uses the context menu.
-    /// </summary>
     public void SetCriticalNoteClickCallback(Action callback)
     {
         _onCriticalNoteClick = callback;
     }
 
-    /// <summary>
-    /// Set the callback to check if an addendum is currently open.
-    /// </summary>
     public void SetAddendumCheckCallback(Func<bool> callback)
     {
         _isAddendumOpen = callback;
     }
 
-    /// <summary>
-    /// Set callbacks for session-wide clinical history fix tracking.
-    /// This prevents duplicate auto-fixes when a study is reopened.
-    /// </summary>
     public void SetClinicalHistoryFixCallbacks(Func<string?, bool> hasFixed, Action<string?> markFixed)
     {
         _hasClinicalHistoryFixed = hasFixed;
         _markClinicalHistoryFixed = markFixed;
     }
 
-    /// <summary>
-    /// Set callback to notify when auto-fix paste completes (for Ignore Inpatient Drafted feature).
-    /// </summary>
     public void SetAutoFixCompleteCallback(Action callback)
     {
         _onAutoFixComplete = callback;
     }
 
-    /// <summary>
-    /// Returns whether currently showing an alert (as opposed to clinical history).
-    /// </summary>
+    #endregion
+
+    #region Alert Mode
+
     public bool IsShowingAlert => _showingAlert;
 
-    /// <summary>
-    /// Show an alert in the notification box (for alerts-only mode).
-    /// This replaces the clinical history text with alert content.
-    /// </summary>
     public void ShowAlertOnly(AlertType type, string details)
     {
         if (InvokeRequired)
@@ -766,35 +873,30 @@ public class ClinicalHistoryForm : Form
         _showingAlert = true;
         _currentAlertType = type;
 
-        // Set appropriate border color and text based on alert type
         switch (type)
         {
             case AlertType.TemplateMismatch:
                 BackColor = TemplateMismatchBorderColor;
                 _contentLabel.BackColor = Color.Black;
-                _contentLabel.ForeColor = Color.FromArgb(255, 150, 150); // Light red
+                _contentLabel.ForeColor = Color.FromArgb(255, 150, 150);
                 _contentLabel.Text = $"TEMPLATE MISMATCH\n{details}";
                 break;
 
             case AlertType.GenderMismatch:
-                // Gender mismatch uses the blinking red (handled by SetGenderWarning)
-                // This is called for completeness but SetGenderWarning handles the display
                 break;
 
             case AlertType.StrokeDetected:
                 BackColor = StrokeBorderColor;
                 _contentLabel.BackColor = Color.Black;
-                _contentLabel.ForeColor = Color.FromArgb(200, 150, 255); // Light purple
+                _contentLabel.ForeColor = Color.FromArgb(200, 150, 255);
                 _contentLabel.Text = $"STROKE PROTOCOL\n{details}";
                 break;
         }
 
         UpdateBorderTooltip();
+        RequestRender();
     }
 
-    /// <summary>
-    /// Clear alert display and return to clinical history mode.
-    /// </summary>
     public void ClearAlert()
     {
         if (InvokeRequired)
@@ -806,7 +908,6 @@ public class ClinicalHistoryForm : Form
         _showingAlert = false;
         _currentAlertType = null;
 
-        // Restore clinical history display
         if (!string.IsNullOrEmpty(_currentDisplayedText))
         {
             _contentLabel.Text = _currentDisplayedText;
@@ -822,12 +923,9 @@ public class ClinicalHistoryForm : Form
 
         BackColor = NormalBorderColor;
         UpdateBorderTooltip();
+        RequestRender();
     }
 
-    /// <summary>
-    /// Get alert text for the given alert type and current state.
-    /// Used by ActionController to get alert details for display.
-    /// </summary>
     public string GetAlertText(AlertType type)
     {
         switch (type)
@@ -848,110 +946,66 @@ public class ClinicalHistoryForm : Form
         }
     }
 
-    /// <summary>
-    /// Update the tooltip to explain the current border color.
-    /// </summary>
+    #endregion
+
+    #region Tooltip
+
     private void UpdateBorderTooltip()
     {
         string tooltip;
 
         if (_genderWarningActive)
-        {
             tooltip = "Red (flashing): Gender mismatch - report contains terms that don't match patient gender";
-        }
         else if (_templateMismatch)
-        {
             tooltip = "Red: Template mismatch - study description doesn't match the report template";
-        }
         else if (_strokeDetected)
         {
             if (_noteCreated)
-            {
                 tooltip = "Purple: Stroke protocol - Critical Communication Note created ✓";
-            }
             else if (_config.StrokeClickToCreateNote)
-            {
                 tooltip = "Purple: Stroke protocol - click to create critical note";
-            }
             else
-            {
                 tooltip = "Purple: Stroke protocol detected";
-            }
         }
         else if (BackColor == DraftedBorderColor)
-        {
             tooltip = "Green: Report is drafted";
-        }
         else
-        {
             tooltip = "Gray: Normal - no alerts";
-        }
 
         _borderTooltip.SetToolTip(this, tooltip);
-        _borderTooltip.SetToolTip(_contentLabel, tooltip);
-        if (_noteCreatedIndicator != null)
+
+        if (!_useLayeredWindow)
         {
-            _borderTooltip.SetToolTip(_noteCreatedIndicator, "Critical Communication Note created in Clario");
-        }
-        if (_historyFixedIndicator != null)
-        {
-            _borderTooltip.SetToolTip(_historyFixedIndicator, "Corrected clinical history inserted to Mosaic");
+            _borderTooltip.SetToolTip(_contentLabel, tooltip);
+            if (_noteCreatedIndicator != null)
+                _borderTooltip.SetToolTip(_noteCreatedIndicator, "Critical Communication Note created in Clario");
+            if (_historyFixedIndicator != null)
+                _borderTooltip.SetToolTip(_historyFixedIndicator, "Corrected clinical history inserted to Mosaic");
         }
     }
 
-    /// <summary>
-    /// Handle mouse clicks on content label.
-    /// Ctrl+Left-click: create critical note (for any case)
-    /// Left-click: paste clinical history to Mosaic (or create stroke note if enabled)
-    /// Right-click: shows context menu (handled by ContextMenuStrip)
-    /// </summary>
+    #endregion
+
+    #region Content Click & Paste (Opaque Mode)
+
     private void OnContentLabelMouseDown(object? sender, MouseEventArgs e)
     {
         if (e.Button == MouseButtons.Left)
         {
-            // Ctrl+Click = create critical note (for any case, not just stroke)
-            if (ModifierKeys.HasFlag(Keys.Control))
-            {
-                Services.Logger.Trace("ClinicalHistory: Ctrl+Click - invoking critical note callback");
-                _onCriticalNoteClick?.Invoke();
-                return;
-            }
-
-            Services.Logger.Trace($"ClinicalHistory click: strokeDetected={_strokeDetected}, clickToCreate={_config.StrokeClickToCreateNote}, callbackSet={_onStrokeNoteClick != null}");
-
-            // If stroke detected and click-to-create enabled, create note instead of paste
-            if (_strokeDetected && _config.StrokeClickToCreateNote && _onStrokeNoteClick != null)
-            {
-                Services.Logger.Trace("ClinicalHistory: Invoking stroke note callback");
-                bool created = _onStrokeNoteClick.Invoke();
-                Services.Logger.Trace($"ClinicalHistory: Callback returned created={created}");
-                if (!created)
-                {
-                    // Note already exists - show tooltip briefly
-                    ShowAlreadyCreatedTooltip();
-                }
-                return;
-            }
-
-            // Default behavior: paste clinical history
-            PasteClinicalHistoryToMosaic();
+            HandleContentClick();
         }
-        // Right-click is handled by ContextMenuStrip
     }
 
-    /// <summary>
-    /// Show a tooltip indicating the critical note was already created.
-    /// </summary>
+    #endregion
+
+    #region Clinical History Paste
+
     private void ShowAlreadyCreatedTooltip()
     {
         _borderTooltip.Show("Critical note already created for this study", this,
             Width / 2, Height / 2, 2000);
     }
 
-    /// <summary>
-    /// Paste the clinical history to Mosaic and return focus to previous window.
-    /// </summary>
-    /// <param name="showYellowCheckmark">If true, shows the yellow checkmark after successful paste (for corrected history)</param>
     private void PasteClinicalHistoryToMosaic(bool showYellowCheckmark = false)
     {
         var text = _contentLabel.Text;
@@ -961,37 +1015,26 @@ public class ClinicalHistoryForm : Form
             return;
         }
 
-        // If manually clicking and text was fixed, show the checkmark
         if (!showYellowCheckmark && _currentTextWasFixed)
-        {
             showYellowCheckmark = true;
-        }
 
-        // Block paste when addendum is open
         if (_isAddendumOpen?.Invoke() == true)
         {
             ShowToast("Cannot paste into addendum");
             return;
         }
 
-        // Format the text with leading and trailing newline for cleaner paste
-        // Trim trailing spaces/periods to avoid " .." when we append our period
         var trimmedText = text.TrimEnd(' ', '.');
         var formatted = $"\nClinical history: {trimmedText}.\n";
 
-        // Run on background thread to avoid blocking UI
         System.Threading.Tasks.Task.Run(() =>
         {
-            // Use paste lock to prevent race conditions with macro insertion
-            // Both will execute in order - no skipping
             lock (ActionController.PasteLock)
             {
                 try
                 {
-                    // Save current focus before we do anything (likely IntelliViewer)
                     NativeWindows.SavePreviousFocus();
 
-                    // Set clipboard on UI thread (STA required for clipboard operations)
                     Logger.Trace($"Clinical history paste: setting clipboard to '{formatted.Substring(0, Math.Min(50, formatted.Length))}...'");
                     var textToPaste = (_config.SeparatePastedItems && !formatted.StartsWith("\n")) ? "\n" + formatted : formatted;
                     if (IsDisposed || !IsHandleCreated) return;
@@ -1010,11 +1053,8 @@ public class ClinicalHistoryForm : Form
                     System.Threading.Thread.Sleep(100);
 
                     ActionController.LastPasteTime = DateTime.Now;
-
-                    // Restore focus to previous window
                     NativeWindows.RestorePreviousFocus();
 
-                    // Show yellow checkmark if corrected clinical history was inserted
                     if (showYellowCheckmark)
                     {
                         if (!IsDisposed && IsHandleCreated)
@@ -1022,7 +1062,6 @@ public class ClinicalHistoryForm : Form
                             Invoke(() => SetHistoryFixInserted(true));
                             Invoke(() => ShowToast("Corrected history pasted"));
                         }
-                        // Notify that auto-fix paste is complete (for Ignore Inpatient Drafted)
                         _onAutoFixComplete?.Invoke();
                     }
                     else
@@ -1040,9 +1079,10 @@ public class ClinicalHistoryForm : Form
         });
     }
 
-    /// <summary>
-    /// Copy template matching debug info to clipboard.
-    /// </summary>
+    #endregion
+
+    #region Debug & Toast
+
     private void CopyDebugInfoToClipboard()
     {
         var debugInfo = $"=== Template Matching Debug ===\r\n" +
@@ -1054,7 +1094,7 @@ public class ClinicalHistoryForm : Form
         {
             Clipboard.SetText(debugInfo);
             Services.Logger.Trace("Template debug info copied to clipboard");
-            ShowCopiedToast();
+            ShowToast("Debug copied!");
         }
         catch (Exception ex)
         {
@@ -1062,14 +1102,6 @@ public class ClinicalHistoryForm : Form
         }
     }
 
-    /// <summary>
-    /// Show a brief toast indicating debug info was copied.
-    /// </summary>
-    private void ShowCopiedToast() => ShowToast("Debug copied!");
-
-    /// <summary>
-    /// Show a brief toast with a custom message.
-    /// </summary>
     private void ShowToast(string message)
     {
         var toast = new Form
@@ -1105,9 +1137,10 @@ public class ClinicalHistoryForm : Form
         timer.Start();
     }
 
-    /// <summary>
-    /// Remove non-printable and special characters from text.
-    /// </summary>
+    #endregion
+
+    #region Text Cleaning & Extraction
+
     private static string CleanText(string text)
     {
         if (string.IsNullOrEmpty(text)) return text;
@@ -1115,28 +1148,16 @@ public class ClinicalHistoryForm : Form
         var sb = new System.Text.StringBuilder();
         foreach (char c in text)
         {
-            // Keep letters, digits, basic punctuation, and whitespace
             if (char.IsLetterOrDigit(c) || char.IsPunctuation(c) || char.IsWhiteSpace(c) || c == '-' || c == '/' || c == '\'')
-            {
                 sb.Append(c);
-            }
             else if (char.IsControl(c))
-            {
-                // Replace control chars with space
                 sb.Append(' ');
-            }
-            // Skip other weird unicode characters
         }
 
-        // Collapse multiple spaces
         var cleaned = Regex.Replace(sb.ToString(), @"\s+", " ").Trim();
-
-        // Remove junk phrases and re-collapse any gaps left behind
         cleaned = Regex.Replace(cleaned, @"Other\s*\(Please Specify\)\s*;?\s*", " ", RegexOptions.IgnoreCase);
         cleaned = Regex.Replace(cleaned, @"\s+", " ").Trim();
 
-        // Deduplicate consecutive identical words (case-insensitive)
-        // e.g., "FALL Fall" → "FALL", "pain PAIN" → "pain"
         var words = cleaned.Split(' ');
         var dedupedWords = new System.Collections.Generic.List<string>();
         for (int i = 0; i < words.Length; i++)
@@ -1146,17 +1167,9 @@ public class ClinicalHistoryForm : Form
         }
         cleaned = string.Join(" ", dedupedWords);
 
-        // Remove repeating phrases
         return RemoveRepeatingPhrases(cleaned);
     }
 
-    /// <summary>
-    /// Detect and remove repeating phrases in text.
-    /// Handles cases like:
-    /// - "fall fall fall fall" -> "fall"
-    /// - "Chest Pain >18 Chest Pain >18 Chest Pain >18" -> "Chest Pain >18"
-    /// - "A; B A; B B A; B" -> "A; B"
-    /// </summary>
     private static string RemoveRepeatingPhrases(string text)
     {
         if (string.IsNullOrEmpty(text) || text.Length < 6)
@@ -1164,31 +1177,18 @@ public class ClinicalHistoryForm : Form
 
         string result = text;
 
-        // FIRST: Check if whole string is just repetitions of a simple pattern
-        // This catches "fall fall fall fall" -> "fall" before complex logic messes it up
-        // Use (Length + 1) / 2 to handle odd-length strings like "fall fall" (9 chars, pattern "fall " is 5)
         for (int patternLen = 1; patternLen <= (result.Length + 1) / 2; patternLen++)
         {
             string pattern = result.Substring(0, patternLen);
-
-            // Build expected string if pattern repeats
             var expected = new System.Text.StringBuilder();
             while (expected.Length < result.Length)
-            {
                 expected.Append(pattern);
-            }
 
-            // Compare (allowing for partial at end)
             string expectedStr = expected.ToString().Substring(0, result.Length);
             if (string.Equals(result, expectedStr, StringComparison.OrdinalIgnoreCase))
-            {
                 return pattern.Trim();
-            }
         }
 
-        // SECOND: Find and remove CONSECUTIVE duplicate phrases only
-        // This handles cases like "Chest Pain >18 Chest Pain >18" but NOT "midepigastric pain... midepigastric region"
-        // Only remove when the same phrase appears immediately after itself (with optional whitespace/punctuation between)
         bool foundDuplicate = true;
         while (foundDuplicate)
         {
@@ -1202,23 +1202,16 @@ public class ClinicalHistoryForm : Form
                     string phrase = result.Substring(startPos, phraseLen).Trim();
                     if (phrase.Length < 5) continue;
 
-                    // Look for the same phrase immediately following (with optional whitespace/punctuation gap)
                     int afterFirstPhrase = startPos + phraseLen;
-
-                    // Skip whitespace and minor punctuation between potential duplicates
                     while (afterFirstPhrase < result.Length &&
                            (char.IsWhiteSpace(result[afterFirstPhrase]) || result[afterFirstPhrase] == ';' || result[afterFirstPhrase] == ','))
-                    {
                         afterFirstPhrase++;
-                    }
 
-                    // Check if the phrase repeats immediately after
                     if (afterFirstPhrase + phrase.Length <= result.Length)
                     {
                         string nextChunk = result.Substring(afterFirstPhrase, phrase.Length);
                         if (string.Equals(phrase, nextChunk.Trim(), StringComparison.OrdinalIgnoreCase))
                         {
-                            // Found consecutive duplicate - remove the second occurrence
                             result = result.Substring(0, startPos + phraseLen) + result.Substring(afterFirstPhrase + phrase.Length);
                             result = Regex.Replace(result, @"\s+", " ").Trim();
                             foundDuplicate = true;
@@ -1233,11 +1226,6 @@ public class ClinicalHistoryForm : Form
         return result;
     }
 
-    /// <summary>
-    /// Extract clinical history from raw Clario scrape text.
-    /// Returns text after "CLINICAL HISTORY" up to the next ALL-CAPS section.
-    /// Deduplicates if the same lines appear twice.
-    /// </summary>
     public static string? ExtractClinicalHistory(string? rawText)
     {
         if (string.IsNullOrWhiteSpace(rawText))
@@ -1248,18 +1236,13 @@ public class ClinicalHistoryForm : Form
 
         Services.Logger.Trace($"ExtractClinicalHistory: Input length={rawText.Length}");
 
-        // Check if CLINICAL HISTORY even exists in the text
         if (!rawText.Contains("CLINICAL HISTORY", StringComparison.OrdinalIgnoreCase))
         {
             Services.Logger.Trace("ExtractClinicalHistory: 'CLINICAL HISTORY' not found in text");
             return null;
         }
 
-        // Common section headers that follow CLINICAL HISTORY
-        // Note: Don't include EXAM here - it causes false matches with "Reason for exam:" in clinical text
         var sectionHeaders = @"TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|PROCEDURE|CONCLUSION|RECOMMENDATION";
-
-        // Find "CLINICAL HISTORY" section - look for content until next section header or end
         var match = Regex.Match(rawText,
             $@"CLINICAL HISTORY[:\s]*(.*?)(?=\b({sectionHeaders})\b|$)",
             RegexOptions.Singleline | RegexOptions.IgnoreCase);
@@ -1271,14 +1254,11 @@ public class ClinicalHistoryForm : Form
         }
 
         Services.Logger.Trace($"ExtractClinicalHistory: Regex matched, group1 length={match.Groups[1].Value.Length}");
-
         var content = match.Groups[1].Value.Trim();
 
-        // Section exists but is empty - return empty string (not null)
         if (string.IsNullOrWhiteSpace(content))
             return string.Empty;
 
-        // Deduplicate: split into lines and remove consecutive duplicates
         var lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
         var uniqueLines = new System.Collections.Generic.List<string>();
 
@@ -1288,7 +1268,6 @@ public class ClinicalHistoryForm : Form
             if (string.IsNullOrWhiteSpace(trimmed))
                 continue;
 
-            // Check if this line (or very similar) already exists
             bool isDuplicate = false;
             foreach (var existing in uniqueLines)
             {
@@ -1306,14 +1285,9 @@ public class ClinicalHistoryForm : Form
         if (uniqueLines.Count == 0)
             return null;
 
-        // Join and clean the text
         return CleanText(string.Join(" ", uniqueLines));
     }
 
-    /// <summary>
-    /// Extract clinical history and return both pre-cleaned and cleaned versions.
-    /// Used to detect if fixing was needed.
-    /// </summary>
     public static (string? preCleaned, string? cleaned) ExtractClinicalHistoryWithFixInfo(string? rawText)
     {
         if (string.IsNullOrWhiteSpace(rawText))
@@ -1322,7 +1296,6 @@ public class ClinicalHistoryForm : Form
         if (!rawText.Contains("CLINICAL HISTORY", StringComparison.OrdinalIgnoreCase))
             return (null, null);
 
-        // Note: Don't include EXAM here - it causes false matches with "Reason for exam:" in clinical text
         var sectionHeaders = @"TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|PROCEDURE|CONCLUSION|RECOMMENDATION";
         var match = Regex.Match(rawText,
             $@"CLINICAL HISTORY[:\s]*(.*?)(?=\b({sectionHeaders})\b|$)",
@@ -1333,11 +1306,9 @@ public class ClinicalHistoryForm : Form
 
         var content = match.Groups[1].Value.Trim();
 
-        // Section exists but is empty - return empty strings (not null)
         if (string.IsNullOrWhiteSpace(content))
             return (string.Empty, string.Empty);
 
-        // Capture ALL lines BEFORE deduplication for pre-cleaned comparison
         var allLines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
         var allTrimmedLines = new System.Collections.Generic.List<string>();
         foreach (var line in allLines)
@@ -1350,7 +1321,6 @@ public class ClinicalHistoryForm : Form
         if (allTrimmedLines.Count == 0)
             return (string.Empty, string.Empty);
 
-        // Pre-cleaned: BEFORE line dedup and phrase removal (just basic char cleanup)
         var preCleanedRaw = string.Join(" ", allTrimmedLines);
         var sb = new System.Text.StringBuilder();
         foreach (char c in preCleanedRaw)
@@ -1362,7 +1332,6 @@ public class ClinicalHistoryForm : Form
         }
         var preCleaned = Regex.Replace(sb.ToString(), @"\s+", " ").Trim();
 
-        // Now deduplicate lines for the cleaned version
         var uniqueLines = new System.Collections.Generic.List<string>();
         foreach (var line in allTrimmedLines)
         {
@@ -1379,11 +1348,46 @@ public class ClinicalHistoryForm : Form
                 uniqueLines.Add(line);
         }
 
-        // Fully cleaned: with line dedup AND phrase removal
         var cleaned = CleanText(string.Join(" ", uniqueLines));
-
         return (preCleaned, cleaned);
     }
+
+    private static string? ExtractClinicalHistoryFromReport(string? reportText)
+    {
+        if (string.IsNullOrWhiteSpace(reportText))
+            return null;
+
+        var match = Regex.Match(reportText,
+            @"CLINICAL HISTORY[:\s]*(.*?)(?=\b(?:TECHNIQUE|FINDINGS|IMPRESSION|COMPARISON|PROCEDURE|CONCLUSION|RECOMMENDATION)\b|$)",
+            RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+        if (!match.Success || match.Groups.Count < 2)
+            return null;
+
+        return match.Groups[1].Value.Trim();
+    }
+
+    private static bool CompareHistoryText(string? text1, string? text2)
+    {
+        if (string.IsNullOrWhiteSpace(text1) || string.IsNullOrWhiteSpace(text2))
+            return false;
+
+        var norm1 = NormalizeForComparison(text1);
+        var norm2 = NormalizeForComparison(text2);
+
+        return string.Equals(norm1, norm2, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeForComparison(string text)
+    {
+        var result = Regex.Replace(text, @"\s+", " ").Trim();
+        result = result.TrimEnd('.', ',', ';', ' ');
+        return result;
+    }
+
+    #endregion
+
+    #region EnsureOnTop
 
     public void EnsureOnTop()
     {
@@ -1395,7 +1399,9 @@ public class ClinicalHistoryForm : Form
         NativeWindows.ForceTopMost(this.Handle);
     }
 
-    #region Drag Logic
+    #endregion
+
+    #region Drag Logic (Opaque Mode)
 
     private void OnDragStart(object? sender, MouseEventArgs e)
     {
@@ -1420,7 +1426,6 @@ public class ClinicalHistoryForm : Form
     private void OnDragEnd(object? sender, MouseEventArgs e)
     {
         _dragging = false;
-        // Save center coordinates, not top-left
         _config.ClinicalHistoryX = Location.X + Width / 2;
         _config.ClinicalHistoryY = Location.Y + Height / 2;
         _config.Save();
@@ -1430,10 +1435,6 @@ public class ClinicalHistoryForm : Form
 
     #region Gender Check
 
-    /// <summary>
-    /// Check report text for gender-specific terms that don't match the patient's gender.
-    /// Returns a list of mismatched terms found in the report.
-    /// </summary>
     public static List<string> CheckGenderMismatch(string? reportText, string? patientGender)
     {
         var mismatches = new List<string>();
@@ -1446,35 +1447,24 @@ public class ClinicalHistoryForm : Form
 
         if (genderUpper == "MALE")
         {
-            // Check for female-only terms in male patient's report
             foreach (var term in FemaleOnlyTerms)
             {
-                // Use word boundary matching to avoid partial matches
                 if (Regex.IsMatch(reportLower, $@"\b{Regex.Escape(term)}\b"))
-                {
                     mismatches.Add(term);
-                }
             }
         }
         else if (genderUpper == "FEMALE")
         {
-            // Check for male-only terms in female patient's report
             foreach (var term in MaleOnlyTerms)
             {
                 if (Regex.IsMatch(reportLower, $@"\b{Regex.Escape(term)}\b"))
-                {
                     mismatches.Add(term);
-                }
             }
         }
 
         return mismatches;
     }
 
-    /// <summary>
-    /// Set or clear the gender warning state.
-    /// When active, replaces clinical history with a blinking red warning.
-    /// </summary>
     public void SetGenderWarning(bool active, string? patientGender, List<string>? mismatchedTerms)
     {
         if (InvokeRequired)
@@ -1485,32 +1475,25 @@ public class ClinicalHistoryForm : Form
 
         if (active && mismatchedTerms != null && mismatchedTerms.Count > 0)
         {
-            // Save current clinical history text if not already in warning mode
             if (!_genderWarningActive)
-            {
                 _savedClinicalHistoryText = _contentLabel.Text;
-            }
 
             _genderWarningActive = true;
             _genderWarningText = $"GENDER MISMATCH!\nPatient: {patientGender}\nTerms: {string.Join(", ", mismatchedTerms)}";
 
-            // Start blinking
             StartBlinking();
             UpdateBorderTooltip();
+            RequestRender();
         }
         else
         {
-            // Clear warning and restore clinical history
             if (_genderWarningActive)
             {
                 _genderWarningActive = false;
                 StopBlinking();
 
-                // Restore label background to black
                 _contentLabel.BackColor = Color.Black;
 
-                // Restore current clinical history text (set by SetClinicalHistory before this call)
-                // Use _currentDisplayedText which is kept up-to-date, not the old saved text
                 if (!string.IsNullOrEmpty(_currentDisplayedText))
                 {
                     _contentLabel.Text = _currentDisplayedText;
@@ -1518,19 +1501,16 @@ public class ClinicalHistoryForm : Form
                 }
                 else if (!string.IsNullOrEmpty(_savedClinicalHistoryText))
                 {
-                    // Fallback to saved text if no current text
                     _contentLabel.Text = _savedClinicalHistoryText;
                     _contentLabel.ForeColor = NormalTextColor;
                 }
 
-                // Restore normal border (may be overridden by template mismatch or drafted state)
                 if (!_templateMismatch)
-                {
                     BackColor = NormalBorderColor;
-                }
-                UpdateBorderTooltip();
 
+                UpdateBorderTooltip();
                 _savedClinicalHistoryText = null;
+                RequestRender();
             }
         }
     }
@@ -1542,7 +1522,7 @@ public class ClinicalHistoryForm : Form
         _blinkState = true;
         UpdateBlinkDisplay();
 
-        _blinkTimer = new System.Windows.Forms.Timer { Interval = 500 }; // Blink every 500ms
+        _blinkTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _blinkTimer.Tick += (_, _) =>
         {
             _blinkState = !_blinkState;
@@ -1567,7 +1547,6 @@ public class ClinicalHistoryForm : Form
 
         if (_blinkState)
         {
-            // Bright red background, white text
             BackColor = Color.FromArgb(220, 0, 0);
             _contentLabel.BackColor = Color.FromArgb(180, 0, 0);
             _contentLabel.ForeColor = Color.White;
@@ -1575,18 +1554,33 @@ public class ClinicalHistoryForm : Form
         }
         else
         {
-            // Darker red background
             BackColor = Color.FromArgb(120, 0, 0);
             _contentLabel.BackColor = Color.FromArgb(80, 0, 0);
             _contentLabel.ForeColor = Color.FromArgb(255, 200, 200);
             _contentLabel.Text = _genderWarningText ?? "GENDER MISMATCH!";
         }
+
+        RequestRender();
     }
 
-    /// <summary>
-    /// Returns whether gender warning is currently active.
-    /// </summary>
     public bool IsGenderWarningActive => _genderWarningActive;
+
+    #endregion
+
+    #region Disposal
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _contentFont?.Dispose();
+            _blinkTimer?.Stop();
+            _blinkTimer?.Dispose();
+            _transparentDragMenu?.Dispose();
+            _transparentContentMenu?.Dispose();
+        }
+        base.Dispose(disposing);
+    }
 
     #endregion
 }
