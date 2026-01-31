@@ -1309,7 +1309,7 @@ public class MainForm : Form
     {
         if (InvokeRequired)
         {
-            Invoke(EnsureWindowsOnTop);
+            BeginInvoke(EnsureWindowsOnTop);
             return;
         }
 
@@ -1317,7 +1317,8 @@ public class MainForm : Form
         _toolbarWindow?.EnsureOnTop();
         _indicatorWindow?.EnsureOnTop();
         _clinicalHistoryWindow?.EnsureOnTop();
-        _impressionWindow?.EnsureOnTop();
+        if (_impressionWindow != null && !_impressionWindow.IsDisposed)
+            _impressionWindow.EnsureOnTop();
     }
 
     #endregion

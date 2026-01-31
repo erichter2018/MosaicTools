@@ -79,12 +79,14 @@ public class IndicatorForm : Form
 
     public void EnsureOnTop()
     {
+        if (IsDisposed) return;
         if (InvokeRequired)
         {
-            Invoke(EnsureOnTop);
+            BeginInvoke(EnsureOnTop);
             return;
         }
-        NativeWindows.ForceTopMost(this.Handle);
+        if (!IsDisposed && IsHandleCreated)
+            NativeWindows.ForceTopMost(this.Handle);
     }
     
     #region Drag Logic

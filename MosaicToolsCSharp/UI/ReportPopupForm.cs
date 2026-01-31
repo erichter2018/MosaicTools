@@ -381,7 +381,7 @@ public class ReportPopupForm : Form
 
         int w = Width, h = Height;
 
-        // Layer 1: semi-transparent background + mode label (no highlights/text)
+        // Layer 1: semi-transparent background + mode label
         using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(bmp))
         {
@@ -441,7 +441,7 @@ public class ReportPopupForm : Form
             if (y + lineHeight > 0 && y < Height)
             {
                 if (highlights)
-                    DrawLineHighlights(g, line, font, layoutRect);
+                    DrawLineHighlights(g, line, font, layoutRect, sf);
 
                 if (text)
                 {
@@ -457,34 +457,74 @@ public class ReportPopupForm : Form
             _totalContentHeight = (int)(y + _scrollOffset + padding);
     }
 
-    private void DrawLineHighlights(Graphics g, string line, Font font, RectangleF layoutRect)
+    private void DrawLineHighlights(Graphics g, string line, Font font, RectangleF layoutRect, StringFormat parentSf)
     {
+        // Collect all character ranges per color, then merge overlapping ranges
+        // to prevent semi-transparent rectangles from stacking.
+        var rangesByColor = new Dictionary<Color, List<(int Start, int End)>>();
+
         foreach (var hl in _highlights)
         {
             int idx = line.IndexOf(hl.Text, StringComparison.Ordinal);
             if (idx < 0) continue;
 
-            try
+            if (!rangesByColor.TryGetValue(hl.BackColor, out var ranges))
             {
-                using var sf = new StringFormat(StringFormat.GenericTypographic);
-                sf.Trimming = StringTrimming.Word;
-                sf.SetMeasurableCharacterRanges(new[] { new CharacterRange(idx, hl.Text.Length) });
-
-                var regions = g.MeasureCharacterRanges(line, font, layoutRect, sf);
-                foreach (var region in regions)
-                {
-                    var bounds = region.GetBounds(g);
-                    if (!bounds.IsEmpty && bounds.Width > 0 && bounds.Height > 0)
-                    {
-                        using var hlBrush = new SolidBrush(hl.BackColor);
-                        g.FillRectangle(hlBrush, bounds);
-                    }
-                    region.Dispose();
-                }
+                ranges = new List<(int, int)>();
+                rangesByColor[hl.BackColor] = ranges;
             }
-            catch { }
+            ranges.Add((idx, idx + hl.Text.Length));
+        }
+
+        if (rangesByColor.Count == 0) return;
+
+        foreach (var (color, ranges) in rangesByColor)
+        {
+            // Merge overlapping/adjacent character ranges
+            ranges.Sort((a, b) => a.Start.CompareTo(b.Start));
+            var merged = new List<(int Start, int End)> { ranges[0] };
+            for (int i = 1; i < ranges.Count; i++)
+            {
+                var last = merged[^1];
+                if (ranges[i].Start <= last.End)
+                    merged[^1] = (last.Start, Math.Max(last.End, ranges[i].End));
+                else
+                    merged.Add(ranges[i]);
+            }
+
+            // Draw each merged range using the SAME StringFormat as text layout
+            foreach (var (start, end) in merged)
+            {
+                try
+                {
+                    using var sf = new StringFormat(parentSf);
+                    sf.SetMeasurableCharacterRanges(new[] { new CharacterRange(start, end - start) });
+
+                    var regions = g.MeasureCharacterRanges(line, font, layoutRect, sf);
+                    using var identity = new System.Drawing.Drawing2D.Matrix();
+                    foreach (var region in regions)
+                    {
+                        // Use GetRegionScans instead of GetBounds to get separate
+                        // tight rectangles per visual line when text wraps.
+                        // GetBounds returns one big bounding box that fills the
+                        // entire width, making wrapped highlights look like blocks.
+                        var scans = region.GetRegionScans(identity);
+                        foreach (var scanRect in scans)
+                        {
+                            if (scanRect.Width > 0 && scanRect.Height > 0)
+                            {
+                                    using var hlBrush = new SolidBrush(color);
+                                g.FillRectangle(hlBrush, scanRect);
+                            }
+                        }
+                        region.Dispose();
+                    }
+                }
+                catch { }
+            }
         }
     }
+
 
     private void DrawModeLabel(Graphics g)
     {

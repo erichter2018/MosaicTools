@@ -225,15 +225,19 @@ public class NoteFormatter
         };
     }
     
+    private static readonly HashSet<string> PreservedAcronyms = new(StringComparer.OrdinalIgnoreCase)
+        { "NP", "MD", "DO", "PA", "RN", "LPN", "BSN", "MSN", "DNP", "PhD" };
+
     private static string ToTitleCase(string s)
     {
-        // Title-case each word, but preserve all-uppercase words (acronyms like NP, MD, DO, PA, RN)
+        // Title-case all words except known post-name credential acronyms
         var words = s.Split(' ');
         for (int i = 0; i < words.Length; i++)
         {
             var w = words[i].Trim();
-            if (w.Length <= 1 || w == w.ToUpperInvariant())
-                continue; // Already all-uppercase — leave it
+            if (w.Length <= 1) continue;
+            if (PreservedAcronyms.Contains(w.TrimEnd('.', ',')))
+                continue; // Known credential acronym — leave it
             words[i] = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(w.ToLower());
         }
         return string.Join(" ", words);

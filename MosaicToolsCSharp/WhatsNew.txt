@@ -1,3 +1,8 @@
+3.0.6
+- Fix doctor name capitalization in critical findings (DR. SMITH → Dr. Smith)
+- Fix app freeze: EnsureOnTop deadlock prevention across all overlay windows
+- Fix report highlight precision: tight per-line rectangles for wrapped text
+
 3.0.5
 - Transparent overlay for clinical history and impression windows
 - Mosaic 2.0.4 compatibility: fix description, MRN, and site code scraping
