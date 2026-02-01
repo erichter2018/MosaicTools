@@ -30,6 +30,7 @@ public class ActionController : IDisposable
     private GetPriorService _getPriorService;
     private readonly OcrService _ocrService;
     private readonly PipeService _pipeService;
+    private readonly TemplateDatabase _templateDatabase;
 
     public PipeService PipeService => _pipeService;
 
@@ -41,6 +42,7 @@ public class ActionController : IDisposable
     // State
     private bool _dictationActive = false;
     private volatile bool _isUserActive = false;
+    private int _scrapeRunning = 0; // Reentrancy guard for scrape timer
     private volatile bool _stopThread = false;
 
     // Impression search state
@@ -81,6 +83,8 @@ public class ActionController : IDisposable
     private bool _draftedAutoProcessDetected = false; // Set true when drafted study's report changes from baseline
     private bool _autoShowReportDoneForAccession = false; // Only auto-show report overlay once per accession
     private bool _needsBaselineCapture = false; // Set true on new study, cleared when baseline captured
+    private bool _baselineIsFromTemplateDb = false; // True when baseline came from template DB fallback (section-only diffing)
+    private int _baselineCaptureAttempts = 0; // Tick counter for template DB fallback timing
     private string? _lastPopupReportText; // Track what's currently displayed in popup for change detection
 
     // RVUCounter integration - track if discard dialog was shown for current accession
@@ -95,6 +99,7 @@ public class ActionController : IDisposable
     private bool _templateMismatchActive = false;
     private bool _genderMismatchActive = false;
     private bool _strokeDetectedActive = false;
+    private bool _pendingClarioPriorityRetry = false;
     private bool _clinicalHistoryVisible = false;
 
     // Critical note tracking - session-scoped set of accessions that already have critical notes
@@ -152,6 +157,7 @@ public class ActionController : IDisposable
         _ocrService = new OcrService();
         _pipeService = new PipeService();
         _pipeService.Start();
+        _templateDatabase = new TemplateDatabase();
 
         _actionThread = new Thread(ActionLoop) { IsBackground = true };
         _actionThread.SetApartmentState(ApartmentState.STA);
@@ -230,7 +236,14 @@ public class ActionController : IDisposable
         {
             StartMosaicScrapeTimer();
         }
-        
+
+        // Load template database and prune stale entries
+        if (_config.TemplateDatabaseEnabled)
+        {
+            _templateDatabase.Load();
+            _templateDatabase.Cleanup();
+        }
+
         Logger.Trace($"ActionController started (Headless={App.IsHeadless})");
     }
     
@@ -1562,7 +1575,8 @@ public class ActionController : IDisposable
             {
                 _currentReportPopup = new ReportPopupForm(_config, reportText, baselineForDiff,
                     changesEnabled: _config.ShowReportChanges,
-                    correlationEnabled: _config.CorrelationEnabled);
+                    correlationEnabled: _config.CorrelationEnabled,
+                    baselineIsSectionOnly: baselineForDiff != null && _baselineIsFromTemplateDb);
                 _lastPopupReportText = reportText;
 
                 // Handle closure to clear references
@@ -1790,6 +1804,7 @@ public class ActionController : IDisposable
         _scrapeTimer = new System.Threading.Timer(_ =>
         {
             if (_isUserActive) return; // Don't scrape during user actions
+            if (Interlocked.CompareExchange(ref _scrapeRunning, 1, 0) != 0) return; // Prevent overlapping scrapes
 
             try
             {
@@ -1958,6 +1973,8 @@ public class ActionController : IDisposable
                     // Note: _criticalNoteCreatedForAccessions is session-scoped, NOT reset on study change
                     // This prevents duplicate notes caused by transient accession-null scrape glitches
                     _baselineReport = null;
+                    _baselineIsFromTemplateDb = false;
+                    _baselineCaptureAttempts = 0;
                     _lastPopupReportText = null;
                     _automationService.ClearLastReport();
                     // Close stale report popup from prior study
@@ -1967,7 +1984,7 @@ public class ActionController : IDisposable
                         _currentReportPopup = null;
                         _mainForm.BeginInvoke(() => { try { stalePopup.Close(); } catch { } });
                     }
-                    _needsBaselineCapture = _config.ShowReportChanges; // Will capture on next scrape with report text
+                    _needsBaselineCapture = _config.ShowReportChanges || _config.CorrelationEnabled; // Baseline needed for Changes mode diff AND Rainbow mode dictated-sentence detection
                     // Speed up scraping to catch template flash before auto-processing
                     if (_needsBaselineCapture && !_searchingForImpression)
                         RestartScrapeTimer(_studyLoadScrapeIntervalMs);
@@ -1976,6 +1993,7 @@ public class ActionController : IDisposable
                     _templateMismatchActive = false;
                     _genderMismatchActive = false;
                     _strokeDetectedActive = false;
+                    _pendingClarioPriorityRetry = false;
 
                     // Reset Ignore Inpatient Drafted state
                     _macrosCompleteForCurrentAccession = false;
@@ -1987,12 +2005,13 @@ public class ActionController : IDisposable
                     {
                         _lastNonEmptyAccession = currentAccession;
 
-                        // Capture baseline report for diff highlighting (if enabled)
-                        Logger.Trace($"New study - ShowReportChanges={_config.ShowReportChanges}, reportText null={string.IsNullOrEmpty(reportText)}");
-                        if (_config.ShowReportChanges && !string.IsNullOrEmpty(reportText))
+                        // Capture baseline report for diff highlighting and Rainbow mode
+                        bool needsBaseline = _config.ShowReportChanges || _config.CorrelationEnabled;
+                        Logger.Trace($"New study - ShowReportChanges={_config.ShowReportChanges}, CorrelationEnabled={_config.CorrelationEnabled}, reportText null={string.IsNullOrEmpty(reportText)}");
+                        if (needsBaseline && !string.IsNullOrEmpty(reportText))
                         {
                             _baselineReport = reportText;
-                            Logger.Trace($"Captured baseline report ({reportText.Length} chars) for changes tracking");
+                            Logger.Trace($"Captured baseline report ({reportText.Length} chars) for changes/rainbow tracking");
                         }
 
                         // Show toast (disabled - too noisy)
@@ -2033,6 +2052,11 @@ public class ActionController : IDisposable
                         // Always extract Clario Priority/Class for pipe broadcasts
                         // Stroke detection UI logic only runs if that feature is enabled
                         ExtractClarioPriorityAndClass(currentAccession);
+
+                        // If Clario hasn't caught up yet (accession mismatch / null priority),
+                        // flag for retry on subsequent scrape ticks
+                        _pendingClarioPriorityRetry = string.IsNullOrEmpty(_automationService.LastClarioPriority);
+
                         if (_config.StrokeDetectionEnabled)
                         {
                             PerformStrokeDetection(currentAccession, reportText);
@@ -2061,20 +2085,51 @@ public class ActionController : IDisposable
                 }
 
                 // Capture baseline if needed (deferred from study change detection)
-                if (_needsBaselineCapture && !string.IsNullOrEmpty(reportText) && !_processReportPressedForCurrentAccession)
+                if (_needsBaselineCapture && !_processReportPressedForCurrentAccession)
                 {
                     if (_automationService.LastDraftedState)
                     {
-                        // Drafted studies: capture immediately - the template flashes complete before auto-processing
-                        _needsBaselineCapture = false;
-                        _baselineReport = reportText;
-                        Logger.Trace($"Captured baseline from scrape (DRAFTED, immediate): {reportText.Length} chars, drafted={_automationService.LastDraftedState}");
-                        Logger.Trace($"Baseline content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
-                        // Revert to normal scrape interval now that baseline is captured
-                        if (!_searchingForImpression)
-                            RestartScrapeTimer(NormalScrapeIntervalMs);
+                        _baselineCaptureAttempts++;
+
+                        if (!string.IsNullOrEmpty(reportText) && _baselineCaptureAttempts <= 1)
+                        {
+                            // First tick: try real-time capture (template flash)
+                            _needsBaselineCapture = false;
+                            _baselineReport = reportText;
+                            Logger.Trace($"Captured baseline from scrape (DRAFTED, immediate): {reportText.Length} chars, drafted={_automationService.LastDraftedState}");
+                            Logger.Trace($"Baseline content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
+                            // Revert to normal scrape interval now that baseline is captured
+                            if (!_searchingForImpression)
+                                RestartScrapeTimer(NormalScrapeIntervalMs);
+                        }
+                        else if (_baselineCaptureAttempts >= 4)
+                        {
+                            // ~2 seconds elapsed, give up on real-time capture, try DB fallback
+                            _needsBaselineCapture = false;
+                            if (!_searchingForImpression)
+                                RestartScrapeTimer(NormalScrapeIntervalMs);
+
+                            if (_config.TemplateDatabaseEnabled)
+                            {
+                                var desc = _automationService.LastDescription;
+                                if (!string.IsNullOrEmpty(desc))
+                                {
+                                    var fallback = _templateDatabase.GetFallbackTemplate(desc);
+                                    if (fallback != null)
+                                    {
+                                        _baselineReport = fallback;
+                                        _baselineIsFromTemplateDb = true;
+                                        Logger.Trace($"Using template DB fallback for '{desc}' ({fallback.Length} chars)");
+                                    }
+                                    else
+                                    {
+                                        Logger.Trace($"TemplateDB: No confident fallback for '{desc}'");
+                                    }
+                                }
+                            }
+                        }
                     }
-                    else
+                    else if (!string.IsNullOrEmpty(reportText))
                     {
                         // Non-drafted: wait for impression to appear - report is generated top-to-bottom after Process Report
                         var impression = ImpressionForm.ExtractImpression(reportText);
@@ -2083,6 +2138,13 @@ public class ActionController : IDisposable
                             _needsBaselineCapture = false;
                             _baselineReport = reportText;
                             Logger.Trace($"Captured baseline from scrape ({reportText.Length} chars)");
+
+                            // Record to template database for future fallback
+                            if (_config.TemplateDatabaseEnabled && !string.IsNullOrEmpty(_automationService.LastDescription))
+                            {
+                                _templateDatabase.RecordTemplate(_automationService.LastDescription, reportText);
+                            }
+
                             // Revert to normal scrape interval now that baseline is captured
                             if (!_searchingForImpression)
                                 RestartScrapeTimer(NormalScrapeIntervalMs);
@@ -2109,7 +2171,7 @@ public class ActionController : IDisposable
                 {
                     Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
                     _lastPopupReportText = reportText;
-                    _mainForm.BeginInvoke(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport); });
+                    _mainForm.BeginInvoke(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
                 }
 
                 // Check for pending macros - insert when clinical history becomes visible
@@ -2164,7 +2226,21 @@ public class ActionController : IDisposable
                         newGenderMismatch = genderMismatches.Count > 0;
                     }
 
-                    // Note: Stroke detection is handled elsewhere (on study change) and sets _strokeDetectedActive
+                    // Retry Clario priority extraction if it failed on accession change
+                    // (Clario may not have updated to the new study yet)
+                    if (_pendingClarioPriorityRetry && !string.IsNullOrEmpty(currentAccession))
+                    {
+                        ExtractClarioPriorityAndClass(currentAccession);
+                        if (!string.IsNullOrEmpty(_automationService.LastClarioPriority))
+                        {
+                            _pendingClarioPriorityRetry = false;
+                            Logger.Trace($"Clario priority retry succeeded: '{_automationService.LastClarioPriority}'");
+                            if (_config.StrokeDetectionEnabled)
+                            {
+                                PerformStrokeDetection(currentAccession, reportText);
+                            }
+                        }
+                    }
 
                     // Determine if any alerts are active
                     bool anyAlertActive = newTemplateMismatch || newGenderMismatch || _strokeDetectedActive;
@@ -2327,6 +2403,10 @@ public class ActionController : IDisposable
             {
                 Logger.Trace($"Mosaic scrape error: {ex.Message}");
             }
+            finally
+            {
+                Interlocked.Exchange(ref _scrapeRunning, 0);
+            }
         }, null, 0, NormalScrapeIntervalMs);
     }
     
@@ -2389,6 +2469,26 @@ public class ActionController : IDisposable
     {
         // Use already-extracted values from ExtractClarioPriorityAndClass()
         bool isStroke = _automationService.IsStrokeStudy;
+
+        // Stroke priority only applies to CT and MRI, not XR/CR/US etc.
+        if (isStroke)
+        {
+            var desc = _automationService.LastDescription;
+            if (!string.IsNullOrEmpty(desc))
+            {
+                bool isCrossSection = desc.StartsWith("CT ", StringComparison.OrdinalIgnoreCase) ||
+                                      desc.StartsWith("MR ", StringComparison.OrdinalIgnoreCase) ||
+                                      desc.StartsWith("MRI ", StringComparison.OrdinalIgnoreCase) ||
+                                      desc.Contains(" CT ", StringComparison.OrdinalIgnoreCase) ||
+                                      desc.Contains(" MR ", StringComparison.OrdinalIgnoreCase) ||
+                                      desc.Contains(" MRI ", StringComparison.OrdinalIgnoreCase);
+                if (!isCrossSection)
+                {
+                    Logger.Trace($"PerformStrokeDetection: Suppressing stroke for non-CT/MR study: '{desc}'");
+                    isStroke = false;
+                }
+            }
+        }
 
         // Also check clinical history for stroke keywords if enabled
         if (!isStroke && _config.StrokeDetectionUseClinicalHistory && !string.IsNullOrEmpty(reportText))

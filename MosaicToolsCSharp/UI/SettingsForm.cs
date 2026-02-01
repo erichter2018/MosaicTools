@@ -93,6 +93,13 @@ public class SettingsForm : Form
     private NumericUpDown _rvuGoalValueBox = null!;
     private TextBox _rvuCounterPathBox = null!;
     private Label _rvuCounterStatusLabel = null!;
+    private CheckBox _rvuMetricTotalCheck = null!;
+    private CheckBox _rvuMetricPerHourCheck = null!;
+    private CheckBox _rvuMetricCurrentHourCheck = null!;
+    private CheckBox _rvuMetricPriorHourCheck = null!;
+    private CheckBox _rvuMetricEstTotalCheck = null!;
+    private ComboBox _rvuOverflowLayoutCombo = null!;
+    private Label _rvuOverflowLayoutLabel = null!;
     private CheckBox _showReportChangesCheck = null!;
     private CheckBox _correlationEnabledCheck = null!;
     private CheckBox _pickListsEnabledCheck = null!;
@@ -2529,7 +2536,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         {
             Text = "RVUCounter Integration",
             Location = new Point(10, y),
-            Size = new Size(groupWidth, 115),
+            Size = new Size(groupWidth, 185),
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
@@ -2564,42 +2571,85 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         rvuGroup.Controls.Add(_rvuCounterEnabledCheck);
         CreateTooltipLabel(rvuGroup, _rvuCounterEnabledCheck, "When enabled, sends signed study events to RVUCounter\nso it can track your RVU productivity.");
+        ry += 22;
 
-        var rvuDisplayLabel = new Label
+        // Metrics checkboxes
+        var metricsLabel = new Label
         {
-            Text = "Display:",
-            Location = new Point(260, ry + 2),
+            Text = "Display metrics:",
+            Location = new Point(10, ry + 2),
             AutoSize = true,
-            ForeColor = Color.LightGray
+            ForeColor = Color.LightGray,
+            Font = new Font("Segoe UI", 9)
         };
-        rvuGroup.Controls.Add(rvuDisplayLabel);
+        rvuGroup.Controls.Add(metricsLabel);
+        ry += 20;
 
-        _rvuDisplayModeCombo = new ComboBox
+        _rvuMetricTotalCheck = new CheckBox { Text = "Total", Location = new Point(20, ry), AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 8) };
+        _rvuMetricPerHourCheck = new CheckBox { Text = "RVU/h", Location = new Point(80, ry), AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 8) };
+        _rvuMetricCurrentHourCheck = new CheckBox { Text = "This Hour", Location = new Point(150, ry), AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 8) };
+        _rvuMetricPriorHourCheck = new CheckBox { Text = "Prev Hour", Location = new Point(235, ry), AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 8) };
+        _rvuMetricEstTotalCheck = new CheckBox { Text = "Est Total", Location = new Point(325, ry), AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 8) };
+        rvuGroup.Controls.Add(_rvuMetricTotalCheck);
+        rvuGroup.Controls.Add(_rvuMetricPerHourCheck);
+        rvuGroup.Controls.Add(_rvuMetricCurrentHourCheck);
+        rvuGroup.Controls.Add(_rvuMetricPriorHourCheck);
+        rvuGroup.Controls.Add(_rvuMetricEstTotalCheck);
+
+        // Wire up checkbox changes to enable/disable layout combo
+        EventHandler updateLayoutState = (s, e) => UpdateOverflowLayoutState();
+        _rvuMetricTotalCheck.CheckedChanged += updateLayoutState;
+        _rvuMetricPerHourCheck.CheckedChanged += updateLayoutState;
+        _rvuMetricCurrentHourCheck.CheckedChanged += updateLayoutState;
+        _rvuMetricPriorHourCheck.CheckedChanged += updateLayoutState;
+        _rvuMetricEstTotalCheck.CheckedChanged += updateLayoutState;
+        ry += 22;
+
+        // Layout combo (for 3+ metrics)
+        _rvuOverflowLayoutLabel = new Label
         {
-            Location = new Point(310, ry - 2),
-            Size = new Size(90, 22),
+            Text = "3+ layout:",
+            Location = new Point(10, ry + 2),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        rvuGroup.Controls.Add(_rvuOverflowLayoutLabel);
+
+        _rvuOverflowLayoutCombo = new ComboBox
+        {
+            Location = new Point(80, ry - 1),
+            Size = new Size(110, 22),
             DropDownStyle = ComboBoxStyle.DropDownList,
             BackColor = Color.FromArgb(50, 50, 50),
             ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat
+            FlatStyle = FlatStyle.Flat,
+            Enabled = false
         };
+        _rvuOverflowLayoutCombo.Items.AddRange(new object[] { "Horizontal", "Vertical Stack", "Hover Popup", "Carousel" });
+        rvuGroup.Controls.Add(_rvuOverflowLayoutCombo);
+        CreateTooltipLabel(rvuGroup, _rvuOverflowLayoutCombo, "Layout when 3+ metrics selected:\nHorizontal = wide bar, Vertical = stacked rows,\nHover = popup on mouse-over, Carousel = cycles every 4s.");
+
+        // Keep legacy combo hidden but functional for save/load
+        _rvuDisplayModeCombo = new ComboBox { Visible = false };
         _rvuDisplayModeCombo.Items.AddRange(new object[] { "Total", "RVU/h", "Both" });
         rvuGroup.Controls.Add(_rvuDisplayModeCombo);
-        CreateTooltipLabel(rvuGroup, _rvuDisplayModeCombo, "How to show RVU count on widget bar:\nTotal = shift total, RVU/h = per hour rate, Both = both values.");
+
         ry += 22;
 
         _rvuGoalEnabledCheck = new CheckBox
         {
             Text = "Goal:",
-            Location = new Point(30, ry),
+            Location = new Point(10, ry),
             AutoSize = true,
-            ForeColor = Color.White
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
         };
         rvuGroup.Controls.Add(_rvuGoalEnabledCheck);
 
         _rvuGoalValueBox = new NumericUpDown
         {
-            Location = new Point(85, ry - 2),
+            Location = new Point(65, ry - 2),
             Size = new Size(55, 20),
             BackColor = Color.FromArgb(50, 50, 50),
             ForeColor = Color.White,
@@ -2613,18 +2663,18 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
 
         var rvuGoalSuffixLabel = new Label
         {
-            Text = "/h",
-            Location = new Point(142, ry + 2),
+            Text = "/h (colors RVU/h red when below)",
+            Location = new Point(122, ry + 2),
             AutoSize = true,
-            ForeColor = Color.Gray
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
         };
         rvuGroup.Controls.Add(rvuGoalSuffixLabel);
-        CreateTooltipLabel(rvuGroup, rvuGoalSuffixLabel, "Target RVU per hour. Widget bar color shows progress:\nblue = meeting goal, red = below goal.");
         ry += 24;
 
         _rvuCounterPathBox = new TextBox
         {
-            Location = new Point(30, ry),
+            Location = new Point(10, ry),
             Size = new Size(300, 20),
             BackColor = Color.FromArgb(50, 50, 50),
             ForeColor = Color.LightGray,
@@ -2635,7 +2685,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         var findRvuBtn = new Button
         {
             Text = "Find",
-            Location = new Point(340, ry - 2),
+            Location = new Point(320, ry - 2),
             Size = new Size(45, 22),
             BackColor = Color.FromArgb(60, 60, 60),
             ForeColor = Color.White,
@@ -2643,12 +2693,11 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         findRvuBtn.Click += OnFindRvuCounterClick;
         rvuGroup.Controls.Add(findRvuBtn);
-        CreateTooltipLabel(rvuGroup, findRvuBtn, "Auto-search common locations for RVUCounter database\n(AppData, Desktop, Documents).");
 
         var browseRvuBtn = new Button
         {
             Text = "...",
-            Location = new Point(390, ry - 2),
+            Location = new Point(370, ry - 2),
             Size = new Size(30, 22),
             BackColor = Color.FromArgb(60, 60, 60),
             ForeColor = Color.White,
@@ -2656,19 +2705,18 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         browseRvuBtn.Click += OnBrowseDatabaseClick;
         rvuGroup.Controls.Add(browseRvuBtn);
-        CreateTooltipLabel(rvuGroup, browseRvuBtn, "Manually browse to select RVUCounter database file.");
         ry += 25;
 
         _rvuCounterStatusLabel = new Label
         {
             Text = "",
-            Location = new Point(30, ry),
+            Location = new Point(10, ry),
             Size = new Size(300, 18),
             ForeColor = Color.Gray
         };
         rvuGroup.Controls.Add(_rvuCounterStatusLabel);
 
-        y += 125;
+        y += 195;
 
         // ========== INPATIENT XR HANDLING SECTION ==========
         var inpatientGroup = new GroupBox
@@ -3005,25 +3053,62 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         scrollPanel.Controls.Add(_rvuCounterEnabledCheck);
         y += 25;
 
-        // Display mode
-        var rvuDisplayLabel = new Label
+        // Metrics checkboxes
+        var metricsLabel2 = new Label
         {
-            Text = "Display mode:",
+            Text = "Display metrics:",
             Location = new Point(20, y),
             AutoSize = true,
             ForeColor = Color.LightGray
         };
-        scrollPanel.Controls.Add(rvuDisplayLabel);
+        scrollPanel.Controls.Add(metricsLabel2);
+        y += 20;
 
-        _rvuDisplayModeCombo = new ComboBox
+        _rvuMetricTotalCheck = new CheckBox { Text = "Total", Location = new Point(30, y), AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 8) };
+        _rvuMetricPerHourCheck = new CheckBox { Text = "RVU/h", Location = new Point(95, y), AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 8) };
+        _rvuMetricCurrentHourCheck = new CheckBox { Text = "This Hour", Location = new Point(170, y), AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 8) };
+        _rvuMetricPriorHourCheck = new CheckBox { Text = "Prev Hour", Location = new Point(260, y), AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 8) };
+        _rvuMetricEstTotalCheck = new CheckBox { Text = "Est Total", Location = new Point(350, y), AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 8) };
+        scrollPanel.Controls.Add(_rvuMetricTotalCheck);
+        scrollPanel.Controls.Add(_rvuMetricPerHourCheck);
+        scrollPanel.Controls.Add(_rvuMetricCurrentHourCheck);
+        scrollPanel.Controls.Add(_rvuMetricPriorHourCheck);
+        scrollPanel.Controls.Add(_rvuMetricEstTotalCheck);
+
+        EventHandler updateLayoutState2 = (s, e) => UpdateOverflowLayoutState();
+        _rvuMetricTotalCheck.CheckedChanged += updateLayoutState2;
+        _rvuMetricPerHourCheck.CheckedChanged += updateLayoutState2;
+        _rvuMetricCurrentHourCheck.CheckedChanged += updateLayoutState2;
+        _rvuMetricPriorHourCheck.CheckedChanged += updateLayoutState2;
+        _rvuMetricEstTotalCheck.CheckedChanged += updateLayoutState2;
+        y += 24;
+
+        // Layout combo for 3+ metrics
+        _rvuOverflowLayoutLabel = new Label
         {
-            Location = new Point(110, y - 3),
-            Size = new Size(100, 22),
+            Text = "3+ layout:",
+            Location = new Point(20, y + 2),
+            AutoSize = true,
+            ForeColor = Color.Gray,
+            Font = new Font("Segoe UI", 8)
+        };
+        scrollPanel.Controls.Add(_rvuOverflowLayoutLabel);
+
+        _rvuOverflowLayoutCombo = new ComboBox
+        {
+            Location = new Point(90, y - 1),
+            Size = new Size(120, 22),
             DropDownStyle = ComboBoxStyle.DropDownList,
             BackColor = Color.FromArgb(50, 50, 50),
             ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat
+            FlatStyle = FlatStyle.Flat,
+            Enabled = false
         };
+        _rvuOverflowLayoutCombo.Items.AddRange(new object[] { "Horizontal", "Vertical Stack", "Hover Popup", "Carousel" });
+        scrollPanel.Controls.Add(_rvuOverflowLayoutCombo);
+
+        // Hidden legacy combo
+        _rvuDisplayModeCombo = new ComboBox { Visible = false };
         _rvuDisplayModeCombo.Items.AddRange(new object[] { "Total", "RVU/h", "Both" });
         scrollPanel.Controls.Add(_rvuDisplayModeCombo);
         y += 28;
@@ -3062,18 +3147,6 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         scrollPanel.Controls.Add(rvuGoalSuffixLabel);
         y += 28;
-
-        // Warning about current version
-        var rvuWarningLabel = new Label
-        {
-            Text = "Don't use this with current version of RVUCounter, may lead to unexpected results.",
-            Location = new Point(40, y),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(200, 100, 100),
-            Font = new Font("Segoe UI", 8, FontStyle.Italic)
-        };
-        scrollPanel.Controls.Add(rvuWarningLabel);
-        y += 25;
 
         // Path label
         var pathLabel = new Label
@@ -3425,6 +3498,20 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         }
     }
 
+    private void UpdateOverflowLayoutState()
+    {
+        int checkedCount = 0;
+        if (_rvuMetricTotalCheck.Checked) checkedCount++;
+        if (_rvuMetricPerHourCheck.Checked) checkedCount++;
+        if (_rvuMetricCurrentHourCheck.Checked) checkedCount++;
+        if (_rvuMetricPriorHourCheck.Checked) checkedCount++;
+        if (_rvuMetricEstTotalCheck.Checked) checkedCount++;
+
+        bool enable = checkedCount >= 3;
+        _rvuOverflowLayoutCombo.Enabled = enable;
+        _rvuOverflowLayoutLabel.ForeColor = enable ? Color.LightGray : Color.Gray;
+    }
+
     private void OnFindRvuCounterClick(object? sender, EventArgs e)
     {
         string? foundDbPath = null;
@@ -3749,6 +3836,14 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         // RVUCounter and Report Changes (no longer in Experimental section)
         _rvuCounterEnabledCheck.Checked = _config.RvuCounterEnabled;
         _rvuDisplayModeCombo.SelectedIndex = (int)_config.RvuDisplayMode;
+        // Load metric flags into checkboxes
+        _rvuMetricTotalCheck.Checked = _config.RvuMetrics.HasFlag(RvuMetric.Total);
+        _rvuMetricPerHourCheck.Checked = _config.RvuMetrics.HasFlag(RvuMetric.PerHour);
+        _rvuMetricCurrentHourCheck.Checked = _config.RvuMetrics.HasFlag(RvuMetric.CurrentHour);
+        _rvuMetricPriorHourCheck.Checked = _config.RvuMetrics.HasFlag(RvuMetric.PriorHour);
+        _rvuMetricEstTotalCheck.Checked = _config.RvuMetrics.HasFlag(RvuMetric.EstimatedTotal);
+        _rvuOverflowLayoutCombo.SelectedIndex = (int)_config.RvuOverflowLayout;
+        UpdateOverflowLayoutState();
         _rvuGoalEnabledCheck.Checked = _config.RvuGoalEnabled;
         _rvuGoalValueBox.Value = (decimal)Math.Clamp(_config.RvuGoalPerHour, 1, 100);
         _rvuCounterPathBox.Text = _config.RvuCounterPath;
@@ -4332,6 +4427,16 @@ SETTINGS FILE
         // RVUCounter and Report Changes
         _config.RvuCounterEnabled = _rvuCounterEnabledCheck.Checked;
         _config.RvuDisplayMode = (RvuDisplayMode)_rvuDisplayModeCombo.SelectedIndex;
+        // Save metric flags from checkboxes
+        var metrics = RvuMetric.None;
+        if (_rvuMetricTotalCheck.Checked) metrics |= RvuMetric.Total;
+        if (_rvuMetricPerHourCheck.Checked) metrics |= RvuMetric.PerHour;
+        if (_rvuMetricCurrentHourCheck.Checked) metrics |= RvuMetric.CurrentHour;
+        if (_rvuMetricPriorHourCheck.Checked) metrics |= RvuMetric.PriorHour;
+        if (_rvuMetricEstTotalCheck.Checked) metrics |= RvuMetric.EstimatedTotal;
+        if (metrics == RvuMetric.None) metrics = RvuMetric.Total; // Default to Total if nothing checked
+        _config.RvuMetrics = metrics;
+        _config.RvuOverflowLayout = (RvuOverflowLayout)Math.Max(0, _rvuOverflowLayoutCombo.SelectedIndex);
         _config.RvuGoalEnabled = _rvuGoalEnabledCheck.Checked;
         _config.RvuGoalPerHour = (double)_rvuGoalValueBox.Value;
         _config.RvuCounterPath = _rvuCounterPathBox.Text;

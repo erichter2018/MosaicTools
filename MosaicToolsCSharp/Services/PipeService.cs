@@ -44,7 +44,21 @@ public record ShiftInfoMessage(
     [property: JsonPropertyName("totalRvu")] double TotalRvu,
     [property: JsonPropertyName("recordCount")] int RecordCount,
     [property: JsonPropertyName("shiftStart")] string? ShiftStart,
-    [property: JsonPropertyName("isShiftActive")] bool IsShiftActive
+    [property: JsonPropertyName("isShiftActive")] bool IsShiftActive,
+    [property: JsonPropertyName("currentHourRvu")] double? CurrentHourRvu = null,
+    [property: JsonPropertyName("priorHourRvu")] double? PriorHourRvu = null,
+    [property: JsonPropertyName("estimatedTotalRvu")] double? EstimatedTotalRvu = null
+);
+
+/// <summary>
+/// Distraction alert from RVUCounter — study has been open too long.
+/// </summary>
+public record DistractionAlertMessage(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("studyType")] string? StudyType,
+    [property: JsonPropertyName("elapsedSeconds")] double ElapsedSeconds,
+    [property: JsonPropertyName("expectedSeconds")] double ExpectedSeconds,
+    [property: JsonPropertyName("alertLevel")] int AlertLevel
 );
 
 /// <summary>
@@ -75,6 +89,11 @@ public class PipeService : IDisposable
     /// Raised when new shift info is received from the pipe client.
     /// </summary>
     public event Action? ShiftInfoUpdated;
+
+    /// <summary>
+    /// Raised when a distraction alert is received from RVUCounter.
+    /// </summary>
+    public event Action<DistractionAlertMessage>? DistractionAlertReceived;
 
     public void Start()
     {
@@ -180,8 +199,17 @@ public class PipeService : IDisposable
                     {
                         _latestShiftInfo = msg;
                     }
-                    Logger.Trace($"PipeService: Received shift_info: rvu={msg.TotalRvu:F1}, records={msg.RecordCount}, active={msg.IsShiftActive}");
+                    Logger.Trace($"PipeService: Received shift_info: rvu={msg.TotalRvu:F1}, records={msg.RecordCount}, active={msg.IsShiftActive}, curHr={msg.CurrentHourRvu?.ToString("F1") ?? "null"}, prevHr={msg.PriorHourRvu?.ToString("F1") ?? "null"}, est={msg.EstimatedTotalRvu?.ToString("F1") ?? "null"}");
                     ShiftInfoUpdated?.Invoke();
+                }
+            }
+            else if (type == "distraction_alert")
+            {
+                var msg = JsonSerializer.Deserialize<DistractionAlertMessage>(json);
+                if (msg != null)
+                {
+                    Logger.Trace($"PipeService: Received distraction_alert: level={msg.AlertLevel}, study={msg.StudyType}, elapsed={msg.ElapsedSeconds:F0}s");
+                    DistractionAlertReceived?.Invoke(msg);
                 }
             }
             else

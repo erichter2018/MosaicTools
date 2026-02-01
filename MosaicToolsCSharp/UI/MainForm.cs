@@ -33,6 +33,13 @@ public class MainForm : Form
     private readonly RvuCounterService _rvuCounterService;
     private System.Windows.Forms.Timer? _rvuTimer;
 
+    // RVU multi-metric support
+    private readonly List<Label> _rvuMetricLabels = new();
+    private System.Windows.Forms.Timer? _carouselTimer;
+    private int _carouselIndex;
+    private RvuPopupForm? _rvuPopup;
+    private RvuPopupForm? _rvuDrawer; // persistent drawer for vertical stack
+
     // Connectivity Monitor
     private readonly ConnectivityService _connectivityService;
     private readonly Panel _connectivityPanel;
@@ -75,6 +82,7 @@ public class MainForm : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
+        DoubleBuffered = true;
         Text = "MosaicToolsMainWindow";  // Hidden title for AHK targeting
         BackColor = Color.FromArgb(51, 51, 51); // #333333
         Size = new Size(baseWidth + rvuWidth + connectivityWidth, 40);
@@ -129,7 +137,7 @@ public class MainForm : Form
         _titleLabel.MouseLeave += (_, _) => _titleLabel.ForeColor = Color.FromArgb(204, 204, 204);
         _titleLabel.Click += (_, _) => OpenSettings();
 
-        // RVU panel with two labels (shown when RVU counter is enabled)
+        // RVU panel (shown when RVU counter is enabled)
         _rvuPanel = new Panel
         {
             BackColor = Color.Black,
@@ -137,6 +145,11 @@ public class MainForm : Form
             Dock = DockStyle.Right,
             Visible = _config.RvuCounterEnabled
         };
+        typeof(Panel).GetProperty("DoubleBuffered",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(_rvuPanel, true);
+        _rvuPanel.MouseEnter += OnRvuPanelMouseEnter;
+        _rvuPanel.MouseLeave += OnRvuPanelMouseLeave;
 
         // RVU value label (Carolina blue)
         _rvuValueLabel = new Label
@@ -378,6 +391,50 @@ public class MainForm : Form
             };
         }
 
+        // Subscribe to distraction alerts from RVUCounter — play escalating beeps
+        // Higher pitch (1200Hz+) and longer than start/stop beeps (800Hz) to sound distinct
+        _controller.PipeService.DistractionAlertReceived += alert =>
+        {
+            var volume = _config.DistractionAlertVolume;
+            if (alert.AlertLevel <= 1)
+            {
+                // Level 1: two rapid beeps
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    AudioService.PlayBeep(1200, 400, volume);
+                    Thread.Sleep(100);
+                    AudioService.PlayBeep(1200, 400, volume);
+                });
+            }
+            else if (alert.AlertLevel == 2)
+            {
+                // Level 2: three beeps, rising pitch
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    AudioService.PlayBeep(1200, 400, volume);
+                    Thread.Sleep(100);
+                    AudioService.PlayBeep(1400, 400, volume);
+                    Thread.Sleep(100);
+                    AudioService.PlayBeep(1600, 400, volume);
+                });
+            }
+            else
+            {
+                // Level 3+: four rapid beeps, high pitch, louder
+                var louder = Math.Min(volume * 1.5, 0.15);
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    AudioService.PlayBeep(1400, 350, louder);
+                    Thread.Sleep(80);
+                    AudioService.PlayBeep(1600, 350, louder);
+                    Thread.Sleep(80);
+                    AudioService.PlayBeep(1600, 350, louder);
+                    Thread.Sleep(80);
+                    AudioService.PlayBeep(1800, 350, louder);
+                });
+            }
+        };
+
         // Start connectivity monitor if enabled (skip in headless mode - no UI to display it)
         if (_config.ConnectivityMonitorEnabled && !App.IsHeadless)
         {
@@ -387,21 +444,45 @@ public class MainForm : Form
     }
 
     /// <summary>
-    /// Calculate the RVU panel width based on display mode.
-    /// Max values to fit: Total="999.9 RVU", PerHour="99.9/h", Both="999 | 99.9/h"
+    /// Calculate the RVU panel width based on selected metrics and layout.
     /// </summary>
     private int GetRvuPanelWidth()
     {
         if (!_config.RvuCounterEnabled)
             return 0;
 
-        return _config.RvuDisplayMode switch
+        var metrics = _config.RvuMetrics;
+        int count = CountSetFlags(metrics);
+
+        if (count == 0)
+            return 75; // Fallback
+
+        if (count <= 2)
         {
-            RvuDisplayMode.Total => 75,    // "999.9 RVU"
-            RvuDisplayMode.PerHour => 60,  // "99.9/h"
-            RvuDisplayMode.Both => 120,    // "999 | 99.9/h"
-            _ => 75
+            // Horizontal layout: ~65px per metric
+            return count * 65;
+        }
+
+        // 3+ metrics: depends on layout
+        return _config.RvuOverflowLayout switch
+        {
+            RvuOverflowLayout.Horizontal => count * 65,
+            RvuOverflowLayout.VerticalStack => 0, // All metrics in drawer
+            RvuOverflowLayout.HoverPopup => 65,    // First metric inline, rest on hover
+            RvuOverflowLayout.Carousel => 75,      // Single metric slot
+            _ => count * 65
         };
+    }
+
+    private static int CountSetFlags(RvuMetric m)
+    {
+        int count = 0;
+        if (m.HasFlag(RvuMetric.Total)) count++;
+        if (m.HasFlag(RvuMetric.PerHour)) count++;
+        if (m.HasFlag(RvuMetric.CurrentHour)) count++;
+        if (m.HasFlag(RvuMetric.PriorHour)) count++;
+        if (m.HasFlag(RvuMetric.EstimatedTotal)) count++;
+        return count;
     }
 
     /// <summary>
@@ -425,7 +506,7 @@ public class MainForm : Form
 
         // Prefer pipe shift info from RVUCounter over SQLite fallback
         ShiftInfo? shiftInfo = null;
-        var pipeShift = _controller.PipeService.LatestShiftInfo;
+        ShiftInfoMessage? pipeShift = _controller.PipeService.LatestShiftInfo;
         if (_controller.PipeService.IsConnected && pipeShift != null && pipeShift.IsShiftActive)
         {
             shiftInfo = new ShiftInfo
@@ -443,96 +524,324 @@ public class MainForm : Form
             Logger.Trace($"UpdateRvuDisplay: Got SQLite shift info = {(shiftInfo != null ? $"total={shiftInfo.TotalRvu:F1}" : "null")}");
         }
 
-        if (shiftInfo != null)
+        // Hide the 3 legacy labels - we use _rvuMetricLabels now
+        _rvuValueLabel.Visible = false;
+        _rvuSeparatorLabel.Visible = false;
+        _rvuSuffixLabel.Visible = false;
+
+        // Clear old metric labels
+        foreach (var lbl in _rvuMetricLabels)
+            lbl.Dispose();
+        _rvuMetricLabels.Clear();
+
+        // Build metric entries
+        var allMetrics = BuildMetricEntries(shiftInfo, pipeShift);
+        var metrics = _config.RvuMetrics;
+        int count = CountSetFlags(metrics);
+
+        if (count == 0 || allMetrics.Count == 0)
         {
-            // Calculate RVU/hour
-            double rvuPerHour = 0;
-            if (DateTime.TryParse(shiftInfo.ShiftStart, out var shiftStart))
-            {
-                var hoursElapsed = (DateTime.Now - shiftStart).TotalHours;
-                if (hoursElapsed > 0.01) // Avoid division by very small numbers
-                {
-                    rvuPerHour = shiftInfo.TotalRvu / hoursElapsed;
-                }
-            }
+            // Show "--" fallback
+            var fallback = CreateMetricLabel("--", Color.FromArgb(100, 100, 100));
+            _rvuPanel.Controls.Add(fallback);
+            _rvuMetricLabels.Add(fallback);
+            int cy = (_rvuPanel.Height - fallback.PreferredHeight) / 2;
+            int cx = Math.Max(2, (_rvuPanel.Width - fallback.PreferredWidth) / 2);
+            fallback.Location = new Point(cx, cy);
+            _rvuPanel.Visible = true;
+            return;
+        }
 
-            // Determine color based on goal
-            var carolinaBlue = Color.FromArgb(75, 156, 211);
-            var lightRed = Color.FromArgb(255, 120, 120);
+        // Hide drawer/popup if not needed for current layout
+        bool useDrawer = count >= 3 && _config.RvuOverflowLayout == RvuOverflowLayout.VerticalStack;
+        if (!useDrawer) HideRvuDrawer();
 
-            // Check if below goal (only when goal is enabled and we have RVU/h to compare)
-            bool belowGoal = _config.RvuGoalEnabled && rvuPerHour < _config.RvuGoalPerHour;
-            var rateColor = belowGoal ? lightRed : carolinaBlue;
-
-            // Build display based on mode
-            switch (_config.RvuDisplayMode)
-            {
-                case RvuDisplayMode.Total:
-                    _rvuValueLabel.Text = $"{shiftInfo.TotalRvu:F1}";
-                    _rvuValueLabel.ForeColor = carolinaBlue;
-                    _rvuSeparatorLabel.Visible = false;
-                    _rvuSuffixLabel.Text = " RVU";
-                    _rvuSuffixLabel.ForeColor = Color.FromArgb(120, 120, 120);
-                    break;
-                case RvuDisplayMode.PerHour:
-                    _rvuValueLabel.Text = $"{rvuPerHour:F1}";
-                    _rvuValueLabel.ForeColor = rateColor;
-                    _rvuSeparatorLabel.Visible = false;
-                    _rvuSuffixLabel.Text = "/h";
-                    _rvuSuffixLabel.ForeColor = Color.FromArgb(120, 120, 120);
-                    break;
-                case RvuDisplayMode.Both:
-                    _rvuValueLabel.Text = $"{shiftInfo.TotalRvu:F0}";
-                    _rvuValueLabel.ForeColor = carolinaBlue;
-                    _rvuSeparatorLabel.Visible = true;
-                    _rvuSuffixLabel.Text = $"{rvuPerHour:F1}/h";
-                    _rvuSuffixLabel.ForeColor = rateColor;
-                    break;
-                default:
-                    _rvuValueLabel.Text = $"{shiftInfo.TotalRvu:F1}";
-                    _rvuValueLabel.ForeColor = carolinaBlue;
-                    _rvuSeparatorLabel.Visible = false;
-                    _rvuSuffixLabel.Text = " RVU";
-                    _rvuSuffixLabel.ForeColor = Color.FromArgb(120, 120, 120);
-                    break;
-            }
-
-            _rvuValueLabel.Visible = true;
-            _rvuSuffixLabel.Visible = true;
-
-            // Center labels within the panel
-            CenterRvuLabels();
+        // Layout depends on count and mode
+        if (count <= 2 || _config.RvuOverflowLayout == RvuOverflowLayout.Horizontal)
+        {
+            LayoutHorizontal(allMetrics);
         }
         else
         {
-            // Show "--" in grey when no shift
-            _rvuValueLabel.Text = "--";
-            _rvuValueLabel.ForeColor = Color.FromArgb(100, 100, 100);
-            _rvuValueLabel.Font = new Font("Segoe UI", 9, FontStyle.Bold);
-            _rvuValueLabel.Visible = true;
-            _rvuSeparatorLabel.Visible = false;
-            _rvuSuffixLabel.Visible = false;
-
-            // Center the label
-            CenterRvuLabels();
+            switch (_config.RvuOverflowLayout)
+            {
+                case RvuOverflowLayout.VerticalStack:
+                    LayoutVerticalStack(allMetrics);
+                    break;
+                case RvuOverflowLayout.HoverPopup:
+                    LayoutHoverPopup(allMetrics);
+                    break;
+                case RvuOverflowLayout.Carousel:
+                    LayoutCarousel(allMetrics);
+                    break;
+                default:
+                    LayoutHorizontal(allMetrics);
+                    break;
+            }
         }
-        _rvuPanel.Visible = true;
+
+        // Hide inline panel when vertical stack puts everything in the drawer
+        bool isVerticalStack = count >= 3 && _config.RvuOverflowLayout == RvuOverflowLayout.VerticalStack;
+        _rvuPanel.Visible = !isVerticalStack;
+    }
+
+    /// <summary>
+    /// Build the list of (shortText, longLabel, value, color) for each enabled metric.
+    /// </summary>
+    private List<(string Short, string Label, string Value, Color Color)> BuildMetricEntries(
+        ShiftInfo? shiftInfo, ShiftInfoMessage? pipeShift)
+    {
+        var carolinaBlue = Color.FromArgb(75, 156, 211);
+        var lightRed = Color.FromArgb(255, 120, 120);
+        var dimGray = Color.FromArgb(120, 120, 120);
+        var metrics = _config.RvuMetrics;
+        var result = new List<(string Short, string Label, string Value, Color Color)>();
+
+        // Calculate RVU/hour from shift start time
+        double rvuPerHour = 0;
+        if (shiftInfo != null && DateTime.TryParse(shiftInfo.ShiftStart, out var shiftStart))
+        {
+            var hoursElapsed = (DateTime.Now - shiftStart).TotalHours;
+            if (hoursElapsed > 0.01)
+                rvuPerHour = shiftInfo.TotalRvu / hoursElapsed;
+        }
+
+        bool belowGoal = _config.RvuGoalEnabled && rvuPerHour < _config.RvuGoalPerHour;
+        var rateColor = belowGoal ? lightRed : carolinaBlue;
+
+        if (metrics.HasFlag(RvuMetric.Total))
+        {
+            var val = shiftInfo != null ? $"{shiftInfo.TotalRvu:F1}" : "--";
+            result.Add(($"RVU: {val}", "RVU:", val, carolinaBlue));
+        }
+
+        if (metrics.HasFlag(RvuMetric.PerHour))
+        {
+            var val = shiftInfo != null ? $"{rvuPerHour:F1}" : "--";
+            result.Add(($"{val}/h", "Rate:", $"{val}/h", rateColor));
+        }
+
+        if (metrics.HasFlag(RvuMetric.PriorHour))
+        {
+            var raw = pipeShift?.PriorHourRvu;
+            var val = raw.HasValue ? $"{raw.Value:F1}" : "--";
+            result.Add(($"{val} prev", "Prev hr:", val, carolinaBlue));
+        }
+
+        if (metrics.HasFlag(RvuMetric.CurrentHour))
+        {
+            var raw = pipeShift?.CurrentHourRvu;
+            var val = raw.HasValue ? $"~{raw.Value:F1}" : "--";
+            result.Add(($"{val} hr", "This hr:", val, carolinaBlue));
+        }
+
+        if (metrics.HasFlag(RvuMetric.EstimatedTotal))
+        {
+            var raw = pipeShift?.EstimatedTotalRvu;
+            var val = raw.HasValue ? $"~{raw.Value:F0}" : "--";
+            result.Add(($"{val} est", "Total:", val, carolinaBlue));
+        }
+
+        return result;
+    }
+
+    private Label CreateMetricLabel(string text, Color foreColor, FontStyle style = FontStyle.Bold)
+    {
+        return new Label
+        {
+            Text = text,
+            Font = new Font("Segoe UI", 9, style),
+            ForeColor = foreColor,
+            BackColor = Color.Black,
+            AutoSize = true
+        };
+    }
+
+    /// <summary>
+    /// Horizontal layout: all metrics in a single row separated by " | ".
+    /// </summary>
+    private void LayoutHorizontal(List<(string Short, string Label, string Value, Color Color)> metrics)
+    {
+        var parts = new List<(string Text, Color Color)>();
+        for (int i = 0; i < metrics.Count; i++)
+        {
+            if (i > 0)
+                parts.Add((" | ", Color.FromArgb(80, 80, 80)));
+            parts.Add((metrics[i].Short, metrics[i].Color));
+        }
+
+        // Create labels and measure
+        int totalWidth = 0;
+        var labels = new List<Label>();
+        foreach (var (text, color) in parts)
+        {
+            var lbl = CreateMetricLabel(text, color, text == " | " ? FontStyle.Regular : FontStyle.Bold);
+            _rvuPanel.Controls.Add(lbl);
+            _rvuMetricLabels.Add(lbl);
+            labels.Add(lbl);
+            totalWidth += lbl.PreferredWidth;
+        }
+
+        // Center horizontally
+        int startX = Math.Max(2, (_rvuPanel.Width - totalWidth) / 2);
+        int centerY = (_rvuPanel.Height - (labels.Count > 0 ? labels[0].PreferredHeight : 16)) / 2;
+        int x = startX;
+        foreach (var lbl in labels)
+        {
+            lbl.Location = new Point(x, centerY);
+            x += lbl.PreferredWidth;
+        }
+    }
+
+    /// <summary>
+    /// Vertical stack: ALL metrics go into a persistent drawer below the bar center.
+    /// </summary>
+    private void LayoutVerticalStack(List<(string Short, string Label, string Value, Color Color)> metrics)
+    {
+        if (metrics.Count == 0)
+        {
+            HideRvuDrawer();
+            return;
+        }
+
+        // All metrics go into the drawer — nothing inline
+        ShowRvuDrawer(metrics);
+    }
+
+    private void ShowRvuDrawer(List<(string Short, string Label, string Value, Color Color)> metrics)
+    {
+        if (_rvuDrawer == null || _rvuDrawer.IsDisposed)
+            _rvuDrawer = new RvuPopupForm { Persistent = true };
+
+        var popupData = metrics.Select(m => (m.Label, m.Value, m.Color)).ToList();
+        _rvuDrawer.SetMetrics(popupData);
+
+        // Center the drawer under the main form
+        var formScreenPos = this.PointToScreen(new Point(0, this.Height - 1));
+        int formCenterX = formScreenPos.X + this.Width / 2;
+        int drawerX = formCenterX - _rvuDrawer.Width / 2;
+        _rvuDrawer.Location = new Point(drawerX, formScreenPos.Y);
+
+        if (!_rvuDrawer.Visible)
+            _rvuDrawer.Show();
+    }
+
+    private void HideRvuDrawer()
+    {
+        if (_rvuDrawer != null && !_rvuDrawer.IsDisposed)
+            _rvuDrawer.Hide();
+    }
+
+    /// <summary>
+    /// Hover popup: show first metric in bar, rest in popup on hover.
+    /// </summary>
+    private void LayoutHoverPopup(List<(string Short, string Label, string Value, Color Color)> metrics)
+    {
+        if (metrics.Count == 0) return;
+
+        // Show first metric inline
+        var first = metrics[0];
+        var lbl = CreateMetricLabel(first.Short, first.Color);
+        lbl.MouseEnter += OnRvuPanelMouseEnter;
+        lbl.MouseLeave += OnRvuPanelMouseLeave;
+        _rvuPanel.Controls.Add(lbl);
+        _rvuMetricLabels.Add(lbl);
+
+        int cx = Math.Max(2, (_rvuPanel.Width - lbl.PreferredWidth) / 2);
+        int cy = (_rvuPanel.Height - lbl.PreferredHeight) / 2;
+        lbl.Location = new Point(cx, cy);
+
+        // Store secondary metrics for popup display
+        _rvuPopupMetrics = metrics.Count > 1 ? metrics.GetRange(1, metrics.Count - 1) : null;
+    }
+
+    private List<(string Short, string Label, string Value, Color Color)>? _rvuPopupMetrics;
+
+    /// <summary>
+    /// Carousel: cycle through metrics one at a time with label prefix.
+    /// </summary>
+    private void LayoutCarousel(List<(string Short, string Label, string Value, Color Color)> metrics)
+    {
+        if (metrics.Count == 0) return;
+
+        // Ensure carousel index is valid
+        if (_carouselIndex >= metrics.Count) _carouselIndex = 0;
+
+        var current = metrics[_carouselIndex];
+        var text = $"{current.Label} {current.Value}";
+        var lbl = CreateMetricLabel(text, current.Color, FontStyle.Bold);
+        _rvuPanel.Controls.Add(lbl);
+        _rvuMetricLabels.Add(lbl);
+
+        int cx = Math.Max(2, (_rvuPanel.Width - lbl.PreferredWidth) / 2);
+        int cy = (_rvuPanel.Height - lbl.PreferredHeight) / 2;
+        lbl.Location = new Point(cx, cy);
+
+        // Ensure carousel timer is running
+        if (_carouselTimer == null)
+        {
+            _carouselTimer = new System.Windows.Forms.Timer { Interval = 4000 };
+            _carouselTimer.Tick += (_, _) =>
+            {
+                _carouselIndex++;
+                UpdateRvuDisplay();
+            };
+            _carouselTimer.Start();
+        }
+    }
+
+    private void OnRvuPanelMouseEnter(object? sender, EventArgs e)
+    {
+        // Only show popup for HoverPopup mode with 3+ metrics
+        if (_config.RvuOverflowLayout != RvuOverflowLayout.HoverPopup) return;
+        if (CountSetFlags(_config.RvuMetrics) < 3) return;
+        if (_rvuPopupMetrics == null || _rvuPopupMetrics.Count == 0) return;
+
+        if (_rvuPopup == null || _rvuPopup.IsDisposed)
+            _rvuPopup = new RvuPopupForm();
+
+        var popupData = _rvuPopupMetrics.Select(m => (m.Label, m.Value, m.Color)).ToList();
+        _rvuPopup.SetMetrics(popupData);
+
+        // Position below the RVU panel
+        var screenPos = _rvuPanel.PointToScreen(new Point(0, _rvuPanel.Height));
+        _rvuPopup.Location = new Point(screenPos.X, screenPos.Y);
+        _rvuPopup.Show();
+    }
+
+    private void OnRvuPanelMouseLeave(object? sender, EventArgs e)
+    {
+        if (_rvuPopup == null || _rvuPopup.IsDisposed || !_rvuPopup.Visible) return;
+
+        // Small delay to allow mouse to move to popup
+        var timer = new System.Windows.Forms.Timer { Interval = 200 };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            if (_rvuPopup != null && !_rvuPopup.IsDisposed && _rvuPopup.Visible)
+            {
+                var cursorPos = Cursor.Position;
+                var panelRect = _rvuPanel.RectangleToScreen(_rvuPanel.ClientRectangle);
+                var popupRect = _rvuPopup.Bounds;
+                if (!panelRect.Contains(cursorPos) && !popupRect.Contains(cursorPos))
+                {
+                    _rvuPopup.Hide();
+                }
+            }
+        };
+        timer.Start();
     }
 
     private void CenterRvuLabels()
     {
-        // Calculate total width of visible labels
+        // Legacy centering - kept for compatibility but no longer primary
         int totalWidth = _rvuValueLabel.PreferredWidth;
         if (_rvuSeparatorLabel.Visible)
-        {
             totalWidth += _rvuSeparatorLabel.PreferredWidth;
-        }
         if (_rvuSuffixLabel.Visible)
-        {
             totalWidth += _rvuSuffixLabel.PreferredWidth;
-        }
 
-        // Center horizontally in panel
         int startX = Math.Max(2, (_rvuPanel.Width - totalWidth) / 2);
         int centerY = (_rvuPanel.Height - _rvuValueLabel.PreferredHeight) / 2;
 
@@ -679,11 +988,24 @@ public class MainForm : Form
     }
 
     /// <summary>
-    /// Refresh RVU panel size and form width based on current display mode.
+    /// Refresh RVU panel size and form width/height based on current metrics and layout.
     /// Called from SettingsForm after saving.
     /// </summary>
     public void RefreshRvuLayout()
     {
+        // Stop carousel timer if layout changed away from carousel
+        if (_carouselTimer != null && _config.RvuOverflowLayout != RvuOverflowLayout.Carousel)
+        {
+            _carouselTimer.Stop();
+            _carouselTimer.Dispose();
+            _carouselTimer = null;
+            _carouselIndex = 0;
+        }
+
+        // Hide drawer if layout changed away from vertical stack
+        if (_config.RvuOverflowLayout != RvuOverflowLayout.VerticalStack)
+            HideRvuDrawer();
+
         int newWidth = GetRvuPanelWidth();
         int oldWidth = _rvuPanel.Width;
         if (newWidth != oldWidth)
@@ -691,6 +1013,11 @@ public class MainForm : Form
             _rvuPanel.Width = newWidth;
             Width += (newWidth - oldWidth);
         }
+
+        // Bar always stays 40px tall
+        if (Height != 40)
+            Height = 40;
+
         _rvuPanel.Visible = _config.RvuCounterEnabled;
 
         // Restart or stop timer
@@ -1422,12 +1749,28 @@ public class MainForm : Form
         _clinicalHistoryWindow?.Close();
         _impressionWindow?.Close();
 
-        // Cleanup RVU timer
+        // Cleanup RVU timer and carousel
         if (_rvuTimer != null)
         {
             _rvuTimer.Stop();
             _rvuTimer.Dispose();
             _rvuTimer = null;
+        }
+        if (_carouselTimer != null)
+        {
+            _carouselTimer.Stop();
+            _carouselTimer.Dispose();
+            _carouselTimer = null;
+        }
+        if (_rvuPopup != null && !_rvuPopup.IsDisposed)
+        {
+            _rvuPopup.Close();
+            _rvuPopup = null;
+        }
+        if (_rvuDrawer != null && !_rvuDrawer.IsDisposed)
+        {
+            _rvuDrawer.Close();
+            _rvuDrawer = null;
         }
 
         // Cleanup connectivity service

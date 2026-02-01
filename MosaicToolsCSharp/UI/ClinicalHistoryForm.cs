@@ -532,7 +532,7 @@ public class ClinicalHistoryForm : Form
     {
         if (InvokeRequired)
         {
-            Invoke(() => SetClinicalHistory(text, wasFixed));
+            BeginInvoke(() => SetClinicalHistory(text, wasFixed));
             return;
         }
 
@@ -564,7 +564,7 @@ public class ClinicalHistoryForm : Form
     {
         if (InvokeRequired)
         {
-            Invoke(() => SetClinicalHistoryWithAutoFix(preCleaned, cleaned, accession));
+            BeginInvoke(() => SetClinicalHistoryWithAutoFix(preCleaned, cleaned, accession));
             return;
         }
 
@@ -667,7 +667,7 @@ public class ClinicalHistoryForm : Form
     {
         if (InvokeRequired)
         {
-            Invoke(() => OnStudyChanged(isNewStudy));
+            BeginInvoke(() => OnStudyChanged(isNewStudy));
             return;
         }
 
@@ -701,7 +701,7 @@ public class ClinicalHistoryForm : Form
     {
         if (InvokeRequired)
         {
-            Invoke(() => UpdateTextColorFromFinalReport(finalReportText));
+            BeginInvoke(() => UpdateTextColorFromFinalReport(finalReportText));
             return;
         }
 
@@ -735,7 +735,7 @@ public class ClinicalHistoryForm : Form
     {
         if (InvokeRequired)
         {
-            Invoke(() => SetDraftedState(isDrafted));
+            BeginInvoke(() => SetDraftedState(isDrafted));
             return;
         }
 
@@ -754,7 +754,7 @@ public class ClinicalHistoryForm : Form
     {
         if (InvokeRequired)
         {
-            Invoke(() => SetTemplateMismatchState(isMismatch, description, templateName));
+            BeginInvoke(() => SetTemplateMismatchState(isMismatch, description, templateName));
             return;
         }
 
@@ -775,7 +775,7 @@ public class ClinicalHistoryForm : Form
     {
         if (InvokeRequired)
         {
-            Invoke(() => SetStrokeState(isStroke));
+            BeginInvoke(() => SetStrokeState(isStroke));
             return;
         }
 
@@ -794,7 +794,7 @@ public class ClinicalHistoryForm : Form
     {
         if (InvokeRequired)
         {
-            Invoke(() => SetNoteCreated(created));
+            BeginInvoke(() => SetNoteCreated(created));
             return;
         }
 
@@ -812,7 +812,7 @@ public class ClinicalHistoryForm : Form
     {
         if (InvokeRequired)
         {
-            Invoke(() => SetHistoryFixInserted(inserted));
+            BeginInvoke(() => SetHistoryFixInserted(inserted));
             return;
         }
 
@@ -866,7 +866,7 @@ public class ClinicalHistoryForm : Form
     {
         if (InvokeRequired)
         {
-            Invoke(() => ShowAlertOnly(type, details));
+            BeginInvoke(() => ShowAlertOnly(type, details));
             return;
         }
 
@@ -901,7 +901,7 @@ public class ClinicalHistoryForm : Form
     {
         if (InvokeRequired)
         {
-            Invoke(ClearAlert);
+            BeginInvoke(ClearAlert);
             return;
         }
 
@@ -1044,7 +1044,7 @@ public class ClinicalHistoryForm : Form
                     if (!NativeWindows.ActivateMosaicForcefully())
                     {
                         if (!IsDisposed && IsHandleCreated)
-                            Invoke(() => ShowToast("Mosaic not found"));
+                            BeginInvoke(() => ShowToast("Mosaic not found"));
                         return;
                     }
 
@@ -1059,21 +1059,21 @@ public class ClinicalHistoryForm : Form
                     {
                         if (!IsDisposed && IsHandleCreated)
                         {
-                            Invoke(() => SetHistoryFixInserted(true));
-                            Invoke(() => ShowToast("Corrected history pasted"));
+                            BeginInvoke(() => SetHistoryFixInserted(true));
+                            BeginInvoke(() => ShowToast("Corrected history pasted"));
                         }
                         _onAutoFixComplete?.Invoke();
                     }
                     else
                     {
                         if (!IsDisposed && IsHandleCreated)
-                            Invoke(() => ShowToast("Pasted to Mosaic"));
+                            BeginInvoke(() => ShowToast("Pasted to Mosaic"));
                     }
                 }
                 catch (Exception ex)
                 {
                     Logger.Trace($"PasteClinicalHistoryToMosaic error: {ex.Message}");
-                    Invoke(() => ShowToast("Paste failed"));
+                    try { if (!IsDisposed && IsHandleCreated) BeginInvoke(() => ShowToast("Paste failed")); } catch { }
                 }
             }
         });

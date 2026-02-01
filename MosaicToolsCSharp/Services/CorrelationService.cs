@@ -258,9 +258,164 @@ public static class CorrelationService
     }
 
     /// <summary>
+    /// Regex pattern matching negative/normal finding sentences that don't need impression representation.
+    /// </summary>
+    private static readonly Regex NegativeSentencePattern = new(
+        @"\bno\s+|(?<!\S)normal\b|\bunremarkable\b|\bnegative\b|\bstable\b|\bwithin normal\b|\bnot\s+seen\b|\bnot\s+identified\b",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Reversed correlation: starts from dictated findings and checks whether each
+    /// is represented in the impression. Unmatched dictated findings get a unique
+    /// "orphan" color that appears nowhere in the impression.
+    /// </summary>
+    public static CorrelationResult CorrelateReversed(string reportText, HashSet<string>? dictatedSentences = null, int? seed = null)
+    {
+        var result = new CorrelationResult { Source = "heuristic-reversed" };
+
+        Logger.Trace($"CorrelateReversed: input length={reportText.Length}, dictatedSentences={dictatedSentences?.Count ?? -1}");
+
+        var (findingsText, impressionText) = ExtractSections(reportText);
+        if (string.IsNullOrWhiteSpace(findingsText) || string.IsNullOrWhiteSpace(impressionText))
+        {
+            Logger.Trace("CorrelateReversed: Missing FINDINGS or IMPRESSION section");
+            return result;
+        }
+
+        var findingsSentences = ParseFindingsSentences(findingsText);
+        var impressionItems = ParseImpressionItems(impressionText);
+
+        if (findingsSentences.Count == 0 || impressionItems.Count == 0)
+            return result;
+
+        // Filter findings to only dictated sentences (if baseline was available)
+        List<string> filteredFindings;
+        if (dictatedSentences != null && dictatedSentences.Count > 0)
+        {
+            filteredFindings = new List<string>();
+            foreach (var sentence in findingsSentences)
+            {
+                var normalized = Regex.Replace(sentence.ToLowerInvariant().Trim(), @"\s+", " ");
+                if (dictatedSentences.Contains(normalized))
+                    filteredFindings.Add(sentence);
+            }
+            Logger.Trace($"CorrelateReversed: {filteredFindings.Count}/{findingsSentences.Count} findings are dictated");
+        }
+        else
+        {
+            filteredFindings = new List<string>(findingsSentences);
+        }
+
+        // Filter out negative/normal statements
+        var significantFindings = new List<string>();
+        foreach (var sentence in filteredFindings)
+        {
+            if (NegativeSentencePattern.IsMatch(sentence))
+            {
+                Logger.Trace($"CorrelateReversed: Skipping negative finding: {sentence.Substring(0, Math.Min(60, sentence.Length))}");
+                continue;
+            }
+            significantFindings.Add(sentence);
+        }
+        Logger.Trace($"CorrelateReversed: {significantFindings.Count} significant findings after negative filter");
+
+        // Safety net: if no dictated sentences provided AND most findings passed (suggesting
+        // baseline wasn't captured), fall back to the old impression-first approach
+        if (dictatedSentences == null && significantFindings.Count > findingsSentences.Count * 0.8)
+        {
+            Logger.Trace("CorrelateReversed: No baseline, most findings pass filter — falling back to Correlate()");
+            return Correlate(reportText, seed);
+        }
+
+        if (significantFindings.Count == 0)
+            return result;
+
+        // Shuffle color order for consistent colors per report
+        var colorOrder = Enumerable.Range(0, Palette.Length).ToList();
+        var rng = new Random(seed ?? reportText.GetHashCode());
+        for (int i = colorOrder.Count - 1; i > 0; i--)
+        {
+            int j = rng.Next(i + 1);
+            (colorOrder[i], colorOrder[j]) = (colorOrder[j], colorOrder[i]);
+        }
+
+        // For each significant finding, find the best-matching impression item
+        // Group findings by their matched impression item
+        var matchedGroups = new Dictionary<int, (string impressionText, List<string> findings)>();
+        var orphanFindings = new List<string>();
+
+        foreach (var finding in significantFindings)
+        {
+            var findingTerms = ExtractTerms(finding);
+            if (findingTerms.Count == 0)
+            {
+                orphanFindings.Add(finding);
+                continue;
+            }
+
+            int bestScore = 0;
+            int bestImpressionIdx = -1;
+            string bestImpressionText = "";
+
+            foreach (var (index, text) in impressionItems)
+            {
+                var impressionTerms = ExtractTerms(text);
+                var shared = findingTerms.Intersect(impressionTerms, StringComparer.OrdinalIgnoreCase).Count();
+                if (shared > bestScore)
+                {
+                    bestScore = shared;
+                    bestImpressionIdx = index;
+                    bestImpressionText = text;
+                }
+            }
+
+            if (bestScore >= 1 && bestImpressionIdx >= 0)
+            {
+                if (!matchedGroups.ContainsKey(bestImpressionIdx))
+                    matchedGroups[bestImpressionIdx] = (bestImpressionText, new List<string>());
+                matchedGroups[bestImpressionIdx].findings.Add(finding);
+            }
+            else
+            {
+                orphanFindings.Add(finding);
+            }
+        }
+
+        // Build result: matched groups get a color shared between impression item and findings
+        int colorIndex = 0;
+        foreach (var (groupIdx, (groupText, groupFindings)) in matchedGroups)
+        {
+            result.Items.Add(new CorrelationItem
+            {
+                ImpressionIndex = groupIdx,
+                ImpressionText = groupText,
+                MatchedFindings = groupFindings,
+                ColorIndex = colorOrder[colorIndex % colorOrder.Count]
+            });
+            colorIndex++;
+        }
+
+        // Orphan findings: each gets its own color, no impression text
+        foreach (var orphan in orphanFindings)
+        {
+            result.Items.Add(new CorrelationItem
+            {
+                ImpressionIndex = -1,
+                ImpressionText = "",
+                MatchedFindings = new List<string> { orphan },
+                ColorIndex = colorOrder[colorIndex % colorOrder.Count]
+            });
+            colorIndex++;
+        }
+
+        Logger.Trace($"CorrelateReversed: {matchedGroups.Count} matched groups, {orphanFindings.Count} orphans");
+        return result;
+    }
+
+    /// <summary>
     /// Extract FINDINGS and IMPRESSION sections from report text.
     /// </summary>
-    private static (string findings, string impression) ExtractSections(string text)
+    internal static (string findings, string impression) ExtractSections(string text)
     {
         // Normalize
         text = text.Replace("\r\n", "\n").Replace("\r", "\n");
@@ -491,7 +646,7 @@ public static class CorrelationService
     /// Returns a set of normalized terms for matching.
     /// Includes: synonym-mapped terms, anatomical terms, and significant content words (5+ chars).
     /// </summary>
-    private static HashSet<string> ExtractTerms(string text)
+    internal static HashSet<string> ExtractTerms(string text)
     {
         var terms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (string.IsNullOrWhiteSpace(text)) return terms;

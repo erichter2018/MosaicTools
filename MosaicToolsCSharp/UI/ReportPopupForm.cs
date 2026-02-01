@@ -99,7 +99,9 @@ public class ReportPopupForm : Form
     private ReportDisplayMode _displayMode;
     private readonly bool _changesEnabled;
     private readonly bool _correlationEnabled;
+    private bool _baselineIsSectionOnly; // True when baseline is from template DB (diff only FINDINGS+IMPRESSION)
     private CorrelationResult? _correlationResult;
+    private CorrelationResult? _previousCorrelation; // Retained to prevent regression on noisy scrapes
 
     // Transparent mode rendering
     private int _scrollOffset;
@@ -134,13 +136,14 @@ public class ReportPopupForm : Form
     }
 
     public ReportPopupForm(Configuration config, string reportText, string? baselineReport = null,
-        bool changesEnabled = false, bool correlationEnabled = false)
+        bool changesEnabled = false, bool correlationEnabled = false, bool baselineIsSectionOnly = false)
     {
         _config = config;
         _baselineReport = baselineReport;
         _currentReportText = reportText;
         _changesEnabled = changesEnabled;
         _correlationEnabled = correlationEnabled;
+        _baselineIsSectionOnly = baselineIsSectionOnly;
         _useLayeredWindow = config.ReportPopupTransparent;
 
         // Compute background alpha from transparency setting
@@ -318,17 +321,21 @@ public class ReportPopupForm : Form
     /// Update the report text and re-apply highlighting.
     /// Called when Process Report is pressed while popup is open.
     /// </summary>
-    public void UpdateReport(string newReportText, string? baseline = null)
+    public void UpdateReport(string newReportText, string? baseline = null, bool baselineIsSectionOnly = false)
     {
         _currentReportText = newReportText;
         if (baseline != null)
+        {
             _baselineReport = baseline;
+            _baselineIsSectionOnly = baselineIsSectionOnly;
+        }
 
         if (_changesEnabled)
             _displayMode = ReportDisplayMode.Changes;
         else if (_correlationEnabled)
             _displayMode = ReportDisplayMode.Rainbow;
 
+        _previousCorrelation = _correlationResult;
         _correlationResult = null;
         _formattedText = SanitizeText(FormatReportText(newReportText)).Replace("\r\n", "\n");
 
@@ -713,8 +720,20 @@ public class ReportPopupForm : Form
                 highlightColor = Color.FromArgb(80, 144, 238, 144);
             }
 
-            var baselineSentences = SplitIntoSentences(_baselineReport!);
-            var currentSentences = SplitIntoSentences(_currentReportText);
+            // When baseline is from template DB, diff only FINDINGS+IMPRESSION sections
+            string baselineText = _baselineReport!;
+            string currentText = _currentReportText;
+            if (_baselineIsSectionOnly)
+            {
+                var (curFindings, curImpression) = CorrelationService.ExtractSections(_currentReportText);
+                if (!string.IsNullOrWhiteSpace(curFindings) && !string.IsNullOrWhiteSpace(curImpression))
+                {
+                    currentText = $"FINDINGS:\n{curFindings}\nIMPRESSION:\n{curImpression}";
+                }
+            }
+
+            var baselineSentences = SplitIntoSentences(baselineText);
+            var currentSentences = SplitIntoSentences(currentText);
 
             var baselineSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var s in baselineSentences)
@@ -752,11 +771,76 @@ public class ReportPopupForm : Form
         }
     }
 
+    /// <summary>
+    /// Extract the set of dictated (non-template) sentences by diffing against baseline.
+    /// Returns null if no baseline is available.
+    /// </summary>
+    private HashSet<string>? GetDictatedSentences()
+    {
+        if (string.IsNullOrEmpty(_baselineReport)) return null;
+
+        try
+        {
+            var baselineSentences = SplitIntoSentences(_baselineReport);
+            var currentSentences = SplitIntoSentences(_currentReportText);
+
+            var baselineSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var s in baselineSentences)
+            {
+                var normalized = NormalizeSentence(s);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                    baselineSet.Add(normalized);
+                var stripped = StripSectionHeading(s);
+                var strippedNorm = NormalizeSentence(stripped);
+                if (!string.IsNullOrWhiteSpace(strippedNorm))
+                    baselineSet.Add(strippedNorm);
+            }
+
+            var dictated = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var sentence in currentSentences)
+            {
+                var content = StripSectionHeading(sentence).Trim();
+                var normalized = NormalizeSentence(content);
+
+                if (string.IsNullOrWhiteSpace(normalized)) continue;
+                if (content.Length < 3) continue;
+                if (content.EndsWith(":")) continue;
+                if (IsSectionHeading(content)) continue;
+                if (baselineSet.Contains(normalized)) continue;
+
+                dictated.Add(normalized);
+            }
+
+            Logger.Trace($"GetDictatedSentences: {dictated.Count} dictated sentences from {currentSentences.Count} total");
+            return dictated.Count > 0 ? dictated : null;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"GetDictatedSentences error: {ex.Message}");
+            return null;
+        }
+    }
+
     private void ComputeRainbowHighlights()
     {
         try
         {
-            _correlationResult ??= CorrelationService.Correlate(_formattedText);
+            var dictated = GetDictatedSentences();
+            _correlationResult ??= CorrelationService.CorrelateReversed(_formattedText, dictated);
+
+            // Don't regress: if previous correlation had more matched groups, keep it
+            // (scrape noise can cause transient correlation failures)
+            if (_previousCorrelation != null)
+            {
+                int prevMatched = _previousCorrelation.Items.Count(i => !string.IsNullOrEmpty(i.ImpressionText));
+                int curMatched = _correlationResult.Items.Count(i => !string.IsNullOrEmpty(i.ImpressionText));
+                if (prevMatched > curMatched)
+                {
+                    Logger.Trace($"Rainbow mode: Keeping previous correlation ({prevMatched} matched > {curMatched} current)");
+                    _correlationResult = _previousCorrelation;
+                }
+                _previousCorrelation = null;
+            }
 
             if (_correlationResult.Items.Count == 0)
             {
@@ -773,6 +857,7 @@ public class ReportPopupForm : Form
                 var blended = CorrelationService.BlendWithBackground(paletteColor, bgColor);
                 var hlColor = Color.FromArgb(160, blended.R, blended.G, blended.B);
 
+                // Only highlight impression for matched groups (not orphans)
                 if (!string.IsNullOrWhiteSpace(item.ImpressionText))
                 {
                     _highlights.Add(new HighlightEntry(item.ImpressionText, hlColor));
@@ -790,7 +875,8 @@ public class ReportPopupForm : Form
                 }
             }
 
-            Logger.Trace($"Rainbow highlights computed: {count} entries from {_correlationResult.Items.Count} correlations");
+            int orphanCount = _correlationResult.Items.Count(i => string.IsNullOrEmpty(i.ImpressionText));
+            Logger.Trace($"Rainbow highlights computed: {count} entries from {_correlationResult.Items.Count} correlations ({orphanCount} orphans)");
         }
         catch (Exception ex)
         {
@@ -893,7 +979,17 @@ public class ReportPopupForm : Form
         {
             if (!string.IsNullOrEmpty(_baselineReport))
             {
-                ApplyDiffHighlighting(_richTextBox, _baselineReport, _currentReportText);
+                string baselineText = _baselineReport;
+                string currentText = _currentReportText;
+                if (_baselineIsSectionOnly)
+                {
+                    var (curFindings, curImpression) = CorrelationService.ExtractSections(_currentReportText);
+                    if (!string.IsNullOrWhiteSpace(curFindings) && !string.IsNullOrWhiteSpace(curImpression))
+                    {
+                        currentText = $"FINDINGS:\n{curFindings}\nIMPRESSION:\n{curImpression}";
+                    }
+                }
+                ApplyDiffHighlighting(_richTextBox, baselineText, currentText);
             }
         }
         else if (_displayMode == ReportDisplayMode.Rainbow)
@@ -908,7 +1004,21 @@ public class ReportPopupForm : Form
 
         try
         {
-            _correlationResult ??= CorrelationService.Correlate(_richTextBox.Text);
+            var dictated = GetDictatedSentences();
+            _correlationResult ??= CorrelationService.CorrelateReversed(_richTextBox.Text, dictated);
+
+            // Don't regress: if previous correlation had more matched groups, keep it
+            if (_previousCorrelation != null)
+            {
+                int prevMatched = _previousCorrelation.Items.Count(i => !string.IsNullOrEmpty(i.ImpressionText));
+                int curMatched = _correlationResult.Items.Count(i => !string.IsNullOrEmpty(i.ImpressionText));
+                if (prevMatched > curMatched)
+                {
+                    Logger.Trace($"Rainbow mode: Keeping previous correlation ({prevMatched} matched > {curMatched} current)");
+                    _correlationResult = _previousCorrelation;
+                }
+                _previousCorrelation = null;
+            }
 
             if (_correlationResult.Items.Count == 0)
             {
@@ -925,12 +1035,16 @@ public class ReportPopupForm : Form
                 var paletteColor = CorrelationService.Palette[item.ColorIndex];
                 var blended = CorrelationService.BlendWithBackground(paletteColor, bg);
 
-                int impressionIdx = rtbText.IndexOf(item.ImpressionText, StringComparison.Ordinal);
-                if (impressionIdx >= 0)
+                // Only highlight impression for matched groups (not orphans)
+                if (!string.IsNullOrEmpty(item.ImpressionText))
                 {
-                    _richTextBox.Select(impressionIdx, item.ImpressionText.Length);
-                    _richTextBox.SelectionBackColor = blended;
-                    highlightCount++;
+                    int impressionIdx = rtbText.IndexOf(item.ImpressionText, StringComparison.Ordinal);
+                    if (impressionIdx >= 0)
+                    {
+                        _richTextBox.Select(impressionIdx, item.ImpressionText.Length);
+                        _richTextBox.SelectionBackColor = blended;
+                        highlightCount++;
+                    }
                 }
 
                 foreach (var finding in item.MatchedFindings)
@@ -949,7 +1063,8 @@ public class ReportPopupForm : Form
             }
 
             _richTextBox.Select(0, 0);
-            Logger.Trace($"Rainbow mode: {_correlationResult.Items.Count} correlations, {highlightCount} regions highlighted");
+            int orphanCount = _correlationResult.Items.Count(i => string.IsNullOrEmpty(i.ImpressionText));
+            Logger.Trace($"Rainbow mode: {_correlationResult.Items.Count} correlations ({orphanCount} orphans), {highlightCount} regions highlighted");
         }
         catch (Exception ex)
         {

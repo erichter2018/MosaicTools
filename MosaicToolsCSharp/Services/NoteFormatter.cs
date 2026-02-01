@@ -28,24 +28,27 @@ public class NoteFormatter
         {
             // 1. Extract Name (Look for clinician patterns)
             var segments = new List<string>();
-            
-            // Look for contact verbs
-            var verbPattern = @"(?:Transferred|Connected\s+with|Connected\s+to|Connected|Was\s+connected\s+with|Spoke\s+to|Spoke\s+with|Discussed\s+with)\s+(.+?)(?=\s+(?:at|@|said|confirmed|stated|reported|declined|who|are|is)|\s*[-;:,]|\s+\d{2}/\d{2}/|$)";
-            var verbMatch = Regex.Match(rawText, verbPattern, RegexOptions.IgnoreCase);
-            if (verbMatch.Success)
-            {
-                var fullSegment = verbMatch.Groups[1].Value;
-                var parts = Regex.Split(fullSegment, @"\s+(?:to|with|w/|and|&)\s+", RegexOptions.IgnoreCase);
-                segments.AddRange(parts);
-            }
-            
-            // Fallback: Individual title matches (Dr., Nurse, NP, PA, etc.)
-            // Stop at common verbs/prepositions that indicate end of name
-            var namePattern = @"((?:Dr\.?|Nurse|NP|PA|RN|MD)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is|and|&|connected|contacted|spoke|discussed|transferred|called|notified|informed|reached|paged)|\s*[-;:,]|\s+(?:Dr\.?|Nurse|NP|PA|RN|MD)|\s+\d{2}/\d{2}/|$)";
+
+            // Prefer title-based matches (Dr., Nurse, NP, PA, etc.) — most reliable
+            var namePattern = @"((?:Dr\.?|Nurse|NP|PA|RN|MD)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is|and|&|connected|contacted|spoke|discussed|transferred|called|notified|informed|reached|paged)\b|\s*[-;:,]|\s+(?:Dr\.?|Nurse|NP|PA|RN|MD)|\s+\d{2}/\d{2}/|$)";
             var nameMatches = Regex.Matches(rawText, namePattern, RegexOptions.IgnoreCase);
             foreach (Match m in nameMatches)
             {
                 segments.Add(m.Groups[1].Value);
+            }
+
+            // Fallback: verb-based extraction (only if no title-based match found)
+            // Negative lookbehind prevents matching passive "to be connected" / "been connected"
+            if (segments.Count == 0)
+            {
+                var verbPattern = @"(?<!\bto\s+be\s+)(?<!\bbeen\s+)(?:Transferred|Connected\s+with|Connected\s+to|Connected|Was\s+connected\s+with|Spoke\s+to|Spoke\s+with|Discussed\s+with)\s+(.+?)(?=\s+(?:at|@|said|confirmed|stated|reported|declined|who|are|is)|\s*[-;:,]|\s+\d{2}/\d{2}/|$)";
+                var verbMatch = Regex.Match(rawText, verbPattern, RegexOptions.IgnoreCase);
+                if (verbMatch.Success)
+                {
+                    var fullSegment = verbMatch.Groups[1].Value;
+                    var parts = Regex.Split(fullSegment, @"\s+(?:to|with|w/|and|&)\s+", RegexOptions.IgnoreCase);
+                    segments.AddRange(parts);
+                }
             }
             
             string titleAndName = "Dr. / Nurse [Name not found]";

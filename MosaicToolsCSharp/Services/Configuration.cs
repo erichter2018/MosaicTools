@@ -236,11 +236,21 @@ public class Configuration
     [JsonPropertyName("rvu_display_mode")]
     public RvuDisplayMode RvuDisplayMode { get; set; } = RvuDisplayMode.Total;
 
+    [JsonPropertyName("rvu_metrics")]
+    public RvuMetric RvuMetrics { get; set; } = RvuMetric.None; // None = not yet migrated
+
+    [JsonPropertyName("rvu_overflow_layout")]
+    public RvuOverflowLayout RvuOverflowLayout { get; set; } = RvuOverflowLayout.Horizontal;
+
     [JsonPropertyName("rvu_goal_enabled")]
     public bool RvuGoalEnabled { get; set; } = false;
 
     [JsonPropertyName("rvu_goal_per_hour")]
     public double RvuGoalPerHour { get; set; } = 10.0;
+
+    // Distraction Alert (beep volume when RVUCounter sends alert)
+    [JsonPropertyName("distraction_alert_volume")]
+    public double DistractionAlertVolume { get; set; } = 0.15;
 
     // Report Changes Highlighting
     [JsonPropertyName("show_report_changes")]
@@ -263,6 +273,9 @@ public class Configuration
 
     [JsonPropertyName("show_report_after_process")]
     public bool ShowReportAfterProcess { get; set; } = false;
+
+    [JsonPropertyName("template_database_enabled")]
+    public bool TemplateDatabaseEnabled { get; set; } = true;
 
     // Version tracking for What's New popup
     [JsonPropertyName("last_seen_version")]
@@ -429,6 +442,18 @@ public class Configuration
             {
                 category.MigrateOptions();
             }
+        }
+
+        // Migrate legacy RvuDisplayMode to RvuMetrics flags (one-time)
+        if (RvuMetrics == RvuMetric.None)
+        {
+            RvuMetrics = RvuDisplayMode switch
+            {
+                RvuDisplayMode.Total => RvuMetric.Total,
+                RvuDisplayMode.PerHour => RvuMetric.PerHour,
+                RvuDisplayMode.Both => RvuMetric.Total | RvuMetric.PerHour,
+                _ => RvuMetric.Total
+            };
         }
 
         // Ensure floating buttons have defaults
@@ -722,13 +747,38 @@ public enum PickListMode
 }
 
 /// <summary>
-/// RVU display mode - what to show in the main window.
+/// RVU display mode - what to show in the main window (legacy, kept for migration).
 /// </summary>
 public enum RvuDisplayMode
 {
     Total,
     PerHour,
     Both
+}
+
+/// <summary>
+/// Flags enum for which RVU metrics to display.
+/// </summary>
+[Flags]
+public enum RvuMetric
+{
+    None = 0,
+    Total = 1,
+    PerHour = 2,
+    CurrentHour = 4,
+    PriorHour = 8,
+    EstimatedTotal = 16
+}
+
+/// <summary>
+/// Layout mode when 3+ RVU metrics are selected.
+/// </summary>
+public enum RvuOverflowLayout
+{
+    Horizontal = 0,
+    VerticalStack = 1,
+    HoverPopup = 2,
+    Carousel = 3
 }
 
 /// <summary>

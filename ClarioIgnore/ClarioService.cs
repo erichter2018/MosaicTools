@@ -79,11 +79,18 @@ public class ClarioService : IDisposable
         try
         {
             var window = FindClarioWindow();
-            if (window == null)
+            if (window == null) return items;
+
+            // Skip when Clario is minimized - clicking would hit the desktop
+            try
             {
-                Logger.Log("Clario window not found");
-                return items;
+                var hwnd = window.Properties.NativeWindowHandle.ValueOrDefault;
+                if (hwnd != IntPtr.Zero && IsIconic(hwnd))
+                {
+                    return items;
+                }
             }
+            catch { /* proceed if we can't check */ }
 
             // Find all elements - we'll filter for the worklist grid rows
             var allElements = window.FindAllDescendants();
@@ -218,6 +225,9 @@ public class ClarioService : IDisposable
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
 
     private const uint GA_ROOT = 2; // Get root owner window
 
