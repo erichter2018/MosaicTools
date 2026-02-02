@@ -1,3 +1,8 @@
+3.0.7
+- RVU metrics customization: choose which metrics to display (Total, Per Hour, Current Hour, etc.)
+- Template database improvements for better correlation
+- Enhanced correlation service integration
+
 3.0.6
 - Fix doctor name capitalization in critical findings (DR. SMITH → Dr. Smith)
 - Fix app freeze: EnsureOnTop deadlock prevention across all overlay windows
