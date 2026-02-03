@@ -768,11 +768,29 @@ public class ActionController : IDisposable
         }
 
         // Auto-show report overlay if enabled (only first time per accession)
+        // Skip if popup is already open (don't trigger toggle/cycle logic)
         if (_config.ShowReportAfterProcess && !_autoShowReportDoneForAccession)
         {
             _autoShowReportDoneForAccession = true;
-            Logger.Trace("Process Report: Auto-showing report overlay (first time for accession)");
-            PerformShowReport();
+            bool popupAlreadyOpen = _currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible;
+            if (popupAlreadyOpen)
+            {
+                Logger.Trace("Process Report: Skipping auto-show (popup already open), marking as stale");
+                var popup = _currentReportPopup;
+                _mainForm.BeginInvoke(() => { if (popup != null && !popup.IsDisposed) popup.SetStaleState(true); });
+            }
+            else
+            {
+                Logger.Trace("Process Report: Auto-showing report overlay (first time for accession)");
+                PerformShowReport();
+            }
+        }
+        else if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
+        {
+            // Popup is open but auto-show is disabled or already done - still mark as stale during processing
+            Logger.Trace("Process Report: Marking popup as stale during processing");
+            var popup = _currentReportPopup;
+            _mainForm.BeginInvoke(() => { if (popup != null && !popup.IsDisposed) popup.SetStaleState(true); });
         }
 
         // Auto-create critical note for stroke cases if enabled
@@ -1556,8 +1574,35 @@ public class ActionController : IDisposable
 
             if (string.IsNullOrEmpty(reportText))
             {
-                 _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No report available (scraping may be disabled)"));
-                 return;
+                // Distinguish between "no study open" and "study loading"
+                var currentAccession = _automationService.LastAccession;
+                if (!string.IsNullOrEmpty(currentAccession))
+                {
+                    // We have an accession but no report yet - show popup with "loading" message
+                    // The scrape timer will auto-update the popup when report becomes available
+                    _mainForm.BeginInvoke(() =>
+                    {
+                        _currentReportPopup = new ReportPopupForm(_config, "Report loading...", null,
+                            changesEnabled: _config.ShowReportChanges,
+                            correlationEnabled: _config.CorrelationEnabled,
+                            baselineIsSectionOnly: false,
+                            accession: currentAccession);
+                        _lastPopupReportText = null; // Will be set when real report arrives
+
+                        _currentReportPopup.FormClosed += (s, e) =>
+                        {
+                            _currentReportPopup = null;
+                            _lastPopupReportText = null;
+                        };
+
+                        _currentReportPopup.Show();
+                    });
+                }
+                else
+                {
+                    _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No report available (scraping may be disabled)"));
+                }
+                return;
             }
 
             // Pass baseline for diff highlighting if: feature enabled AND (process report was pressed OR drafted study auto-processed)
@@ -1576,7 +1621,8 @@ public class ActionController : IDisposable
                 _currentReportPopup = new ReportPopupForm(_config, reportText, baselineForDiff,
                     changesEnabled: _config.ShowReportChanges,
                     correlationEnabled: _config.CorrelationEnabled,
-                    baselineIsSectionOnly: baselineForDiff != null && _baselineIsFromTemplateDb);
+                    baselineIsSectionOnly: baselineForDiff != null && _baselineIsFromTemplateDb,
+                    accession: _automationService.LastAccession);
                 _lastPopupReportText = reportText;
 
                 // Handle closure to clear references
@@ -1587,6 +1633,13 @@ public class ActionController : IDisposable
                 };
 
                 _currentReportPopup.Show();
+
+                // If Process Report was just pressed, show "Updating..." indicator immediately
+                // (report is being processed, so current content may be stale)
+                if (_processReportPressedForCurrentAccession)
+                {
+                    _currentReportPopup.SetStaleState(true);
+                }
             });
         }
         catch (Exception ex)
@@ -2005,14 +2058,10 @@ public class ActionController : IDisposable
                     {
                         _lastNonEmptyAccession = currentAccession;
 
-                        // Capture baseline report for diff highlighting and Rainbow mode
-                        bool needsBaseline = _config.ShowReportChanges || _config.CorrelationEnabled;
+                        // Baseline capture deferred to scrape timer to catch template flash
+                        // (removing immediate capture fixes issue where dictated content like "appendix is normal"
+                        // gets captured as baseline if already present in template/macros)
                         Logger.Trace($"New study - ShowReportChanges={_config.ShowReportChanges}, CorrelationEnabled={_config.CorrelationEnabled}, reportText null={string.IsNullOrEmpty(reportText)}");
-                        if (needsBaseline && !string.IsNullOrEmpty(reportText))
-                        {
-                            _baselineReport = reportText;
-                            Logger.Trace($"Captured baseline report ({reportText.Length} chars) for changes/rainbow tracking");
-                        }
 
                         // Show toast (disabled - too noisy)
                         // Logger.Trace($"Showing New Study toast for {currentAccession}");
@@ -2094,13 +2143,26 @@ public class ActionController : IDisposable
                         if (!string.IsNullOrEmpty(reportText) && _baselineCaptureAttempts <= 1)
                         {
                             // First tick: try real-time capture (template flash)
-                            _needsBaselineCapture = false;
-                            _baselineReport = reportText;
-                            Logger.Trace($"Captured baseline from scrape (DRAFTED, immediate): {reportText.Length} chars, drafted={_automationService.LastDraftedState}");
-                            Logger.Trace($"Baseline content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
-                            // Revert to normal scrape interval now that baseline is captured
-                            if (!_searchingForImpression)
-                                RestartScrapeTimer(NormalScrapeIntervalMs);
+                            // Only capture if report seems like a clean template (no long dictated content)
+                            // Templates are typically < 2500 chars; anything significantly longer likely has dictation
+                            bool seemsLikeCleanTemplate = reportText.Length < 2500;
+
+                            if (seemsLikeCleanTemplate)
+                            {
+                                _needsBaselineCapture = false;
+                                _baselineReport = reportText;
+                                Logger.Trace($"Captured baseline from scrape (DRAFTED, immediate): {reportText.Length} chars, drafted={_automationService.LastDraftedState}");
+                                Logger.Trace($"Baseline content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
+                                // Revert to normal scrape interval now that baseline is captured
+                                if (!_searchingForImpression)
+                                    RestartScrapeTimer(NormalScrapeIntervalMs);
+                            }
+                            else
+                            {
+                                Logger.Trace($"Skipping baseline capture - report too long ({reportText.Length} chars), likely has dictation. Will try DB fallback.");
+                                // Skip ahead to DB fallback
+                                _baselineCaptureAttempts = 4;
+                            }
                         }
                         else if (_baselineCaptureAttempts >= 4)
                         {
@@ -2166,12 +2228,20 @@ public class ActionController : IDisposable
 
                 // Auto-update popup when report text changes (continuous updates with diff highlighting)
                 var popup = _currentReportPopup;
-                if (popup != null && !popup.IsDisposed && popup.Visible &&
-                    !string.IsNullOrEmpty(reportText) && reportText != _lastPopupReportText)
+                if (popup != null && !popup.IsDisposed && popup.Visible)
                 {
-                    Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
-                    _lastPopupReportText = reportText;
-                    _mainForm.BeginInvoke(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
+                    if (!string.IsNullOrEmpty(reportText) && reportText != _lastPopupReportText)
+                    {
+                        Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
+                        _lastPopupReportText = reportText;
+                        _mainForm.BeginInvoke(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
+                    }
+                    else if (string.IsNullOrEmpty(reportText) && !string.IsNullOrEmpty(_lastPopupReportText))
+                    {
+                        // Report text is gone (being updated in Mosaic) but popup is visible with cached content
+                        Logger.Trace("Popup showing stale content - report being updated");
+                        _mainForm.BeginInvoke(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
+                    }
                 }
 
                 // Check for pending macros - insert when clinical history becomes visible

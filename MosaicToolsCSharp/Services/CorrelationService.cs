@@ -132,6 +132,7 @@ public static class CorrelationService
         { "dilatation", "dilation" }, { "dilated", "dilation" }, { "dilation", "dilation" },
         { "hydronephrosis", "hydronephrosis" }, { "hydroureter", "hydroureter" },
         { "ascites", "ascites" },
+        { "swollen", "swelling" },
     };
 
     /// <summary>
@@ -642,6 +643,22 @@ public static class CorrelationService
     };
 
     /// <summary>
+    /// Simple depluralization: strips trailing 's' or 'es' to normalize plurals.
+    /// E.g., "tissues" → "tissue", "masses" → "mass", "calculi" handled by synonyms.
+    /// </summary>
+    private static string Depluralize(string word)
+    {
+        if (word.Length <= 3) return word;
+        if (word.EndsWith("ses") || word.EndsWith("zes") || word.EndsWith("xes") || word.EndsWith("ches") || word.EndsWith("shes"))
+            return word.Substring(0, word.Length - 2);
+        if (word.EndsWith("ies"))
+            return word.Substring(0, word.Length - 3) + "y";
+        if (word.EndsWith("s") && !word.EndsWith("ss") && !word.EndsWith("us") && !word.EndsWith("is"))
+            return word.Substring(0, word.Length - 1);
+        return word;
+    }
+
+    /// <summary>
     /// Extract canonical medical terms from a text fragment.
     /// Returns a set of normalized terms for matching.
     /// Includes: synonym-mapped terms, anatomical terms, and significant content words (5+ chars).
@@ -658,10 +675,15 @@ public static class CorrelationService
 
         foreach (var word in words)
         {
-            // Check synonym dictionary
+            // Check synonym dictionary (try both raw word and depluralized form)
+            var singular = Depluralize(word);
             if (Synonyms.TryGetValue(word, out var canonical))
             {
                 terms.Add(canonical);
+            }
+            else if (singular != word && Synonyms.TryGetValue(singular, out var canonical2))
+            {
+                terms.Add(canonical2);
             }
 
             // Check if word itself is an anatomical term
@@ -669,12 +691,17 @@ public static class CorrelationService
             {
                 terms.Add(word);
             }
+            else if (singular != word && AnatomicalTerms.Contains(singular))
+            {
+                terms.Add(singular);
+            }
 
             // Include significant content words (5+ chars, not stopwords)
             // This catches medical terms not in our dictionaries
+            // Use depluralized form so "tissues" and "tissue" match
             if (word.Length >= 5 && !StopWords.Contains(word))
             {
-                terms.Add(word);
+                terms.Add(singular);
             }
         }
 

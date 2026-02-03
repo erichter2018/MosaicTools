@@ -102,6 +102,8 @@ public class ReportPopupForm : Form
     private bool _baselineIsSectionOnly; // True when baseline is from template DB (diff only FINDINGS+IMPRESSION)
     private CorrelationResult? _correlationResult;
     private CorrelationResult? _previousCorrelation; // Retained to prevent regression on noisy scrapes
+    private bool _showingStaleContent; // True when showing cached report while live report is being updated
+    private int? _accessionSeed; // Hash of accession for consistent rainbow colors per study
 
     // Transparent mode rendering
     private int _scrollOffset;
@@ -110,6 +112,7 @@ public class ReportPopupForm : Form
     private readonly Font _normalFont;
     private readonly Font _headerFont;
     private readonly Font _modeLabelFont;
+    private readonly Font _staleIndicatorFont;
 
     private readonly record struct HighlightEntry(string Text, Color BackColor);
     private List<HighlightEntry> _highlights = new();
@@ -136,7 +139,8 @@ public class ReportPopupForm : Form
     }
 
     public ReportPopupForm(Configuration config, string reportText, string? baselineReport = null,
-        bool changesEnabled = false, bool correlationEnabled = false, bool baselineIsSectionOnly = false)
+        bool changesEnabled = false, bool correlationEnabled = false, bool baselineIsSectionOnly = false,
+        string? accession = null)
     {
         _config = config;
         _baselineReport = baselineReport;
@@ -145,6 +149,7 @@ public class ReportPopupForm : Form
         _correlationEnabled = correlationEnabled;
         _baselineIsSectionOnly = baselineIsSectionOnly;
         _useLayeredWindow = config.ReportPopupTransparent;
+        _accessionSeed = accession?.GetHashCode();
 
         // Compute background alpha from transparency setting
         _backgroundAlpha = (int)Math.Round(config.ReportPopupTransparency / 100.0 * 255);
@@ -162,6 +167,7 @@ public class ReportPopupForm : Form
         _normalFont = new Font(config.ReportPopupFontFamily, config.ReportPopupFontSize);
         _headerFont = new Font(config.ReportPopupFontFamily, config.ReportPopupFontSize + 2, FontStyle.Bold);
         _modeLabelFont = new Font("Segoe UI", 8f);
+        _staleIndicatorFont = new Font("Segoe UI", 11f, FontStyle.Bold);
 
         // Form properties
         FormBorderStyle = FormBorderStyle.None;
@@ -323,20 +329,32 @@ public class ReportPopupForm : Form
     /// </summary>
     public void UpdateReport(string newReportText, string? baseline = null, bool baselineIsSectionOnly = false)
     {
-        _currentReportText = newReportText;
+        _showingStaleContent = false; // Clear stale flag when we get new content
         if (baseline != null)
         {
             _baselineReport = baseline;
             _baselineIsSectionOnly = baselineIsSectionOnly;
         }
 
-        if (_changesEnabled)
-            _displayMode = ReportDisplayMode.Changes;
-        else if (_correlationEnabled)
-            _displayMode = ReportDisplayMode.Rainbow;
+        // Don't reset display mode - preserve user's current selection (Changes vs Rainbow)
+        // Reset correlation for recalculation; only keep previous for anti-regression if content is similar
+        // (anti-regression is for scrape noise, not genuine edits)
+        bool contentChanged = newReportText != _currentReportText;
+        _currentReportText = newReportText;
 
-        _previousCorrelation = _correlationResult;
-        _correlationResult = null;
+        if (contentChanged)
+        {
+            // Genuine content change - force fresh correlation, don't use anti-regression
+            _previousCorrelation = null;
+            _correlationResult = null;
+            Logger.Trace($"UpdateReport: Content changed, forcing fresh correlation");
+        }
+        else
+        {
+            // Same content (e.g., baseline update) - allow anti-regression
+            _previousCorrelation = _correlationResult;
+            _correlationResult = null;
+        }
         _formattedText = SanitizeText(FormatReportText(newReportText)).Replace("\r\n", "\n");
 
         if (_useLayeredWindow)
@@ -369,6 +387,26 @@ public class ReportPopupForm : Form
         }
 
         Logger.Trace($"ReportPopup updated: {newReportText.Length} chars, baseline={_baselineReport?.Length ?? 0} chars, mode={_displayMode}");
+    }
+
+    /// <summary>
+    /// Mark the popup as showing stale/cached content while the live report is being updated.
+    /// </summary>
+    public void SetStaleState(bool isStale)
+    {
+        if (_showingStaleContent != isStale)
+        {
+            _showingStaleContent = isStale;
+
+            if (_useLayeredWindow)
+            {
+                RenderAndUpdate(); // Explicit repaint needed for layered windows
+            }
+            else
+            {
+                UpdateModeLabel(); // Update label for RichTextBox mode
+            }
+        }
     }
 
     #endregion
@@ -535,6 +573,30 @@ public class ReportPopupForm : Form
 
     private void DrawModeLabel(Graphics g)
     {
+        // Show stale content indicator (always visible when flag is set)
+        if (_showingStaleContent)
+        {
+            string staleLabel = "Updating...";
+            var staleSize = g.MeasureString(staleLabel, _staleIndicatorFont);
+            float staleX = (Width - staleSize.Width) / 2; // Center horizontally
+            float staleY = 6;
+
+            // Semi-transparent yellow background banner
+            using (var bgBrush = new SolidBrush(Color.FromArgb(180, 200, 180, 0)))
+            {
+                g.FillRectangle(bgBrush, 0, 0, Width, staleSize.Height + 12);
+            }
+
+            // Black text on yellow background for contrast
+            using (var textBrush = new SolidBrush(Color.FromArgb(255, 0, 0, 0)))
+            {
+                g.DrawString(staleLabel, _staleIndicatorFont, textBrush, staleX, staleY);
+            }
+
+            return; // Don't show mode label when stale indicator is showing
+        }
+
+        // Show mode label (Changes/Rainbow) only when correlation features enabled
         if (!_changesEnabled || !_correlationEnabled) return;
 
         string label = _displayMode == ReportDisplayMode.Changes ? "Changes" : "Rainbow";
@@ -826,7 +888,7 @@ public class ReportPopupForm : Form
         try
         {
             var dictated = GetDictatedSentences();
-            _correlationResult ??= CorrelationService.CorrelateReversed(_formattedText, dictated);
+            _correlationResult ??= CorrelationService.CorrelateReversed(_formattedText, dictated, _accessionSeed);
 
             // Don't regress: if previous correlation had more matched groups, keep it
             // (scrape noise can cause transient correlation failures)
@@ -934,9 +996,21 @@ public class ReportPopupForm : Form
     {
         if (_modeLabel == null) return;
 
-        if (_changesEnabled && _correlationEnabled)
+        // Show stale indicator when report is being updated
+        if (_showingStaleContent)
+        {
+            _modeLabel.Text = "Updating...";
+            _modeLabel.Font = _staleIndicatorFont;
+            _modeLabel.ForeColor = Color.FromArgb(200, 180, 0); // Yellow
+            _modeLabel.BackColor = Color.FromArgb(80, 60, 0); // Dark yellow background
+            _modeLabel.Visible = true;
+        }
+        else if (_changesEnabled && _correlationEnabled)
         {
             _modeLabel.Text = _displayMode == ReportDisplayMode.Changes ? "Changes" : "Rainbow";
+            _modeLabel.Font = _modeLabelFont; // Restore normal font
+            _modeLabel.ForeColor = Color.FromArgb(140, 140, 140); // Gray (default)
+            _modeLabel.BackColor = Color.FromArgb(30, 30, 30); // Dark background (default)
             _modeLabel.Visible = true;
         }
         else
@@ -1005,7 +1079,7 @@ public class ReportPopupForm : Form
         try
         {
             var dictated = GetDictatedSentences();
-            _correlationResult ??= CorrelationService.CorrelateReversed(_richTextBox.Text, dictated);
+            _correlationResult ??= CorrelationService.CorrelateReversed(_richTextBox.Text, dictated, _accessionSeed);
 
             // Don't regress: if previous correlation had more matched groups, keep it
             if (_previousCorrelation != null)
@@ -1338,6 +1412,7 @@ public class ReportPopupForm : Form
             _normalFont?.Dispose();
             _headerFont?.Dispose();
             _modeLabelFont?.Dispose();
+            _staleIndicatorFont?.Dispose();
         }
         base.Dispose(disposing);
     }

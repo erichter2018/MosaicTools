@@ -59,7 +59,7 @@ public class TemplateDatabase
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "MosaicTools", "TemplateDatabase.json");
 
-    private const int ConfidenceThreshold = 3;
+    private const int ConfidenceThreshold = 5;
     private const int MaxTemplatesPerStudy = 3;
     private const int StaleDays = 90;
     private const int LowConfidenceStaleDays = 30;
@@ -164,14 +164,35 @@ public class TemplateDatabase
         }
         else
         {
-            // New variant detected — decay existing entries so the new template
-            // can overtake quickly if the default template was changed
+            // New variant detected — apply conservative decay to existing templates
+            // High-confidence templates (count >= 30) decay by 5% (minimal but allows eventual updates)
+            // Medium-confidence templates (count 10-29) decay by 25%
+            // Low-confidence templates (count < 10) decay by 50%
             foreach (var entry in entries)
             {
                 var oldCount = entry.Count;
-                entry.Count = Math.Max(1, entry.Count / 2);
-                if (oldCount != entry.Count)
-                    Logger.Trace($"TemplateDB: Decayed existing template for '{studyDescription}' ({oldCount} → {entry.Count})");
+
+                if (entry.Count >= 30)
+                {
+                    // Very high confidence - minimal 5% decay (allows gradual template updates)
+                    entry.Count = Math.Max(1, (entry.Count * 19) / 20);
+                    if (oldCount != entry.Count)
+                        Logger.Trace($"TemplateDB: High-confidence template minimally decayed for '{studyDescription}' ({oldCount} → {entry.Count})");
+                }
+                else if (entry.Count >= 10)
+                {
+                    // Medium confidence - conservative 25% decay
+                    entry.Count = Math.Max(1, (entry.Count * 3) / 4);
+                    if (oldCount != entry.Count)
+                        Logger.Trace($"TemplateDB: Medium-confidence template decayed for '{studyDescription}' ({oldCount} → {entry.Count})");
+                }
+                else
+                {
+                    // Low confidence - standard 50% decay
+                    entry.Count = Math.Max(1, entry.Count / 2);
+                    if (oldCount != entry.Count)
+                        Logger.Trace($"TemplateDB: Low-confidence template decayed for '{studyDescription}' ({oldCount} → {entry.Count})");
+                }
             }
 
             entries.Add(new TemplateEntry
