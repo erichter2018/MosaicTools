@@ -1,3 +1,8 @@
+3.1.0
+- Settings redesign: new sectioned layout with search functionality
+- Timezone setting for Critical Findings: convert times to your local timezone
+- New Button Studio and Key Mappings dialogs for easier configuration
+
 3.0.7
 - RVU metrics customization: choose which metrics to display (Total, Per Hour, Current Hour, etc.)
 - Template database improvements for better correlation
