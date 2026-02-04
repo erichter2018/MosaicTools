@@ -152,7 +152,7 @@ public class ActionController : IDisposable
         _hidService = new HidService();
         _keyboardService = new KeyboardService();
         _automationService = new AutomationService();
-        _noteFormatter = new NoteFormatter(config.DoctorName, config.CriticalFindingsTemplate);
+        _noteFormatter = new NoteFormatter(config.DoctorName, config.CriticalFindingsTemplate, config.TargetTimezone);
         _getPriorService = new GetPriorService(_config.ComparisonTemplate);
         _ocrService = new OcrService();
         _pipeService = new PipeService();
@@ -257,7 +257,7 @@ public class ActionController : IDisposable
     {
         Logger.Trace("Refreshing ActionController services...");
         // Recreate services that depend on config
-        _noteFormatter = new NoteFormatter(_config.DoctorName, _config.CriticalFindingsTemplate);
+        _noteFormatter = new NoteFormatter(_config.DoctorName, _config.CriticalFindingsTemplate, _config.TargetTimezone);
         _getPriorService = new GetPriorService(_config.ComparisonTemplate);
         RegisterHotkeys();
         

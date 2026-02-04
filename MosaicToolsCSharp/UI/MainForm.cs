@@ -1699,8 +1699,20 @@ public class MainForm : Form
     
     private void OpenSettings()
     {
-        using var settingsForm = new SettingsForm(_config, _controller, this);
-        settingsForm.ShowDialog(this);
+        try
+        {
+            Logger.Trace("OpenSettings: Creating SettingsFormNew");
+            using var settingsForm = new SettingsFormNew(_config, _controller, this);
+            Logger.Trace("OpenSettings: Showing dialog");
+            settingsForm.ShowDialog(this);
+            Logger.Trace("OpenSettings: Dialog closed");
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"OpenSettings: EXCEPTION - {ex.GetType().Name}: {ex.Message}");
+            Logger.Trace($"OpenSettings: StackTrace - {ex.StackTrace}");
+            MessageBox.Show($"Error opening settings: {ex.Message}\n\n{ex.StackTrace}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
     
     #endregion

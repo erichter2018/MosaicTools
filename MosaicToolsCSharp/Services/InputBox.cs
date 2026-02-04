@@ -36,11 +36,12 @@ public static class InputBox
             textBox.Multiline = true;
             textBox.ScrollBars = ScrollBars.Vertical;
             textBox.AcceptsReturn = true;
-            label.SetBounds(12, 12, 450, 60);
-            textBox.SetBounds(12, 80, 450, 150);
-            buttonOk.SetBounds(306, 245, 75, 23);
-            buttonCancel.SetBounds(387, 245, 75, 23);
-            form.ClientSize = new Size(480, 280);
+            textBox.WordWrap = false;
+            label.SetBounds(12, 12, 450, 20);
+            textBox.SetBounds(12, 40, 450, 180);
+            buttonOk.SetBounds(306, 230, 75, 23);
+            buttonCancel.SetBounds(387, 230, 75, 23);
+            form.ClientSize = new Size(480, 265);
         }
         else
         {

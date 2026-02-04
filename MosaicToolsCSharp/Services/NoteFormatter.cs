@@ -12,11 +12,13 @@ public class NoteFormatter
 {
     private readonly string _doctorName;
     private readonly string? _template;
-    
-    public NoteFormatter(string doctorName, string? template = null)
+    private readonly string? _targetTimezone;  // null = preserve original, otherwise convert
+
+    public NoteFormatter(string doctorName, string? template = null, string? targetTimezone = null)
     {
         _doctorName = doctorName;
         _template = template;
+        _targetTimezone = targetTimezone;
     }
     
     /// <summary>
@@ -105,36 +107,39 @@ public class NoteFormatter
                 // Note Dialog format - infer date from current time
                 var textTimeStr = NormalizeTimeStr(dialogTimeMatch.Groups[1].Value);
                 var rawTz = dialogTimeMatch.Groups[2].Success ? dialogTimeMatch.Groups[2].Value.Trim() : "";
-                var timezoneStr = GetTimezoneDisplay(rawTz);
-                
+                var sourceTimezoneStr = GetTimezoneDisplay(rawTz);
+
                 var tzOffsets = new Dictionary<string, int>
                 {
                     ["Eastern Time"] = 1, ["Central Time"] = 0, ["Mountain Time"] = -1, ["Pacific Time"] = -2
                 };
-                int offset = tzOffsets.GetValueOrDefault(timezoneStr, 0);
-                
+                int sourceOffset = tzOffsets.GetValueOrDefault(sourceTimezoneStr, 0);
+
                 var now = DateTime.Now;
                 var today = now.Date;
                 var yesterday = today.AddDays(-1);
-                
-                if (DateTime.TryParseExact(textTimeStr, "h:mm tt", 
+
+                if (DateTime.TryParseExact(textTimeStr, "h:mm tt",
                     System.Globalization.CultureInfo.InvariantCulture,
                     System.Globalization.DateTimeStyles.None, out var noteTime))
                 {
-                    var noteHourCt = noteTime.Hour - offset;
+                    var noteHourCt = noteTime.Hour - sourceOffset;
                     if (noteHourCt < 0) noteHourCt += 24;
                     else if (noteHourCt >= 24) noteHourCt -= 24;
-                    
+
                     var noteDtToday = today.AddHours(noteHourCt).AddMinutes(noteTime.Minute);
-                    
+
                     if (noteDtToday > now)
                         endDate = yesterday.ToString("MM/dd/yyyy");
                     else
                         endDate = today.ToString("MM/dd/yyyy");
-                    
+
                     endTimeCtStr = textTimeStr;
-                    
-                    return $"Critical findings were discussed with and acknowledged by {titleAndName} at {textTimeStr} {timezoneStr} on {endDate}.";
+
+                    // Apply timezone conversion if target is set
+                    var (finalTime, finalTzAbbr) = ConvertToTargetTimezone(noteTime, sourceTimezoneStr);
+
+                    return $"Critical findings were discussed with and acknowledged by {titleAndName} at {finalTime:h:mm tt} {finalTzAbbr} on {endDate}.";
                 }
             }
             
@@ -142,44 +147,62 @@ public class NoteFormatter
             string finalTimeDisplay = "N/A";
             string diffWarning = "";
             var textTimeMatch = Regex.Match(rawText, @"(?:at|@|\.|-)\s*(\d{1,2}:\d{2}\s*(?i:AM|PM))\s*([a-zA-Z\s]+)?", RegexOptions.IgnoreCase);
-            
+
             if (textTimeMatch.Success && dtEnd.HasValue)
             {
                 var textTimeStr = NormalizeTimeStr(textTimeMatch.Groups[1].Value);
                 var rawTz = textTimeMatch.Groups[2].Success ? textTimeMatch.Groups[2].Value.Trim() : "";
-                
-                // Determine source timezone relative to Central (0)
-                int offsetFromCentral = GetTzHoursFromCentral(rawTz);
-                
+
+                // Determine source timezone from note text (defaults to Central if not detected)
+                int sourceOffsetFromCentral = GetTzHoursFromCentral(rawTz);
+                var sourceTimezoneStr = GetTimezoneDisplay(rawTz);
+
                 if (DateTime.TryParseExact($"{endDate} {textTimeStr}", "MM/dd/yyyy h:mm tt",
                     System.Globalization.CultureInfo.InvariantCulture,
                     System.Globalization.DateTimeStyles.None, out var dtText))
                 {
                     // Convert discovered text time to Central (CDT/CST)
                     // If Mountain (-1), we subtract -1 (add 1 hour) to get Central.
-                    var dtTextCt = dtText.AddHours(-offsetFromCentral);
-                    
+                    var dtTextCt = dtText.AddHours(-sourceOffsetFromCentral);
+
                     // Cross-reference with system "end" timestamp (which is already Central)
                     var diffSeconds = (dtTextCt - dtEnd.Value).TotalSeconds;
                     if (diffSeconds > 43200) dtTextCt = dtTextCt.AddDays(-1);
                     else if (diffSeconds < -43200) dtTextCt = dtTextCt.AddDays(1);
-                    
+
                     var timeDiffMin = Math.Abs((dtTextCt - dtEnd.Value).TotalMinutes);
-                    
-                    // Always normalize to Central for the final display
-                    finalTimeDisplay = $"{dtTextCt:h:mm tt} CST";
+
+                    // Apply timezone conversion based on settings
+                    var (finalTime, finalTzAbbr) = ConvertToTargetTimezone(dtText, sourceTimezoneStr);
+                    finalTimeDisplay = $"{finalTime:h:mm tt} {finalTzAbbr}";
 
                     if (timeDiffMin > 55)
                         diffWarning = $"NOTE: Entry logged {(int)timeDiffMin} minutes after reported communication.\n";
                 }
                 else
                 {
-                    finalTimeDisplay = $"{textTimeStr} CST";
+                    // Parsing failed - use source time with appropriate abbreviation
+                    var (_, tzAbbr) = ConvertToTargetTimezone(DateTime.Now, sourceTimezoneStr);
+                    finalTimeDisplay = $"{textTimeStr} {tzAbbr}";
                 }
             }
             else
             {
-                finalTimeDisplay = string.IsNullOrEmpty(endTimeCtStr) || endTimeCtStr == "N/A" ? "N/A" : $"{endTimeCtStr} CST";
+                // No text time found - use end timestamp with CST (assumed Central)
+                if (!string.IsNullOrEmpty(endTimeCtStr) && endTimeCtStr != "N/A")
+                {
+                    if (DateTime.TryParseExact(endTimeCtStr, "h:mm tt",
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.None, out var endTime))
+                    {
+                        var (finalTime, finalTzAbbr) = ConvertToTargetTimezone(endTime, "Central Time");
+                        finalTimeDisplay = $"{finalTime:h:mm tt} {finalTzAbbr}";
+                    }
+                    else
+                    {
+                        finalTimeDisplay = $"{endTimeCtStr} CT";
+                    }
+                }
             }
             
             string template = _template ?? "Critical findings were discussed with and acknowledged by {name} at {time} on {date}.";
@@ -227,7 +250,58 @@ public class NoteFormatter
             _ => "Central Time"
         };
     }
-    
+
+    private static string GetTimezoneAbbreviation(string timezone)
+    {
+        return timezone switch
+        {
+            "Eastern Time" => "ET",
+            "Central Time" => "CT",
+            "Mountain Time" => "MT",
+            "Pacific Time" => "PT",
+            _ => "CT"
+        };
+    }
+
+    /// <summary>
+    /// Convert time from source timezone to target timezone (or keep original if no target set).
+    /// Returns the converted time and the timezone abbreviation to display.
+    /// </summary>
+    private (DateTime time, string tzAbbr) ConvertToTargetTimezone(DateTime sourceTime, string sourceTimezone)
+    {
+        // If no target timezone is set, keep the original
+        if (string.IsNullOrEmpty(_targetTimezone))
+        {
+            return (sourceTime, GetTimezoneAbbreviation(sourceTimezone));
+        }
+
+        // Get offsets from Central for source and target
+        int sourceOffsetFromCentral = sourceTimezone switch
+        {
+            "Eastern Time" => 1,
+            "Central Time" => 0,
+            "Mountain Time" => -1,
+            "Pacific Time" => -2,
+            _ => 0  // Default to Central if unknown
+        };
+
+        int targetOffsetFromCentral = _targetTimezone switch
+        {
+            "Eastern Time" => 1,
+            "Central Time" => 0,
+            "Mountain Time" => -1,
+            "Pacific Time" => -2,
+            _ => 0  // Default to Central if unknown
+        };
+
+        // Convert: source → Central → target
+        // Offset difference: how many hours to add to convert source to target
+        int hoursDiff = targetOffsetFromCentral - sourceOffsetFromCentral;
+        var convertedTime = sourceTime.AddHours(hoursDiff);
+
+        return (convertedTime, GetTimezoneAbbreviation(_targetTimezone));
+    }
+
     private static readonly HashSet<string> PreservedAcronyms = new(StringComparer.OrdinalIgnoreCase)
         { "NP", "MD", "DO", "PA", "RN", "LPN", "BSN", "MSN", "DNP", "PhD" };
 

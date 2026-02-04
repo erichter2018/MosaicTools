@@ -34,6 +34,9 @@ public class Configuration
     [JsonPropertyName("doctor_name")]
     public string DoctorName { get; set; } = "Radiologist";
 
+    [JsonPropertyName("target_timezone")]
+    public string? TargetTimezone { get; set; } = null;  // null = keep original timezone from note
+
     [JsonPropertyName("auto_update_enabled")]
     public bool AutoUpdateEnabled { get; set; } = true;
 
