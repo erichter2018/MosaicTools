@@ -6,13 +6,17 @@ using MosaicTools.Services;
 namespace MosaicTools.UI.Settings;
 
 /// <summary>
-/// Reference section: AHK integration docs, debug tips.
+/// Reference section: AHK integration docs, debug tips, element dump tool.
 /// </summary>
 public class ReferenceSection : SettingsSection
 {
     public override string SectionId => "reference";
 
     private readonly TextBox _infoBox;
+    private readonly ComboBox _targetAppCombo;
+    private readonly ComboBox _methodCombo;
+    private readonly Button _dumpButton;
+    private readonly Label _statusLabel;
 
     public ReferenceSection(ToolTip toolTip) : base("Reference", toolTip)
     {
@@ -23,7 +27,7 @@ public class ReferenceSection : SettingsSection
             WordWrap = false,
             ScrollBars = ScrollBars.Vertical,
             Location = new Point(LeftMargin, _nextY),
-            Size = new Size(450, 480),
+            Size = new Size(450, 380),
             BackColor = Color.FromArgb(35, 35, 38),
             ForeColor = Color.LightGray,
             Font = new Font("Consolas", 8.5f),
@@ -53,29 +57,119 @@ public class ReferenceSection : SettingsSection
 "DetectHiddenWindows, On\r\n" +
 "PostMessage, 0x0401, 0, 0,, ahk_class WindowsForms\r\n" +
 "\r\n" +
-"=== Critical Note Creation ===\r\n" +
-"\r\n" +
-"Create a Critical Communication Note in Clario:\r\n" +
-"- Map 'Create Critical Note' to hotkey/mic button\r\n" +
-"- Ctrl+Click on Clinical History window\r\n" +
-"- Right-click Clinical History -> Create Critical Note\r\n" +
-"- Windows message 0x040F from AHK\r\n" +
-"\r\n" +
 "=== Debug Tips ===\r\n" +
 "\r\n" +
 "- Hold Win key while triggering Critical Findings\r\n" +
 "  to see raw data without pasting.\r\n" +
 "\r\n" +
-"- Right-click Clinical History or Impression\r\n" +
-"  windows for context menu and debug options.\r\n" +
-"\r\n" +
 "=== Config File ===\r\n" +
 "Settings: %LOCALAPPDATA%\\MosaicTools\\MosaicToolsSettings.json"
         };
         Controls.Add(_infoBox);
-        _nextY += 490;
+        _nextY += 390;
+
+        // Element Dump section
+        AddSectionDivider("Element Dump (Debug)");
+
+        // Target app dropdown
+        AddLabel("Target App:", LeftMargin, _nextY + 3);
+        _targetAppCombo = new ComboBox
+        {
+            Location = new Point(LeftMargin + 100, _nextY),
+            Width = 120,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _targetAppCombo.Items.AddRange(new[] { "Clario", "Mosaic", "InteleViewer" });
+        _targetAppCombo.SelectedIndex = 0;
+        Controls.Add(_targetAppCombo);
+        _nextY += RowHeight;
+
+        // Method dropdown
+        AddLabel("Method:", LeftMargin, _nextY + 3);
+        _methodCombo = new ComboBox
+        {
+            Location = new Point(LeftMargin + 100, _nextY),
+            Width = 120,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _methodCombo.Items.AddRange(new[] { "Both", "Name", "LegacyValue" });
+        _methodCombo.SelectedIndex = 0;
+        Controls.Add(_methodCombo);
+        _nextY += RowHeight;
+
+        // Dump button
+        _dumpButton = new Button
+        {
+            Text = "Dump Elements to Clipboard",
+            Location = new Point(LeftMargin, _nextY),
+            Size = new Size(180, 28),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        _dumpButton.FlatAppearance.BorderColor = Color.FromArgb(80, 80, 80);
+        _dumpButton.Click += OnDumpClick;
+        Controls.Add(_dumpButton);
+
+        _statusLabel = new Label
+        {
+            Location = new Point(LeftMargin + 190, _nextY + 5),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(120, 200, 120),
+            Font = new Font("Segoe UI", 9)
+        };
+        Controls.Add(_statusLabel);
+        _nextY += 35;
+
+        _toolTip.SetToolTip(_targetAppCombo, "Select the application to scan for UI elements.");
+        _toolTip.SetToolTip(_methodCombo, "Name = UIA Name property\nLegacyValue = LegacyIAccessible.Value\nBoth = Compare both methods");
+        _toolTip.SetToolTip(_dumpButton, "Scan all UI elements and copy to clipboard.\nUse to compare Name vs LegacyIAccessible.Value.");
 
         UpdateHeight();
+    }
+
+    private void OnDumpClick(object? sender, EventArgs e)
+    {
+        _statusLabel.Text = "Scanning...";
+        _statusLabel.ForeColor = Color.FromArgb(200, 200, 120);
+        _statusLabel.Refresh();
+
+        try
+        {
+            var targetApp = _targetAppCombo.SelectedItem?.ToString() ?? "Clario";
+            var method = _methodCombo.SelectedItem?.ToString() ?? "Both";
+
+            using var automation = new AutomationService();
+            var result = automation.DumpElements(targetApp, method);
+
+            Clipboard.SetText(result);
+
+            if (result.StartsWith("ERROR:"))
+            {
+                _statusLabel.Text = result;
+                _statusLabel.ForeColor = Color.FromArgb(255, 120, 120);
+            }
+            else
+            {
+                // Count elements from the result
+                var lines = result.Split('\n');
+                var countLine = Array.Find(lines, l => l.StartsWith("Total elements"));
+                _statusLabel.Text = countLine ?? "Copied to clipboard!";
+                _statusLabel.ForeColor = Color.FromArgb(120, 200, 120);
+            }
+        }
+        catch (Exception ex)
+        {
+            _statusLabel.Text = $"Error: {ex.Message}";
+            _statusLabel.ForeColor = Color.FromArgb(255, 120, 120);
+        }
     }
 
     public override void LoadSettings(Configuration config)

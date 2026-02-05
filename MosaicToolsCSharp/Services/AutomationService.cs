@@ -821,6 +821,119 @@ public class AutomationService : IDisposable
         }
     }
 
+    // For simulated mouse clicks (Focus() doesn't work in Chrome-based apps)
+    [DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    private static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X; public int Y; }
+
+    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+
+    // SELFLAG_TAKEFOCUS - sets keyboard focus via IAccessible
+    private const int SELFLAG_TAKEFOCUS = 1;
+
+    /// <summary>
+    /// Focus the Transcript text box in Mosaic.
+    /// This is needed because some microphone buttons can shift focus to Final Report.
+    /// Tries LegacyIAccessible.Select(SELFLAG_TAKEFOCUS) first, falls back to click if needed.
+    /// Returns true if successful.
+    /// </summary>
+    public bool FocusTranscriptBox()
+    {
+        try
+        {
+            var window = _cachedSlimHubWindow ?? FindMosaicWindow();
+            if (window == null)
+            {
+                Logger.Trace("FocusTranscriptBox: Mosaic window not found");
+                return false;
+            }
+
+            // Find ProseMirror elements - the Transcript one doesn't contain U+FFFC
+            var proseMirrors = window.FindAllDescendants(cf =>
+                cf.ByClassName("ProseMirror", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+
+            foreach (var pm in proseMirrors)
+            {
+                try
+                {
+                    var name = pm.Name ?? "";
+                    // Skip the Final Report editor (contains EXAM: and U+FFFC)
+                    if (name.Contains("EXAM:") || name.Contains('\uFFFC'))
+                        continue;
+
+                    var rect = pm.BoundingRectangle;
+                    if (rect.Width > 100 && rect.Height > 50)
+                    {
+                        // Try LegacyIAccessible.Select with SELFLAG_TAKEFOCUS first
+                        var legacyPattern = pm.Patterns.LegacyIAccessible.PatternOrDefault;
+                        if (legacyPattern != null)
+                        {
+                            try
+                            {
+                                legacyPattern.Select(SELFLAG_TAKEFOCUS);
+                                Logger.Trace($"FocusTranscriptBox: Used LegacyIAccessible.Select on ProseMirror at {rect}");
+                                return true;
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Trace($"FocusTranscriptBox: LegacyIAccessible.Select failed: {ex.Message}, falling back to click");
+                            }
+                        }
+
+                        // Fallback to click
+                        ClickAtCenter(rect);
+                        Logger.Trace($"FocusTranscriptBox: Clicked ProseMirror at {rect}");
+                        return true;
+                    }
+                }
+                catch { continue; }
+            }
+
+            Logger.Trace("FocusTranscriptBox: Transcript box not found");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"FocusTranscriptBox error: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Click at the center of a rectangle using simulated mouse events.
+    /// Saves and restores mouse position.
+    /// </summary>
+    private void ClickAtCenter(System.Drawing.Rectangle rect)
+    {
+        int x = rect.X + rect.Width / 2;
+        int y = rect.Y + rect.Height / 2;
+
+        // Save current mouse position
+        GetCursorPos(out POINT originalPos);
+
+        // Move to target
+        SetCursorPos(x, y);
+        Thread.Sleep(50);
+
+        // Click
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        Thread.Sleep(20);
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+        Thread.Sleep(30);
+
+        // Restore mouse position
+        SetCursorPos(originalPos.X, originalPos.Y);
+    }
+
     /// <summary>
     /// Find the Mosaic editor element for pasting.
     /// </summary>
@@ -2037,6 +2150,181 @@ public class AutomationService : IDisposable
             }
         }
         return string.Join(" ", words);
+    }
+
+    #endregion
+
+    #region Debug Element Dump
+
+    /// <summary>
+    /// Find InteleViewer window.
+    /// </summary>
+    public AutomationElement? FindInteleViewerWindow()
+    {
+        try
+        {
+            var desktop = _automation.GetDesktop();
+            var windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
+
+            foreach (var window in windows)
+            {
+                try
+                {
+                    var title = window.Name ?? "";
+                    if (title.Contains("InteleViewer", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return window;
+                    }
+                }
+                catch { continue; }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Error finding InteleViewer window: {ex.Message}");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Dump all elements from a window, comparing UIA Name vs LegacyIAccessible Value.
+    /// </summary>
+    /// <param name="targetApp">Target app: "Clario", "Mosaic", or "InteleViewer"</param>
+    /// <param name="method">Method: "Name", "LegacyValue", or "Both"</param>
+    /// <returns>Formatted string with element dump, or error message</returns>
+    public string DumpElements(string targetApp, string method)
+    {
+        try
+        {
+            AutomationElement? window = targetApp switch
+            {
+                "Clario" => FindClarioWindow(),
+                "Mosaic" => FindMosaicWindow(),
+                "InteleViewer" => FindInteleViewerWindow(),
+                _ => null
+            };
+
+            if (window == null)
+            {
+                return $"ERROR: {targetApp} window not found. Make sure it's open.";
+            }
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"ELEMENT DUMP: {targetApp}");
+            sb.AppendLine($"Method: {method}");
+            sb.AppendLine($"Window: {window.Name}");
+            sb.AppendLine($"Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            sb.AppendLine(new string('=', 80));
+            sb.AppendLine();
+
+            int count = 0;
+            DumpElementRecursive(window, sb, method, 0, 20, ref count);
+
+            sb.AppendLine();
+            sb.AppendLine(new string('=', 80));
+            sb.AppendLine($"Total elements with content: {count}");
+
+            return sb.ToString();
+        }
+        catch (Exception ex)
+        {
+            return $"ERROR: {ex.Message}";
+        }
+    }
+
+    private void DumpElementRecursive(AutomationElement element, System.Text.StringBuilder sb,
+        string method, int depth, int maxDepth, ref int count)
+    {
+        if (depth > maxDepth) return;
+
+        try
+        {
+            string? automationId = null;
+            string? controlType = null;
+            string? name = null;
+            string? legacyValue = null;
+
+            try { automationId = element.AutomationId; } catch { }
+            try { controlType = element.ControlType.ToString(); } catch { }
+            try { name = element.Name; } catch { }
+
+            // Get LegacyIAccessible Value
+            try
+            {
+                var legacyPattern = element.Patterns.LegacyIAccessible.PatternOrDefault;
+                if (legacyPattern != null)
+                {
+                    legacyValue = legacyPattern.Value;
+                }
+            }
+            catch { }
+
+            // Only include elements with some content
+            bool hasContent = !string.IsNullOrEmpty(automationId) ||
+                              !string.IsNullOrEmpty(name) ||
+                              !string.IsNullOrEmpty(legacyValue);
+
+            if (hasContent)
+            {
+                count++;
+                var indent = new string(' ', depth * 2);
+
+                sb.AppendLine($"{indent}--- Depth {depth} ---");
+                if (!string.IsNullOrEmpty(automationId))
+                    sb.AppendLine($"{indent}AutomationID: {automationId}");
+                if (!string.IsNullOrEmpty(controlType))
+                    sb.AppendLine($"{indent}ControlType:  {controlType}");
+
+                if (method == "Name" || method == "Both")
+                {
+                    sb.AppendLine($"{indent}UIA Name:     '{Truncate(name, 150)}'");
+                }
+
+                if (method == "LegacyValue" || method == "Both")
+                {
+                    sb.AppendLine($"{indent}LegacyValue:  '{Truncate(legacyValue, 150)}'");
+                }
+
+                // Flag differences when using Both
+                if (method == "Both" && !string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(legacyValue))
+                {
+                    if (name != legacyValue)
+                    {
+                        sb.AppendLine($"{indent}  ** DIFFERENT **");
+                    }
+                }
+                else if (method == "Both" && string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(legacyValue))
+                {
+                    sb.AppendLine($"{indent}  ** LEGACY ONLY **");
+                }
+                else if (method == "Both" && !string.IsNullOrEmpty(name) && string.IsNullOrEmpty(legacyValue))
+                {
+                    sb.AppendLine($"{indent}  ** NAME ONLY **");
+                }
+
+                sb.AppendLine();
+            }
+
+            // Recurse into children
+            try
+            {
+                var children = element.FindAllChildren();
+                foreach (var child in children)
+                {
+                    DumpElementRecursive(child, sb, method, depth + 1, maxDepth, ref count);
+                }
+            }
+            catch { }
+        }
+        catch { }
+    }
+
+    private static string Truncate(string? value, int maxLength)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        if (value.Length <= maxLength) return value;
+        return value.Substring(0, maxLength) + "...";
     }
 
     #endregion

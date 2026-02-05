@@ -1,3 +1,6 @@
+3.1.1
+- Philips SpeechMike support in Event mode
+
 3.1.0
 - Settings redesign: new sectioned layout with search functionality
 - Timezone setting for Critical Findings: convert times to your local timezone

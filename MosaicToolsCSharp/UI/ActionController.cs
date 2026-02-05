@@ -1122,7 +1122,11 @@ public class ActionController : IDisposable
 
                 // Activate Mosaic and paste
                 NativeWindows.ActivateMosaicForcefully();
-                Thread.Sleep(100);
+                Thread.Sleep(50);
+
+                // Focus Transcript box to ensure paste goes to correct location
+                _automationService.FocusTranscriptBox();
+                Thread.Sleep(50);
 
                 // Paste
                 NativeWindows.SendHotkey("ctrl+v");
@@ -1271,7 +1275,11 @@ public class ActionController : IDisposable
 
                 // Activate Mosaic and paste
                 NativeWindows.ActivateMosaicForcefully();
-                Thread.Sleep(100);
+                Thread.Sleep(50);
+
+                // Focus Transcript box to ensure paste goes to correct location
+                _automationService.FocusTranscriptBox();
+                Thread.Sleep(50);
 
                 // Paste
                 NativeWindows.SendHotkey("ctrl+v");
@@ -1388,7 +1396,11 @@ public class ActionController : IDisposable
             // Paste into Mosaic (with leading and trailing newline for cleaner insertion)
             ClipboardService.SetText(PrepareTextForPaste(formatted + "\n"));
             NativeWindows.ActivateMosaicForcefully();
-            Thread.Sleep(200);
+            Thread.Sleep(100);
+
+            // Focus Transcript box to ensure paste goes to correct location
+            _automationService.FocusTranscriptBox();
+            Thread.Sleep(100);
 
             NativeWindows.SendHotkey("ctrl+v");
 

@@ -37,6 +37,9 @@ public class Configuration
     [JsonPropertyName("target_timezone")]
     public string? TargetTimezone { get; set; } = null;  // null = keep original timezone from note
 
+    [JsonPropertyName("preferred_microphone")]
+    public string PreferredMicrophone { get; set; } = "Auto";  // Auto, PowerMic, or SpeechMike
+
     [JsonPropertyName("auto_update_enabled")]
     public bool AutoUpdateEnabled { get; set; } = true;
 
@@ -331,10 +334,14 @@ public class Configuration
     [JsonPropertyName("window_level_keys")]
     public List<string> WindowLevelKeys { get; set; } = new() { "F4", "F5", "F7", "F6" };
 
-    // Action Mappings (action name -> {hotkey, mic_button})
+    // Action Mappings for PowerMic (action name -> {hotkey, mic_button})
     [JsonPropertyName("action_mappings")]
     public Dictionary<string, ActionMapping> ActionMappings { get; set; } = new();
-    
+
+    // Action Mappings for SpeechMike (action name -> {hotkey, mic_button})
+    [JsonPropertyName("speechmike_action_mappings")]
+    public Dictionary<string, ActionMapping> SpeechMikeActionMappings { get; set; } = new();
+
     // Floating Buttons Configuration
     [JsonPropertyName("floating_buttons")]
     public FloatingButtonsConfig FloatingButtons { get; set; } = new();
@@ -415,7 +422,7 @@ public class Configuration
     /// </summary>
     private void EnsureDefaults()
     {
-        // Default action mappings if empty
+        // Default action mappings for PowerMic if empty
         if (ActionMappings.Count == 0)
         {
             ActionMappings = new Dictionary<string, ActionMapping>
@@ -430,7 +437,23 @@ public class Configuration
                 [Actions.SignReport] = new() { Hotkey = "", MicButton = "Checkmark" }
             };
         }
-        
+
+        // Default action mappings for SpeechMike if empty
+        if (SpeechMikeActionMappings.Count == 0)
+        {
+            SpeechMikeActionMappings = new Dictionary<string, ActionMapping>
+            {
+                [Actions.GetPrior] = new() { Hotkey = "", MicButton = "Left Button" },
+                [Actions.CriticalFindings] = new() { Hotkey = "", MicButton = "Skip Forward" },
+                [Actions.SystemBeep] = new() { Hotkey = "", MicButton = "" },
+                [Actions.ShowReport] = new() { Hotkey = "", MicButton = "" },
+                [Actions.CaptureSeries] = new() { Hotkey = "", MicButton = "T Button" },
+                [Actions.ToggleRecord] = new() { Hotkey = "", MicButton = "" },
+                [Actions.ProcessReport] = new() { Hotkey = "", MicButton = "Skip Back" },
+                [Actions.SignReport] = new() { Hotkey = "", MicButton = "Checkmark" }
+            };
+        }
+
         // Ensure macros have IDs (migration for pre-ID macros)
         foreach (var macro in Macros)
         {

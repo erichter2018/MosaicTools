@@ -21,6 +21,8 @@ public class KeyMappingsDialog : Form
     private readonly bool _isHeadless;
     private readonly Dictionary<string, TextBox> _hotkeyBoxes = new();
     private readonly Dictionary<string, ComboBox> _micCombos = new();
+    private ComboBox _deviceCombo = null!;
+    private Label _deviceStatusLabel = null!;
 
     public KeyMappingsDialog(Configuration config, ActionController controller, bool isHeadless)
     {
@@ -30,6 +32,11 @@ public class KeyMappingsDialog : Form
 
         InitializeUI();
         LoadSettings();
+    }
+
+    private Dictionary<string, ActionMapping> GetCurrentMappings()
+    {
+        return _deviceCombo.SelectedIndex == 1 ? _config.SpeechMikeActionMappings : _config.ActionMappings;
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -46,7 +53,7 @@ public class KeyMappingsDialog : Form
     private void InitializeUI()
     {
         Text = "Key Mappings";
-        Size = new Size(500, 520);
+        Size = new Size(500, 580);
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -64,6 +71,51 @@ public class KeyMappingsDialog : Form
         Controls.Add(contentPanel);
 
         int y = 15;
+
+        // Device selector
+        contentPanel.Controls.Add(new Label
+        {
+            Text = "Configure mappings for:",
+            Location = new Point(20, y + 3),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        });
+
+        _deviceCombo = new ComboBox
+        {
+            Location = new Point(170, y),
+            Width = 130,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _deviceCombo.Items.AddRange(new[] { "PowerMic", "SpeechMike" });
+        _deviceCombo.SelectedIndex = _config.PreferredMicrophone == HidService.DeviceSpeechMike ? 1 : 0;
+        _deviceCombo.SelectedIndexChanged += (s, e) => LoadSettings();
+        contentPanel.Controls.Add(_deviceCombo);
+
+        _deviceStatusLabel = new Label
+        {
+            Location = new Point(310, y + 3),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        };
+        UpdateDeviceStatus();
+        contentPanel.Controls.Add(_deviceStatusLabel);
+
+        y += 35;
+
+        // Separator
+        contentPanel.Controls.Add(new Label
+        {
+            Text = "─────────────────────────────────────────────────────",
+            Location = new Point(20, y),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(60, 60, 60)
+        });
+        y += 20;
 
         // Headers
         contentPanel.Controls.Add(new Label
@@ -170,8 +222,7 @@ public class KeyMappingsDialog : Form
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat
             };
-            micCombo.Items.Add("");
-            micCombo.Items.AddRange(HidService.AllButtons);
+            // Buttons will be populated by LoadSettings() based on selected device
             contentPanel.Controls.Add(micCombo);
             _micCombos[action] = micCombo;
 
@@ -242,29 +293,78 @@ public class KeyMappingsDialog : Form
         box.Click += (s, e) => box.SelectAll();
     }
 
+    private void UpdateDeviceStatus()
+    {
+        var connected = _controller.GetConnectedMicrophoneName();
+        if (!string.IsNullOrEmpty(connected))
+        {
+            bool isSelected = (_deviceCombo.SelectedIndex == 0 && !connected.Contains("Speech")) ||
+                              (_deviceCombo.SelectedIndex == 1 && connected.Contains("Speech"));
+            _deviceStatusLabel.Text = isSelected ? $"(Connected: {connected})" : $"(Other connected: {connected})";
+            _deviceStatusLabel.ForeColor = isSelected ? Color.LightGreen : Color.Yellow;
+        }
+        else
+        {
+            _deviceStatusLabel.Text = "(Not connected)";
+            _deviceStatusLabel.ForeColor = Color.Gray;
+        }
+    }
+
+    private string[] GetButtonsForSelectedDevice()
+    {
+        return _deviceCombo.SelectedIndex == 1
+            ? HidService.SpeechMikeButtons
+            : HidService.PowerMicButtons;
+    }
+
     private void LoadSettings()
     {
+        UpdateDeviceStatus();
+        var micMappings = GetCurrentMappings();  // Device-specific for mic buttons
+        var buttons = GetButtonsForSelectedDevice();
+
         foreach (var action in Actions.All)
         {
             if (action == Actions.None) continue;
 
-            var mapping = _config.ActionMappings.GetValueOrDefault(action);
-
+            // Hotkeys are always from PowerMic mappings (shared across devices)
             if (_hotkeyBoxes.TryGetValue(action, out var hotkeyBox))
             {
-                hotkeyBox.Text = mapping?.Hotkey ?? "";
+                var hotkeyMapping = _config.ActionMappings.GetValueOrDefault(action);
+                hotkeyBox.Text = hotkeyMapping?.Hotkey ?? "";
             }
 
+            // Mic buttons are device-specific
             if (_micCombos.TryGetValue(action, out var micCombo))
             {
-                var mic = mapping?.MicButton ?? "";
-                micCombo.SelectedItem = micCombo.Items.Contains(mic) ? mic : "";
+                var micMapping = micMappings.GetValueOrDefault(action);
+                var currentSelection = micMapping?.MicButton ?? "";
+                micCombo.Items.Clear();
+                micCombo.Items.Add("");
+                micCombo.Items.AddRange(buttons);
+
+                // Select the current mapping if it exists in this device's button list
+                micCombo.SelectedItem = micCombo.Items.Contains(currentSelection) ? currentSelection : "";
             }
         }
     }
 
     private void SaveAndClose()
     {
+        // Save to both mappings - hotkeys are shared, mic buttons are per-device
+        SaveMappingsForDevice(_config.ActionMappings, false);
+        SaveMappingsForDevice(_config.SpeechMikeActionMappings, true);
+
+        _config.Save();
+        _controller.RefreshServices();
+        DialogResult = DialogResult.OK;
+        Close();
+    }
+
+    private void SaveMappingsForDevice(Dictionary<string, ActionMapping> targetMappings, bool isSpeechMike)
+    {
+        bool isCurrentDevice = (_deviceCombo.SelectedIndex == 1) == isSpeechMike;
+
         foreach (var action in Actions.All)
         {
             if (action == Actions.None) continue;
@@ -272,30 +372,32 @@ public class KeyMappingsDialog : Form
             string? hotkey = null;
             string? micButton = null;
 
+            // Hotkeys are always taken from the UI (shared across devices)
             if (_hotkeyBoxes.TryGetValue(action, out var hotkeyBox))
             {
                 hotkey = string.IsNullOrWhiteSpace(hotkeyBox.Text) ? null : hotkeyBox.Text;
             }
 
-            if (_micCombos.TryGetValue(action, out var micCombo))
+            // Mic buttons: only update from UI if this is the currently selected device
+            if (isCurrentDevice && _micCombos.TryGetValue(action, out var micCombo))
             {
                 micButton = micCombo.SelectedItem?.ToString();
                 if (string.IsNullOrWhiteSpace(micButton)) micButton = null;
             }
+            else
+            {
+                // Keep existing mic button for the other device
+                micButton = targetMappings.GetValueOrDefault(action)?.MicButton;
+            }
 
             if (hotkey != null || micButton != null)
             {
-                _config.ActionMappings[action] = new ActionMapping { Hotkey = hotkey, MicButton = micButton };
+                targetMappings[action] = new ActionMapping { Hotkey = hotkey, MicButton = micButton };
             }
             else
             {
-                _config.ActionMappings.Remove(action);
+                targetMappings.Remove(action);
             }
         }
-
-        _config.Save();
-        _controller.RefreshServices();
-        DialogResult = DialogResult.OK;
-        Close();
     }
 }

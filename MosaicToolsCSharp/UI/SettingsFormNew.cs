@@ -518,6 +518,8 @@ public class SettingsFormNew : Form, IMessageFilter
 
     #region Search
 
+    private string _lastSearchQuery = "";  // Track previous query to detect real clears
+
     private void UpdateSearchClearVisibility()
     {
         var hasRealText = !string.IsNullOrWhiteSpace(_searchBox.Text) && _searchBox.Text != "Search settings...";
@@ -531,6 +533,9 @@ public class SettingsFormNew : Form, IMessageFilter
 
         UpdateSearchClearVisibility();
 
+        // Only re-layout if search query actually changed (not placeholder focus swaps)
+        if (query == _lastSearchQuery) return;
+
         foreach (var section in _sections)
         {
             section.Visible = section.MatchesSearch(query);
@@ -540,13 +545,15 @@ public class SettingsFormNew : Form, IMessageFilter
         LayoutSections();
         _navPanel.Invalidate();
 
-        // If search cleared, scroll to top
-        if (string.IsNullOrWhiteSpace(query))
+        // Only scroll to top if user cleared an actual search (not placeholder focus changes)
+        if (string.IsNullOrWhiteSpace(query) && !string.IsNullOrWhiteSpace(_lastSearchQuery))
         {
             _contentPanel.AutoScrollPosition = new Point(0, 0);
             _selectedNavRow = 0;
             _navPanel.Invalidate();
         }
+
+        _lastSearchQuery = query;
     }
 
     #endregion

@@ -129,17 +129,6 @@ public class OcrService
                 gScale.DrawImage(rawCrop, 0, 0, croppedBitmap.Width, croppedBitmap.Height);
             }
 
-            try 
-            {
-                string debugPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "debug_ocr_capture.png");
-                croppedBitmap.Save(debugPath, ImageFormat.Png);
-                Logger.Trace($"Saved corrected debug image (scaled 2x) to: {debugPath}");
-            }
-            catch (Exception saveEx)
-            {
-                Logger.Trace($"Failed to save debug image: {saveEx.Message}");
-            }
-            
             var result = await RecognizeAsync(croppedBitmap);
             
             string logText = result?.Replace("\r", "|").Replace("\n", "|") ?? "null";
@@ -265,71 +254,36 @@ public class OcrService
             }
             
             Logger.Trace($"Found {clusters.Count} clusters");
-            
-            // Visual Debugging: Draw clusters on a debug image
-            using (var debugBmp = new Bitmap(screenshot))
-            using (var debugG = Graphics.FromImage(debugBmp))
+
+            // Find best cluster
+            Rectangle? bestRect = null;
+            long maxArea = 0;
+
+            foreach (var r in clusters)
             {
-                using var redPen = new Pen(Color.Red, 3);
-                using var greenPen = new Pen(Color.Green, 5);
+                Logger.Trace($"Cluster: {r.Width}x{r.Height} at {r.X},{r.Y}");
 
-                // 3. Find best cluster
-                Rectangle? bestRect = null;
-                long maxArea = 0;
-                
-                foreach (var r in clusters)
+                // Filter noise
+                if (r.Width < 50 || r.Height < 50) continue;
+
+                long area = (long)r.Width * r.Height;
+
+                if (area > maxArea)
                 {
-                    Logger.Trace($"Cluster: {r.Width}x{r.Height} at {r.X},{r.Y}");
-                    
-                    // Draw candidate in Red
-                    debugG.DrawRectangle(redPen, r);
-
-                    // Filter noise
-                    if (r.Width < 50 || r.Height < 50) continue;
-                    
-                    long area = (long)r.Width * r.Height;
-                    
-                    if (area > maxArea)
-                    {
-                        maxArea = area;
-                        bestRect = r;
-                    }
+                    maxArea = area;
+                    bestRect = r;
                 }
-                
-                if (bestRect.HasValue)
-                {
-                    // Draw selected in Green
-                    debugG.DrawRectangle(greenPen, bestRect.Value);
-                    
-                    var r = bestRect.Value;
-                    // Convert back to screen coords
-                    var resultRect = new Rectangle(vScreenLeft + r.X, vScreenTop + r.Y, r.Width, r.Height);
-                    Logger.Trace($"Selected Best Cluster: {r.Width}x{r.Height} at ({resultRect.X},{resultRect.Y})");
-
-                    try 
-                    {
-                        string debugPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "debug_yellow_scan.png");
-                        debugBmp.Save(debugPath, ImageFormat.Png);
-                        Logger.Trace($"Saved DETECTION debug image to: {debugPath}");
-                    }
-                    catch (Exception saveEx)
-                    {
-                        Logger.Trace($"Failed to save detection debug image: {saveEx.Message}");
-                    }
-
-                    return resultRect;
-                }
-                
-                // Save even if no valid target found, to see what WAS found
-                try 
-                {
-                    string debugPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "debug_yellow_scan.png");
-                    debugBmp.Save(debugPath, ImageFormat.Png);
-                    Logger.Trace($"Saved FAILURE debug image to: {debugPath}");
-                }
-                catch {}
             }
-            
+
+            if (bestRect.HasValue)
+            {
+                var r = bestRect.Value;
+                // Convert back to screen coords
+                var resultRect = new Rectangle(vScreenLeft + r.X, vScreenTop + r.Y, r.Width, r.Height);
+                Logger.Trace($"Selected Best Cluster: {r.Width}x{r.Height} at ({resultRect.X},{resultRect.Y})");
+                return resultRect;
+            }
+
             Logger.Trace("No valid clusters found");
             return null;
         }
