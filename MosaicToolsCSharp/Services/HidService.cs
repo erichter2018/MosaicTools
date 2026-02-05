@@ -1,20 +1,26 @@
 using System;
 using System.Collections.Generic;
-using System.Runtime.InteropServices;
+using System.Linq;
+using System.Threading;
 using HidSharp;
 
 namespace MosaicTools.Services;
 
 /// <summary>
-/// PowerMic HID device communication service.
-/// Matches Python's background_listener() and HID logic.
+/// PowerMic and SpeechMike HID device communication service.
+/// Reads button presses from the vendor-specific HID interface.
 /// </summary>
 public class HidService : IDisposable
 {
     // Nuance / Dictaphone Vendor IDs + Philips (0x0911)
     private static readonly int[] VendorIds = { 0x0554, 0x0558, 0x0911 };
-    
-    // Button byte patterns [byte0, byte1, byte2]
+
+    // Device type constants
+    public const string DeviceAuto = "Auto";
+    public const string DevicePowerMic = "PowerMic";
+    public const string DeviceSpeechMike = "SpeechMike";
+
+    // Button byte patterns [byte0, byte1, byte2] for PowerMic
     public static readonly Dictionary<string, byte[]> ButtonDefinitions = new()
     {
         ["Left Button"] = new byte[] { 0x00, 0x80, 0x00 },
@@ -28,48 +34,119 @@ public class HidService : IDisposable
         ["Stop/Play"] = new byte[] { 0x00, 0x40, 0x00 },
         ["Checkmark"] = new byte[] { 0x00, 0x00, 0x01 }
     };
-    
-    public static readonly string[] AllButtons =
+
+    // PowerMic buttons
+    public static readonly string[] PowerMicButtons =
     {
         "Left Button", "Right Button", "Record Button", "T Button",
         "Skip Back", "Skip Forward", "Rewind", "Fast Forward",
         "Stop/Play", "Checkmark", "Scan Button"
     };
-    
+
+    // SpeechMike buttons (Event mode - use SpeechControl to configure front mouse buttons as hotkeys)
+    public static readonly string[] SpeechMikeButtons =
+    {
+        "Record", "Play/Pause", "Fast Forward", "Rewind",
+        "EoL", "Ins/Ovr", "-i-",
+        "Index Finger", "F1", "F2", "F3", "F4"
+    };
+
+    // Legacy - returns all possible buttons for backwards compatibility
+    public static readonly string[] AllButtons =
+    {
+        "Left Button", "Right Button", "Record Button", "T Button",
+        "Skip Back", "Skip Forward", "Rewind", "Fast Forward",
+        "Stop/Play", "Checkmark", "Scan Button",
+        "Record", "Play/Pause", "EoL", "Ins/Ovr", "-i-",
+        "Index Finger", "F1", "F2", "F3", "F4"
+    };
+
     private HidDevice? _device;
     private HidStream? _stream;
     private Thread? _listenerThread;
     private volatile bool _running;
     private bool _isPhilips;
-    private DateTime _lastSyncTime = DateTime.Now;
-    
+    private string _preferredDevice = DeviceAuto;
+
     public event Action<string>? ButtonPressed;
     public event Action<string>? DeviceConnected;
     public event Action<bool>? RecordButtonStateChanged; // For PTT: true=down, false=up
-    
+
     public bool IsConnected => _stream != null;
-    
+    public string? ConnectedDeviceName { get; private set; }
+    public bool IsPhilipsConnected => _isPhilips && IsConnected;
+
+    /// <summary>
+    /// Set the preferred device type. Pass DeviceAuto to connect to any available device.
+    /// </summary>
+    public void SetPreferredDevice(string deviceType)
+    {
+        _preferredDevice = deviceType;
+        // If connected to wrong device, disconnect to force reconnect
+        if (_stream != null && !string.IsNullOrEmpty(ConnectedDeviceName))
+        {
+            bool shouldDisconnect = deviceType switch
+            {
+                DevicePowerMic => _isPhilips,
+                DeviceSpeechMike => !_isPhilips,
+                _ => false
+            };
+            if (shouldDisconnect)
+            {
+                Logger.Trace($"Disconnecting {ConnectedDeviceName} to switch to preferred: {deviceType}");
+                Disconnect();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Get list of available dictation microphones (PowerMic, SpeechMike).
+    /// </summary>
+    public static List<(string Name, string Type)> GetAvailableDevices()
+    {
+        var result = new List<(string Name, string Type)>();
+        try
+        {
+            var devices = DeviceList.Local.GetHidDevices();
+            foreach (var device in devices)
+            {
+                if (Array.IndexOf(VendorIds, device.VendorID) < 0) continue;
+                bool isPhilips = device.VendorID == 0x0911;
+                var name = device.GetProductName() ?? (isPhilips ? "SpeechMike" : "PowerMic");
+                var type = isPhilips ? DeviceSpeechMike : DevicePowerMic;
+                // Avoid duplicates (same type)
+                if (!result.Exists(r => r.Type == type))
+                    result.Add((name, type));
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"GetAvailableDevices error: {ex.Message}");
+        }
+        return result;
+    }
+
     public void Start()
     {
         if (_running) return;
-        
+
         _running = true;
         _listenerThread = new Thread(ListenerLoop) { IsBackground = true };
         _listenerThread.Start();
     }
-    
+
     public void Stop()
     {
         _running = false;
         _listenerThread?.Join(1000);
         Disconnect();
     }
-    
+
     private void ListenerLoop()
     {
         bool lastRecordDown = false;
         byte[] lastData = new byte[4];
-        byte lastPhilipsButton = 0;
+        ushort lastPhilipsButtons = 0;
 
         while (_running)
         {
@@ -100,62 +177,74 @@ public class HidService : IDisposable
                 }
                 catch
                 {
-                    // Device disconnected
                     Disconnect();
                     continue;
                 }
 
                 if (_isPhilips)
                 {
-                    // Philips SpeechMike: 9-byte reports, button bitmask in byte[8]
-                    if (bytesRead < 9) continue;
-                    if (buffer[0] != 0x80) continue; // Only process button reports (ignore 0x9E motion etc.)
+                    // Philips SpeechMike: reports via vendor-specific interface (0xFFA0)
+                    // HidSharp adds 1-byte report ID prefix, so actual data is offset by 1
+                    // Byte 8 (index 8) = F1/F2/F3/F4/Index finger buttons
+                    // Byte 9 (index 9) = Record/FF/Rewind/EoL/Ins/Ovr/-i-
 
-                    byte btn = buffer[8];
+                    if (bytesRead < 10) continue;
+
+                    byte btn7 = buffer[8];  // F buttons (user's byte 7)
+                    byte btn8 = buffer[9];  // Record/EoL etc (user's byte 8)
+                    ushort btnCombined = (ushort)((btn7 << 8) | btn8);
 
                     // Debounce
-                    if (btn == lastPhilipsButton)
+                    if (btnCombined == lastPhilipsButtons)
                     {
                         Thread.Sleep(10);
                         continue;
                     }
-                    lastPhilipsButton = btn;
+
+                    ushort prevButtons = lastPhilipsButtons;
+                    lastPhilipsButtons = btnCombined;
 
                     // Track Record button state for PTT
-                    bool recordDown = (btn & 0x01) != 0;
+                    bool recordDown = (btn8 & 0x01) != 0;
                     if (recordDown != lastRecordDown)
                     {
-                        Logger.Trace($"PTT State: {(recordDown ? "DOWN" : "UP")}");
                         RecordButtonStateChanged?.Invoke(recordDown);
                         lastRecordDown = recordDown;
                     }
 
-                    // Release (no buttons held)
-                    if (btn == 0x00) continue;
+                    // Button release - don't fire any action
+                    if (btnCombined == 0x0000) continue;
 
-                    // Match Philips buttons by bitmask → existing button names
+                    // Only fire on fresh button press
+                    if (prevButtons != 0x0000) continue;
+
+                    // Match SpeechMike buttons
                     string? matchedButton = null;
-                    if ((btn & 0x01) != 0) matchedButton = "Record Button";
-                    else if ((btn & 0x04) != 0) matchedButton = "Stop/Play";
-                    else if ((btn & 0x08) != 0) matchedButton = "Skip Forward";
-                    else if ((btn & 0x10) != 0) matchedButton = "Skip Back";
-                    else if ((btn & 0x20) != 0) matchedButton = "Checkmark";
-                    else if ((btn & 0x40) != 0) matchedButton = "T Button";
-                    else if ((btn & 0x80) != 0) matchedButton = "Left Button";
+
+                    // Byte 8 buttons
+                    if ((btn8 & 0x01) != 0) matchedButton = "Record";
+                    else if ((btn8 & 0x04) != 0) matchedButton = "Play/Pause";
+                    else if ((btn8 & 0x08) != 0) matchedButton = "Fast Forward";
+                    else if ((btn8 & 0x10) != 0) matchedButton = "Rewind";
+                    else if ((btn8 & 0x20) != 0) matchedButton = "EoL";
+                    else if ((btn8 & 0x40) != 0) matchedButton = "Ins/Ovr";
+                    else if ((btn8 & 0x80) != 0) matchedButton = "-i-";
+
+                    // Byte 7 buttons
+                    else if ((btn7 & 0x02) != 0) matchedButton = "F1";
+                    else if ((btn7 & 0x04) != 0) matchedButton = "F2";
+                    else if ((btn7 & 0x08) != 0) matchedButton = "F3";
+                    else if ((btn7 & 0x10) != 0) matchedButton = "F4";
+                    else if ((btn7 & 0x20) != 0) matchedButton = "Index Finger";
 
                     if (matchedButton != null)
                     {
-                        Logger.Trace($"HID Button Match: {matchedButton} (Philips byte: 0x{btn:X2})");
                         ButtonPressed?.Invoke(matchedButton);
-                    }
-                    else
-                    {
-                        Logger.Trace($"HID Activity (Unknown Philips): (Len: {bytesRead}, Data: {BitConverter.ToString(buffer, 0, bytesRead)})");
                     }
                 }
                 else
                 {
-                    // PowerMic path (unchanged)
+                    // PowerMic path
                     if (bytesRead < 3) continue;
 
                     var btnData = new byte[] {
@@ -174,22 +263,19 @@ public class HidService : IDisposable
                     }
                     Array.Copy(btnData, lastData, 4);
 
-                    // Track Record Button state for PTT (bit 0x04 in byte 2 - shifted by ReportID)
+                    // Track Record Button state for PTT
                     bool recordDown = (btnData[2] & 0x04) != 0;
                     if (recordDown != lastRecordDown)
                     {
-                        Logger.Trace($"PTT State: {(recordDown ? "DOWN" : "UP")}");
                         RecordButtonStateChanged?.Invoke(recordDown);
                         lastRecordDown = recordDown;
                     }
 
-                    // Only fire action if at least one button bit is set in ANY potential data byte (1, 2, or 3)
+                    // Only fire if button pressed
                     if (btnData[1] == 0 && btnData[2] == 0 && btnData[3] == 0)
-                    {
                         continue;
-                    }
 
-                    // Match button pattern using bitwise priority across ALL data bytes
+                    // Match button pattern
                     string? matchedButton = null;
 
                     // Byte 3: Right Button and Checkmark
@@ -207,18 +293,13 @@ public class HidService : IDisposable
                     else if ((btnData[2] & 0x01) != 0) matchedButton = "T Button";
                     else if ((btnData[2] & 0x40) != 0) matchedButton = "Stop/Play";
 
-                    // Byte 1: Support Tab key (alternate mapping)
+                    // Byte 1: Support Tab key
                     else if ((btnData[1] & 0x01) != 0) matchedButton = "T Button";
 
                     if (matchedButton != null)
                     {
-                        Logger.Trace($"HID Button Match: {matchedButton} (Data: {BitConverter.ToString(btnData)})");
+                        Logger.Trace($"PowerMic button: {matchedButton}");
                         ButtonPressed?.Invoke(matchedButton);
-                    }
-                    else
-                    {
-                       // Log any non-zero pattern that didn't match
-                       Logger.Trace($"HID Activity (Unknown Map): (Len: {bytesRead}, Data: {BitConverter.ToString(buffer, 0, bytesRead)})");
                     }
                 }
 
@@ -231,32 +312,38 @@ public class HidService : IDisposable
             }
         }
     }
-    
+
     private bool TryConnect()
     {
         try
         {
             var devices = DeviceList.Local.GetHidDevices();
-            
+
             foreach (var device in devices)
             {
                 if (Array.IndexOf(VendorIds, device.VendorID) < 0) continue;
-                
+
+                bool isPhilips = device.VendorID == 0x0911;
+
+                // Check if this device matches the preference
+                if (_preferredDevice == DevicePowerMic && isPhilips) continue;
+                if (_preferredDevice == DeviceSpeechMike && !isPhilips) continue;
+
+
                 try
                 {
-                    Logger.Trace($"Attempting HID connect: {device.GetProductName() ?? "PowerMic"} at {device.DevicePath}");
-                    
                     var stream = device.Open();
-                    stream.ReadTimeout = 100; // Non-blocking with short timeout
-                    
+                    stream.ReadTimeout = 100;
+
                     _device = device;
                     _stream = stream;
-                    _isPhilips = device.VendorID == 0x0911;
+                    _isPhilips = isPhilips;
 
                     var name = device.GetProductName() ?? (_isPhilips ? "SpeechMike" : "PowerMic");
-                    Logger.Trace($"HID Connection Successful: {name}");
+                    ConnectedDeviceName = name;
+                    Logger.Trace($"Connected to {name}");
                     DeviceConnected?.Invoke($"Connected to {name}");
-                    
+
                     return true;
                 }
                 catch (Exception ex)
@@ -264,23 +351,25 @@ public class HidService : IDisposable
                     Logger.Trace($"HID Connection Failed: {ex.Message}");
                 }
             }
+
         }
         catch (Exception ex)
         {
             Logger.Trace($"HID enumerate error: {ex.Message}");
         }
-        
+
         return false;
     }
-    
+
     private void Disconnect()
     {
         _stream?.Dispose();
         _stream = null;
         _device = null;
         _isPhilips = false;
+        ConnectedDeviceName = null;
     }
-    
+
     public void Dispose()
     {
         Stop();

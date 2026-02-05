@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using MosaicTools.Services;
 using MosaicTools.UI;
 
@@ -214,10 +215,12 @@ public class ActionController : IDisposable
         // Wire up HID events (always active, including headless)
         _hidService.ButtonPressed += OnMicButtonPressed;
         _hidService.RecordButtonStateChanged += OnRecordButtonStateChanged;
-        _hidService.DeviceConnected += msg => 
+        _hidService.DeviceConnected += msg =>
             _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(msg));
+
+        _hidService.SetPreferredDevice(_config.PreferredMicrophone);
         _hidService.Start();
-        
+
         // Register hotkeys (skip in headless mode)
         if (!App.IsHeadless)
         {
@@ -259,11 +262,17 @@ public class ActionController : IDisposable
         // Recreate services that depend on config
         _noteFormatter = new NoteFormatter(_config.DoctorName, _config.CriticalFindingsTemplate, _config.TargetTimezone);
         _getPriorService = new GetPriorService(_config.ComparisonTemplate);
+        _hidService.SetPreferredDevice(_config.PreferredMicrophone);
         RegisterHotkeys();
-        
+
         // Toggle scraper based on setting
         ToggleMosaicScraper(_config.ScrapeMosaicEnabled);
     }
+
+    /// <summary>
+    /// Get the name of the currently connected microphone, or null if not connected.
+    /// </summary>
+    public string? GetConnectedMicrophoneName() => _hidService.ConnectedDeviceName;
     
     private void RegisterHotkeys()
     {
@@ -288,17 +297,27 @@ public class ActionController : IDisposable
         }
     }
     
+    /// <summary>
+    /// Get the action mappings for the currently connected microphone.
+    /// </summary>
+    private Dictionary<string, ActionMapping> GetCurrentMicMappings()
+    {
+        return _hidService.IsPhilipsConnected ? _config.SpeechMikeActionMappings : _config.ActionMappings;
+    }
+
     private void OnMicButtonPressed(string button)
     {
-        // If PTT is on, the Record Button is handled by OnRecordButtonStateChanged 
+        // If PTT is on, the Record Button is handled by OnRecordButtonStateChanged
         // and should not trigger its mapped action (usually System Beep or Toggle)
-        if (_config.DeadManSwitch && button == "Record Button")
+        // "Record Button" = PowerMic, "Record" = SpeechMike
+        if (_config.DeadManSwitch && (button == "Record Button" || button == "Record"))
         {
             return;
         }
 
-        // Find action for this button
-        foreach (var (action, mapping) in _config.ActionMappings)
+        // Find action for this button using the correct mappings for connected device
+        var mappings = GetCurrentMicMappings();
+        foreach (var (action, mapping) in mappings)
         {
             if (mapping.MicButton == button)
             {
@@ -411,9 +430,9 @@ public class ActionController : IDisposable
                 PerformSignReport(req.Source);
                 break;
             case Actions.CreateImpression:
-                // Skip Forward is hardcoded in Mosaic to trigger Create Impression
+                // Skip Forward (PowerMic) and -i- (SpeechMike) are hardcoded in Mosaic to trigger Create Impression
                 // Only invoke via UI automation if triggered by other sources
-                if (req.Source != "Skip Forward")
+                if (req.Source != "Skip Forward" && req.Source != "-i-")
                 {
                     PerformCreateImpression();
                 }
@@ -679,18 +698,23 @@ public class ActionController : IDisposable
             Thread.Sleep(200);
         }
         
-        // 2. Conditional Alt+P logic for PowerMic 2 hardcoded buttons
-        bool isSkipBackTrigger = (source == "Skip Back");
-        bool isSkipBackMappedToProcess = _config.ActionMappings.GetValueOrDefault(Actions.ProcessReport)?.MicButton == "Skip Back";
+        // 2. Conditional Alt+P logic for hardcoded mic buttons
+        // PowerMic: Skip Back is hardcoded to Process Report
+        // SpeechMike: Ins/Ovr is hardcoded to Process Report
+        bool isHardcodedProcessButton = (source == "Skip Back") || (source == "Ins/Ovr");
+        var currentMappings = GetCurrentMicMappings();
+        bool isButtonMappedToProcess =
+            currentMappings.GetValueOrDefault(Actions.ProcessReport)?.MicButton == "Skip Back" ||
+            currentMappings.GetValueOrDefault(Actions.ProcessReport)?.MicButton == "Ins/Ovr";
 
-        if (isSkipBackTrigger && isSkipBackMappedToProcess)
+        if (isHardcodedProcessButton && isButtonMappedToProcess)
         {
             // If the hardware button is pressed, and it's mapped to Process Report
             if (dictationWasActive)
             {
                 // If dictation was ON, the hardware button might fail to process the report.
                 // We send it manually AFTER stopping dictation.
-                Logger.Trace("Process Report: Dictation was ON + Skip Back. Sending Alt+P manually.");
+                Logger.Trace($"Process Report: Dictation was ON + {source}. Sending Alt+P manually.");
                 NativeWindows.ActivateMosaicForcefully();
                 Thread.Sleep(100);
                 NativeWindows.SendAltKey('P');
@@ -698,7 +722,7 @@ public class ActionController : IDisposable
             else
             {
                 // Hardware handles it when dictation is OFF.
-                Logger.Trace("Process Report: Dictation was OFF + Skip Back. Skipping redundant Alt+P.");
+                Logger.Trace($"Process Report: Dictation was OFF + {source}. Skipping redundant Alt+P.");
             }
         }
         else
@@ -859,14 +883,17 @@ public class ActionController : IDisposable
         _currentAccessionSigned = true;
         Logger.Trace($"RVUCounter: Marked accession '{_lastNonEmptyAccession}' as signed");
 
-        // Check if Checkmark button triggered this and is mapped to Sign Report
+        // Check if Checkmark (PowerMic) or EoL (SpeechMike) button triggered this and is mapped to Sign Report
         // If so, Mosaic handles the actual signing - we only clean up impression state
-        bool isCheckmarkTrigger = (source == "Checkmark");
-        bool isCheckmarkMappedToSign = _config.ActionMappings.GetValueOrDefault(Actions.SignReport)?.MicButton == "Checkmark";
+        bool isHardcodedSignButton = (source == "Checkmark") || (source == "EoL");
+        var signMappings = GetCurrentMicMappings();
+        bool isButtonMappedToSign =
+            signMappings.GetValueOrDefault(Actions.SignReport)?.MicButton == "Checkmark" ||
+            signMappings.GetValueOrDefault(Actions.SignReport)?.MicButton == "EoL";
 
-        if (isCheckmarkTrigger && isCheckmarkMappedToSign)
+        if (isHardcodedSignButton && isButtonMappedToSign)
         {
-            Logger.Trace("Sign Report: Checkmark button - Mosaic handles signing, only cleaning up impression.");
+            Logger.Trace($"Sign Report: {source} button - Mosaic handles signing, only cleaning up impression.");
         }
         else
         {
