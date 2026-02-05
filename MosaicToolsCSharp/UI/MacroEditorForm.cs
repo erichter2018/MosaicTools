@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Windows.Forms;
 using MosaicTools.Services;
 
@@ -12,6 +14,12 @@ namespace MosaicTools.UI;
 /// </summary>
 public class MacroEditorForm : Form
 {
+    private static readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNameCaseInsensitive = true
+    };
+
     private readonly Configuration _config;
     private List<MacroConfig> _macros;
     private MacroConfig? _selectedMacro;
@@ -88,14 +96,47 @@ public class MacroEditorForm : Form
         cancelBtn.Click += (s, e) => Close();
         Controls.Add(cancelBtn);
 
+        // Backup/Restore buttons (bottom left)
+        var backupBtn = new Button
+        {
+            Text = "Backup...",
+            Size = new Size(80, 32),
+            Anchor = AnchorStyles.Bottom | AnchorStyles.Left,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        backupBtn.FlatAppearance.BorderSize = 0;
+        backupBtn.Click += (s, e) => BackupMacros();
+        Controls.Add(backupBtn);
+
+        var restoreBtn = new Button
+        {
+            Text = "Restore...",
+            Size = new Size(80, 32),
+            Anchor = AnchorStyles.Bottom | AnchorStyles.Left,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand
+        };
+        restoreBtn.FlatAppearance.BorderSize = 0;
+        restoreBtn.Click += (s, e) => RestoreMacros();
+        Controls.Add(restoreBtn);
+
         // Position buttons
         Resize += (s, e) =>
         {
             cancelBtn.Location = new Point(ClientSize.Width - cancelBtn.Width - 15, ClientSize.Height - cancelBtn.Height - 15);
             saveBtn.Location = new Point(cancelBtn.Left - saveBtn.Width - 10, cancelBtn.Top);
+            backupBtn.Location = new Point(15, ClientSize.Height - backupBtn.Height - 15);
+            restoreBtn.Location = new Point(backupBtn.Right + 5, backupBtn.Top);
         };
         cancelBtn.Location = new Point(ClientSize.Width - cancelBtn.Width - 15, ClientSize.Height - cancelBtn.Height - 15);
         saveBtn.Location = new Point(cancelBtn.Left - saveBtn.Width - 10, cancelBtn.Top);
+        backupBtn.Location = new Point(15, ClientSize.Height - backupBtn.Height - 15);
+        restoreBtn.Location = new Point(backupBtn.Right + 5, backupBtn.Top);
 
         CreateLeftPanel();
         CreateRightPanel();
@@ -150,8 +191,8 @@ public class MacroEditorForm : Form
 
     private void CreateRightPanel()
     {
-        int x = 235, y = 15;
-        int rightWidth = 480;
+        int x = 270, y = 15;
+        int rightWidth = 445;
 
         // Header
         var header = CreateLabel("MACRO PROPERTIES", x, y, true);
@@ -458,6 +499,126 @@ public class MacroEditorForm : Form
         RefreshListBox();
         _listBox.SelectedIndex = _macros.Count - 1;
     }
+
+    #region Backup/Restore
+
+    private void BackupMacros()
+    {
+        if (_macros.Count == 0)
+        {
+            MessageBox.Show("No macros to backup.", "Backup", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Backup Macros",
+            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+            DefaultExt = "json",
+            FileName = $"Macros_Backup_{DateTime.Now:yyyy-MM-dd}.json"
+        };
+
+        if (dialog.ShowDialog() != DialogResult.OK)
+            return;
+
+        try
+        {
+            var json = JsonSerializer.Serialize(_macros, _jsonOptions);
+            File.WriteAllText(dialog.FileName, json);
+            MessageBox.Show($"Backed up {_macros.Count} macro(s) to:\n{dialog.FileName}",
+                "Backup Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to save backup:\n{ex.Message}", "Backup Error",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void RestoreMacros()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Restore Macros",
+            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+            DefaultExt = "json"
+        };
+
+        if (dialog.ShowDialog() != DialogResult.OK)
+            return;
+
+        List<MacroConfig> imported;
+        try
+        {
+            var json = File.ReadAllText(dialog.FileName);
+            imported = JsonSerializer.Deserialize<List<MacroConfig>>(json, _jsonOptions) ?? new();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to read backup file:\n{ex.Message}", "Restore Error",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        if (imported.Count == 0)
+        {
+            MessageBox.Show("No macros found in the backup file.", "Restore", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        // Check for duplicates by name (case-insensitive)
+        var existingNames = _macros.Select(m => m.Name.ToLowerInvariant()).ToHashSet();
+        var duplicates = new List<MacroConfig>();
+        var newItems = new List<MacroConfig>();
+
+        foreach (var item in imported)
+        {
+            if (existingNames.Contains(item.Name.ToLowerInvariant()))
+                duplicates.Add(item);
+            else
+                newItems.Add(item);
+        }
+
+        // Build confirmation message
+        var message = $"Found {imported.Count} macro(s) in backup.\n\n";
+
+        if (newItems.Count > 0)
+            message += $"New (will be added): {newItems.Count}\n";
+
+        if (duplicates.Count > 0)
+            message += $"Duplicates (will be skipped): {duplicates.Count}\n" +
+                       $"  ({string.Join(", ", duplicates.Select(d => d.Name).Take(5))}" +
+                       (duplicates.Count > 5 ? "..." : "") + ")\n";
+
+        if (newItems.Count == 0)
+        {
+            MessageBox.Show(message + "\nNothing to import - all items already exist.",
+                "Restore", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        message += $"\nImport {newItems.Count} new macro(s)?";
+
+        if (MessageBox.Show(message, "Confirm Restore", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            return;
+
+        // Import new items (CloneMacro gives them fresh IDs)
+        foreach (var item in newItems)
+        {
+            var clone = CloneMacro(item);
+            _macros.Add(clone);
+        }
+
+        RefreshListBox();
+        if (_macros.Count > 0)
+            _listBox.SelectedIndex = _macros.Count - 1;
+
+        MessageBox.Show($"Imported {newItems.Count} macro(s)." +
+            (duplicates.Count > 0 ? $"\nSkipped {duplicates.Count} duplicate(s)." : ""),
+            "Restore Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    #endregion
 
     private void SaveAndClose()
     {

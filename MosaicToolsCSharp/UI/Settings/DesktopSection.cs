@@ -25,6 +25,7 @@ public class DesktopSection : SettingsSection
     private readonly Label _startVolLabel;
     private readonly Label _stopVolLabel;
     private readonly NumericUpDown _dictationPauseNum;
+    private readonly CheckBox _autoUpdateCheck;
 
     private readonly MainForm _mainForm;
 
@@ -90,6 +91,32 @@ public class DesktopSection : SettingsSection
         _dictationPauseNum = AddNumericUpDown(LeftMargin + 130, _nextY, 70, 100, 5000, 1000,
             "Delay before playing start beep, to avoid false triggers.\nRecommended: 800-1200ms.");
         AddLabel("ms", LeftMargin + 205, _nextY + 3);
+        _nextY += RowHeight + 5;
+
+        // Updates section
+        AddSectionDivider("Updates");
+
+        _autoUpdateCheck = AddCheckBox("Auto-update on startup", LeftMargin, _nextY,
+            "Automatically check for and install updates on startup.");
+
+        var checkUpdatesBtn = AddButton("Check Now", LeftMargin + 200, _nextY - 2, 100, 24, async (s, e) =>
+        {
+            var btn = (Button)s!;
+            btn.Enabled = false;
+            btn.Text = "Checking...";
+            try
+            {
+                await _mainForm.CheckForUpdatesManualAsync();
+            }
+            finally
+            {
+                if (!btn.IsDisposed)
+                {
+                    btn.Text = "Check Now";
+                    btn.Enabled = true;
+                }
+            }
+        }, "Manually check for available updates now.");
         _nextY += RowHeight;
 
         UpdateHeight();
@@ -142,6 +169,7 @@ public class DesktopSection : SettingsSection
         _startVolumeSlider.Value = VolumeToSlider(config.StartBeepVolume);
         _stopVolumeSlider.Value = VolumeToSlider(config.StopBeepVolume);
         _dictationPauseNum.Value = config.DictationPauseMs;
+        _autoUpdateCheck.Checked = config.AutoUpdateEnabled;
 
         UpdateIndicatorSubState();
     }
@@ -158,6 +186,7 @@ public class DesktopSection : SettingsSection
         config.StartBeepVolume = SliderToVolume(_startVolumeSlider.Value);
         config.StopBeepVolume = SliderToVolume(_stopVolumeSlider.Value);
         config.DictationPauseMs = (int)_dictationPauseNum.Value;
+        config.AutoUpdateEnabled = _autoUpdateCheck.Checked;
     }
 
     // Volume slider uses logarithmic scale for natural feel

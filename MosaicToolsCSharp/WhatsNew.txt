@@ -1,3 +1,7 @@
+3.1.2
+- Macro editor: Backup/Restore feature for importing and exporting macros
+- Auto-update setting moved from Experimental to Desktop Mode section
+
 3.1.1
 - Philips SpeechMike support in Event mode
 

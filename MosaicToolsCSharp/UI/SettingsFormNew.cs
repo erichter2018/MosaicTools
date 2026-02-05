@@ -329,7 +329,7 @@ public class SettingsFormNew : Form, IMessageFilter
         _sections.Add(new RvuMetricsSection(_toolTip));
 
         // Experimental
-        _sections.Add(new ExperimentalSection(_toolTip, _mainForm, App.IsHeadless));
+        _sections.Add(new ExperimentalSection(_toolTip));
 
         // Reference
         _sections.Add(new ReferenceSection(_toolTip));

@@ -6,55 +6,23 @@ using MosaicTools.Services;
 namespace MosaicTools.UI.Settings;
 
 /// <summary>
-/// Experimental settings: Network monitor, auto-update.
+/// Experimental settings: Network monitor.
 /// </summary>
 public class ExperimentalSection : SettingsSection
 {
     public override string SectionId => "experimental";
 
-    private readonly CheckBox _autoUpdateCheck;
     private readonly CheckBox _connectivityMonitorEnabledCheck;
     private readonly NumericUpDown _connectivityIntervalUpDown;
     private readonly NumericUpDown _connectivityTimeoutUpDown;
 
-    private readonly MainForm _mainForm;
-
-    public ExperimentalSection(ToolTip toolTip, MainForm mainForm, bool isHeadless) : base("Experimental", toolTip)
+    public ExperimentalSection(ToolTip toolTip) : base("Experimental", toolTip)
     {
-        _mainForm = mainForm;
 
         var warningLabel = AddLabel("⚠ These features may change or be removed", LeftMargin, _nextY);
         warningLabel.ForeColor = Color.FromArgb(255, 180, 50);
         warningLabel.Font = new Font("Segoe UI", 8, FontStyle.Italic);
         _nextY += RowHeight;
-
-        // Auto-Update
-        AddSectionDivider("Updates");
-
-        _autoUpdateCheck = AddCheckBox("Auto-update on startup", LeftMargin, _nextY,
-            "Automatically check for and install updates on startup.");
-        _autoUpdateCheck.Enabled = !isHeadless;
-        _autoUpdateCheck.ForeColor = isHeadless ? Color.Gray : Color.White;
-
-        var checkUpdatesBtn = AddButton("Check Now", LeftMargin + 200, _nextY - 2, 100, 24, async (s, e) =>
-        {
-            var btn = (Button)s!;
-            btn.Enabled = false;
-            btn.Text = "Checking...";
-            try
-            {
-                await _mainForm.CheckForUpdatesManualAsync();
-            }
-            finally
-            {
-                if (!btn.IsDisposed)
-                {
-                    btn.Text = "Check Now";
-                    btn.Enabled = true;
-                }
-            }
-        }, "Manually check for available updates now.");
-        _nextY += RowHeight + 5;
 
         // Network Monitor
         AddSectionDivider("Network Monitor");
@@ -87,7 +55,6 @@ public class ExperimentalSection : SettingsSection
 
     public override void LoadSettings(Configuration config)
     {
-        _autoUpdateCheck.Checked = config.AutoUpdateEnabled;
         _connectivityMonitorEnabledCheck.Checked = config.ConnectivityMonitorEnabled;
         _connectivityIntervalUpDown.Value = config.ConnectivityCheckIntervalSeconds;
         // Config stores ms, UI shows seconds
@@ -98,7 +65,6 @@ public class ExperimentalSection : SettingsSection
 
     public override void SaveSettings(Configuration config)
     {
-        config.AutoUpdateEnabled = _autoUpdateCheck.Checked;
         config.ConnectivityMonitorEnabled = _connectivityMonitorEnabledCheck.Checked;
         config.ConnectivityCheckIntervalSeconds = (int)_connectivityIntervalUpDown.Value;
         // UI shows seconds, config stores ms
