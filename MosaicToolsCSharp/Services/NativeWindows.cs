@@ -371,28 +371,41 @@ public static class NativeWindows
     public static bool ActivateMosaicForcefully()
     {
         var hWnd = FindWindowByTitle(new[] { "mosaic" }, new[] { "reporting", "info hub" });
-        if (hWnd == IntPtr.Zero) return false;
-
-        for (int i = 0; i < 3; i++) // Try up to 3 times
+        if (hWnd == IntPtr.Zero)
         {
-            if (GetForegroundWindow() == hWnd) return true;
+            Logger.Trace("ActivateMosaicForcefully: window not found");
+            return false;
+        }
 
+        if (GetForegroundWindow() == hWnd) return true;
+
+        // Strategy 1: Topmost trick - set topmost then remove it.
+        // This bypasses the foreground lock because SetWindowPos(TOPMOST) always works.
+        SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        SetWindowPos(hWnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+
+        // Alt key trick to unlock foreground, then claim it
+        keybd_event(VK_MENU, 0, 0, UIntPtr.Zero);
+        keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        SetForegroundWindow(hWnd);
+
+        Thread.Sleep(50);
+        if (GetForegroundWindow() == hWnd) return true;
+
+        // Strategy 2: AttachThreadInput
+        for (int i = 0; i < 2; i++)
+        {
             try
             {
                 uint currentThread = GetCurrentThreadId();
                 uint targetThread = GetWindowThreadProcessId(hWnd, out _);
 
                 AttachThreadInput(currentThread, targetThread, true);
-                SwitchToThisWindow(hWnd, true);
                 BringWindowToTop(hWnd);
                 SetForegroundWindow(hWnd);
+                SwitchToThisWindow(hWnd, true);
                 AttachThreadInput(currentThread, targetThread, false);
 
-                // Double-tap with gentle method
-                Thread.Sleep(100); // Increased from 50ms
-                ActivateWindow(hWnd);
-
-                // Verification loop (200ms)
                 var sw = Stopwatch.StartNew();
                 while (sw.ElapsedMilliseconds < 200)
                 {
@@ -402,16 +415,24 @@ public static class NativeWindows
             }
             catch (Exception ex)
             {
-                Logger.Trace($"Force activate attempt {i+1} failed: {ex.Message}");
+                Logger.Trace($"ActivateMosaicForcefully attempt {i+1} failed: {ex.Message}");
             }
-            Thread.Sleep(100); // Wait before retry
+            Thread.Sleep(50);
         }
 
-        return GetForegroundWindow() == hWnd;
+        var result = GetForegroundWindow() == hWnd;
+        if (!result) Logger.Trace("ActivateMosaicForcefully: FAILED after all strategies");
+        return result;
     }
-    
+
+    public static bool IsMosaicForeground()
+    {
+        var hWnd = FindWindowByTitle(new[] { "mosaic" }, new[] { "reporting", "info hub" });
+        return hWnd != IntPtr.Zero && GetForegroundWindow() == hWnd;
+    }
+
     #endregion
-    
+
     #region Focus Restoration
     
     private static IntPtr _previousFocusHwnd = IntPtr.Zero;
@@ -626,6 +647,7 @@ public static class NativeWindows
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
     public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+    public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_SHOWWINDOW = 0x0040;

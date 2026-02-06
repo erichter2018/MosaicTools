@@ -908,8 +908,6 @@ public class ActionController : IDisposable
         Logger.Trace("Discard Study action triggered");
 
         // Don't restore focus after discard - Mosaic should stay active.
-        // ClickDiscardStudy uses FlaUI Invoke (async) and needs Mosaic to keep focus
-        // while it processes the discard.
         NativeWindows.ClearSavedFocus();
 
         // Close report popup if open

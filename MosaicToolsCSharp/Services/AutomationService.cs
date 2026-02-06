@@ -1738,110 +1738,80 @@ public class AutomationService : IDisposable
     {
         try
         {
-            var window = _cachedSlimHubWindow ?? FindMosaicWindow();
+            // Always use a fresh window reference to avoid stale cached trees
+            var window = FindMosaicWindow();
             if (window == null)
             {
                 Logger.Trace("ClickDiscardStudy: Mosaic window not found");
                 return false;
             }
 
-            // Run the discard sequence. Chromium may not process the first
-            // programmatic click after a recent update, so retry once if needed.
-            for (int attempt = 1; attempt <= 2; attempt++)
+            // Activate Mosaic and give Chromium time to become ready for UIA events.
+            // Without this delay, Invoke succeeds but Chromium silently ignores it.
+            NativeWindows.ActivateMosaicForcefully();
+            Thread.Sleep(500);
+            Logger.Trace($"ClickDiscardStudy: Mosaic activated, foreground={NativeWindows.IsMosaicForeground()}");
+
+            // Step 1: Click ACTIONS button
+            var actionsButton = window.FindFirstDescendant(cf =>
+                cf.ByControlType(FlaUI.Core.Definitions.ControlType.Button)
+                  .And(cf.ByName("ACTIONS")));
+
+            if (actionsButton == null)
             {
-                if (attempt == 2)
-                    Logger.Trace("ClickDiscardStudy: First attempt had no effect, retrying...");
-
-                // Step 1: Click ACTIONS button
-                var actionsButton = window.FindFirstDescendant(cf =>
-                    cf.ByControlType(FlaUI.Core.Definitions.ControlType.Button)
-                      .And(cf.ByName("ACTIONS")));
-
-                if (actionsButton == null)
-                {
-                    Logger.Trace("ClickDiscardStudy: ACTIONS button not found");
-                    return false;
-                }
-
-                var invokePattern = actionsButton.Patterns.Invoke.PatternOrDefault;
-                if (invokePattern != null)
-                {
-                    invokePattern.Invoke();
-                    Logger.Trace($"ClickDiscardStudy: Clicked ACTIONS button (attempt {attempt})");
-                }
-                else
-                {
-                    actionsButton.Click();
-                    Logger.Trace($"ClickDiscardStudy: Clicked ACTIONS button (fallback, attempt {attempt})");
-                }
-
-                // Wait for menu to appear
-                Thread.Sleep(400);
-
-                // Step 2: Click "Discard Changes" menu item
-                var discardMenuItem = window.FindFirstDescendant(cf =>
-                    cf.ByControlType(FlaUI.Core.Definitions.ControlType.MenuItem)
-                      .And(cf.ByName("Discard Changes")));
-
-                if (discardMenuItem == null)
-                {
-                    Logger.Trace("ClickDiscardStudy: Discard Changes menu item not found");
-                    return false;
-                }
-
-                invokePattern = discardMenuItem.Patterns.Invoke.PatternOrDefault;
-                if (invokePattern != null)
-                {
-                    invokePattern.Invoke();
-                    Logger.Trace($"ClickDiscardStudy: Clicked Discard Changes (attempt {attempt})");
-                }
-                else
-                {
-                    discardMenuItem.Click();
-                    Logger.Trace($"ClickDiscardStudy: Clicked Discard Changes (fallback, attempt {attempt})");
-                }
-
-                // Wait for dialog to appear
-                Thread.Sleep(500);
-
-                // Step 3: Click "YES, DISCARD" button
-                var yesDiscardButton = window.FindFirstDescendant(cf =>
-                    cf.ByControlType(FlaUI.Core.Definitions.ControlType.Button)
-                      .And(cf.ByName("YES, DISCARD")));
-
-                if (yesDiscardButton == null)
-                {
-                    Logger.Trace("ClickDiscardStudy: YES, DISCARD button not found");
-                    return false;
-                }
-
-                invokePattern = yesDiscardButton.Patterns.Invoke.PatternOrDefault;
-                if (invokePattern != null)
-                {
-                    invokePattern.Invoke();
-                    Logger.Trace($"ClickDiscardStudy: Clicked YES, DISCARD (attempt {attempt})");
-                }
-                else
-                {
-                    yesDiscardButton.Click();
-                    Logger.Trace($"ClickDiscardStudy: Clicked YES, DISCARD (fallback, attempt {attempt})");
-                }
-
-                // Check if the discard actually took effect
-                Thread.Sleep(300);
-                if (!IsDiscardDialogVisible())
-                {
-                    Logger.Trace($"ClickDiscardStudy: SUCCESS on attempt {attempt}");
-                    return true;
-                }
-
-                // Dialog is still showing - first attempt had no effect
-                // Loop will retry
+                Logger.Trace("ClickDiscardStudy: ACTIONS button not found");
+                return false;
             }
 
-            // If we get here, both attempts showed the dialog still visible.
-            // The discard may still process - return true since we did click everything.
-            Logger.Trace("ClickDiscardStudy: Dialog still visible after 2 attempts, returning success anyway");
+            var invokePattern = actionsButton.Patterns.Invoke.PatternOrDefault;
+            if (invokePattern != null)
+                invokePattern.Invoke();
+            else
+                actionsButton.Click();
+            Logger.Trace("ClickDiscardStudy: Invoked ACTIONS button");
+
+            // Wait for menu to appear
+            Thread.Sleep(500);
+
+            // Step 2: Click "Discard Changes" menu item
+            var discardMenuItem = window.FindFirstDescendant(cf =>
+                cf.ByControlType(FlaUI.Core.Definitions.ControlType.MenuItem)
+                  .And(cf.ByName("Discard Changes")));
+
+            if (discardMenuItem == null)
+            {
+                Logger.Trace("ClickDiscardStudy: Discard Changes not found");
+                return false;
+            }
+
+            invokePattern = discardMenuItem.Patterns.Invoke.PatternOrDefault;
+            if (invokePattern != null)
+                invokePattern.Invoke();
+            else
+                discardMenuItem.Click();
+            Logger.Trace("ClickDiscardStudy: Invoked Discard Changes");
+
+            // Wait for dialog to appear
+            Thread.Sleep(500);
+
+            // Step 3: Click "YES, DISCARD" button
+            var yesDiscardButton = window.FindFirstDescendant(cf =>
+                cf.ByControlType(FlaUI.Core.Definitions.ControlType.Button)
+                  .And(cf.ByName("YES, DISCARD")));
+
+            if (yesDiscardButton == null)
+            {
+                Logger.Trace("ClickDiscardStudy: YES, DISCARD button not found");
+                return false;
+            }
+
+            invokePattern = yesDiscardButton.Patterns.Invoke.PatternOrDefault;
+            if (invokePattern != null)
+                invokePattern.Invoke();
+            else
+                yesDiscardButton.Click();
+            Logger.Trace("ClickDiscardStudy: Invoked YES, DISCARD - SUCCESS");
+
             return true;
         }
         catch (Exception ex)

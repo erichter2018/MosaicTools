@@ -228,6 +228,8 @@ public class HidService : IDisposable
                     if (bitsSet > 1)
                     {
                         Logger.Trace($"SpeechMike: Ignoring compound event (btn7=0x{btn7:X2}, btn8=0x{btn8:X2}, {bitsSet} bits set)");
+                        // Reset so the next real button press is treated as fresh
+                        lastPhilipsButtons = 0;
                         continue;
                     }
 
