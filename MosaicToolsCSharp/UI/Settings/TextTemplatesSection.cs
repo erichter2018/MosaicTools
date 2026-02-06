@@ -1,10 +1,7 @@
 using System;
 using System.Drawing;
-using System.IO;
-using System.Text.Json;
 using System.Windows.Forms;
 using MosaicTools.Services;
-using MosaicTools.UI;
 
 namespace MosaicTools.UI.Settings;
 
@@ -150,38 +147,14 @@ public class TextTemplatesSection : SettingsSection
 
     private string GetMacrosCountText()
     {
-        try
-        {
-            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "MosaicTools", "Macros.json");
-            if (File.Exists(path))
-            {
-                var json = File.ReadAllText(path);
-                using var doc = JsonDocument.Parse(json);
-                var count = doc.RootElement.GetArrayLength();
-                return $"({count} macro{(count == 1 ? "" : "s")})";
-            }
-        }
-        catch { }
-        return "(0 macros)";
+        var count = _config.Macros.Count;
+        return $"({count} macro{(count == 1 ? "" : "s")})";
     }
 
     private string GetPickListsCountText()
     {
-        try
-        {
-            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "MosaicTools", "PickLists.json");
-            if (File.Exists(path))
-            {
-                var json = File.ReadAllText(path);
-                using var doc = JsonDocument.Parse(json);
-                var count = doc.RootElement.GetArrayLength();
-                return $"({count} list{(count == 1 ? "" : "s")})";
-            }
-        }
-        catch { }
-        return "(0 lists)";
+        var count = _config.PickLists.Count;
+        return $"({count} list{(count == 1 ? "" : "s")})";
     }
 
     private void OnEditMacrosClick(object? sender, EventArgs e)

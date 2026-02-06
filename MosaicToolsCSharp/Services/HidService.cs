@@ -188,7 +188,11 @@ public class HidService : IDisposable
                     // Byte 8 (index 8) = F1/F2/F3/F4/Index finger buttons
                     // Byte 9 (index 9) = Record/FF/Rewind/EoL/Ins/Ovr/-i-
 
-                    if (bytesRead < 10) continue;
+                    if (bytesRead < 10)
+                    {
+                        Logger.Trace($"SpeechMike: Short read ({bytesRead} bytes), skipping");
+                        continue;
+                    }
 
                     byte btn7 = buffer[8];  // F buttons (user's byte 7)
                     byte btn8 = buffer[9];  // Record/EoL etc (user's byte 8)
@@ -218,27 +222,37 @@ public class HidService : IDisposable
                     // Only fire on fresh button press
                     if (prevButtons != 0x0000) continue;
 
+                    // Ignore compound events (multiple bits set) - these are status updates, not button presses
+                    // Count bits set in btn7 and btn8
+                    int bitsSet = System.Numerics.BitOperations.PopCount(btn7) + System.Numerics.BitOperations.PopCount(btn8);
+                    if (bitsSet > 1)
+                    {
+                        Logger.Trace($"SpeechMike: Ignoring compound event (btn7=0x{btn7:X2}, btn8=0x{btn8:X2}, {bitsSet} bits set)");
+                        continue;
+                    }
+
                     // Match SpeechMike buttons
                     string? matchedButton = null;
 
-                    // Byte 8 buttons
-                    if ((btn8 & 0x01) != 0) matchedButton = "Record";
-                    else if ((btn8 & 0x04) != 0) matchedButton = "Play/Pause";
-                    else if ((btn8 & 0x08) != 0) matchedButton = "Fast Forward";
-                    else if ((btn8 & 0x10) != 0) matchedButton = "Rewind";
-                    else if ((btn8 & 0x20) != 0) matchedButton = "EoL";
-                    else if ((btn8 & 0x40) != 0) matchedButton = "Ins/Ovr";
-                    else if ((btn8 & 0x80) != 0) matchedButton = "-i-";
+                    // Byte 8 buttons (exact match since we already filtered compound events)
+                    if (btn8 == 0x01) matchedButton = "Record";
+                    else if (btn8 == 0x04) matchedButton = "Play/Pause";
+                    else if (btn8 == 0x08) matchedButton = "Fast Forward";
+                    else if (btn8 == 0x10) matchedButton = "Rewind";
+                    else if (btn8 == 0x20) matchedButton = "EoL";
+                    else if (btn8 == 0x40) matchedButton = "Ins/Ovr";
+                    else if (btn8 == 0x80) matchedButton = "-i-";
 
                     // Byte 7 buttons
-                    else if ((btn7 & 0x02) != 0) matchedButton = "F1";
-                    else if ((btn7 & 0x04) != 0) matchedButton = "F2";
-                    else if ((btn7 & 0x08) != 0) matchedButton = "F3";
-                    else if ((btn7 & 0x10) != 0) matchedButton = "F4";
-                    else if ((btn7 & 0x20) != 0) matchedButton = "Index Finger";
+                    else if (btn7 == 0x02) matchedButton = "F1";
+                    else if (btn7 == 0x04) matchedButton = "F2";
+                    else if (btn7 == 0x08) matchedButton = "F3";
+                    else if (btn7 == 0x10) matchedButton = "F4";
+                    else if (btn7 == 0x20) matchedButton = "Index Finger";
 
                     if (matchedButton != null)
                     {
+                        Logger.Trace($"SpeechMike button: {matchedButton} (btn7=0x{btn7:X2}, btn8=0x{btn8:X2}, prev=0x{prevButtons:X4})");
                         ButtonPressed?.Invoke(matchedButton);
                     }
                 }
@@ -332,6 +346,16 @@ public class HidService : IDisposable
 
                 try
                 {
+                    var maxInputLen = device.GetMaxInputReportLength();
+                    Logger.Trace($"Trying HID device: VID=0x{device.VendorID:X4}, PID=0x{device.ProductID:X4}, MaxInput={maxInputLen}");
+
+                    // SpeechMike needs at least 10 bytes for button data (bytes 8-9)
+                    if (isPhilips && maxInputLen < 10)
+                    {
+                        Logger.Trace($"Skipping SpeechMike interface (MaxInput={maxInputLen} too small, need 10+)");
+                        continue;
+                    }
+
                     var stream = device.Open();
                     stream.ReadTimeout = 100;
 
@@ -341,14 +365,14 @@ public class HidService : IDisposable
 
                     var name = device.GetProductName() ?? (_isPhilips ? "SpeechMike" : "PowerMic");
                     ConnectedDeviceName = name;
-                    Logger.Trace($"Connected to {name}");
+                    Logger.Trace($"Connected to {name} (VID=0x{device.VendorID:X4}, PID=0x{device.ProductID:X4})");
                     DeviceConnected?.Invoke($"Connected to {name}");
 
                     return true;
                 }
                 catch (Exception ex)
                 {
-                    Logger.Trace($"HID Connection Failed: {ex.Message}");
+                    Logger.Trace($"HID Connection Failed (VID=0x{device.VendorID:X4}, PID=0x{device.ProductID:X4}): {ex.Message}");
                 }
             }
 

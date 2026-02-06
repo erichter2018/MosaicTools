@@ -442,6 +442,15 @@ public static class NativeWindows
     }
     
     /// <summary>
+    /// Clear the saved focus handle so RestorePreviousFocus becomes a no-op.
+    /// Used by actions (like Discard Study) where focus should stay on Mosaic.
+    /// </summary>
+    public static void ClearSavedFocus()
+    {
+        _previousFocusHwnd = IntPtr.Zero;
+    }
+
+    /// <summary>
     /// Restore focus to the previously saved window.
     /// </summary>
     public static void RestorePreviousFocus(int delayMs = 50)

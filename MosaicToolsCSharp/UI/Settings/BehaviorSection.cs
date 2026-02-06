@@ -14,9 +14,7 @@ public class BehaviorSection : SettingsSection
 {
     public override string SectionId => "behavior";
 
-    private readonly CheckBox _scrapeMosaicCheck;
     private readonly NumericUpDown _scrapeIntervalUpDown;
-    private readonly CheckBox _restoreFocusCheck;
     private readonly CheckBox _scrollToBottomCheck;
     private readonly CheckBox _showLineCountToastCheck;
     private readonly NumericUpDown _scrollThreshold1;
@@ -32,17 +30,11 @@ public class BehaviorSection : SettingsSection
         // Background Monitoring
         AddSectionDivider("Background Monitoring");
 
-        _scrapeMosaicCheck = AddCheckBox("Scrape Mosaic every", LeftMargin, _nextY,
-            "Poll Mosaic for report changes. Required for most features.");
-
-        _scrapeIntervalUpDown = AddNumericUpDown(LeftMargin + 150, _nextY, 50, 1, 30, 3);
+        AddLabel("Scrape Mosaic every", LeftMargin, _nextY + 3);
+        _scrapeIntervalUpDown = AddNumericUpDown(LeftMargin + 150, _nextY, 50, 1, 30, 1);
         AddLabel("seconds", LeftMargin + 205, _nextY + 3);
         _nextY += SubRowHeight;
-        AddHintLabel("Required for: Clinical History, Alerts, Macros, Impression popup", LeftMargin + 25);
-        _nextY += 3;
-
-        _restoreFocusCheck = AddCheckBox("Restore focus after action", LeftMargin, _nextY,
-            "Return focus to previous window after actions complete.");
+        AddHintLabel("Keep this at 1s unless you are having massive performance degradation.", LeftMargin + 25);
         _nextY += RowHeight + 5;
 
         // Report Processing
@@ -164,9 +156,7 @@ public class BehaviorSection : SettingsSection
 
     public override void LoadSettings(Configuration config)
     {
-        _scrapeMosaicCheck.Checked = config.ScrapeMosaicEnabled;
-        _scrapeIntervalUpDown.Value = config.ScrapeIntervalSeconds;
-        _restoreFocusCheck.Checked = config.RestoreFocusAfterAction;
+        _scrapeIntervalUpDown.Value = Math.Clamp(config.ScrapeIntervalSeconds, 1, 30);
 
         _scrollToBottomCheck.Checked = config.ScrollToBottomOnProcess;
         _showLineCountToastCheck.Checked = config.ShowLineCountToast;
@@ -189,9 +179,7 @@ public class BehaviorSection : SettingsSection
 
     public override void SaveSettings(Configuration config)
     {
-        config.ScrapeMosaicEnabled = _scrapeMosaicCheck.Checked;
         config.ScrapeIntervalSeconds = (int)_scrapeIntervalUpDown.Value;
-        config.RestoreFocusAfterAction = _restoreFocusCheck.Checked;
 
         config.ScrollToBottomOnProcess = _scrollToBottomCheck.Checked;
         config.ShowLineCountToast = _showLineCountToastCheck.Checked;

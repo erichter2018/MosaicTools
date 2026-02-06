@@ -57,9 +57,7 @@ public class SettingsForm : Form
     private List<Label> _tooltipLabels = new();
 
     // Advanced tab controls
-    private CheckBox _restoreFocusCheck = null!;
     private CheckBox _scrollToBottomCheck = null!;
-    private CheckBox _scrapeMosaicCheck = null!;
     private NumericUpDown _scrapeIntervalUpDown = null!;
     private CheckBox _showClinicalHistoryCheck = null!;
     private CheckBox _alwaysShowClinicalHistoryCheck = null!;
@@ -1605,10 +1603,6 @@ public class SettingsForm : Form
         _macrosEnabledCheck.CheckedChanged += (s, e) =>
         {
             UpdateMacroStates();
-            if (_macrosEnabledCheck.Checked && !_scrapeMosaicCheck.Checked)
-            {
-                _scrapeMosaicCheck.Checked = true;
-            }
         };
         macrosGroup.Controls.Add(_macrosEnabledCheck);
 
@@ -2133,7 +2127,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         {
             Text = "Background Monitoring",
             Location = new Point(10, y),
-            Size = new Size(groupWidth, 95),
+            Size = new Size(groupWidth, 70),
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
@@ -2141,23 +2135,14 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
 
         int my = 20;
 
-        _scrapeMosaicCheck = new CheckBox
+        monitoringGroup.Controls.Add(new Label
         {
             Text = "Scrape Mosaic every",
             Location = new Point(10, my),
             AutoSize = true,
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9)
-        };
-        _scrapeMosaicCheck.CheckedChanged += (s, e) =>
-        {
-            UpdateThresholdStates();
-            if (!_scrapeMosaicCheck.Checked && _macrosEnabledCheck != null && _macrosEnabledCheck.Checked)
-            {
-                _macrosEnabledCheck.Checked = false;
-            }
-        };
-        monitoringGroup.Controls.Add(_scrapeMosaicCheck);
+        });
 
         _scrapeIntervalUpDown = new NumericUpDown
         {
@@ -2165,46 +2150,32 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             Width = 50,
             Minimum = 1,
             Maximum = 30,
-            Value = 3,
+            Value = 1,
             BackColor = Color.FromArgb(45, 45, 48),
             ForeColor = Color.White
         };
         monitoringGroup.Controls.Add(_scrapeIntervalUpDown);
 
-        var secondsLabel = new Label
+        monitoringGroup.Controls.Add(new Label
         {
             Text = "seconds",
             Location = new Point(215, my),
             AutoSize = true,
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9)
-        };
-        monitoringGroup.Controls.Add(secondsLabel);
-        CreateTooltipLabel(monitoringGroup, secondsLabel, "Poll Mosaic for report changes.\nRequired for most features.");
+        });
         my += 25;
 
         monitoringGroup.Controls.Add(new Label
         {
-            Text = "Required for: Clinical History, Alerts, Macros, Impression popup",
+            Text = "Keep this at 1s unless you are having massive performance degradation.",
             Location = new Point(30, my),
             AutoSize = true,
             ForeColor = Color.Gray,
             Font = new Font("Segoe UI", 8, FontStyle.Italic)
         });
-        my += 20;
 
-        _restoreFocusCheck = new CheckBox
-        {
-            Text = "Restore focus after action",
-            Location = new Point(10, my),
-            AutoSize = true,
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 9)
-        };
-        monitoringGroup.Controls.Add(_restoreFocusCheck);
-        CreateTooltipLabel(monitoringGroup, _restoreFocusCheck, "Return focus to previous window\nafter actions complete.");
-
-        y += 105;
+        y += 80;
 
         // ========== REPORT PROCESSING SECTION ==========
         var processingGroup = new GroupBox
@@ -3588,15 +3559,11 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
 
     private void UpdateThresholdStates()
     {
-        bool thresholdsEnabled = _scrollToBottomCheck.Checked && _scrapeMosaicCheck.Checked;
+        bool thresholdsEnabled = _scrollToBottomCheck.Checked;
         _scrollThreshold1.Enabled = thresholdsEnabled;
         _scrollThreshold2.Enabled = thresholdsEnabled;
         _scrollThreshold3.Enabled = thresholdsEnabled;
         _showLineCountToastCheck.Enabled = thresholdsEnabled;
-
-        // Clinical history and impression depend on scrape mosaic being enabled
-        _showClinicalHistoryCheck.Enabled = _scrapeMosaicCheck.Checked;
-        _showImpressionCheck.Enabled = _scrapeMosaicCheck.Checked;
 
         // Update notification box states
         UpdateNotificationBoxStates();
@@ -3604,7 +3571,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
 
     private void UpdateNotificationBoxStates()
     {
-        bool notificationBoxEnabled = _scrapeMosaicCheck.Checked && _showClinicalHistoryCheck.Checked;
+        bool notificationBoxEnabled = _showClinicalHistoryCheck.Checked;
         bool alwaysShowEnabled = notificationBoxEnabled && _alwaysShowClinicalHistoryCheck.Checked;
 
         // "Always show" and its children depend on notification box being enabled
@@ -3793,10 +3760,8 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         _reportFontSizeNumeric.Value = (decimal)Math.Clamp(_config.ReportPopupFontSize, 7f, 24f);
 
         // Advanced tab
-        _restoreFocusCheck.Checked = _config.RestoreFocusAfterAction;
         _scrollToBottomCheck.Checked = _config.ScrollToBottomOnProcess;
         _showLineCountToastCheck.Checked = _config.ShowLineCountToast;
-        _scrapeMosaicCheck.Checked = _config.ScrapeMosaicEnabled;
         _scrapeIntervalUpDown.Value = Math.Clamp(_config.ScrapeIntervalSeconds, 1, 30);
         _showClinicalHistoryCheck.Checked = _config.ShowClinicalHistory;
         _alwaysShowClinicalHistoryCheck.Checked = _config.AlwaysShowClinicalHistory;
@@ -4382,10 +4347,8 @@ SETTINGS FILE
         _config.ReportPopupFontSize = (float)_reportFontSizeNumeric.Value;
 
         // Advanced tab
-        _config.RestoreFocusAfterAction = _restoreFocusCheck.Checked;
         _config.ScrollToBottomOnProcess = _scrollToBottomCheck.Checked;
         _config.ShowLineCountToast = _showLineCountToastCheck.Checked;
-        _config.ScrapeMosaicEnabled = _scrapeMosaicCheck.Checked;
         _config.ScrapeIntervalSeconds = (int)_scrapeIntervalUpDown.Value;
         _config.ShowClinicalHistory = _showClinicalHistoryCheck.Checked;
         _config.AlwaysShowClinicalHistory = _alwaysShowClinicalHistoryCheck.Checked;

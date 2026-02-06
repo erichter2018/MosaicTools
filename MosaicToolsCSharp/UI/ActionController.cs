@@ -180,10 +180,7 @@ public class ActionController : IDisposable
                 _isUserActive = true;
                 
                 // Save previous focus before activating Mosaic
-                if (_config.RestoreFocusAfterAction)
-                {
-                    NativeWindows.SavePreviousFocus();
-                }
+                NativeWindows.SavePreviousFocus();
                 
                 try
                 {
@@ -199,10 +196,7 @@ public class ActionController : IDisposable
                     _isUserActive = false;
                     
                     // Restore focus after action completes
-                    if (_config.RestoreFocusAfterAction)
-                    {
-                        NativeWindows.RestorePreviousFocus(50);
-                    }
+                    NativeWindows.RestorePreviousFocus(50);
                     
                     _mainForm.BeginInvoke(() => _mainForm.EnsureWindowsOnTop());
                 }
@@ -234,11 +228,8 @@ public class ActionController : IDisposable
             StartDictationSync();
         }
         
-        // Start Mosaic scrape timer if enabled
-        if (_config.ScrapeMosaicEnabled)
-        {
-            StartMosaicScrapeTimer();
-        }
+        // Start Mosaic scrape timer (always on)
+        StartMosaicScrapeTimer();
 
         // Load template database and prune stale entries
         if (_config.TemplateDatabaseEnabled)
@@ -265,8 +256,8 @@ public class ActionController : IDisposable
         _hidService.SetPreferredDevice(_config.PreferredMicrophone);
         RegisterHotkeys();
 
-        // Toggle scraper based on setting
-        ToggleMosaicScraper(_config.ScrapeMosaicEnabled);
+        // Restart scraper to pick up any interval changes
+        ToggleMosaicScraper(true);
     }
 
     /// <summary>
@@ -739,8 +730,6 @@ public class ActionController : IDisposable
         {
             int pageDowns = 0;
             
-            // Only smart scroll if we have data from the scraper
-            if (_config.ScrapeMosaicEnabled)
             {
                 string? report = _automationService.LastFinalReport;
                 if (!string.IsNullOrEmpty(report))
@@ -763,10 +752,6 @@ public class ActionController : IDisposable
                 {
                     Logger.Trace("Smart Scroll: No report scraped yet. Skipping scroll.");
                 }
-            }
-            else
-            {
-                 Logger.Trace("Smart Scroll: Scrape disabled. Skipping scroll.");
             }
             
             if (pageDowns > 0)
@@ -922,6 +907,11 @@ public class ActionController : IDisposable
     {
         Logger.Trace("Discard Study action triggered");
 
+        // Don't restore focus after discard - Mosaic should stay active.
+        // ClickDiscardStudy uses FlaUI Invoke (async) and needs Mosaic to keep focus
+        // while it processes the discard.
+        NativeWindows.ClearSavedFocus();
+
         // Close report popup if open
         if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
         {
@@ -985,8 +975,8 @@ public class ActionController : IDisposable
             _searchingForImpression = false;
             _impressionFromProcessReport = false;
             _mainForm.BeginInvoke(() => _mainForm.HideImpressionWindow());
-            RestartScrapeTimer(NormalScrapeIntervalMs);
         }
+
     }
 
     private void PerformCreateImpression()
@@ -1108,11 +1098,7 @@ public class ActionController : IDisposable
         lock (PasteLock)
         {
             // Save focus
-            var previousWindow = IntPtr.Zero;
-            if (_config.RestoreFocusAfterAction)
-            {
-                previousWindow = NativeWindows.GetForegroundWindow();
-            }
+            var previousWindow = NativeWindows.GetForegroundWindow();
 
             try
             {
@@ -1154,7 +1140,7 @@ public class ActionController : IDisposable
                 LastPasteTime = DateTime.Now;
 
                 // Restore focus
-                if (_config.RestoreFocusAfterAction && previousWindow != IntPtr.Zero)
+                if (previousWindow != IntPtr.Zero)
                 {
                     Thread.Sleep(100);
                     NativeWindows.SetForegroundWindow(previousWindow);
@@ -1261,11 +1247,7 @@ public class ActionController : IDisposable
         lock (PasteLock)
         {
             // Save focus
-            var previousWindow = IntPtr.Zero;
-            if (_config.RestoreFocusAfterAction)
-            {
-                previousWindow = NativeWindows.GetForegroundWindow();
-            }
+            var previousWindow = NativeWindows.GetForegroundWindow();
 
             try
             {
@@ -1297,7 +1279,7 @@ public class ActionController : IDisposable
                 LastPasteTime = DateTime.Now;
 
                 // Restore focus
-                if (_config.RestoreFocusAfterAction && previousWindow != IntPtr.Zero)
+                if (previousWindow != IntPtr.Zero)
                 {
                     Thread.Sleep(100);
                     NativeWindows.SetForegroundWindow(previousWindow);
@@ -1908,6 +1890,9 @@ public class ActionController : IDisposable
 
                 // Scrape Mosaic for report data
                 var reportText = _automationService.GetFinalReportFast(needDraftedCheck);
+
+                // Bail out if user action started during the scrape
+                if (_isUserActive) return;
 
                 // Check for new study (non-empty accession different from last non-empty)
                 var currentAccession = _automationService.LastAccession;

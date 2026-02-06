@@ -139,13 +139,13 @@ public class KeysButtonsSection : SettingsSection
     private void OnOpenKeysClick(object? sender, EventArgs e)
     {
         using var dialog = new KeyMappingsDialog(_config, _controller, App.IsHeadless);
-        dialog.ShowDialog();
+        dialog.ShowDialog(FindForm());
     }
 
     private void OnOpenButtonsClick(object? sender, EventArgs e)
     {
         using var dialog = new ButtonStudioDialog(_config);
-        dialog.ShowDialog();
+        dialog.ShowDialog(FindForm());
     }
 
     public override void LoadSettings(Configuration config)

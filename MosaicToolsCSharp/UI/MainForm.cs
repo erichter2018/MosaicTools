@@ -325,7 +325,7 @@ public class MainForm : Form
         // Clinical History window: show if enabled and scrape mosaic is on
         // Don't show on startup if "hide when no study" is enabled - scrape will show it when study opens
         // Also don't show in alerts-only mode - window only appears when alerts trigger
-        if (_config.ShowClinicalHistory && _config.ScrapeMosaicEnabled &&
+        if (_config.ShowClinicalHistory &&
             _config.AlwaysShowClinicalHistory && !_config.HideClinicalHistoryWhenNoStudy)
         {
             ToggleClinicalHistory(true);
@@ -1470,7 +1470,7 @@ public class MainForm : Form
     /// </summary>
     public void UpdateClinicalHistoryVisibility()
     {
-        if (!_config.ShowClinicalHistory || !_config.ScrapeMosaicEnabled)
+        if (!_config.ShowClinicalHistory)
         {
             ToggleClinicalHistory(false);
             return;

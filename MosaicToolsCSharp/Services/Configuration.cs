@@ -57,10 +57,10 @@ public class Configuration
     public bool StopBeepEnabled { get; set; } = true;
     
     [JsonPropertyName("start_beep_volume")]
-    public double StartBeepVolume { get; set; } = 0.04;
-    
+    public double StartBeepVolume { get; set; } = 0.08;
+
     [JsonPropertyName("stop_beep_volume")]
-    public double StopBeepVolume { get; set; } = 0.04;
+    public double StopBeepVolume { get; set; } = 0.08;
     
     [JsonPropertyName("dictation_pause_ms")]
     public int DictationPauseMs { get; set; } = 1000;
@@ -94,13 +94,13 @@ public class Configuration
     public bool SeparatePastedItems { get; set; } = true;
 
     [JsonPropertyName("restore_focus_after_action")]
-    public bool RestoreFocusAfterAction { get; set; } = true;
+    public bool RestoreFocusAfterAction { get; set; } = true;  // Always true, not user-configurable
     
     [JsonPropertyName("scroll_to_bottom_on_process")]
     public bool ScrollToBottomOnProcess { get; set; } = false;
 
     [JsonPropertyName("scrape_mosaic_enabled")]
-    public bool ScrapeMosaicEnabled { get; set; } = false;
+    public bool ScrapeMosaicEnabled { get; set; } = true;  // Always true, not user-configurable
 
     [JsonPropertyName("scrape_interval_seconds")]
     public int ScrapeIntervalSeconds { get; set; } = 1;
@@ -481,6 +481,10 @@ public class Configuration
                 _ => RvuMetric.Total
             };
         }
+
+        // Force mandatory settings (not user-configurable)
+        ScrapeMosaicEnabled = true;
+        RestoreFocusAfterAction = true;
 
         // Ensure floating buttons have defaults
         if (FloatingButtons.Buttons.Count == 0)

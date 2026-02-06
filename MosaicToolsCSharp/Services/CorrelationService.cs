@@ -108,7 +108,7 @@ public static class CorrelationService
         { "cholelithiasis", "gallstone" }, { "gallbladder stone", "gallstone" },
         { "calculus", "stone" }, { "calculi", "stone" }, { "calcified", "calcification" },
         { "thrombus", "clot" }, { "thrombosis", "clot" }, { "thrombotic", "clot" },
-        { "embolus", "clot" }, { "embolism", "clot" }, { "embolic", "clot" },
+        { "embolus", "clot" }, { "embolism", "clot" }, { "embolic", "clot" }, { "filling defect", "clot" },
         { "hemorrhage", "bleeding" }, { "hemorrhagic", "bleeding" },
         { "hematoma", "bleeding" },
         { "edema", "swelling" }, { "edematous", "swelling" },
