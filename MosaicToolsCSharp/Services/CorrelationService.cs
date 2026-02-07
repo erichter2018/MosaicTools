@@ -133,6 +133,63 @@ public static class CorrelationService
         { "hydronephrosis", "hydronephrosis" }, { "hydroureter", "hydroureter" },
         { "ascites", "ascites" },
         { "swollen", "swelling" },
+
+        // Radiology descriptive
+        { "opacification", "opacity" }, { "opacified", "opacity" }, { "opaque", "opacity" },
+        { "lucent", "lucency" }, { "radiolucent", "lucency" },
+        { "sclerotic", "sclerosis" },
+        { "osteolytic", "lytic" },
+
+        // Degenerative / MSK
+        { "degenerative", "degeneration" }, { "spondylosis", "degeneration" },
+        { "arthritic", "arthritis" }, { "arthropathy", "arthritis" },
+        { "scoliotic", "scoliosis" },
+        { "kyphotic", "kyphosis" },
+        { "lordotic", "lordosis" },
+
+        // Vascular
+        { "ectatic", "dilation" }, { "ectasia", "dilation" },
+        { "tortuous", "tortuosity" },
+        { "atherosclerotic", "atherosclerosis" }, { "atheromatous", "atherosclerosis" },
+
+        // Tissue changes
+        { "fibrotic", "fibrosis" },
+        { "emphysematous", "emphysema" },
+        { "necrotic", "necrosis" },
+        { "ischemic", "ischemia" },
+        { "infarcted", "infarction" }, { "infarct", "infarction" },
+
+        // Structural
+        { "perforated", "perforation" },
+        { "displaced", "displacement" },
+        { "compressed", "compression" },
+        { "distended", "distension" },
+        { "collapsed", "collapse" },
+
+        // Neoplastic
+        { "carcinoma", "malignancy" }, { "carcinomatous", "malignancy" },
+
+        // Size/shape descriptors
+        { "thickened", "thickening" },
+        { "enlarged", "enlargement" },
+        { "prominent", "prominence" },
+
+        // Short but important pathology terms (< 5 chars, need synonym to be included)
+        { "cystic", "cyst" }, { "cyst", "cyst" },
+
+        // Missing anatomical adjective → noun
+        { "abdominal", "abdomen" },
+        { "sacral", "sacrum" },
+    };
+
+    /// <summary>
+    /// Laterality terms that alone are too generic to establish a correlation match.
+    /// These still contribute to scoring (to pick left vs right impression) but
+    /// at least one non-laterality term must also match.
+    /// </summary>
+    private static readonly HashSet<string> LateralityTerms = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "left", "right"
     };
 
     /// <summary>
@@ -147,7 +204,10 @@ public static class CorrelationService
         "pericardium", "peritoneum", "retroperitoneum", "mediastinum", "hilum",
         "mesentery", "femur", "humerus", "tibia", "pelvis", "gallbladder",
         "bowel", "small bowel", "large bowel", "chest wall", "diaphragm",
-        "bone", "lymph node"
+        "bone", "lymph node",
+        // Laterality and short anatomical terms (< 5 chars, need explicit listing)
+        "left", "right", "lobe", "rib", "disc", "disk",
+        "atrium", "ventricle", "artery", "vein", "sacrum"
     };
 
     /// <summary>
@@ -159,6 +219,7 @@ public static class CorrelationService
 
         Logger.Trace($"Correlate: input length={reportText.Length}");
 
+        var contextTerms = ExtractExamContextTerms(reportText);
         var (findingsText, impressionText) = ExtractSections(reportText);
         Logger.Trace($"Correlate: findings={findingsText.Length} chars, impression={impressionText.Length} chars");
         if (string.IsNullOrWhiteSpace(findingsText) || string.IsNullOrWhiteSpace(impressionText))
@@ -198,7 +259,7 @@ public static class CorrelationService
                 continue;
             }
 
-            var impressionTerms = ExtractTerms(text);
+            var impressionTerms = ExtractTerms(text, contextTerms);
             Logger.Trace($"Correlate: Impression #{index} terms: [{string.Join(", ", impressionTerms)}] from: {text.Substring(0, Math.Min(80, text.Length))}");
 
             if (impressionTerms.Count == 0) continue;
@@ -206,6 +267,7 @@ public static class CorrelationService
             // Find the best matching subsection block (most shared terms)
             // This prevents a single common word from spreading across the whole report
             int bestScore = 0;
+            int bestSubstantiveScore = 0;
             List<string>? bestBlock = null;
 
             foreach (var block in findingsBlocks)
@@ -214,28 +276,31 @@ public static class CorrelationService
                 var blockTerms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var sentence in block)
                 {
-                    foreach (var t in ExtractTerms(sentence))
+                    foreach (var t in ExtractTerms(sentence, contextTerms))
                         blockTerms.Add(t);
                 }
 
                 var shared = impressionTerms.Intersect(blockTerms, StringComparer.OrdinalIgnoreCase).ToList();
+                int substantiveCount = shared.Count(t => !LateralityTerms.Contains(t));
                 if (shared.Count > bestScore)
                 {
                     bestScore = shared.Count;
+                    bestSubstantiveScore = substantiveCount;
                     bestBlock = block;
-                    Logger.Trace($"Correlate:   Block match score={shared.Count} terms=[{string.Join(", ", shared)}]");
+                    Logger.Trace($"Correlate:   Block match score={shared.Count} substantive={substantiveCount} terms=[{string.Join(", ", shared)}]");
                 }
             }
 
-            // Require at least 1 shared term with the best block
-            if (bestScore >= 1 && bestBlock != null)
+            // Require at least 1 non-laterality shared term with the best block
+            if (bestSubstantiveScore >= 1 && bestBlock != null)
             {
-                // Only include sentences from the best block that actually share terms
+                // Only include sentences from the best block that actually share substantive terms
                 var matchedSentences = new List<string>();
                 foreach (var sentence in bestBlock)
                 {
-                    var sentenceTerms = ExtractTerms(sentence);
-                    if (impressionTerms.Intersect(sentenceTerms, StringComparer.OrdinalIgnoreCase).Any())
+                    var sentenceTerms = ExtractTerms(sentence, contextTerms);
+                    var sentenceShared = impressionTerms.Intersect(sentenceTerms, StringComparer.OrdinalIgnoreCase).ToList();
+                    if (sentenceShared.Any(t => !LateralityTerms.Contains(t)))
                     {
                         matchedSentences.Add(sentence);
                     }
@@ -259,10 +324,18 @@ public static class CorrelationService
     }
 
     /// <summary>
-    /// Regex pattern matching negative/normal finding sentences that don't need impression representation.
+    /// Regex pattern matching negative/normal/incidental finding sentences that don't need impression representation.
+    /// Start-anchored patterns prevent filtering mixed sentences like
+    /// "The kidney shows no hydronephrosis but a new 2 cm mass."
+    /// Unanchored patterns match anywhere for unambiguous indicators.
     /// </summary>
     private static readonly Regex NegativeSentencePattern = new(
-        @"\bno\s+|(?<!\S)normal\b|\bunremarkable\b|\bnegative\b|\bstable\b|\bwithin normal\b|\bnot\s+seen\b|\bnot\s+identified\b",
+        @"^\s*(?:no\s|normal\b|negative\b|stable\b|there\s+(?:is|are)\s+no\s|not\s)" +
+        @"|\bunremarkable\b|\bwithin\s+normal\b" +
+        @"|\b(?:was|has\s+been)\s+performed\b" +               // surgical history
+        @"|\bdemonstrates?\s+no\s" +                            // mid-sentence negative
+        @"|\bis\s+normal\s+in\b" +                              // normal descriptive
+        @"|\bnot\s+clearly\s+(?:seen|visualized|identified)\b", // non-visualization
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
@@ -276,6 +349,7 @@ public static class CorrelationService
 
         Logger.Trace($"CorrelateReversed: input length={reportText.Length}, dictatedSentences={dictatedSentences?.Count ?? -1}");
 
+        var contextTerms = ExtractExamContextTerms(reportText);
         var (findingsText, impressionText) = ExtractSections(reportText);
         if (string.IsNullOrWhiteSpace(findingsText) || string.IsNullOrWhiteSpace(impressionText))
         {
@@ -307,28 +381,28 @@ public static class CorrelationService
             filteredFindings = new List<string>(findingsSentences);
         }
 
-        // Filter out negative/normal statements
-        var significantFindings = new List<string>();
+        // Identify negative/normal statements (these can match impressions but won't become orphans)
+        var negativeFindings = new HashSet<string>(StringComparer.Ordinal);
         foreach (var sentence in filteredFindings)
         {
             if (NegativeSentencePattern.IsMatch(sentence))
             {
-                Logger.Trace($"CorrelateReversed: Skipping negative finding: {sentence.Substring(0, Math.Min(60, sentence.Length))}");
-                continue;
+                negativeFindings.Add(sentence);
+                Logger.Trace($"CorrelateReversed: Negative finding (can match, won't orphan): {sentence.Substring(0, Math.Min(60, sentence.Length))}");
             }
-            significantFindings.Add(sentence);
         }
-        Logger.Trace($"CorrelateReversed: {significantFindings.Count} significant findings after negative filter");
+        int significantCount = filteredFindings.Count - negativeFindings.Count;
+        Logger.Trace($"CorrelateReversed: {significantCount} significant + {negativeFindings.Count} negative findings");
 
-        // Safety net: if no dictated sentences provided AND most findings passed (suggesting
+        // Safety net: if no dictated sentences provided AND most findings are significant (suggesting
         // baseline wasn't captured), fall back to the old impression-first approach
-        if (dictatedSentences == null && significantFindings.Count > findingsSentences.Count * 0.8)
+        if (dictatedSentences == null && significantCount > findingsSentences.Count * 0.8)
         {
             Logger.Trace("CorrelateReversed: No baseline, most findings pass filter — falling back to Correlate()");
             return Correlate(reportText, seed);
         }
 
-        if (significantFindings.Count == 0)
+        if (significantCount == 0)
             return result;
 
         // Shuffle color order for consistent colors per report
@@ -340,45 +414,63 @@ public static class CorrelationService
             (colorOrder[i], colorOrder[j]) = (colorOrder[j], colorOrder[i]);
         }
 
-        // For each significant finding, find the best-matching impression item
-        // Group findings by their matched impression item
+        // For each finding, find the best-matching impression item
+        // All findings (including negative) participate in matching,
+        // but only positive findings become orphans when unmatched
         var matchedGroups = new Dictionary<int, (string impressionText, List<string> findings)>();
         var orphanFindings = new List<string>();
 
-        foreach (var finding in significantFindings)
+        foreach (var finding in filteredFindings)
         {
-            var findingTerms = ExtractTerms(finding);
+            bool isNegative = negativeFindings.Contains(finding);
+            var findingTerms = ExtractTerms(finding, contextTerms);
+            Logger.Trace($"CorrelateReversed: Finding terms=[{string.Join(", ", findingTerms)}] neg={isNegative} for: {finding.Substring(0, Math.Min(60, finding.Length))}");
             if (findingTerms.Count == 0)
             {
-                orphanFindings.Add(finding);
+                if (!isNegative) orphanFindings.Add(finding);
                 continue;
             }
 
             int bestScore = 0;
+            int bestSubstantiveScore = 0;
             int bestImpressionIdx = -1;
             string bestImpressionText = "";
 
             foreach (var (index, text) in impressionItems)
             {
-                var impressionTerms = ExtractTerms(text);
-                var shared = findingTerms.Intersect(impressionTerms, StringComparer.OrdinalIgnoreCase).Count();
-                if (shared > bestScore)
+                // Skip generic negative impression statements — "no acute" matches too broadly
+                if (Regex.IsMatch(text, @"\bno\s+acute\b", RegexOptions.IgnoreCase))
+                    continue;
+
+                var impressionTerms = ExtractTerms(text, contextTerms);
+                var shared = findingTerms.Intersect(impressionTerms, StringComparer.OrdinalIgnoreCase).ToList();
+                int substantiveCount = shared.Count(t => !LateralityTerms.Contains(t));
+                Logger.Trace($"CorrelateReversed:   vs Impression #{index} terms=[{string.Join(", ", impressionTerms)}] shared=[{string.Join(", ", shared)}] score={shared.Count} substantive={substantiveCount}");
+                if (shared.Count > bestScore)
                 {
-                    bestScore = shared;
+                    bestScore = shared.Count;
+                    bestSubstantiveScore = substantiveCount;
                     bestImpressionIdx = index;
                     bestImpressionText = text;
                 }
             }
 
-            if (bestScore >= 1 && bestImpressionIdx >= 0)
+            // Require at least one non-laterality shared term to count as a match
+            if (bestSubstantiveScore >= 1 && bestImpressionIdx >= 0)
             {
+                Logger.Trace($"CorrelateReversed: MATCHED finding to Impression #{bestImpressionIdx} (score={bestScore}, substantive={bestSubstantiveScore})");
                 if (!matchedGroups.ContainsKey(bestImpressionIdx))
                     matchedGroups[bestImpressionIdx] = (bestImpressionText, new List<string>());
                 matchedGroups[bestImpressionIdx].findings.Add(finding);
             }
+            else if (!isNegative)
+            {
+                Logger.Trace($"CorrelateReversed: ORPHAN finding (bestScore={bestScore}, substantive={bestSubstantiveScore})");
+                orphanFindings.Add(finding);
+            }
             else
             {
-                orphanFindings.Add(finding);
+                Logger.Trace($"CorrelateReversed: Negative finding unmatched, not orphaned");
             }
         }
 
@@ -411,6 +503,73 @@ public static class CorrelationService
 
         Logger.Trace($"CorrelateReversed: {matchedGroups.Count} matched groups, {orphanFindings.Count} orphans");
         return result;
+    }
+
+    /// <summary>
+    /// Extract context terms from the EXAM description line to exclude from correlation.
+    /// Terms like "lumbar", "spine" in a lumbar spine study appear everywhere and don't indicate pathology.
+    /// </summary>
+    internal static HashSet<string> ExtractExamContextTerms(string reportText)
+    {
+        var contextTerms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Find EXAM: line (inline "EXAM: description" or "EXAM:" followed by description on next line)
+        var lines = reportText.Replace("\r\n", "\n").Split('\n');
+        string? examLine = null;
+        bool sawExamHeader = false;
+
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith("EXAM:", StringComparison.OrdinalIgnoreCase))
+            {
+                var rest = trimmed.Substring(5).Trim();
+                if (!string.IsNullOrEmpty(rest))
+                {
+                    examLine = rest;
+                    break;
+                }
+                // Standalone "EXAM:" — description is on the next line
+                sawExamHeader = true;
+                continue;
+            }
+            if (sawExamHeader && !string.IsNullOrWhiteSpace(trimmed))
+            {
+                // Don't grab another section header as the exam description
+                if (Regex.IsMatch(trimmed, @"^[A-Z\s]+:\s*$"))
+                    break;
+                examLine = trimmed;
+                break;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(examLine)) return contextTerms;
+
+        // Strip date/time suffix (e.g., "02/06/2026 06:59:00 PM")
+        examLine = Regex.Replace(examLine, @"\d{1,2}/\d{1,2}/\d{4}.*$", "").Trim();
+
+        // Extract significant words from exam description
+        var words = Regex.Split(examLine.ToLowerInvariant(), @"[^a-z]+")
+            .Where(w => w.Length >= 4) // Only meaningful words
+            .ToArray();
+
+        foreach (var word in words)
+        {
+            // Skip very common modifiers that aren't anatomical context
+            if (word is "with" or "without" or "views" or "view" or "contrast" or "portable")
+                continue;
+            contextTerms.Add(word);
+            // Also add synonym-mapped forms
+            if (Synonyms.TryGetValue(word, out var canonical))
+                contextTerms.Add(canonical);
+            if (AnatomicalTerms.Contains(word))
+                contextTerms.Add(word);
+        }
+
+        if (contextTerms.Count > 0)
+            Logger.Trace($"Exam context terms (excluded from matching): [{string.Join(", ", contextTerms)}]");
+
+        return contextTerms;
     }
 
     /// <summary>
@@ -634,11 +793,11 @@ public static class CorrelationService
         "other", "otherwise", "overall",
         "partially", "patient", "please", "possible", "possibly",
         "prior", "probably",
-        "redemonstrated", "related", "remain", "remains", "right",
+        "redemonstrated", "related", "remain", "remains",
         "seen", "series", "severe", "severely", "several", "should",
         "since", "small", "stable", "status", "study", "suggest", "suggests",
         "there", "these", "those", "through", "total",
-        "unchanged", "under", "unremarkable", "upper", "lower",
+        "unchanged", "under", "unremarkable",
         "visualized", "well", "where", "which", "within", "without"
     };
 
@@ -663,7 +822,9 @@ public static class CorrelationService
     /// Returns a set of normalized terms for matching.
     /// Includes: synonym-mapped terms, anatomical terms, and significant content words (5+ chars).
     /// </summary>
-    internal static HashSet<string> ExtractTerms(string text)
+    internal static HashSet<string> ExtractTerms(string text) => ExtractTerms(text, null);
+
+    internal static HashSet<string> ExtractTerms(string text, HashSet<string>? contextExclusions)
     {
         var terms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (string.IsNullOrWhiteSpace(text)) return terms;
@@ -722,6 +883,12 @@ public static class CorrelationService
             {
                 terms.Add(kvp.Value);
             }
+        }
+
+        // Remove exam context terms (e.g., "lumbar", "spine" in a lumbar spine study)
+        if (contextExclusions != null && contextExclusions.Count > 0)
+        {
+            terms.ExceptWith(contextExclusions);
         }
 
         return terms;

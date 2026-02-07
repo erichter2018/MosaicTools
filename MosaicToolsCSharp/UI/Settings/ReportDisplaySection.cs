@@ -18,6 +18,7 @@ public class ReportDisplaySection : SettingsSection
     private readonly Label _reportChangesAlphaLabel;
     private readonly RichTextBox _reportChangesPreview;
     private readonly CheckBox _correlationEnabledCheck;
+    private readonly CheckBox _orphanFindingsEnabledCheck;
     private readonly CheckBox _reportTransparentCheck;
     private readonly TrackBar _reportTransparencySlider;
     private readonly Label _reportTransparencyLabel;
@@ -75,6 +76,11 @@ public class ReportDisplaySection : SettingsSection
         // Rainbow Mode
         _correlationEnabledCheck = AddCheckBox("Rainbow Mode (findings-impression correlation)", LeftMargin, _nextY,
             "Color-codes matching concepts between Findings and Impression.\nClick report popup to cycle between Changes and Rainbow modes.");
+        _nextY += RowHeight;
+
+        // Unmatched Findings
+        _orphanFindingsEnabledCheck = AddCheckBox("Unmatched Findings (highlight findings missing from impression)", LeftMargin, _nextY,
+            "After Rainbow, shows only findings not represented in the impression.\nHelps catch findings that may need to be added.");
         _nextY += RowHeight + 5;
 
         // Transparent Overlay
@@ -159,6 +165,7 @@ public class ReportDisplaySection : SettingsSection
         _reportChangesAlphaLabel.Text = $"{config.ReportChangesAlpha}%";
 
         _correlationEnabledCheck.Checked = config.CorrelationEnabled;
+        _orphanFindingsEnabledCheck.Checked = config.OrphanFindingsEnabled;
 
         _reportTransparentCheck.Checked = config.ReportPopupTransparent;
         _reportTransparencySlider.Value = config.ReportPopupTransparency;
@@ -180,6 +187,7 @@ public class ReportDisplaySection : SettingsSection
         config.ReportChangesAlpha = _reportChangesAlphaSlider.Value;
 
         config.CorrelationEnabled = _correlationEnabledCheck.Checked;
+        config.OrphanFindingsEnabled = _orphanFindingsEnabledCheck.Checked;
 
         config.ReportPopupTransparent = _reportTransparentCheck.Checked;
         config.ReportPopupTransparency = _reportTransparencySlider.Value;

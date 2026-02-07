@@ -68,6 +68,11 @@ public class HidService : IDisposable
     private bool _isPhilips;
     private string _preferredDevice = DeviceAuto;
 
+    // Debounce for SpeechMike phantom events from physical movement
+    private string? _lastPhilipsButton;
+    private DateTime _lastPhilipsButtonTime = DateTime.MinValue;
+    private const int PhilipsDebounceMs = 300;
+
     public event Action<string>? ButtonPressed;
     public event Action<string>? DeviceConnected;
     public event Action<bool>? RecordButtonStateChanged; // For PTT: true=down, false=up
@@ -208,7 +213,18 @@ public class HidService : IDisposable
                     ushort prevButtons = lastPhilipsButtons;
                     lastPhilipsButtons = btnCombined;
 
-                    // Track Record button state for PTT
+                    // Ignore compound events (multiple bits set) - these are status updates, not button presses
+                    // Must check BEFORE Record state tracking to avoid phantom PTT releases
+                    int bitsSet = System.Numerics.BitOperations.PopCount(btn7) + System.Numerics.BitOperations.PopCount(btn8);
+                    if (bitsSet > 1)
+                    {
+                        Logger.Trace($"SpeechMike: Ignoring compound event (btn7=0x{btn7:X2}, btn8=0x{btn8:X2}, {bitsSet} bits set)");
+                        // Reset so the next real button press is treated as fresh
+                        lastPhilipsButtons = 0;
+                        continue;
+                    }
+
+                    // Track Record button state for PTT (after compound filter)
                     bool recordDown = (btn8 & 0x01) != 0;
                     if (recordDown != lastRecordDown)
                     {
@@ -221,17 +237,6 @@ public class HidService : IDisposable
 
                     // Only fire on fresh button press
                     if (prevButtons != 0x0000) continue;
-
-                    // Ignore compound events (multiple bits set) - these are status updates, not button presses
-                    // Count bits set in btn7 and btn8
-                    int bitsSet = System.Numerics.BitOperations.PopCount(btn7) + System.Numerics.BitOperations.PopCount(btn8);
-                    if (bitsSet > 1)
-                    {
-                        Logger.Trace($"SpeechMike: Ignoring compound event (btn7=0x{btn7:X2}, btn8=0x{btn8:X2}, {bitsSet} bits set)");
-                        // Reset so the next real button press is treated as fresh
-                        lastPhilipsButtons = 0;
-                        continue;
-                    }
 
                     // Match SpeechMike buttons
                     string? matchedButton = null;
@@ -254,6 +259,17 @@ public class HidService : IDisposable
 
                     if (matchedButton != null)
                     {
+                        // Debounce: ignore same button firing again within 300ms (phantom from movement)
+                        var now = DateTime.UtcNow;
+                        if (matchedButton == _lastPhilipsButton &&
+                            (now - _lastPhilipsButtonTime).TotalMilliseconds < PhilipsDebounceMs)
+                        {
+                            Logger.Trace($"SpeechMike DEBOUNCED: {matchedButton} ({(now - _lastPhilipsButtonTime).TotalMilliseconds:F0}ms since last)");
+                            continue;
+                        }
+                        _lastPhilipsButton = matchedButton;
+                        _lastPhilipsButtonTime = now;
+
                         Logger.Trace($"SpeechMike button: {matchedButton} (btn7=0x{btn7:X2}, btn8=0x{btn8:X2}, prev=0x{prevButtons:X4})");
                         ButtonPressed?.Invoke(matchedButton);
                     }

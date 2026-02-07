@@ -473,6 +473,9 @@ public class ActionController : IDisposable
 
     private void PerformBeep()
     {
+        // Protect from Registry Sync overwriting state during toggle
+        _lastManualToggleTime = DateTime.Now;
+
         // 1. Determine STARTING state (The state we are moving TO)
         bool startingActive = !_dictationActive;
         
@@ -2175,6 +2178,13 @@ public class ActionController : IDisposable
                                 _baselineReport = reportText;
                                 Logger.Trace($"Captured baseline from scrape (DRAFTED, immediate): {reportText.Length} chars, drafted={_automationService.LastDraftedState}");
                                 Logger.Trace($"Baseline content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
+
+                                // Record to template database (drafted = reduced weight)
+                                if (_config.TemplateDatabaseEnabled && !string.IsNullOrEmpty(_automationService.LastDescription))
+                                {
+                                    _templateDatabase.RecordTemplate(_automationService.LastDescription, reportText, isDrafted: true);
+                                }
+
                                 // Revert to normal scrape interval now that baseline is captured
                                 if (!_searchingForImpression)
                                     RestartScrapeTimer(NormalScrapeIntervalMs);
@@ -2263,6 +2273,11 @@ public class ActionController : IDisposable
                         // Report text is gone (being updated in Mosaic) but popup is visible with cached content
                         Logger.Trace("Popup showing stale content - report being updated");
                         _mainForm.BeginInvoke(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
+                    }
+                    else if (!string.IsNullOrEmpty(reportText))
+                    {
+                        // Report text is available and matches last text - clear stale indicator if showing
+                        _mainForm.BeginInvoke(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
                     }
                 }
 
@@ -2756,6 +2771,9 @@ public class ActionController : IDisposable
                 _automationService.LastClarioClass,
                 _automationService.LastDescription))
             return;
+
+        // Only trigger for drafted studies
+        if (!_automationService.LastDraftedState) return;
 
         _ctrlASentForCurrentAccession = true;
         Logger.Trace("Ignore Inpatient Drafted: Sending Ctrl+A");

@@ -19,7 +19,8 @@ namespace MosaicTools.UI;
 public enum ReportDisplayMode
 {
     Changes,
-    Rainbow
+    Rainbow,
+    OrphanFindings
 }
 
 /// <summary>
@@ -299,12 +300,30 @@ public class ReportPopupForm : Form
     /// </summary>
     public bool HandleClickCycle()
     {
-        Logger.Trace($"HandleClickCycle: mode={_displayMode}, changesEnabled={_changesEnabled}, correlationEnabled={_correlationEnabled}");
+        Logger.Trace($"HandleClickCycle: mode={_displayMode}, changesEnabled={_changesEnabled}, correlationEnabled={_correlationEnabled}, orphanEnabled={_config.OrphanFindingsEnabled}");
 
         if (_displayMode == ReportDisplayMode.Changes && _correlationEnabled)
         {
             _displayMode = ReportDisplayMode.Rainbow;
             Logger.Trace("Switching to Rainbow mode");
+
+            if (_useLayeredWindow)
+            {
+                ComputeHighlights();
+                RenderAndUpdate();
+            }
+            else
+            {
+                UpdateModeLabel();
+                ResetAndReapplyFormatting();
+            }
+            return true;
+        }
+
+        if (_displayMode == ReportDisplayMode.Rainbow && _config.OrphanFindingsEnabled)
+        {
+            _displayMode = ReportDisplayMode.OrphanFindings;
+            Logger.Trace("Switching to Unmatched mode");
 
             if (_useLayeredWindow)
             {
@@ -596,10 +615,18 @@ public class ReportPopupForm : Form
             return; // Don't show mode label when stale indicator is showing
         }
 
-        // Show mode label (Changes/Rainbow) only when correlation features enabled
-        if (!_changesEnabled || !_correlationEnabled) return;
+        // Show mode label when more than one mode is available in the cycle
+        bool hasMultipleModes = (_changesEnabled && _correlationEnabled) ||
+                                (_correlationEnabled && _config.OrphanFindingsEnabled);
+        if (!hasMultipleModes) return;
 
-        string label = _displayMode == ReportDisplayMode.Changes ? "Changes" : "Rainbow";
+        string label = _displayMode switch
+        {
+            ReportDisplayMode.Changes => "Changes",
+            ReportDisplayMode.Rainbow => "Rainbow",
+            ReportDisplayMode.OrphanFindings => "Unmatched",
+            _ => "Changes"
+        };
         var labelSize = g.MeasureString(label, _modeLabelFont);
         float x = Width - labelSize.Width - 8;
         float y = 4;
@@ -762,6 +789,10 @@ public class ReportPopupForm : Form
         else if (_displayMode == ReportDisplayMode.Rainbow)
         {
             ComputeRainbowHighlights();
+        }
+        else if (_displayMode == ReportDisplayMode.OrphanFindings)
+        {
+            ComputeOrphanHighlights();
         }
     }
 
@@ -946,6 +977,51 @@ public class ReportPopupForm : Form
         }
     }
 
+    private void ComputeOrphanHighlights()
+    {
+        try
+        {
+            var dictated = GetDictatedSentences();
+            _correlationResult ??= CorrelationService.CorrelateReversed(_formattedText, dictated, _accessionSeed);
+
+            if (_correlationResult.Items.Count == 0)
+            {
+                Logger.Trace("Unmatched mode: No correlations found");
+                return;
+            }
+
+            var bgColor = Color.FromArgb(20, 20, 20);
+            int count = 0;
+
+            foreach (var item in _correlationResult.Items)
+            {
+                // Only show orphan findings (items with no impression match)
+                if (!string.IsNullOrEmpty(item.ImpressionText)) continue;
+
+                var paletteColor = CorrelationService.Palette[item.ColorIndex];
+                var blended = CorrelationService.BlendWithBackground(paletteColor, bgColor);
+                var hlColor = Color.FromArgb(160, blended.R, blended.G, blended.B);
+
+                foreach (var finding in item.MatchedFindings)
+                {
+                    if (IsSectionHeading(finding)) continue;
+                    if (!string.IsNullOrWhiteSpace(finding))
+                    {
+                        _highlights.Add(new HighlightEntry(finding, hlColor));
+                        count++;
+                    }
+                }
+            }
+
+            int orphanCount = _correlationResult.Items.Count(i => string.IsNullOrEmpty(i.ImpressionText));
+            Logger.Trace($"Unmatched highlights computed: {count} entries from {orphanCount} orphan findings");
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Unmatched highlight computation error: {ex.Message}");
+        }
+    }
+
     #endregion
 
     #region Transparent Mode - Mouse Handling
@@ -1005,9 +1081,16 @@ public class ReportPopupForm : Form
             _modeLabel.BackColor = Color.FromArgb(80, 60, 0); // Dark yellow background
             _modeLabel.Visible = true;
         }
-        else if (_changesEnabled && _correlationEnabled)
+        else if ((_changesEnabled && _correlationEnabled) ||
+                 (_correlationEnabled && _config.OrphanFindingsEnabled))
         {
-            _modeLabel.Text = _displayMode == ReportDisplayMode.Changes ? "Changes" : "Rainbow";
+            _modeLabel.Text = _displayMode switch
+            {
+                ReportDisplayMode.Changes => "Changes",
+                ReportDisplayMode.Rainbow => "Rainbow",
+                ReportDisplayMode.OrphanFindings => "Unmatched",
+                _ => "Changes"
+            };
             _modeLabel.Font = _modeLabelFont; // Restore normal font
             _modeLabel.ForeColor = Color.FromArgb(140, 140, 140); // Gray (default)
             _modeLabel.BackColor = Color.FromArgb(30, 30, 30); // Dark background (default)
@@ -1070,6 +1153,10 @@ public class ReportPopupForm : Form
         {
             ApplyCorrelationHighlighting();
         }
+        else if (_displayMode == ReportDisplayMode.OrphanFindings)
+        {
+            ApplyOrphanHighlighting();
+        }
     }
 
     private void ApplyCorrelationHighlighting()
@@ -1104,15 +1191,21 @@ public class ReportPopupForm : Form
             var bg = BackColor;
             int highlightCount = 0;
 
+            // Find section boundaries so impression/finding highlights don't overlap
+            int impressionSectionStart = rtbText.IndexOf("IMPRESSION:", StringComparison.OrdinalIgnoreCase);
+
             foreach (var item in _correlationResult.Items)
             {
                 var paletteColor = CorrelationService.Palette[item.ColorIndex];
                 var blended = CorrelationService.BlendWithBackground(paletteColor, bg);
 
                 // Only highlight impression for matched groups (not orphans)
+                // Search only in IMPRESSION section to avoid matching identical text in FINDINGS
                 if (!string.IsNullOrEmpty(item.ImpressionText))
                 {
-                    int impressionIdx = rtbText.IndexOf(item.ImpressionText, StringComparison.Ordinal);
+                    int impressionIdx = impressionSectionStart >= 0
+                        ? rtbText.IndexOf(item.ImpressionText, impressionSectionStart, StringComparison.Ordinal)
+                        : rtbText.IndexOf(item.ImpressionText, StringComparison.Ordinal);
                     if (impressionIdx >= 0)
                     {
                         _richTextBox.Select(impressionIdx, item.ImpressionText.Length);
@@ -1143,6 +1236,57 @@ public class ReportPopupForm : Form
         catch (Exception ex)
         {
             Logger.Trace($"Rainbow mode error: {ex.Message}");
+        }
+    }
+
+    private void ApplyOrphanHighlighting()
+    {
+        if (_richTextBox == null) return;
+
+        try
+        {
+            var dictated = GetDictatedSentences();
+            _correlationResult ??= CorrelationService.CorrelateReversed(_richTextBox.Text, dictated, _accessionSeed);
+
+            if (_correlationResult.Items.Count == 0)
+            {
+                Logger.Trace("Unmatched mode: No correlations found");
+                return;
+            }
+
+            var rtbText = _richTextBox.Text;
+            var bg = BackColor;
+            int highlightCount = 0;
+
+            foreach (var item in _correlationResult.Items)
+            {
+                // Only show orphan findings (items with no impression match)
+                if (!string.IsNullOrEmpty(item.ImpressionText)) continue;
+
+                var paletteColor = CorrelationService.Palette[item.ColorIndex];
+                var blended = CorrelationService.BlendWithBackground(paletteColor, bg);
+
+                foreach (var finding in item.MatchedFindings)
+                {
+                    if (IsSectionHeading(finding)) continue;
+
+                    int findingIdx = rtbText.IndexOf(finding, StringComparison.Ordinal);
+                    if (findingIdx >= 0)
+                    {
+                        _richTextBox.Select(findingIdx, finding.Length);
+                        _richTextBox.SelectionBackColor = blended;
+                        highlightCount++;
+                    }
+                }
+            }
+
+            _richTextBox.Select(0, 0);
+            int orphanCount = _correlationResult.Items.Count(i => string.IsNullOrEmpty(i.ImpressionText));
+            Logger.Trace($"Unmatched mode: {orphanCount} orphan findings, {highlightCount} regions highlighted");
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Unmatched mode error: {ex.Message}");
         }
     }
 

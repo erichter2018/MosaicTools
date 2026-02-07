@@ -160,14 +160,14 @@ public class TextTemplatesSection : SettingsSection
     private void OnEditMacrosClick(object? sender, EventArgs e)
     {
         using var editor = new MacroEditorForm(_config);
-        editor.ShowDialog();
+        editor.ShowDialog(FindForm());
         _macrosCountLabel.Text = GetMacrosCountText();
     }
 
     private void OnEditPickListsClick(object? sender, EventArgs e)
     {
         using var editor = new PickListEditorForm(_config);
-        editor.ShowDialog();
+        editor.ShowDialog(FindForm());
         _pickListsCountLabel.Text = GetPickListsCountText();
     }
 

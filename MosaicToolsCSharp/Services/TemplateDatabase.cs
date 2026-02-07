@@ -119,10 +119,12 @@ public class TemplateDatabase
     }
 
     /// <summary>
-    /// Record a template observation from a non-drafted study.
+    /// Record a template observation. Non-drafted studies fully reinforce confidence;
+    /// drafted studies keep templates alive (update last_seen) but don't build confidence,
+    /// since drafted reports may have been modified by a prior reader.
     /// Extracts FINDINGS+IMPRESSION sections and stores only that portion.
     /// </summary>
-    public void RecordTemplate(string studyDescription, string reportText)
+    public void RecordTemplate(string studyDescription, string reportText, bool isDrafted = false)
     {
         if (string.IsNullOrWhiteSpace(studyDescription) || string.IsNullOrWhiteSpace(reportText))
             return;
@@ -158,9 +160,16 @@ public class TemplateDatabase
         var existing = entries.FirstOrDefault(e => e.Hash == hash);
         if (existing != null)
         {
-            existing.Count++;
             existing.LastSeen = today;
-            Logger.Trace($"TemplateDB: Template reinforced for '{studyDescription}' (count={existing.Count})");
+            if (!isDrafted)
+            {
+                existing.Count++;
+                Logger.Trace($"TemplateDB: Template reinforced for '{studyDescription}' (count={existing.Count})");
+            }
+            else
+            {
+                Logger.Trace($"TemplateDB: Template seen in drafted study for '{studyDescription}' (count stays {existing.Count}, last_seen updated)");
+            }
         }
         else
         {
@@ -168,42 +177,48 @@ public class TemplateDatabase
             // High-confidence templates (count >= 30) decay by 5% (minimal but allows eventual updates)
             // Medium-confidence templates (count 10-29) decay by 25%
             // Low-confidence templates (count < 10) decay by 50%
-            foreach (var entry in entries)
+            // Drafted observations don't trigger decay (they're less trustworthy signals)
+            if (!isDrafted)
             {
-                var oldCount = entry.Count;
+                foreach (var entry in entries)
+                {
+                    var oldCount = entry.Count;
 
-                if (entry.Count >= 30)
-                {
-                    // Very high confidence - minimal 5% decay (allows gradual template updates)
-                    entry.Count = Math.Max(1, (entry.Count * 19) / 20);
-                    if (oldCount != entry.Count)
-                        Logger.Trace($"TemplateDB: High-confidence template minimally decayed for '{studyDescription}' ({oldCount} → {entry.Count})");
-                }
-                else if (entry.Count >= 10)
-                {
-                    // Medium confidence - conservative 25% decay
-                    entry.Count = Math.Max(1, (entry.Count * 3) / 4);
-                    if (oldCount != entry.Count)
-                        Logger.Trace($"TemplateDB: Medium-confidence template decayed for '{studyDescription}' ({oldCount} → {entry.Count})");
-                }
-                else
-                {
-                    // Low confidence - standard 50% decay
-                    entry.Count = Math.Max(1, entry.Count / 2);
-                    if (oldCount != entry.Count)
-                        Logger.Trace($"TemplateDB: Low-confidence template decayed for '{studyDescription}' ({oldCount} → {entry.Count})");
+                    if (entry.Count >= 30)
+                    {
+                        // Very high confidence - minimal 5% decay (allows gradual template updates)
+                        entry.Count = Math.Max(1, (entry.Count * 19) / 20);
+                        if (oldCount != entry.Count)
+                            Logger.Trace($"TemplateDB: High-confidence template minimally decayed for '{studyDescription}' ({oldCount} → {entry.Count})");
+                    }
+                    else if (entry.Count >= 10)
+                    {
+                        // Medium confidence - conservative 25% decay
+                        entry.Count = Math.Max(1, (entry.Count * 3) / 4);
+                        if (oldCount != entry.Count)
+                            Logger.Trace($"TemplateDB: Medium-confidence template decayed for '{studyDescription}' ({oldCount} → {entry.Count})");
+                    }
+                    else
+                    {
+                        // Low confidence - standard 50% decay
+                        entry.Count = Math.Max(1, entry.Count / 2);
+                        if (oldCount != entry.Count)
+                            Logger.Trace($"TemplateDB: Low-confidence template decayed for '{studyDescription}' ({oldCount} → {entry.Count})");
+                    }
                 }
             }
 
+            // Drafted studies start at count=0 (need non-drafted observations to build confidence)
+            var initialCount = isDrafted ? 0 : 1;
             entries.Add(new TemplateEntry
             {
                 Hash = hash,
                 Text = sectionText,
-                Count = 1,
+                Count = initialCount,
                 FirstSeen = today,
                 LastSeen = today
             });
-            Logger.Trace($"TemplateDB: New template variant recorded for '{studyDescription}' ({sectionText.Length} chars), decayed {entries.Count - 1} existing");
+            Logger.Trace($"TemplateDB: New template variant recorded for '{studyDescription}' ({sectionText.Length} chars, count={initialCount}, drafted={isDrafted}), decayed {entries.Count - 1} existing");
         }
 
         // Enforce max templates per study type (keep top by count)
