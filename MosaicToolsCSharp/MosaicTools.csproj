@@ -11,9 +11,9 @@
     <RootNamespace>MosaicTools</RootNamespace>
 
     <!-- Version -->
-    <Version>3.1.3</Version>
-    <AssemblyVersion>3.1.3.0</AssemblyVersion>
-    <FileVersion>3.1.3.0</FileVersion>
+    <Version>3.1.4</Version>
+    <AssemblyVersion>3.1.4.0</AssemblyVersion>
+    <FileVersion>3.1.4.0</FileVersion>
 
     <!-- Application Icon -->
     <ApplicationIcon>MosaicTools.ico</ApplicationIcon>
@@ -43,6 +43,9 @@
 
     <!-- JSON Configuration -->
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
+
+    <!-- WebView2 for embedded HTML UI -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2739.15" />
   </ItemGroup>
 
   <ItemGroup>
@@ -56,6 +59,7 @@
   <ItemGroup>
     <!-- Embedded Resources -->
     <EmbeddedResource Include="WhatsNew.txt" />
+    <EmbeddedResource Include="MicCalibrator.html" />
   </ItemGroup>
 
 </Project>

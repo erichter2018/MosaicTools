@@ -41,6 +41,23 @@ public class ProfileSection : SettingsSection
 
         _showTooltipsCheck = AddCheckBox("Show tooltips throughout settings", LeftMargin, _nextY,
             "Display helpful tooltips when hovering over settings.");
+        _nextY += RowHeight + 5;
+
+        // Mic Gain Calibrator button
+        AddButton("Mic Gain Calibrator", LeftMargin, _nextY, 160, 28, (s, e) =>
+        {
+            using var form = new AudioSetupForm();
+            form.ShowDialog(FindForm());
+        }, "Measure microphone levels and calculate the optimal Windows input gain for voice recognition.");
+        _searchTerms.Add("mic gain calibrator");
+        _searchTerms.Add("audio setup");
+        _nextY += RowHeight + 5;
+
+        // Acknowledgments
+        AddLabel("Thank you to Brian Mowell for providing this feature.", LeftMargin, _nextY, isSubItem: true);
+        _nextY += RowHeight + 5;
+
+        AddLabel("Thank you to Dr. Tony Maung for providing code for the GetPrior function.", LeftMargin, _nextY, isSubItem: true);
         _nextY += RowHeight;
 
         UpdateHeight();

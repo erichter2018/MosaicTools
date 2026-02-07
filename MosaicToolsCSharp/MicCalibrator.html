@@ -1,0 +1,933 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voice Input Diagnostic — Web Audio Gain Calibrator</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:        #08090c;
+  --surface:   #0f1117;
+  --surface2:  #161921;
+  --surface3:  #1c2029;
+  --border:    #252a36;
+  --border-hi: #353b4a;
+  --text:      #d4d8e3;
+  --text-dim:  #6c7386;
+  --text-xdim: #454b5c;
+  --mono:      'IBM Plex Mono', monospace;
+  --sans:      'IBM Plex Sans', sans-serif;
+  --green:     #34d399;
+  --green-bg:  rgba(52,211,153,0.08);
+  --yellow:    #fbbf24;
+  --yellow-bg: rgba(251,191,36,0.08);
+  --red:       #f87171;
+  --red-bg:    rgba(248,113,113,0.08);
+  --blue:      #60a5fa;
+  --blue-bg:   rgba(96,165,250,0.06);
+  --blue-glow: rgba(96,165,250,0.15);
+  --orange:    #fb923c;
+}
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:var(--sans); font-size:14px; line-height:1.5; min-height:100vh; padding:1.5rem; }
+.app { max-width:800px; margin:0 auto; }
+
+/* HEADER */
+.header { margin-bottom:2rem; }
+.header h1 { font-family:var(--mono); font-size:0.65rem; font-weight:600; letter-spacing:0.2em; text-transform:uppercase; color:var(--blue); margin-bottom:0.25rem; }
+.header .title { font-size:1.5rem; font-weight:600; letter-spacing:-0.02em; }
+.header .desc { font-size:0.85rem; color:var(--text-dim); margin-top:0.25rem; max-width:560px; }
+
+/* PHASE STEPS */
+.phase-steps { display:flex; gap:0; margin-bottom:1rem; border:1px solid var(--border); border-radius:6px; overflow:hidden; position:sticky; top:0; z-index:10; }
+.phase-step {
+  flex:1; padding:0.5rem 0.4rem; font-family:var(--mono); font-size:0.55rem; letter-spacing:0.05em;
+  text-align:center; background:var(--bg); color:var(--text-xdim); border-right:1px solid var(--border);
+  transition:all 0.3s; display:flex; align-items:center; justify-content:center; gap:0.35rem;
+}
+.phase-step:last-child { border-right:none; }
+.phase-step.active { background:var(--blue-bg); color:var(--blue); }
+.phase-step.done { background:var(--green-bg); color:var(--green); }
+.phase-step .step-num {
+  width:16px; height:16px; border-radius:50%; border:1px solid currentColor;
+  display:inline-flex; align-items:center; justify-content:center; font-size:0.5rem; font-weight:600; flex-shrink:0;
+}
+.phase-step.done .step-num { background:var(--green); color:var(--bg); border-color:var(--green); }
+
+/* CARDS */
+.card {
+  background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:1.25rem;
+  margin-bottom:1rem; transition: opacity 0.4s, max-height 0.5s ease, padding 0.4s, margin 0.4s, border-color 0.3s;
+  overflow:hidden;
+}
+.card.focus-ring { border-color:rgba(96,165,250,0.4); box-shadow:0 0 0 1px rgba(96,165,250,0.1); }
+
+.card-label {
+  font-family:var(--mono); font-size:0.6rem; font-weight:500; letter-spacing:0.14em; text-transform:uppercase;
+  color:var(--text-dim); margin-bottom:0.75rem; display:flex; align-items:center; gap:0.5rem;
+}
+
+.indicator { width:6px; height:6px; border-radius:50%; background:var(--text-xdim); flex-shrink:0; transition:all 0.3s; }
+.indicator.on { background:var(--green); box-shadow:0 0 6px rgba(52,211,153,0.5); }
+.indicator.warn { background:var(--yellow); box-shadow:0 0 6px rgba(251,191,36,0.4); }
+.indicator.err { background:var(--red); box-shadow:0 0 6px rgba(248,113,113,0.4); }
+
+/* DEVICE SELECT */
+.device-row { display:flex; align-items:center; gap:0.75rem; margin-bottom:0.75rem; }
+.device-select {
+  flex:1; font-family:var(--mono); font-size:0.75rem; background:var(--bg); color:var(--text);
+  border:1px solid var(--border); border-radius:6px; padding:0.5rem 0.75rem; outline:none; cursor:pointer;
+  appearance:none; -webkit-appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%236c7386'%3E%3Cpath d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat:no-repeat; background-position:right 0.75rem center; padding-right:2rem;
+}
+.device-select:focus { border-color:var(--blue); }
+.device-select option { background:var(--surface); }
+
+.mic-name-tag {
+  font-family:var(--mono); font-size:0.65rem; color:var(--text-dim); background:var(--bg);
+  border:1px solid var(--border); border-radius:5px; padding:0.35rem 0.6rem;
+  display:flex; align-items:center; gap:0.4rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.mic-name-tag.active { border-color:var(--green); color:var(--green); }
+.mic-name-tag .tag-dot { width:5px; height:5px; border-radius:50%; background:var(--text-xdim); flex-shrink:0; }
+.mic-name-tag.active .tag-dot { background:var(--green); box-shadow:0 0 4px rgba(52,211,153,0.5); }
+
+/* BUTTONS */
+.btn-row { display:flex; gap:0.6rem; flex-wrap:wrap; }
+.btn {
+  font-family:var(--mono); font-size:0.7rem; font-weight:500; letter-spacing:0.04em;
+  padding:0.55rem 1rem; border-radius:6px; border:1px solid var(--border); background:var(--surface2);
+  color:var(--text); cursor:pointer; transition:all 0.15s; display:inline-flex; align-items:center; gap:0.4rem;
+}
+.btn:hover { border-color:var(--blue); background:var(--blue-bg); }
+.btn:disabled { opacity:0.3; cursor:not-allowed; pointer-events:none; }
+.btn.primary { background:rgba(96,165,250,0.12); border-color:rgba(96,165,250,0.3); color:var(--blue); }
+.btn.primary:hover { background:rgba(96,165,250,0.2); }
+.btn.danger { border-color:rgba(248,113,113,0.3); color:var(--red); background:var(--red-bg); }
+.btn.lg { padding:0.75rem 1.5rem; font-size:0.8rem; }
+
+/* STEP 1: GAIN SETUP */
+.gain-setup-hero { text-align:center; padding:1.5rem 1rem; }
+.gain-setup-hero .big-num { font-family:var(--mono); font-size:4rem; font-weight:700; color:var(--yellow); line-height:1; }
+.gain-setup-hero .big-label { font-family:var(--mono); font-size:0.7rem; color:var(--text-dim); letter-spacing:0.1em; text-transform:uppercase; margin-top:0.25rem; }
+.gain-path {
+  font-family:var(--mono); font-size:0.65rem; color:var(--text-xdim); text-align:center; margin:1rem auto;
+  padding:0.5rem 1rem; background:var(--bg); border-radius:6px; border:1px solid var(--border); display:inline-block;
+}
+.gain-checklist { max-width:400px; margin:1rem auto; text-align:left; }
+.gain-checklist li {
+  font-size:0.82rem; color:var(--text-dim); padding:0.35rem 0; list-style:none;
+  display:flex; align-items:center; gap:0.5rem;
+}
+.gain-checklist li::before { content:'→'; color:var(--yellow); font-family:var(--mono); font-weight:600; }
+
+/* METER */
+.meter-container { margin:0.75rem 0; }
+.meter-track { position:relative; height:24px; background:var(--bg); border:1px solid var(--border); border-radius:5px; overflow:hidden; }
+.meter-fill { position:absolute; top:0; left:0; bottom:0; width:0%; border-radius:4px; background:linear-gradient(90deg, #22543d 0%, var(--green) 55%, var(--yellow) 78%, var(--red) 95%); transition:width 0.05s linear; }
+.meter-target { position:absolute; top:0; bottom:0; left:63.3%; width:16.7%; background:rgba(52,211,153,0.06); border-left:1px dashed rgba(52,211,153,0.25); border-right:1px dashed rgba(251,191,36,0.25); pointer-events:none; }
+.meter-peak-hold { position:absolute; top:0; bottom:0; width:2px; background:var(--red); transition:left 0.08s; display:none; }
+.meter-noise-floor { position:absolute; top:0; bottom:0; width:1px; background:var(--orange); opacity:0.6; display:none; }
+.meter-scale { display:flex; justify-content:space-between; font-family:var(--mono); font-size:0.5rem; color:var(--text-xdim); padding:3px 2px 0; }
+.meter-readout { font-family:var(--mono); font-weight:600; font-size:1.6rem; color:var(--green); transition:color 0.2s; text-align:right; min-width:5.5ch; }
+.meter-readout.hot { color:var(--yellow); }
+.meter-readout.clip { color:var(--red); }
+.meter-row { display:flex; align-items:center; gap:1rem; }
+.meter-row .meter-container { flex:1; }
+
+/* STATS */
+.stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px,1fr)); gap:0.6rem; }
+.stat-box { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:0.5rem 0.65rem; }
+.stat-box .label { font-family:var(--mono); font-size:0.5rem; font-weight:500; letter-spacing:0.1em; text-transform:uppercase; color:var(--text-dim); margin-bottom:0.15rem; }
+.stat-box .value { font-family:var(--mono); font-weight:600; font-size:0.9rem; }
+
+/* SPECTRUM */
+.spectrum-container { margin:0.75rem 0; position:relative; }
+.spectrum-canvas { width:100%; height:80px; display:block; border-radius:5px; border:1px solid var(--border); background:var(--bg); }
+.spectrum-labels { display:flex; justify-content:space-between; font-family:var(--mono); font-size:0.5rem; color:var(--text-xdim); padding:2px 2px 0; }
+.spectrum-badge { position:absolute; top:6px; right:8px; font-family:var(--mono); font-size:0.5rem; letter-spacing:0.06em; padding:2px 6px; border-radius:3px; background:rgba(52,211,153,0.15); color:var(--green); border:1px solid rgba(52,211,153,0.2); }
+.spectrum-badge.warn { background:rgba(251,191,36,0.12); color:var(--yellow); border-color:rgba(251,191,36,0.2); }
+.spectrum-badge.bad { background:rgba(248,113,113,0.12); color:var(--red); border-color:rgba(248,113,113,0.2); }
+
+/* RECOMMENDATION */
+.rec-card { border-color:rgba(96,165,250,0.25); background:linear-gradient(135deg, var(--surface) 0%, rgba(96,165,250,0.03) 100%); }
+.rec-hero { text-align:center; padding:0.75rem 0 1rem; }
+.rec-hero .rec-num { font-family:var(--mono); font-size:3.2rem; font-weight:700; color:var(--blue); line-height:1; transition:color 0.3s; }
+.rec-hero .rec-num.good { color:var(--green); }
+.rec-hero .rec-num.warn { color:var(--yellow); }
+.rec-hero .rec-num.bad { color:var(--red); }
+.rec-hero .rec-unit { font-family:var(--mono); font-size:0.7rem; color:var(--text-dim); letter-spacing:0.1em; text-transform:uppercase; margin-top:0.15rem; }
+.rec-hero .rec-direction { font-family:var(--mono); font-size:0.65rem; margin-top:0.35rem; display:flex; align-items:center; justify-content:center; gap:0.4rem; }
+.rec-detail { font-size:0.8rem; color:var(--text-dim); text-align:center; line-height:1.6; padding:0 1rem; }
+.rec-path { font-family:var(--mono); font-size:0.6rem; color:var(--text-xdim); text-align:center; margin-top:0.5rem; padding:0.4rem 0.75rem; background:var(--bg); border-radius:5px; border:1px solid var(--border); display:inline-block; }
+
+/* DIAGNOSTICS */
+.diag-list { display:flex; flex-direction:column; gap:0.4rem; }
+.diag-item { display:flex; align-items:center; gap:0.6rem; padding:0.45rem 0.6rem; background:var(--bg); border:1px solid var(--border); border-radius:6px; font-size:0.78rem; }
+.diag-icon { width:18px; height:18px; border-radius:4px; display:flex; align-items:center; justify-content:center; font-size:0.65rem; flex-shrink:0; }
+.diag-icon.pass { background:var(--green-bg); color:var(--green); }
+.diag-icon.fail { background:var(--red-bg); color:var(--red); }
+.diag-icon.warn { background:var(--yellow-bg); color:var(--yellow); }
+.diag-icon.none { background:var(--surface2); color:var(--text-xdim); }
+.diag-text { flex:1; color:var(--text-dim); }
+.diag-val { font-family:var(--mono); font-weight:500; font-size:0.75rem; }
+
+/* QUALITY RING */
+.quality-score-wrap { text-align:center; margin:0.5rem 0; }
+.quality-ring { width:100px; height:100px; position:relative; display:inline-block; }
+.quality-ring svg { transform:rotate(-90deg); }
+.quality-ring .ring-bg { fill:none; stroke:var(--border); stroke-width:6; }
+.quality-ring .ring-fg { fill:none; stroke-width:6; stroke-linecap:round; transition:stroke-dashoffset 0.6s ease, stroke 0.3s; }
+.quality-ring .score-text { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-family:var(--mono); font-weight:700; font-size:1.4rem; }
+
+/* PASSAGE */
+.passage-text { font-size:0.88rem; line-height:1.75; color:var(--text); padding:1rem; background:var(--bg); border:1px solid var(--border); border-radius:6px; }
+
+/* PROGRESS */
+.progress-bar-bg { height:3px; background:var(--bg); border-radius:2px; overflow:hidden; border:1px solid var(--border); margin:0.5rem 0; }
+.progress-bar { height:100%; width:0%; background:var(--blue); border-radius:2px; transition:width 0.2s linear; }
+
+/* STATUS */
+.status-bar { font-family:var(--mono); font-size:0.6rem; color:var(--text-dim); text-align:center; padding:0.5rem 0 0; min-height:2em; }
+
+.hidden { display:none !important; }
+
+@media (max-width:520px) {
+  body { padding:1rem; }
+  .stats { grid-template-columns:1fr 1fr; }
+  .rec-hero .rec-num { font-size:2.5rem; }
+  .phase-step { font-size:0.45rem; padding:0.4rem 0.2rem; }
+  .gain-setup-hero .big-num { font-size:3rem; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="header">
+    <h1>Web Audio Diagnostic</h1>
+    <div class="title">Voice Input Gain Calibrator</div>
+    <div class="desc">Measures the microphone signal as seen by the Web Audio API in Edge and calculates the optimal Windows gain to maximize voice recognition accuracy.</div>
+  </div>
+
+  <!-- PHASE INDICATOR -->
+  <div class="phase-steps" id="phaseSteps">
+    <div class="phase-step active" id="phase1"><span class="step-num">1</span> Gain</div>
+    <div class="phase-step" id="phase2"><span class="step-num">2</span> Mic</div>
+    <div class="phase-step" id="phase3"><span class="step-num">3</span> Ambient</div>
+    <div class="phase-step" id="phase4"><span class="step-num">4</span> Speech</div>
+    <div class="phase-step" id="phase5"><span class="step-num">5</span> Results</div>
+  </div>
+
+  <!-- ═══ STEP 1: WINDOWS GAIN ═══ -->
+  <div class="card focus-ring" id="step1Card">
+    <div class="card-label"><span class="indicator on"></span> Step 1 — Set Windows Microphone Gain</div>
+    <div class="card-body">
+      <div class="gain-setup-hero">
+        <div class="big-num">100%</div>
+        <div class="big-label">Windows Input Volume</div>
+      </div>
+      <div style="text-align:center;">
+        <span class="gain-path">Settings → System → Sound → Input → Volume → 100</span>
+      </div>
+      <ul class="gain-checklist">
+        <li>Open Windows Sound Settings</li>
+        <li>Select your input device</li>
+        <li>Drag the volume slider to <strong>100</strong></li>
+        <li>Disable any "Audio Enhancements" or "Voice Focus"</li>
+      </ul>
+      <div style="text-align:center; margin-top:1rem;">
+        <button class="btn primary lg" onclick="confirmGain()">✓ Gain is set to 100% — Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ STEP 2: MIC SELECTION ═══ -->
+  <div class="card hidden" id="step2Card">
+    <div class="card-label"><span class="indicator" id="micIndicator"></span> Step 2 — Select Microphone</div>
+    <div class="card-body">
+      <div class="device-row">
+        <select class="device-select" id="micSelect" onchange="onMicChange()">
+          <option value="">— Loading devices —</option>
+        </select>
+      </div>
+      <div class="mic-name-tag" id="micTag">
+        <span class="tag-dot"></span>
+        <span id="micTagName">No microphone active</span>
+      </div>
+      <div style="margin-top:0.75rem;">
+        <div class="btn-row">
+          <button class="btn primary lg" id="btnStartAmbient" onclick="beginAmbient()">▶ Start Ambient Capture</button>
+          <button class="btn" onclick="enumerateDevices()">↻ Refresh Devices</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ STEP 3: AMBIENT CAPTURE ═══ -->
+  <div class="card hidden" id="step3Card">
+    <div class="card-label"><span class="indicator" id="ambientIndicator"></span> Step 3 — Capturing Ambient Noise</div>
+    <div class="card-body">
+      <div class="meter-row">
+        <div class="meter-container">
+          <div class="meter-track">
+            <div class="meter-target"></div>
+            <div class="meter-fill" id="meterFill"></div>
+            <div class="meter-peak-hold" id="meterPeakHold"></div>
+          </div>
+          <div class="meter-scale">
+            <span>-60</span><span>-48</span><span>-36</span><span>-24</span><span>-12</span><span>-6</span><span>0 dBFS</span>
+          </div>
+        </div>
+        <div class="meter-readout" id="meterReadout">—</div>
+      </div>
+      <div class="progress-bar-bg" id="progressWrap">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+      <div class="status-bar" id="ambientStatus">Stay quiet — measuring background noise...</div>
+      <div class="stats" style="margin-top:0.5rem;">
+        <div class="stat-box"><div class="label">RMS</div><div class="value" id="statRms">—</div></div>
+        <div class="stat-box"><div class="label">Peak</div><div class="value" id="statPeak">—</div></div>
+        <div class="stat-box"><div class="label">Noise Floor</div><div class="value" id="statNoiseFloor">—</div></div>
+      </div>
+      <div style="text-align:center; margin-top:0.75rem;">
+        <button class="btn danger" id="btnStopAmbient" onclick="stopEverything()">⏹ Stop</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ STEP 4: SPEECH CAPTURE ═══ -->
+  <div class="card hidden" id="step4Card">
+    <div class="card-label"><span class="indicator" id="speechIndicator"></span> Step 4 — Voice Capture</div>
+    <div class="card-body">
+      <!-- Pre-capture prompt -->
+      <div id="speechPrompt">
+        <div class="stats" style="max-width:320px; margin:0 auto 1rem;">
+          <div class="stat-box"><div class="label">Noise Floor</div><div class="value" id="promptNoiseFloor">—</div></div>
+          <div class="stat-box"><div class="label">Ambient</div><div class="value" style="color:var(--green)">✓ Captured</div></div>
+        </div>
+        <div style="font-size:0.85rem; color:var(--text-dim); text-align:center; margin-bottom:0.75rem; line-height:1.6;">
+          Microphone is off. Review the passage below, then click to start recording.<br>
+          You'll have <strong>15 seconds</strong> to read it aloud.
+        </div>
+        <div class="passage-text" style="margin-bottom:1rem;">
+          The old lighthouse keeper climbed the winding stairs each evening, lantern in hand, to light the great
+          beacon before dark. Ships far out at sea depended on that steady glow to find safe passage through the
+          rocky shallows. On clear nights he could count a dozen sails drifting slowly toward the harbor. It was
+          quiet work, but he never minded the solitude. The sound of waves against the rocks below was all the
+          company he needed.
+        </div>
+        <div style="text-align:center;">
+          <button class="btn primary lg" onclick="beginSpeechCapture()">🎙 Start Voice Capture</button>
+        </div>
+      </div>
+
+      <!-- Active capture (hidden until recording) -->
+      <div id="speechActive" class="hidden">
+        <div class="meter-row">
+          <div class="meter-container">
+            <div class="meter-track">
+              <div class="meter-target"></div>
+              <div class="meter-noise-floor" id="meterNoiseFloor"></div>
+              <div class="meter-fill" id="meterFill2"></div>
+              <div class="meter-peak-hold" id="meterPeakHold2"></div>
+            </div>
+            <div class="meter-scale">
+              <span>-60</span><span>-48</span><span>-36</span><span>-24</span><span>-12</span><span>-6</span><span>0 dBFS</span>
+            </div>
+          </div>
+          <div class="meter-readout" id="meterReadout2">—</div>
+        </div>
+
+        <div class="spectrum-container">
+          <canvas class="spectrum-canvas" id="spectrumCanvas"></canvas>
+          <div class="spectrum-badge" id="spectrumBadge">SPEECH BAND</div>
+          <div class="spectrum-labels">
+            <span>100 Hz</span><span>300</span><span>1k</span><span>3.4k</span><span>8k</span><span>16k Hz</span>
+          </div>
+        </div>
+
+        <div class="progress-bar-bg" id="speechProgressWrap">
+          <div class="progress-bar" id="speechProgressBar"></div>
+        </div>
+        <div class="status-bar" id="speechStatus">Read the passage aloud at your normal speaking voice...</div>
+
+        <div class="stats" style="margin-top:0.5rem;">
+          <div class="stat-box"><div class="label">RMS</div><div class="value" id="statRms2">—</div></div>
+          <div class="stat-box"><div class="label">Peak</div><div class="value" id="statPeak2">—</div></div>
+          <div class="stat-box"><div class="label">Headroom</div><div class="value" id="statHeadroom">—</div></div>
+          <div class="stat-box"><div class="label">Clip Count</div><div class="value" id="statClip">0</div></div>
+        </div>
+
+        <div class="passage-text" style="margin-top:0.75rem;">
+          The old lighthouse keeper climbed the winding stairs each evening, lantern in hand, to light the great
+          beacon before dark. Ships far out at sea depended on that steady glow to find safe passage through the
+          rocky shallows. On clear nights he could count a dozen sails drifting slowly toward the harbor. It was
+          quiet work, but he never minded the solitude. The sound of waves against the rocks below was all the
+          company he needed.
+        </div>
+
+        <div style="text-align:center; margin-top:0.75rem;">
+          <button class="btn danger" onclick="stopEverything()">⏹ Stop</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ STEP 5: RESULTS ═══ -->
+  <div class="card rec-card hidden" id="step5RecCard">
+    <div class="card-label"><span class="indicator on"></span> Recommended Windows Mic Gain</div>
+    <div class="card-body">
+      <div class="rec-hero">
+        <div class="rec-num" id="recNum">—</div>
+        <div class="rec-unit">Windows Input Volume</div>
+        <div class="rec-direction" id="recDirection"></div>
+      </div>
+      <div class="rec-detail" id="recDetail"></div>
+      <div style="text-align:center; margin-top:0.5rem;">
+        <span class="rec-path">Settings → System → Sound → Input → Volume</span>
+      </div>
+      <div class="stats" style="margin-top:1rem;">
+        <div class="stat-box"><div class="label">Speech Avg</div><div class="value" id="recSpeechAvg">—</div></div>
+        <div class="stat-box"><div class="label">Speech Peak</div><div class="value" id="recSpeechPeak">—</div></div>
+        <div class="stat-box"><div class="label">Noise Floor</div><div class="value" id="recNoiseFloor">—</div></div>
+        <div class="stat-box"><div class="label">SNR</div><div class="value" id="recSnr">—</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card hidden" id="step5DiagCard">
+    <div class="card-label"><span class="indicator" id="diagIndicator"></span> Voice Recognition Diagnostics</div>
+    <div class="card-body">
+      <div style="display:flex; gap:1.25rem; align-items:flex-start; flex-wrap:wrap;">
+        <div class="quality-score-wrap">
+          <div class="quality-ring">
+            <svg width="100" height="100" viewBox="0 0 100 100">
+              <circle class="ring-bg" cx="50" cy="50" r="42"/>
+              <circle class="ring-fg" id="ringFg" cx="50" cy="50" r="42" stroke-dasharray="263.9" stroke-dashoffset="263.9"/>
+            </svg>
+            <div class="score-text" id="scoreText">—</div>
+          </div>
+        </div>
+        <div class="diag-list" style="flex:1; min-width:240px;">
+          <div class="diag-item"><div class="diag-icon none" id="dClip">—</div><div class="diag-text">No Clipping</div><div class="diag-val" id="dClipVal">—</div></div>
+          <div class="diag-item"><div class="diag-icon none" id="dHeadroom">—</div><div class="diag-text">Peak Headroom ≥ 6 dB</div><div class="diag-val" id="dHeadroomVal">—</div></div>
+          <div class="diag-item"><div class="diag-icon none" id="dLevel">—</div><div class="diag-text">Speech Level in Range</div><div class="diag-val" id="dLevelVal">—</div></div>
+          <div class="diag-item"><div class="diag-icon none" id="dSnr">—</div><div class="diag-text">SNR ≥ 15 dB</div><div class="diag-val" id="dSnrVal">—</div></div>
+          <div class="diag-item"><div class="diag-icon none" id="dSpectral">—</div><div class="diag-text">Speech Band Clarity</div><div class="diag-val" id="dSpectralVal">—</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card hidden" id="step5ActionsCard">
+    <div class="btn-row" style="justify-content:space-between;">
+      <button class="btn" onclick="restart()">↻ Re-test from Start</button>
+      <button class="btn primary" onclick="exportResults()">⬇ Export Report</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+const STATE = {
+  phase: 'gain',
+  micActive: false,
+  audioCtx: null,
+  analyser: null,
+  freqAnalyser: null,
+  stream: null,
+  animId: null,
+  selectedDeviceId: null,
+  micLabel: '',
+  sampleRate: 48000,
+  ambient: { rms: [], peaks: [], startTime: 0, duration: 4000 },
+  speech:  { rms: [], peaks: [], spectralRatios: [], startTime: 0, duration: 15000 },
+  results: { noiseFloorDb:-60, speechAvgDb:-40, speechPeakDb:-20, snrDb:20, clipCount:0, headroomDb:12, spectralClarity:0.8, recommendedGain:50, qualityScore:0 },
+  peakHoldDb: -Infinity,
+  peakDecay: 0,
+  clipCount: 0,
+};
+
+const $ = id => document.getElementById(id);
+let spectrumCtx = null;
+
+function scrollTo(el) {
+  setTimeout(() => el.scrollIntoView({ behavior:'smooth', block:'center' }), 150);
+}
+
+function collapseCard(id) {
+  const card = $(id);
+  card.classList.add('hidden');
+  card.classList.remove('focus-ring');
+}
+
+function focusCard(id) {
+  const card = $(id);
+  card.classList.remove('hidden', 'collapsed');
+  card.classList.add('focus-ring');
+  scrollTo(card);
+}
+
+function setPhase(n) {
+  for (let i = 1; i <= 5; i++) {
+    const el = $('phase' + i);
+    el.className = 'phase-step' + (i < n ? ' done' : i === n ? ' active' : '');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  STEP 1: CONFIRM GAIN
+// ═══════════════════════════════════════════════════════════════
+
+function confirmGain() {
+  collapseCard('step1Card');
+  setPhase(2);
+  focusCard('step2Card');
+  enumerateDevices();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  STEP 2: MIC SELECT
+// ═══════════════════════════════════════════════════════════════
+
+async function enumerateDevices() {
+  try {
+    const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    tempStream.getTracks().forEach(t => t.stop());
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const mics = devices.filter(d => d.kind === 'audioinput');
+    const sel = $('micSelect');
+    sel.innerHTML = '';
+    mics.forEach((m, i) => {
+      const opt = document.createElement('option');
+      opt.value = m.deviceId;
+      opt.textContent = m.label || `Microphone ${i + 1}`;
+      sel.appendChild(opt);
+    });
+    if (mics.length > 0) STATE.selectedDeviceId = mics[0].deviceId;
+    $('micIndicator').classList.add('on');
+  } catch (e) {
+    $('micSelect').innerHTML = '<option>⚠ Access denied</option>';
+  }
+}
+
+function onMicChange() { STATE.selectedDeviceId = $('micSelect').value; }
+
+// ═══════════════════════════════════════════════════════════════
+//  AUDIO ENGINE
+// ═══════════════════════════════════════════════════════════════
+
+async function startAudio() {
+  const constraints = {
+    audio: {
+      deviceId: STATE.selectedDeviceId ? { exact: STATE.selectedDeviceId } : undefined,
+      noiseSuppression: false,
+      autoGainControl: false,
+    }
+  };
+  STATE.stream = await navigator.mediaDevices.getUserMedia(constraints);
+  STATE.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  STATE.sampleRate = STATE.audioCtx.sampleRate;
+  const source = STATE.audioCtx.createMediaStreamSource(STATE.stream);
+
+  STATE.analyser = STATE.audioCtx.createAnalyser();
+  STATE.analyser.fftSize = 2048;
+  STATE.analyser.smoothingTimeConstant = 0.2;
+
+  STATE.freqAnalyser = STATE.audioCtx.createAnalyser();
+  STATE.freqAnalyser.fftSize = 4096;
+  STATE.freqAnalyser.smoothingTimeConstant = 0.4;
+
+  source.connect(STATE.analyser);
+  source.connect(STATE.freqAnalyser);
+  STATE.micActive = true;
+
+  const track = STATE.stream.getAudioTracks()[0];
+  STATE.micLabel = track.label || 'Unknown Device';
+  $('micTagName').textContent = STATE.micLabel;
+  $('micTag').classList.add('active');
+}
+
+function stopAudio() {
+  STATE.micActive = false;
+  if (STATE.stream) STATE.stream.getTracks().forEach(t => t.stop());
+  if (STATE.audioCtx) STATE.audioCtx.close();
+  if (STATE.animId) cancelAnimationFrame(STATE.animId);
+  $('micTag').classList.remove('active');
+}
+
+function stopEverything() {
+  stopAudio();
+  STATE.phase = 'idle';
+  $('step3Card').classList.add('hidden');
+  $('step4Card').classList.add('hidden');
+  $('step2Card').classList.remove('hidden');
+  focusCard('step2Card');
+  setPhase(2);
+}
+
+function restart() {
+  stopAudio();
+  STATE.phase = 'gain';
+  STATE.clipCount = 0;
+  STATE.peakHoldDb = -Infinity;
+  STATE.ambient = { rms:[], peaks:[], startTime:0, duration:4000 };
+  STATE.speech = { rms:[], peaks:[], spectralRatios:[], startTime:0, duration:15000 };
+
+  ['step2Card','step3Card','step4Card','step5RecCard','step5DiagCard','step5ActionsCard'].forEach(id => $(id).classList.add('hidden'));
+  $('step1Card').classList.remove('hidden');
+  $('step1Card').classList.add('focus-ring');
+  $('speechPrompt').classList.remove('hidden');
+  $('speechActive').classList.add('hidden');
+  setPhase(1);
+  scrollTo($('step1Card'));
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  STEP 3: AMBIENT CAPTURE
+// ═══════════════════════════════════════════════════════════════
+
+async function beginAmbient() {
+  STATE.ambient = { rms:[], peaks:[], startTime:0, duration:4000 };
+  STATE.clipCount = 0;
+  STATE.peakHoldDb = -Infinity;
+
+  try { await startAudio(); } catch (e) { return; }
+
+  collapseCard('step2Card');
+  setPhase(3);
+  focusCard('step3Card');
+  $('ambientIndicator').classList.add('on');
+  $('ambientStatus').textContent = 'Stay quiet — measuring background noise...';
+  $('progressBar').style.width = '0%';
+
+  STATE.phase = 'ambient';
+  STATE.ambient.startTime = Date.now();
+  tick();
+}
+
+function finishAmbient() {
+  const valid = STATE.ambient.rms.filter(v => v > -100);
+  STATE.results.noiseFloorDb = valid.length > 0
+    ? valid.reduce((a, b) => a + b, 0) / valid.length : -60;
+
+  $('statNoiseFloor').textContent = STATE.results.noiseFloorDb.toFixed(1) + ' dB';
+  $('ambientStatus').textContent = '✓ Ambient noise captured.';
+
+  // Stop mic
+  stopAudio();
+  STATE.phase = 'waiting';
+
+  // Show noise floor marker on speech meter
+  const nfPct = dbToPct(STATE.results.noiseFloorDb);
+  $('meterNoiseFloor').style.display = 'block';
+  $('meterNoiseFloor').style.left = nfPct + '%';
+
+  // Collapse step 3, focus step 4 (speech prompt)
+  setTimeout(() => {
+    collapseCard('step3Card');
+    setPhase(4);
+    focusCard('step4Card');
+    $('speechIndicator').classList.add('on');
+    $('promptNoiseFloor').textContent = STATE.results.noiseFloorDb.toFixed(1) + ' dB';
+    $('speechPrompt').classList.remove('hidden');
+    $('speechActive').classList.add('hidden');
+  }, 600);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  STEP 4: SPEECH CAPTURE
+// ═══════════════════════════════════════════════════════════════
+
+async function beginSpeechCapture() {
+  STATE.speech = { rms:[], peaks:[], spectralRatios:[], startTime:0, duration:15000 };
+  STATE.clipCount = 0;
+  STATE.peakHoldDb = -Infinity;
+
+  try { await startAudio(); } catch (e) { return; }
+
+  $('speechPrompt').classList.add('hidden');
+  $('speechActive').classList.remove('hidden');
+  $('speechProgressBar').style.width = '0%';
+  $('statClip').textContent = '0';
+  $('statClip').style.color = 'var(--text)';
+
+  spectrumCtx = $('spectrumCanvas').getContext('2d');
+
+  STATE.phase = 'speech';
+  STATE.speech.startTime = Date.now();
+  $('speechStatus').textContent = 'Read the passage aloud at your normal speaking voice...';
+  scrollTo($('speechActive'));
+
+  tick();
+}
+
+function finishSpeech() {
+  stopAudio();
+  STATE.phase = 'results';
+
+  computeResults();
+
+  // Collapse step 4, show results
+  setTimeout(() => {
+    collapseCard('step4Card');
+    setPhase(5);
+
+    showResults();
+
+    $('step5RecCard').classList.remove('hidden');
+    $('step5DiagCard').classList.remove('hidden');
+    $('step5ActionsCard').classList.remove('hidden');
+    scrollTo($('step5RecCard'));
+  }, 400);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  ANALYSIS LOOP
+// ═══════════════════════════════════════════════════════════════
+
+function tick() {
+  if (!STATE.micActive) return;
+
+  const buf = new Float32Array(STATE.analyser.fftSize);
+  STATE.analyser.getFloatTimeDomainData(buf);
+
+  let sum = 0, peak = 0;
+  for (let i = 0; i < buf.length; i++) {
+    sum += buf[i] * buf[i];
+    const v = Math.abs(buf[i]);
+    if (v > peak) peak = v;
+  }
+  const rms = Math.sqrt(sum / buf.length);
+  const rmsDb = rms > 1e-10 ? 20 * Math.log10(rms) : -100;
+  const peakDb = peak > 1e-10 ? 20 * Math.log10(peak) : -100;
+
+  if (peak >= 0.997) STATE.clipCount++;
+  if (peakDb > STATE.peakHoldDb) { STATE.peakHoldDb = peakDb; STATE.peakDecay = 0; }
+  STATE.peakDecay++;
+  if (STATE.peakDecay > 120) STATE.peakHoldDb -= 0.25;
+
+  const freqBuf = new Float32Array(STATE.freqAnalyser.frequencyBinCount);
+  STATE.freqAnalyser.getFloatFrequencyData(freqBuf);
+  const speechBandRatio = computeSpeechBandRatio(freqBuf);
+
+  const now = Date.now();
+
+  if (STATE.phase === 'ambient') {
+    STATE.ambient.rms.push(rmsDb);
+    STATE.ambient.peaks.push(peakDb);
+    const elapsed = now - STATE.ambient.startTime;
+    $('progressBar').style.width = Math.min(100, (elapsed / STATE.ambient.duration) * 100) + '%';
+    updateMeter(rmsDb, 'meterFill', 'meterPeakHold', 'meterReadout');
+    $('statRms').textContent = rmsDb > -100 ? rmsDb.toFixed(1) + ' dB' : '—';
+    $('statPeak').textContent = STATE.peakHoldDb > -100 ? STATE.peakHoldDb.toFixed(1) + ' dB' : '—';
+    if (elapsed >= STATE.ambient.duration) { finishAmbient(); return; }
+  } else if (STATE.phase === 'speech') {
+    STATE.speech.rms.push(rmsDb);
+    STATE.speech.peaks.push(peakDb);
+    STATE.speech.spectralRatios.push(speechBandRatio);
+    const elapsed = now - STATE.speech.startTime;
+    $('speechProgressBar').style.width = Math.min(100, (elapsed / STATE.speech.duration) * 100) + '%';
+    const remain = Math.max(0, Math.ceil((STATE.speech.duration - elapsed) / 1000));
+    $('speechStatus').textContent = `Recording — ${remain}s remaining`;
+    updateMeter(rmsDb, 'meterFill2', 'meterPeakHold2', 'meterReadout2');
+    $('statRms2').textContent = rmsDb > -100 ? rmsDb.toFixed(1) + ' dB' : '—';
+    $('statPeak2').textContent = STATE.peakHoldDb > -100 ? STATE.peakHoldDb.toFixed(1) + ' dB' : '—';
+    const headroom = 0 - STATE.peakHoldDb;
+    $('statHeadroom').textContent = STATE.peakHoldDb > -100 ? headroom.toFixed(1) + ' dB' : '—';
+    $('statHeadroom').style.color = headroom < 3 ? 'var(--red)' : headroom < 8 ? 'var(--yellow)' : 'var(--text)';
+    $('statClip').textContent = STATE.clipCount;
+    $('statClip').style.color = STATE.clipCount > 0 ? 'var(--red)' : 'var(--text)';
+    if (spectrumCtx) drawSpectrum(freqBuf, speechBandRatio);
+    if (elapsed >= STATE.speech.duration) { finishSpeech(); return; }
+  }
+
+  STATE.animId = requestAnimationFrame(tick);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════
+
+function dbToPct(db) { return Math.max(0, Math.min(100, ((db + 60) / 60) * 100)); }
+
+function updateMeter(rmsDb, fillId, peakId, readoutId) {
+  const pct = dbToPct(rmsDb);
+  $(fillId).style.width = pct + '%';
+  const peakPct = dbToPct(STATE.peakHoldDb);
+  if (STATE.peakHoldDb > -55) { $(peakId).style.display = 'block'; $(peakId).style.left = peakPct + '%'; }
+  const r = $(readoutId);
+  if (rmsDb > -100) { r.textContent = rmsDb.toFixed(1); r.className = 'meter-readout' + (rmsDb > -3 ? ' clip' : rmsDb > -10 ? ' hot' : ''); }
+  else { r.textContent = '—'; r.className = 'meter-readout'; }
+}
+
+function computeSpeechBandRatio(freqData) {
+  const sampleRate = STATE.audioCtx.sampleRate;
+  const binCount = freqData.length;
+  const hzPerBin = sampleRate / (binCount * 2);
+  const lo = Math.floor(300 / hzPerBin), hi = Math.ceil(3400 / hzPerBin);
+  let speechE = 0, totalE = 0;
+  for (let i = 1; i < binCount; i++) {
+    const p = Math.pow(10, freqData[i] / 10);
+    totalE += p;
+    if (i >= lo && i <= hi) speechE += p;
+  }
+  return totalE > 0 ? speechE / totalE : 0;
+}
+
+function drawSpectrum(freqData, speechRatio) {
+  const canvas = $('spectrumCanvas');
+  const ctx = spectrumCtx;
+  const W = canvas.width = canvas.offsetWidth * 2;
+  const H = canvas.height = canvas.offsetHeight * 2;
+  ctx.clearRect(0, 0, W, H);
+  const sr = STATE.audioCtx.sampleRate, bc = freqData.length, hpb = sr / (bc * 2);
+  const fMin = 80, fMax = 20000, lMin = Math.log10(fMin), lMax = Math.log10(fMax);
+  const slX = ((Math.log10(300) - lMin) / (lMax - lMin)) * W;
+  const srX = ((Math.log10(3400) - lMin) / (lMax - lMin)) * W;
+  ctx.fillStyle = 'rgba(96,165,250,0.06)'; ctx.fillRect(slX, 0, srX - slX, H);
+  ctx.beginPath(); let first = true;
+  for (let i = 1; i < bc; i++) {
+    const f = i * hpb; if (f < fMin || f > fMax) continue;
+    const x = ((Math.log10(f) - lMin) / (lMax - lMin)) * W;
+    const y = H - Math.max(0, Math.min(1, (freqData[i] + 90) / 80)) * H;
+    first ? (ctx.moveTo(x, y), first = false) : ctx.lineTo(x, y);
+  }
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, 'rgba(96,165,250,0.25)'); g.addColorStop(1, 'rgba(96,165,250,0.02)');
+  ctx.fillStyle = g; ctx.fill();
+  ctx.beginPath(); first = true;
+  for (let i = 1; i < bc; i++) {
+    const f = i * hpb; if (f < fMin || f > fMax) continue;
+    const x = ((Math.log10(f) - lMin) / (lMax - lMin)) * W;
+    const y = H - Math.max(0, Math.min(1, (freqData[i] + 90) / 80)) * H;
+    first ? (ctx.moveTo(x, y), first = false) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = 'rgba(96,165,250,0.6)'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.strokeStyle = 'rgba(96,165,250,0.15)'; ctx.lineWidth = 1; ctx.setLineDash([4,4]);
+  ctx.beginPath(); ctx.moveTo(slX, 0); ctx.lineTo(slX, H); ctx.moveTo(srX, 0); ctx.lineTo(srX, H); ctx.stroke(); ctx.setLineDash([]);
+  const badge = $('spectrumBadge');
+  badge.textContent = `SPEECH ${(speechRatio * 100).toFixed(0)}%`;
+  badge.className = 'spectrum-badge' + (speechRatio >= 0.3 ? '' : speechRatio >= 0.15 ? ' warn' : ' bad');
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  RESULTS
+// ═══════════════════════════════════════════════════════════════
+
+function computeResults() {
+  const R = STATE.results, s = STATE.speech;
+  const sortedRms = [...s.rms].filter(v => v > -100).sort((a, b) => b - a);
+  const ac = Math.max(10, Math.ceil(sortedRms.length * 0.5));
+  R.speechAvgDb = sortedRms.slice(0, ac).reduce((a, b) => a + b, 0) / ac;
+  const sortedPeaks = [...s.peaks].filter(v => v > -100).sort((a, b) => b - a);
+  R.speechPeakDb = sortedPeaks[Math.floor(sortedPeaks.length * 0.03)] || sortedPeaks[0] || -20;
+  R.headroomDb = Math.max(0, 0 - R.speechPeakDb);
+  R.snrDb = Math.max(0, R.speechAvgDb - R.noiseFloorDb);
+  const vr = s.spectralRatios.filter(r => r > 0.05);
+  R.spectralClarity = vr.length > 0 ? vr.reduce((a, b) => a + b, 0) / vr.length : 0;
+  R.clipCount = STATE.clipCount;
+  const mpl = Math.pow(10, R.speechPeakDb / 20);
+  const tpl = Math.pow(10, -12 / 20);
+  R.recommendedGain = Math.round(Math.max(5, Math.min(100, (tpl / mpl) * 100)));
+  let score = 0;
+  score += R.clipCount === 0 ? 30 : R.clipCount < 10 ? 20 : R.clipCount < 50 ? 10 : 0;
+  score += R.headroomDb >= 10 ? 20 : R.headroomDb >= 6 ? 15 : R.headroomDb >= 3 ? 8 : 0;
+  score += R.snrDb >= 25 ? 25 : R.snrDb >= 15 ? 20 : R.snrDb >= 10 ? 12 : R.snrDb >= 5 ? 5 : 0;
+  score += (R.speechAvgDb >= -24 && R.speechAvgDb <= -6) ? 15 : (R.speechAvgDb >= -30 && R.speechAvgDb <= -3) ? 8 : 0;
+  score += R.spectralClarity >= 0.4 ? 10 : R.spectralClarity >= 0.25 ? 6 : R.spectralClarity >= 0.15 ? 3 : 0;
+  R.qualityScore = score;
+}
+
+function showResults() {
+  const R = STATE.results;
+  $('recNum').textContent = R.recommendedGain + '%';
+  $('recNum').className = 'rec-num ' + (R.recommendedGain <= 60 ? 'bad' : R.recommendedGain <= 85 ? '' : 'good');
+  const dir = $('recDirection');
+  if (R.recommendedGain < 90) {
+    dir.innerHTML = '<span style="color:var(--green)">▼ Reduce from 100%</span>';
+    $('recDetail').textContent = `Reduce Windows input volume to ${R.recommendedGain}%. This places speech peaks at -12 dBFS with 12 dB of clean headroom, eliminating clipping distortion that degrades voice recognition.`;
+  } else if (R.recommendedGain >= 100) {
+    dir.innerHTML = '<span style="color:var(--yellow)">Signal may be too low — consider a higher-gain mic.</span>';
+    $('recDetail').textContent = 'Your input level is low even at 100%. Voice recognition may struggle. Try moving closer or using an external mic.';
+  } else {
+    dir.innerHTML = '<span style="color:var(--green)">✓ Close to optimal</span>';
+    $('recDetail').textContent = `A minor reduction to ${R.recommendedGain}% fine-tunes your headroom. Your signal is already in a good range.`;
+  }
+  $('recSpeechAvg').textContent = R.speechAvgDb.toFixed(1) + ' dB';
+  $('recSpeechPeak').textContent = R.speechPeakDb.toFixed(1) + ' dB';
+  $('recNoiseFloor').textContent = R.noiseFloorDb.toFixed(1) + ' dB';
+  $('recSnr').textContent = R.snrDb.toFixed(0) + ' dB';
+
+  const score = R.qualityScore;
+  const circ = 2 * Math.PI * 42;
+  $('ringFg').style.strokeDashoffset = circ - (score / 100) * circ;
+  $('ringFg').style.stroke = score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow)' : 'var(--red)';
+  $('scoreText').textContent = score;
+  $('diagIndicator').className = 'indicator ' + (score >= 70 ? 'on' : score >= 40 ? 'warn' : 'err');
+
+  setDiag('dClip', R.clipCount === 0 ? 'pass' : R.clipCount < 20 ? 'warn' : 'fail', R.clipCount === 0 ? '✓' : R.clipCount < 20 ? '!' : '✕', R.clipCount + ' clips');
+  setDiag('dHeadroom', R.headroomDb >= 6 ? 'pass' : R.headroomDb >= 3 ? 'warn' : 'fail', R.headroomDb >= 6 ? '✓' : '!', R.headroomDb.toFixed(1) + ' dB');
+  const lok = R.speechAvgDb >= -24 && R.speechAvgDb <= -6;
+  setDiag('dLevel', lok ? 'pass' : 'warn', lok ? '✓' : '!', R.speechAvgDb.toFixed(1) + ' dB');
+  setDiag('dSnr', R.snrDb >= 15 ? 'pass' : R.snrDb >= 10 ? 'warn' : 'fail', R.snrDb >= 15 ? '✓' : '!', R.snrDb.toFixed(0) + ' dB');
+  const sc = R.spectralClarity >= 0.3;
+  setDiag('dSpectral', sc ? 'pass' : 'warn', sc ? '✓' : '!', (R.spectralClarity * 100).toFixed(0) + '%');
+}
+
+function setDiag(iconId, status, symbol, value) {
+  $(iconId).className = 'diag-icon ' + status;
+  $(iconId).textContent = symbol;
+  $(iconId + 'Val').textContent = value;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  EXPORT
+// ═══════════════════════════════════════════════════════════════
+
+function exportResults() {
+  const R = STATE.results;
+  const now = new Date().toISOString().slice(0,19).replace('T',' ');
+  const report = [
+    '══════════════════════════════════════════════════',
+    '  VOICE INPUT DIAGNOSTIC — CALIBRATION REPORT',
+    '══════════════════════════════════════════════════','',
+    `  Date:         ${now}`,
+    `  Microphone:   ${STATE.micLabel || 'Unknown'}`,
+    `  Browser:      ${navigator.userAgent.split(' ').slice(-3).join(' ')}`,
+    `  Sample Rate:  ${STATE.sampleRate} Hz`,'',
+    '── RECOMMENDATION ─────────────────────────────────','',
+    `  Windows Mic Gain:  ${R.recommendedGain}%`,
+    `  Path: Settings → System → Sound → Input → Volume`,'',
+    '── MEASUREMENTS ───────────────────────────────────','',
+    `  Noise Floor:       ${R.noiseFloorDb.toFixed(1)} dBFS`,
+    `  Speech Average:    ${R.speechAvgDb.toFixed(1)} dBFS`,
+    `  Speech Peak (97%): ${R.speechPeakDb.toFixed(1)} dBFS`,
+    `  Headroom:          ${R.headroomDb.toFixed(1)} dB`,
+    `  SNR:               ${R.snrDb.toFixed(0)} dB`,
+    `  Clip Events:       ${R.clipCount}`,
+    `  Speech Band:       ${(R.spectralClarity * 100).toFixed(0)}%`,'',
+    '── VOICE QUALITY SCORE ────────────────────────────','',
+    `  Score: ${R.qualityScore} / 100`,'',
+    `  Clipping:         ${R.clipCount === 0 ? 'PASS' : R.clipCount < 20 ? 'WARN' : 'FAIL'} (${R.clipCount})`,
+    `  Headroom:         ${R.headroomDb >= 6 ? 'PASS' : 'WARN'} (${R.headroomDb.toFixed(1)} dB)`,
+    `  Speech Level:     ${R.speechAvgDb >= -24 && R.speechAvgDb <= -6 ? 'PASS' : 'WARN'} (${R.speechAvgDb.toFixed(1)} dB)`,
+    `  SNR:              ${R.snrDb >= 15 ? 'PASS' : 'WARN'} (${R.snrDb.toFixed(0)} dB)`,
+    `  Spectral Clarity: ${R.spectralClarity >= 0.3 ? 'PASS' : 'WARN'} (${(R.spectralClarity * 100).toFixed(0)}%)`,'',
+    '══════════════════════════════════════════════════',
+  ].join('\n');
+  const blob = new Blob([report], { type:'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `mic-diagnostic-${new Date().toISOString().slice(0,10)}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+</script>
+</body>
+</html>
