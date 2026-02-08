@@ -66,8 +66,11 @@ public class NoteFormatter
                 {
                     var nameParts = _doctorName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                     // If any part of the doctor's name appears in this segment, skip it
+                    // Exclude common titles (Dr, Dr., Nurse, etc.) so they don't match every name
                     isCurrentDoctor = nameParts.Any(part =>
-                        part.Length > 2 && cleaned.Contains(part, StringComparison.OrdinalIgnoreCase));
+                        part.Length > 2
+                        && !TitleWords.Contains(part.TrimEnd('.', ','))
+                        && cleaned.Contains(part, StringComparison.OrdinalIgnoreCase));
                 }
 
                 if (!isCurrentDoctor && cleaned.Length > 2)
@@ -301,6 +304,10 @@ public class NoteFormatter
 
         return (convertedTime, GetTimezoneAbbreviation(_targetTimezone));
     }
+
+    /// <summary>Titles to ignore when matching DoctorName parts against extracted names.</summary>
+    private static readonly HashSet<string> TitleWords = new(StringComparer.OrdinalIgnoreCase)
+        { "Dr", "Nurse", "NP", "PA", "RN", "MD", "DO", "LPN" };
 
     private static readonly HashSet<string> PreservedAcronyms = new(StringComparer.OrdinalIgnoreCase)
         { "NP", "MD", "DO", "PA", "RN", "LPN", "BSN", "MSN", "DNP", "PhD" };
