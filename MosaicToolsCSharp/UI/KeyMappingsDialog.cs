@@ -54,7 +54,7 @@ public class KeyMappingsDialog : Form
     {
         Text = "Key Mappings";
         Size = new Size(500, 580);
-        StartPosition = FormStartPosition.CenterParent;
+        StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -265,6 +265,9 @@ public class KeyMappingsDialog : Form
 
     private void SetupHotkeyCapture(TextBox box)
     {
+        // Ensure Alt key combinations reach the TextBox KeyDown handler
+        box.PreviewKeyDown += (s, e) => e.IsInputKey = true;
+
         box.KeyDown += (s, e) =>
         {
             e.SuppressKeyPress = true;
@@ -285,12 +288,25 @@ public class KeyMappingsDialog : Form
             if (e.KeyCode != Keys.ControlKey && e.KeyCode != Keys.Menu &&
                 e.KeyCode != Keys.ShiftKey && e.KeyCode != Keys.None)
             {
-                parts.Add(e.KeyCode.ToString());
+                parts.Add(KeyCodeToDisplayName(e.KeyCode));
                 box.Text = string.Join("+", parts);
             }
         };
 
         box.Click += (s, e) => box.SelectAll();
+    }
+
+    /// <summary>
+    /// Convert WinForms Keys enum to display name matching KeyboardService.VKToName format.
+    /// Keys.D0-D9 become "0"-"9" instead of "D0"-"D9".
+    /// </summary>
+    private static string KeyCodeToDisplayName(Keys keyCode)
+    {
+        if (keyCode >= Keys.D0 && keyCode <= Keys.D9)
+            return ((char)('0' + (keyCode - Keys.D0))).ToString();
+        if (keyCode >= Keys.NumPad0 && keyCode <= Keys.NumPad9)
+            return ((char)('0' + (keyCode - Keys.NumPad0))).ToString();
+        return keyCode.ToString();
     }
 
     private void UpdateDeviceStatus()

@@ -220,6 +220,7 @@ public class KeyboardService : IDisposable
     {
         >= 0x41 and <= 0x5A => ((char)(vk + 32)).ToString(), // A-Z → a-z
         >= 0x30 and <= 0x39 => ((char)vk).ToString(),        // 0-9
+        >= 0x60 and <= 0x69 => ((char)('0' + vk - 0x60)).ToString(), // NumPad 0-9
         >= 0x70 and <= 0x7B => $"f{vk - 0x6F}",              // F1-F12
         0x20 => "space", 0x0D => "enter", 0x1B => "escape",
         0x08 => "backspace", 0x09 => "tab", 0x14 => "capslock",
