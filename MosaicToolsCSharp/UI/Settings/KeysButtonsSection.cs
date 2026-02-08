@@ -18,6 +18,10 @@ public class KeysButtonsSection : SettingsSection
     private readonly Configuration _config;
     private readonly ActionController _controller;
 
+    // Track open non-modal dialogs to prevent duplicates
+    private KeyMappingsDialog? _openKeysDialog;
+    private ButtonStudioDialog? _openButtonsDialog;
+
     public KeysButtonsSection(ToolTip toolTip, Configuration config, ActionController controller, bool isHeadless) : base("Keys & Buttons", toolTip)
     {
         _config = config;
@@ -138,14 +142,26 @@ public class KeysButtonsSection : SettingsSection
 
     private void OnOpenKeysClick(object? sender, EventArgs e)
     {
-        using var dialog = new KeyMappingsDialog(_config, _controller, App.IsHeadless);
-        dialog.ShowDialog(FindForm());
+        if (_openKeysDialog != null && !_openKeysDialog.IsDisposed)
+        {
+            _openKeysDialog.Activate();
+            return;
+        }
+        _openKeysDialog = new KeyMappingsDialog(_config, _controller, App.IsHeadless);
+        _openKeysDialog.FormClosed += (_, _) => _openKeysDialog = null;
+        _openKeysDialog.Show();
     }
 
     private void OnOpenButtonsClick(object? sender, EventArgs e)
     {
-        using var dialog = new ButtonStudioDialog(_config);
-        dialog.ShowDialog(FindForm());
+        if (_openButtonsDialog != null && !_openButtonsDialog.IsDisposed)
+        {
+            _openButtonsDialog.Activate();
+            return;
+        }
+        _openButtonsDialog = new ButtonStudioDialog(_config);
+        _openButtonsDialog.FormClosed += (_, _) => _openButtonsDialog = null;
+        _openButtonsDialog.Show();
     }
 
     public override void LoadSettings(Configuration config)

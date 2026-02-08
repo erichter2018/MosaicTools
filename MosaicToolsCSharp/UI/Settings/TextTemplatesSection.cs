@@ -28,6 +28,10 @@ public class TextTemplatesSection : SettingsSection
 
     private readonly Configuration _config;
 
+    // Track open non-modal dialogs to prevent duplicates
+    private MacroEditorForm? _openMacroEditor;
+    private PickListEditorForm? _openPickListEditor;
+
     public TextTemplatesSection(ToolTip toolTip, Configuration config) : base("Text & Templates", toolTip)
     {
         _config = config;
@@ -159,16 +163,34 @@ public class TextTemplatesSection : SettingsSection
 
     private void OnEditMacrosClick(object? sender, EventArgs e)
     {
-        using var editor = new MacroEditorForm(_config);
-        editor.ShowDialog(FindForm());
-        _macrosCountLabel.Text = GetMacrosCountText();
+        if (_openMacroEditor != null && !_openMacroEditor.IsDisposed)
+        {
+            _openMacroEditor.Activate();
+            return;
+        }
+        _openMacroEditor = new MacroEditorForm(_config);
+        _openMacroEditor.FormClosed += (_, _) =>
+        {
+            _openMacroEditor = null;
+            _macrosCountLabel.Text = GetMacrosCountText();
+        };
+        _openMacroEditor.Show();
     }
 
     private void OnEditPickListsClick(object? sender, EventArgs e)
     {
-        using var editor = new PickListEditorForm(_config);
-        editor.ShowDialog(FindForm());
-        _pickListsCountLabel.Text = GetPickListsCountText();
+        if (_openPickListEditor != null && !_openPickListEditor.IsDisposed)
+        {
+            _openPickListEditor.Activate();
+            return;
+        }
+        _openPickListEditor = new PickListEditorForm(_config);
+        _openPickListEditor.FormClosed += (_, _) =>
+        {
+            _openPickListEditor = null;
+            _pickListsCountLabel.Text = GetPickListsCountText();
+        };
+        _openPickListEditor.Show();
     }
 
     public override void LoadSettings(Configuration config)

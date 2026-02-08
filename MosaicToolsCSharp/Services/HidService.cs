@@ -73,6 +73,11 @@ public class HidService : IDisposable
     private DateTime _lastPhilipsButtonTime = DateTime.MinValue;
     private const int PhilipsDebounceMs = 300;
 
+    // Debounce for PowerMic (parity with SpeechMike)
+    private string? _lastPowerMicButton;
+    private DateTime _lastPowerMicButtonTime = DateTime.MinValue;
+    private const int PowerMicDebounceMs = 300;
+
     public event Action<string>? ButtonPressed;
     public event Action<string>? DeviceConnected;
     public event Action<bool>? RecordButtonStateChanged; // For PTT: true=down, false=up
@@ -330,6 +335,17 @@ public class HidService : IDisposable
 
                     if (matchedButton != null)
                     {
+                        // Debounce: ignore same button firing again within 300ms
+                        var now = DateTime.UtcNow;
+                        if (matchedButton == _lastPowerMicButton &&
+                            (now - _lastPowerMicButtonTime).TotalMilliseconds < PowerMicDebounceMs)
+                        {
+                            Logger.Trace($"PowerMic DEBOUNCED: {matchedButton} ({(now - _lastPowerMicButtonTime).TotalMilliseconds:F0}ms since last)");
+                            continue;
+                        }
+                        _lastPowerMicButton = matchedButton;
+                        _lastPowerMicButtonTime = now;
+
                         Logger.Trace($"PowerMic button: {matchedButton}");
                         ButtonPressed?.Invoke(matchedButton);
                     }

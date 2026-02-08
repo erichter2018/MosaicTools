@@ -476,9 +476,24 @@ public class ActionController : IDisposable
         // Protect from Registry Sync overwriting state during toggle
         _lastManualToggleTime = DateTime.Now;
 
-        // 1. Determine STARTING state (The state we are moving TO)
-        bool startingActive = !_dictationActive;
-        
+        // 1. Determine STARTING state using registry truth when available
+        bool? realState = NativeWindows.IsMicrophoneActiveFromRegistry();
+        bool currentState = realState ?? _dictationActive;
+        bool startingActive = !currentState;
+
+        // Phantom detection: if toggling from ON→OFF, wait briefly and verify mic actually stopped
+        if (currentState == true && !startingActive)
+        {
+            Thread.Sleep(300);
+            bool? verified = NativeWindows.IsMicrophoneActiveFromRegistry();
+            if (verified == true)
+            {
+                // Mic still active — this was a phantom button press. Suppress.
+                Logger.Trace("PerformBeep: Phantom detected (mic still active after 300ms). Suppressing.");
+                return;
+            }
+        }
+
         // 2. Play Feedback Beep FIRST for snappiness (Python matches this order)
         bool shouldPlay = startingActive ? _config.StartBeepEnabled : _config.StopBeepEnabled;
         if (shouldPlay)

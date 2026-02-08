@@ -75,7 +75,7 @@ public class ButtonStudioDialog : Form
     {
         Text = "InteleViewer Button Studio";
         Size = new Size(520, 480);
-        StartPosition = FormStartPosition.CenterParent;
+        StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;

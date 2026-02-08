@@ -1,3 +1,8 @@
+3.1.5
+- Fix critical findings name extraction when doctor name includes title prefix (e.g. "Dr.")
+- Fix number keys (0-9) not working in hotkey capture fields
+- NumPad key support for hotkeys
+
 3.1.4
 - Mic Gain Calibrator: measure mic levels and calculate optimal Windows input gain for voice recognition
 - Acknowledgments section in Profile settings

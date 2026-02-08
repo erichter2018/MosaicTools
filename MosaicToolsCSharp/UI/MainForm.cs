@@ -459,14 +459,14 @@ public class MainForm : Form
 
         if (count <= 2)
         {
-            // Horizontal layout: ~65px per metric
-            return count * 65;
+            // Horizontal layout: ~65px per metric + right padding
+            return count * 65 + 8;
         }
 
         // 3+ metrics: depends on layout
         return _config.RvuOverflowLayout switch
         {
-            RvuOverflowLayout.Horizontal => count * 65,
+            RvuOverflowLayout.Horizontal => count * 65 + 8,
             RvuOverflowLayout.VerticalStack => 0, // All metrics in drawer
             RvuOverflowLayout.HoverPopup => 65,    // First metric inline, rest on hover
             RvuOverflowLayout.Carousel => 75,      // Single metric slot

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows.Forms;
 using MosaicTools.Services;
@@ -14,6 +15,21 @@ namespace MosaicTools.UI;
 /// </summary>
 public class PickListEditorForm : Form
 {
+    [DllImport("dwmapi.dll", PreserveSig = true)]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        try
+        {
+            int value = 1;
+            DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref value, sizeof(int));
+        }
+        catch { }
+    }
+
     private readonly Configuration _config;
     private List<PickListConfig> _pickLists;
     private PickListConfig? _selectedList;
@@ -139,7 +155,7 @@ public class PickListEditorForm : Form
         Text = "Pick List Editor";
         Size = new Size(1000, 650);
         MinimumSize = new Size(900, 550);
-        StartPosition = FormStartPosition.CenterParent;
+        StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(30, 30, 30);
         ForeColor = Color.White;
         Padding = new Padding(15);
