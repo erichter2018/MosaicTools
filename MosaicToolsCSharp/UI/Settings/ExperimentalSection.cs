@@ -58,7 +58,7 @@ public class ExperimentalSection : SettingsSection
         _connectivityMonitorEnabledCheck.Checked = config.ConnectivityMonitorEnabled;
         _connectivityIntervalUpDown.Value = config.ConnectivityCheckIntervalSeconds;
         // Config stores ms, UI shows seconds
-        _connectivityTimeoutUpDown.Value = Math.Max(1, config.ConnectivityTimeoutMs / 1000);
+        _connectivityTimeoutUpDown.Value = Math.Max(1, (config.ConnectivityTimeoutMs + 500) / 1000);
 
         UpdateNetworkSettingsStates();
     }

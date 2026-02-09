@@ -457,7 +457,7 @@ public class ActionController : IDisposable
     
     #region Action Implementations
     
-    private int _syncCheckToken = 0;
+    private volatile int _syncCheckToken = 0;
     private string PrepareTextForPaste(string text)
     {
         if (_config.SeparatePastedItems && !text.StartsWith("\n"))
@@ -533,7 +533,7 @@ public class ActionController : IDisposable
         // 4. Reality Check (Python Parity)
         // We only correct if reality says TRUE but we are FALSE.
         // We wait for the system to settle before checking.
-        int currentToken = ++_syncCheckToken;
+        int currentToken = Interlocked.Increment(ref _syncCheckToken);
         int syncDelayMs = Math.Max(1500, (int)(_config.DictationPauseMs * 2.5));
 
         ThreadPool.QueueUserWorkItem(_ =>
@@ -805,12 +805,12 @@ public class ActionController : IDisposable
         if (_config.ShowReportAfterProcess && !_autoShowReportDoneForAccession)
         {
             _autoShowReportDoneForAccession = true;
-            bool popupAlreadyOpen = _currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible;
+            var popupRef = _currentReportPopup;
+            bool popupAlreadyOpen = popupRef != null && !popupRef.IsDisposed && popupRef.Visible;
             if (popupAlreadyOpen)
             {
                 Logger.Trace("Process Report: Skipping auto-show (popup already open), marking as stale");
-                var popup = _currentReportPopup;
-                _mainForm.BeginInvoke(() => { if (popup != null && !popup.IsDisposed) popup.SetStaleState(true); });
+                _mainForm.BeginInvoke(() => { if (popupRef != null && !popupRef.IsDisposed) popupRef.SetStaleState(true); });
             }
             else
             {
@@ -818,12 +818,15 @@ public class ActionController : IDisposable
                 PerformShowReport();
             }
         }
-        else if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
+        else
         {
-            // Popup is open but auto-show is disabled or already done - still mark as stale during processing
-            Logger.Trace("Process Report: Marking popup as stale during processing");
-            var popup = _currentReportPopup;
-            _mainForm.BeginInvoke(() => { if (popup != null && !popup.IsDisposed) popup.SetStaleState(true); });
+            var popupRef2 = _currentReportPopup;
+            if (popupRef2 != null && !popupRef2.IsDisposed && popupRef2.Visible)
+            {
+                // Popup is open but auto-show is disabled or already done - still mark as stale during processing
+                Logger.Trace("Process Report: Marking popup as stale during processing");
+                _mainForm.BeginInvoke(() => { if (popupRef2 != null && !popupRef2.IsDisposed) popupRef2.SetStaleState(true); });
+            }
         }
 
         // Auto-create critical note for stroke cases if enabled
@@ -868,7 +871,9 @@ public class ActionController : IDisposable
 
     private void RestartScrapeTimer(int intervalMs)
     {
-        _scrapeTimer?.Change(intervalMs, intervalMs);
+        var timer = _scrapeTimer;
+        try { timer?.Change(intervalMs, intervalMs); }
+        catch (ObjectDisposedException) { return; }
         Logger.Trace($"Scrape timer interval changed to {intervalMs}ms");
     }
 
@@ -1093,7 +1098,7 @@ public class ActionController : IDisposable
     }
 
     private volatile string? _pendingMacroText = null;
-    private int _pendingMacroCount = 0;
+    private volatile int _pendingMacroCount = 0;
     private volatile string? _pendingMacroInsertAccession = null;
 
     private void PerformInsertMacros()

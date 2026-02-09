@@ -15,6 +15,7 @@ public class RvuMetricsSection : SettingsSection
     public override string SectionId => "rvu";
 
     private readonly CheckBox _rvuCounterEnabledCheck;
+    private bool _isLoading;
     private readonly CheckBox _rvuMetricTotalCheck;
     private readonly CheckBox _rvuMetricPerHourCheck;
     private readonly CheckBox _rvuMetricCurrentHourCheck;
@@ -34,6 +35,7 @@ public class RvuMetricsSection : SettingsSection
             "When enabled, sends signed study events to RVUCounter\nso it can track your RVU productivity.");
         _rvuCounterEnabledCheck.CheckedChanged += (s, e) =>
         {
+            if (_isLoading) return;
             if (!_rvuCounterEnabledCheck.Checked)
             {
                 var result = MessageBox.Show(
@@ -164,6 +166,7 @@ public class RvuMetricsSection : SettingsSection
 
     public override void LoadSettings(Configuration config)
     {
+        _isLoading = true;
         _rvuCounterEnabledCheck.Checked = config.RvuCounterEnabled;
 
         // Load metrics from flags enum
@@ -181,6 +184,7 @@ public class RvuMetricsSection : SettingsSection
         _rvuCounterPathBox.Text = config.RvuCounterPath ?? "";
 
         UpdateOverflowLayoutState();
+        _isLoading = false;
     }
 
     public override void SaveSettings(Configuration config)

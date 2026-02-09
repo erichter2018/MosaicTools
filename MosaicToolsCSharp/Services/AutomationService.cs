@@ -22,7 +22,7 @@ public class AutomationService : IDisposable
 
     // Cached report document name (detected once, reused for fast lookups)
     // e.g., "RADPAIR" on Mosaic 2.0.3+, or contains "Report" on older versions
-    private string? _cachedReportDocName;
+    private volatile string? _cachedReportDocName;
     
     // Last scraped final report (public for external access)
     public string? LastFinalReport { get; private set; }
@@ -831,7 +831,7 @@ public class AutomationService : IDisposable
     private static extern bool GetCursorPos(out POINT lpPoint);
 
     [DllImport("user32.dll")]
-    private static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
+    private static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, IntPtr dwExtraInfo);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT { public int X; public int Y; }
@@ -927,9 +927,9 @@ public class AutomationService : IDisposable
         Thread.Sleep(50);
 
         // Click
-        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, IntPtr.Zero);
         Thread.Sleep(20);
-        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, IntPtr.Zero);
         Thread.Sleep(30);
 
         // Restore mouse position

@@ -30,6 +30,7 @@ public class AlertsSection : SettingsSection
 
     private readonly MainForm _mainForm;
     private readonly Configuration _config;
+    private List<string>? _pendingStrokeKeywords;
 
     public AlertsSection(ToolTip toolTip, MainForm mainForm, Configuration config) : base("Alerts", toolTip)
     {
@@ -165,7 +166,7 @@ public class AlertsSection : SettingsSection
 
         if (input != null && input != currentKeywords)
         {
-            _config.StrokeClinicalHistoryKeywords = input
+            _pendingStrokeKeywords = input
                 .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
                 .Select(s => s.Trim().ToLowerInvariant())
                 .Where(s => !string.IsNullOrEmpty(s))
@@ -207,5 +208,8 @@ public class AlertsSection : SettingsSection
         config.StrokeDetectionUseClinicalHistory = _strokeDetectionUseClinicalHistoryCheck.Checked;
         config.StrokeClickToCreateNote = _strokeClickToCreateNoteCheck.Checked;
         config.StrokeAutoCreateNote = _strokeAutoCreateNoteCheck.Checked;
+
+        if (_pendingStrokeKeywords != null)
+            config.StrokeClinicalHistoryKeywords = _pendingStrokeKeywords;
     }
 }

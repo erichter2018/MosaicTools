@@ -147,6 +147,10 @@ public class ConnectivityDetailsForm : Form
                 RefreshContent();
                 lastCheckLabel.Text = GetLastCheckText();
             }
+            catch (Exception ex)
+            {
+                Logger.Trace($"Connectivity check failed: {ex.Message}");
+            }
             finally
             {
                 if (!checkNowBtn.IsDisposed)
@@ -190,7 +194,19 @@ public class ConnectivityDetailsForm : Form
 
     private void RefreshContent()
     {
+        // Dispose old controls (including Region objects on dot panels) before clearing
+        var oldControls = _contentPanel.Controls.Cast<Control>().ToList();
         _contentPanel.Controls.Clear();
+        foreach (var ctrl in oldControls)
+        {
+            // Dispose Region on dot panels to prevent GDI leak
+            foreach (Control child in ctrl.Controls)
+            {
+                child.Region?.Dispose();
+                child.Region = null;
+            }
+            ctrl.Dispose();
+        }
 
         var statuses = _connectivityService.GetEnabledStatuses().ToList();
 

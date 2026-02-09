@@ -1023,7 +1023,9 @@ public class SettingsForm : Form
     
     private void RenderPreview()
     {
+        var oldPreviewCtrls = _previewPanel.Controls.Cast<Control>().ToList();
         _previewPanel.Controls.Clear();
+        foreach (var ctrl in oldPreviewCtrls) ctrl.Dispose();
         
         int btnSize = 50;
         int wideBtnHeight = 34;  // Match actual toolbar
@@ -1095,7 +1097,9 @@ public class SettingsForm : Form
     
     private void RenderButtonList()
     {
+        var oldBtnListCtrls = _buttonListPanel.Controls.Cast<Control>().ToList();
         _buttonListPanel.Controls.Clear();
+        foreach (var ctrl in oldBtnListCtrls) ctrl.Dispose();
         
         for (int i = 0; i < _studioButtons.Count; i++)
         {

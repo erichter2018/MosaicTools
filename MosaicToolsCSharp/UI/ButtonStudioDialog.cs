@@ -442,7 +442,9 @@ public class ButtonStudioDialog : Form
 
     private void RenderPreview()
     {
+        var oldControls = _previewPanel.Controls.Cast<Control>().ToList();
         _previewPanel.Controls.Clear();
+        foreach (var ctrl in oldControls) ctrl.Dispose();
 
         int btnSize = 50;
         int wideWidth = btnSize * 2 + 5;
@@ -500,7 +502,9 @@ public class ButtonStudioDialog : Form
 
     private void RenderButtonList()
     {
+        var oldControls = _buttonListPanel.Controls.Cast<Control>().ToList();
         _buttonListPanel.Controls.Clear();
+        foreach (var ctrl in oldControls) ctrl.Dispose();
 
         for (int i = 0; i < _buttons.Count; i++)
         {

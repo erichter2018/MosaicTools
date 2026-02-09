@@ -135,19 +135,22 @@ public class ReferenceSection : SettingsSection
         UpdateHeight();
     }
 
-    private void OnDumpClick(object? sender, EventArgs e)
+    private async void OnDumpClick(object? sender, EventArgs e)
     {
         _statusLabel.Text = "Scanning...";
         _statusLabel.ForeColor = Color.FromArgb(200, 200, 120);
-        _statusLabel.Refresh();
+        _dumpButton.Enabled = false;
 
         try
         {
             var targetApp = _targetAppCombo.SelectedItem?.ToString() ?? "Clario";
             var method = _methodCombo.SelectedItem?.ToString() ?? "Both";
 
-            using var automation = new AutomationService();
-            var result = automation.DumpElements(targetApp, method);
+            var result = await Task.Run(() =>
+            {
+                using var automation = new AutomationService();
+                return automation.DumpElements(targetApp, method);
+            });
 
             Clipboard.SetText(result);
 
@@ -158,7 +161,6 @@ public class ReferenceSection : SettingsSection
             }
             else
             {
-                // Count elements from the result
                 var lines = result.Split('\n');
                 var countLine = Array.Find(lines, l => l.StartsWith("Total elements"));
                 _statusLabel.Text = countLine ?? "Copied to clipboard!";
@@ -169,6 +171,11 @@ public class ReferenceSection : SettingsSection
         {
             _statusLabel.Text = $"Error: {ex.Message}";
             _statusLabel.ForeColor = Color.FromArgb(255, 120, 120);
+        }
+        finally
+        {
+            if (!_dumpButton.IsDisposed)
+                _dumpButton.Enabled = true;
         }
     }
 

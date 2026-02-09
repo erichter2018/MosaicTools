@@ -108,6 +108,10 @@ public class DesktopSection : SettingsSection
             {
                 await _mainForm.CheckForUpdatesManualAsync();
             }
+            catch (Exception ex)
+            {
+                Logger.Trace($"Manual update check failed: {ex.Message}");
+            }
             finally
             {
                 if (!btn.IsDisposed)
@@ -215,6 +219,6 @@ public class DesktopSection : SettingsSection
     private static int VolumeToSlider(double volume)
     {
         if (volume <= 0) return 0;
-        return (int)Math.Round(50.0 * Math.Log10(volume * 99.0 + 1.0));
+        return Math.Clamp((int)Math.Round(50.0 * Math.Log10(volume * 99.0 + 1.0)), 0, 100);
     }
 }
