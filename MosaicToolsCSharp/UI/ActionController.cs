@@ -41,7 +41,7 @@ public class ActionController : IDisposable
     private readonly Thread _actionThread;
     
     // State
-    private bool _dictationActive = false;
+    private volatile bool _dictationActive = false;
     private volatile bool _isUserActive = false;
     private int _scrapeRunning = 0; // Reentrancy guard for scrape timer
     private volatile bool _stopThread = false;
@@ -54,8 +54,8 @@ public class ActionController : IDisposable
     private int _fastScrapeIntervalMs = 1000;
     private int _studyLoadScrapeIntervalMs = 500;
 
-    // PTT (Push-to-talk) state
-    private bool _pttBusy = false;
+    // PTT (Push-to-talk) state (int for Interlocked atomicity)
+    private int _pttBusy = 0;
     private DateTime _lastSyncTime = DateTime.Now;
     private readonly System.Threading.Timer? _syncTimer;
     private System.Threading.Timer? _scrapeTimer;
@@ -339,29 +339,35 @@ public class ActionController : IDisposable
         {
             if (isDown)
             {
-                if (!_pttBusy && !_dictationActive)
+                if (Interlocked.CompareExchange(ref _pttBusy, 1, 0) == 0 && !_dictationActive)
                 {
-                    _pttBusy = true;
                     ThreadPool.QueueUserWorkItem(_ =>
                     {
                         try { PerformToggleRecord(true, sendKey: true); }
-                        finally { _pttBusy = false; }
+                        finally { Interlocked.Exchange(ref _pttBusy, 0); }
                     });
+                }
+                else
+                {
+                    Interlocked.CompareExchange(ref _pttBusy, 0, 1); // Reset if condition not met
                 }
             }
             else
             {
-                if (!_pttBusy && _dictationActive)
+                if (Interlocked.CompareExchange(ref _pttBusy, 1, 0) == 0 && _dictationActive)
                 {
-                    _pttBusy = true;
                     ThreadPool.QueueUserWorkItem(_ =>
                     {
-                        try { 
-                            Thread.Sleep(50); 
-                            PerformToggleRecord(false, sendKey: true); 
+                        try {
+                            Thread.Sleep(50);
+                            PerformToggleRecord(false, sendKey: true);
                         }
-                        finally { _pttBusy = false; }
+                        finally { Interlocked.Exchange(ref _pttBusy, 0); }
                     });
+                }
+                else
+                {
+                    Interlocked.CompareExchange(ref _pttBusy, 0, 1); // Reset if condition not met
                 }
             }
             return;
@@ -1086,9 +1092,9 @@ public class ActionController : IDisposable
         TriggerAction("__InsertMacros__", "Internal");
     }
 
-    private string? _pendingMacroText = null;
+    private volatile string? _pendingMacroText = null;
     private int _pendingMacroCount = 0;
-    private string? _pendingMacroInsertAccession = null;
+    private volatile string? _pendingMacroInsertAccession = null;
 
     private void PerformInsertMacros()
     {
@@ -1167,7 +1173,7 @@ public class ActionController : IDisposable
 
     // Pick list popup reference
     private PickListPopupForm? _currentPickListPopup;
-    private string? _pendingPickListText;
+    private volatile string? _pendingPickListText;
 
     private void PerformShowPickLists()
     {
@@ -1306,20 +1312,17 @@ public class ActionController : IDisposable
 
     private void PerformGetPrior()
     {
-        _isUserActive = true;
         Logger.Trace("Get Prior");
 
         if (IsAddendumOpen())
         {
             Logger.Trace("GetPrior: Blocked - addendum is open");
             _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
-            _isUserActive = false;
             return;
         }
 
         _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Extracting Prior..."));
 
-        try
         {
             // Check if InteleViewer is active
             var foreground = NativeWindows.GetForegroundWindow();
@@ -1405,23 +1408,16 @@ public class ActionController : IDisposable
             Logger.Trace($"Get Prior complete: {formatted}");
             _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Prior inserted"));
         }
-        finally
-        {
-            _isUserActive = false;
-        }
     }
     
     private void PerformCriticalFindings(bool debugMode = false)
     {
-        _isUserActive = true;
-
         if (debugMode)
         {
             // Debug mode: scrape but show dialog instead of pasting
             Logger.Trace("Critical Findings DEBUG MODE");
             _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Debug mode: Scraping Clario...", 2000));
 
-            try
             {
                 var rawNote = _automationService.PerformClarioScrape(msg =>
                 {
@@ -1437,10 +1433,6 @@ public class ActionController : IDisposable
                 _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(
                     "Debug complete. Review the raw data above to troubleshoot extraction.", 10000));
             }
-            finally
-            {
-                _isUserActive = false;
-            }
             return;
         }
 
@@ -1448,7 +1440,6 @@ public class ActionController : IDisposable
         Logger.Trace("Critical Findings (Clario Scrape)");
         _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Scraping Clario..."));
 
-        try
         {
             // Scrape with repeating toast callback
             var rawNote = _automationService.PerformClarioScrape(msg =>
@@ -1468,10 +1459,12 @@ public class ActionController : IDisposable
             // Format
             var formatted = _noteFormatter.FormatNote(rawNote);
 
-            // Paste into Mosaic
+            // Paste into Mosaic (focus transcript box first, consistent with GetPrior)
             ClipboardService.SetText(formatted);
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(200);
+            _automationService.FocusTranscriptBox();
+            Thread.Sleep(100);
 
             NativeWindows.SendHotkey("ctrl+v");
 
@@ -1482,10 +1475,6 @@ public class ActionController : IDisposable
 
             _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(
                 "Critical findings inserted.\nHold Win key and trigger again to debug.", 20000));
-        }
-        finally
-        {
-            _isUserActive = false;
         }
     }
 
@@ -1574,8 +1563,8 @@ public class ActionController : IDisposable
         _mainForm.BeginInvoke(() => CriticalStudiesChanged?.Invoke());
     }
 
-    // State for Report Popup Toggle
-    private ReportPopupForm? _currentReportPopup;
+    // State for Report Popup Toggle (volatile: accessed from STA thread and UI thread)
+    private volatile ReportPopupForm? _currentReportPopup;
 
     private void PerformShowReport()
     {
@@ -1688,13 +1677,10 @@ public class ActionController : IDisposable
     
     private void PerformCaptureSeries()
     {
-        _isUserActive = true;
-
         if (IsAddendumOpen())
         {
             Logger.Trace("CaptureSeries: Blocked - addendum is open");
             _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
-            _isUserActive = false;
             return;
         }
 
@@ -1755,10 +1741,6 @@ public class ActionController : IDisposable
         {
             Logger.Trace($"CaptureSeries error: {ex.Message}");
             _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"OCR Error: {ex.Message}"));
-        }
-        finally
-        {
-            _isUserActive = false;
         }
     }
 
@@ -1868,14 +1850,18 @@ public class ActionController : IDisposable
         _dictationSyncTimer = new System.Threading.Timer(_ =>
         {
             if (_isUserActive) return; // Don't check during user actions
-            
+
             try
             {
                 bool? state = NativeWindows.IsMicrophoneActiveFromRegistry();
-                if (state.HasValue && state.Value != _dictationActive)
+                if (!state.HasValue) return;
+
+                // Only sync ON immediately; sync OFF only if main sync timer agrees
+                // (avoids contradicting the debounced sync timer's OFF logic)
+                if (state.Value && !_dictationActive)
                 {
-                    _dictationActive = state.Value;
-                    _mainForm.BeginInvoke(() => _mainForm.UpdateIndicatorState(_dictationActive));
+                    _dictationActive = true;
+                    _mainForm.BeginInvoke(() => _mainForm.UpdateIndicatorState(true));
                 }
             }
             catch { }
@@ -2752,15 +2738,21 @@ public class ActionController : IDisposable
     private void TrimTrackingSets()
     {
         const int maxSize = 100;
+        const int keepSize = 50;
         if (_macrosInsertedForAccessions.Count > maxSize)
         {
             Logger.Trace($"Trimming macro tracking set (was {_macrosInsertedForAccessions.Count})");
-            _macrosInsertedForAccessions.Clear();
+            // Keep the most recent entries by removing oldest (arbitrary order for ConcurrentDictionary)
+            var toRemove = _macrosInsertedForAccessions.Keys.Take(_macrosInsertedForAccessions.Count - keepSize).ToList();
+            foreach (var key in toRemove)
+                _macrosInsertedForAccessions.TryRemove(key, out _);
         }
         if (_clinicalHistoryFixedForAccessions.Count > maxSize)
         {
             Logger.Trace($"Trimming clinical history tracking set (was {_clinicalHistoryFixedForAccessions.Count})");
-            _clinicalHistoryFixedForAccessions.Clear();
+            var toRemove = _clinicalHistoryFixedForAccessions.Keys.Take(_clinicalHistoryFixedForAccessions.Count - keepSize).ToList();
+            foreach (var key in toRemove)
+                _clinicalHistoryFixedForAccessions.TryRemove(key, out _);
         }
     }
 
@@ -2840,5 +2832,6 @@ public class ActionController : IDisposable
         _keyboardService?.Dispose();
         _automationService.Dispose();
         _pipeService?.Dispose();
+        _actionEvent.Dispose();
     }
 }

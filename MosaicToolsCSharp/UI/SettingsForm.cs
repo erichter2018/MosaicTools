@@ -1759,24 +1759,24 @@ public class SettingsForm : Form
 Send Windows Messages to trigger actions from
 AutoHotkey or other programs:
 
-WM_TRIGGER_SCRAPE = 0x0401        # Critical Findings
-WM_TRIGGER_BEEP = 0x0403          # System Beep
-WM_TRIGGER_SHOW_REPORT = 0x0404   # Show Report
-WM_TRIGGER_CAPTURE_SERIES = 0x0405 # Capture Series
-WM_TRIGGER_GET_PRIOR = 0x0406     # Get Prior
-WM_TRIGGER_TOGGLE_RECORD = 0x0407 # Toggle Record
-WM_TRIGGER_PROCESS_REPORT = 0x0408 # Process Report
-WM_TRIGGER_SIGN_REPORT = 0x0409   # Sign Report
-WM_TRIGGER_OPEN_SETTINGS = 0x040A # Open Settings
-WM_TRIGGER_CREATE_IMPRESSION = 0x040B # Create Impression
-WM_TRIGGER_DISCARD_STUDY = 0x040C # Discard Study
-WM_TRIGGER_CHECK_UPDATES = 0x040D # Check for Updates
-WM_TRIGGER_SHOW_PICK_LISTS = 0x040E # Show Pick Lists
-WM_TRIGGER_CREATE_CRITICAL_NOTE = 0x040F # Create Critical Note
+WM_TRIGGER_SCRAPE = 0x8001        # Critical Findings
+WM_TRIGGER_BEEP = 0x8003          # System Beep
+WM_TRIGGER_SHOW_REPORT = 0x8004   # Show Report
+WM_TRIGGER_CAPTURE_SERIES = 0x8005 # Capture Series
+WM_TRIGGER_GET_PRIOR = 0x8006     # Get Prior
+WM_TRIGGER_TOGGLE_RECORD = 0x8007 # Toggle Record
+WM_TRIGGER_PROCESS_REPORT = 0x8008 # Process Report
+WM_TRIGGER_SIGN_REPORT = 0x8009   # Sign Report
+WM_TRIGGER_OPEN_SETTINGS = 0x800A # Open Settings
+WM_TRIGGER_CREATE_IMPRESSION = 0x800B # Create Impression
+WM_TRIGGER_DISCARD_STUDY = 0x800C # Discard Study
+WM_TRIGGER_CHECK_UPDATES = 0x800D # Check for Updates
+WM_TRIGGER_SHOW_PICK_LISTS = 0x800E # Show Pick Lists
+WM_TRIGGER_CREATE_CRITICAL_NOTE = 0x800F # Create Critical Note
 
 Example AHK:
 DetectHiddenWindows, On
-PostMessage, 0x0401, 0, 0,, ahk_class WindowsForms
+PostMessage, 0x8001, 0, 0,, ahk_class WindowsForms
 
 === Critical Note Creation ===
 
@@ -1784,7 +1784,7 @@ Create a Critical Communication Note in Clario for any study:
 • Map 'Create Critical Note' to hotkey/mic button
 • Ctrl+Click on Clinical History window
 • Right-click Clinical History → Create Critical Note
-• Windows message 0x040F from AHK
+• Windows message 0x800F from AHK
 
 === Debug Tips ===
 
@@ -2853,30 +2853,6 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
 
     // ========== Helper Methods ==========
 
-    // Old CreateExperimentalTab removed - functionality moved to Text and Behavior tabs
-    // Stub to satisfy any remaining references
-    private TabPage CreateExperimentalTab()
-    {
-        return new TabPage("Experimental") { BackColor = Color.FromArgb(40, 40, 40) };
-    }
-
-    // Old CreateAdvancedTab removed - functionality moved to Notifications and Behavior tabs
-    private TabPage CreateAdvancedTab()
-    {
-        return new TabPage("Advanced") { BackColor = Color.FromArgb(40, 40, 40) };
-    }
-
-    // Old CreateTemplatesTab removed - functionality moved to Text tab
-    private TabPage CreateTemplatesTab()
-    {
-        return new TabPage("Templates") { BackColor = Color.FromArgb(40, 40, 40) };
-    }
-
-    // Old CreateMacrosTab removed - functionality moved to Text tab
-    private TabPage CreateMacrosTab_Legacy()
-    {
-        return new TabPage("Macros") { BackColor = Color.FromArgb(40, 40, 40) };
-    }
 
     // Keep this stub for the actual Experimental tab in InitializeUI
     private TabPage CreateExperimentalTab_Stub()
@@ -4174,24 +4150,24 @@ AHK / EXTERNAL INTEGRATION
 This shows how to trigger Mosaic Tools actions from external programs.
 
 WINDOWS MESSAGE CODES
-• 0x0401 - Critical Findings (hold Win key for debug mode)
-• 0x0403 - System Beep
-• 0x0404 - Show Report
-• 0x0405 - Capture Series/Image
-• 0x0406 - Get Prior
-• 0x0407 - Toggle Recording
-• 0x0408 - Process Report
-• 0x0409 - Sign Report
-• 0x040A - Open Settings
-• 0x040B - Create Impression
-• 0x040C - Discard Study
-• 0x040D - Check for Updates
-• 0x040E - Show Pick Lists
-• 0x040F - Create Critical Note
+• 0x8001 - Critical Findings (hold Win key for debug mode)
+• 0x8003 - System Beep
+• 0x8004 - Show Report
+• 0x8005 - Capture Series/Image
+• 0x8006 - Get Prior
+• 0x8007 - Toggle Recording
+• 0x8008 - Process Report
+• 0x8009 - Sign Report
+• 0x800A - Open Settings
+• 0x800B - Create Impression
+• 0x800C - Discard Study
+• 0x800D - Check for Updates
+• 0x800E - Show Pick Lists
+• 0x800F - Create Critical Note
 
 AUTOHOTKEY EXAMPLE
 DetectHiddenWindows, On
-PostMessage, 0x0401, 0, 0,, ahk_class WindowsForms
+PostMessage, 0x8001, 0, 0,, ahk_class WindowsForms
 
 CREATE CRITICAL NOTE
 Creates a Critical Communication Note in Clario for the current study.
@@ -4200,7 +4176,7 @@ Triggers:
 • Map to hotkey or mic button in Actions tab
 • Ctrl+Click on Clinical History window
 • Right-click Clinical History window → Create Critical Note
-• Windows message 0x040F from AHK
+• Windows message 0x800F from AHK
 
 DEBUG TIPS
 • Hold Win key while triggering Critical Findings to see raw data.
@@ -4508,7 +4484,7 @@ public class DarkTabControl : TabControl
 
         // Tab text
         using var textBrush = new SolidBrush(isSelected ? Color.White : Color.FromArgb(160, 160, 160));
-        var textFormat = new StringFormat
+        using var textFormat = new StringFormat
         {
             Alignment = StringAlignment.Center,
             LineAlignment = StringAlignment.Center

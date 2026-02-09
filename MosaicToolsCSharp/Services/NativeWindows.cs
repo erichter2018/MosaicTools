@@ -145,6 +145,21 @@ public static class NativeWindows
             else if (p == "alt") modifiers.Add(VK_MENU);
             else if (p.Length == 1) mainKey = GetVirtualKeyCode(p[0]);
             else if (p.StartsWith("f") && int.TryParse(p.Substring(1), out var f)) mainKey = (byte)(0x6F + f);
+            else if (p == "enter" || p == "return") mainKey = 0x0D;
+            else if (p == "space") mainKey = 0x20;
+            else if (p == "tab") mainKey = 0x09;
+            else if (p == "escape" || p == "esc") mainKey = 0x1B;
+            else if (p == "backspace" || p == "back") mainKey = 0x08;
+            else if (p == "delete" || p == "del") mainKey = 0x2E;
+            else if (p == "insert" || p == "ins") mainKey = 0x2D;
+            else if (p == "home") mainKey = 0x24;
+            else if (p == "end") mainKey = 0x23;
+            else if (p == "pageup" || p == "pgup") mainKey = 0x21;
+            else if (p == "pagedown" || p == "pgdn") mainKey = 0x22;
+            else if (p == "up") mainKey = 0x26;
+            else if (p == "down") mainKey = 0x28;
+            else if (p == "left") mainKey = 0x25;
+            else if (p == "right") mainKey = 0x27;
         }
 
         foreach (var mod in modifiers)
@@ -395,16 +410,16 @@ public static class NativeWindows
         // Strategy 2: AttachThreadInput
         for (int i = 0; i < 2; i++)
         {
+            bool attached = false;
             try
             {
                 uint currentThread = GetCurrentThreadId();
                 uint targetThread = GetWindowThreadProcessId(hWnd, out _);
 
-                AttachThreadInput(currentThread, targetThread, true);
+                attached = AttachThreadInput(currentThread, targetThread, true);
                 BringWindowToTop(hWnd);
                 SetForegroundWindow(hWnd);
                 SwitchToThisWindow(hWnd, true);
-                AttachThreadInput(currentThread, targetThread, false);
 
                 var sw = Stopwatch.StartNew();
                 while (sw.ElapsedMilliseconds < 200)
@@ -416,6 +431,15 @@ public static class NativeWindows
             catch (Exception ex)
             {
                 Logger.Trace($"ActivateMosaicForcefully attempt {i+1} failed: {ex.Message}");
+            }
+            finally
+            {
+                if (attached)
+                {
+                    uint currentThread = GetCurrentThreadId();
+                    uint targetThread = GetWindowThreadProcessId(hWnd, out _);
+                    AttachThreadInput(currentThread, targetThread, false);
+                }
             }
             Thread.Sleep(50);
         }
@@ -435,7 +459,7 @@ public static class NativeWindows
 
     #region Focus Restoration
     
-    private static IntPtr _previousFocusHwnd = IntPtr.Zero;
+    private static volatile IntPtr _previousFocusHwnd = IntPtr.Zero;
     
     /// <summary>
     /// Save the current foreground window for later restoration.
@@ -538,21 +562,21 @@ public static class NativeWindows
     
     #region Custom Windows Messages
 
-    public const int WM_TRIGGER_SCRAPE = 0x0401;
-    public const int WM_TRIGGER_DEBUG = 0x0402;
-    public const int WM_TRIGGER_BEEP = 0x0403;
-    public const int WM_TRIGGER_SHOW_REPORT = 0x0404;
-    public const int WM_TRIGGER_CAPTURE_SERIES = 0x0405;
-    public const int WM_TRIGGER_GET_PRIOR = 0x0406;
-    public const int WM_TRIGGER_TOGGLE_RECORD = 0x0407;
-    public const int WM_TRIGGER_PROCESS_REPORT = 0x0408;
-    public const int WM_TRIGGER_SIGN_REPORT = 0x0409;
-    public const int WM_TRIGGER_OPEN_SETTINGS = 0x040A;
-    public const int WM_TRIGGER_CREATE_IMPRESSION = 0x040B;
-    public const int WM_TRIGGER_DISCARD_STUDY = 0x040C;
-    public const int WM_TRIGGER_CHECK_UPDATES = 0x040D;
-    public const int WM_TRIGGER_SHOW_PICK_LISTS = 0x040E;
-    public const int WM_TRIGGER_CREATE_CRITICAL_NOTE = 0x040F;
+    public const int WM_TRIGGER_SCRAPE = 0x8001;
+    public const int WM_TRIGGER_DEBUG = 0x8002;
+    public const int WM_TRIGGER_BEEP = 0x8003;
+    public const int WM_TRIGGER_SHOW_REPORT = 0x8004;
+    public const int WM_TRIGGER_CAPTURE_SERIES = 0x8005;
+    public const int WM_TRIGGER_GET_PRIOR = 0x8006;
+    public const int WM_TRIGGER_TOGGLE_RECORD = 0x8007;
+    public const int WM_TRIGGER_PROCESS_REPORT = 0x8008;
+    public const int WM_TRIGGER_SIGN_REPORT = 0x8009;
+    public const int WM_TRIGGER_OPEN_SETTINGS = 0x800A;
+    public const int WM_TRIGGER_CREATE_IMPRESSION = 0x800B;
+    public const int WM_TRIGGER_DISCARD_STUDY = 0x800C;
+    public const int WM_TRIGGER_CHECK_UPDATES = 0x800D;
+    public const int WM_TRIGGER_SHOW_PICK_LISTS = 0x800E;
+    public const int WM_TRIGGER_CREATE_CRITICAL_NOTE = 0x800F;
 
     #endregion
 

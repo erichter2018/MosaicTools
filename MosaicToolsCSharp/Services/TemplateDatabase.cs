@@ -54,6 +54,7 @@ public class TemplateDatabaseData
 /// </summary>
 public class TemplateDatabase
 {
+    private static readonly object _saveLock = new();
     private TemplateDatabaseData _data = new();
     private static readonly string DbPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -110,7 +111,10 @@ public class TemplateDatabase
 
             var options = new JsonSerializerOptions { WriteIndented = true };
             var json = JsonSerializer.Serialize(_data, options);
-            File.WriteAllText(DbPath, json);
+            lock (_saveLock)
+            {
+                File.WriteAllText(DbPath, json);
+            }
         }
         catch (Exception ex)
         {

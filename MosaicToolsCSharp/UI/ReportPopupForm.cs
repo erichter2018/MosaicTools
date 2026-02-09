@@ -743,13 +743,17 @@ public class ReportPopupForm : Form
     {
         if (!IsHandleCreated || IsDisposed) return;
 
-        IntPtr screenDc = GetDC(IntPtr.Zero);
-        IntPtr memDc = CreateCompatibleDC(screenDc);
-        IntPtr hBitmap = bitmap.GetHbitmap(Color.FromArgb(0));
-        IntPtr oldBitmap = SelectObject(memDc, hBitmap);
+        IntPtr screenDc = IntPtr.Zero;
+        IntPtr memDc = IntPtr.Zero;
+        IntPtr hBitmap = IntPtr.Zero;
+        IntPtr oldBitmap = IntPtr.Zero;
 
         try
         {
+            screenDc = GetDC(IntPtr.Zero);
+            memDc = CreateCompatibleDC(screenDc);
+            hBitmap = bitmap.GetHbitmap(Color.FromArgb(0));
+            oldBitmap = SelectObject(memDc, hBitmap);
             var blend = new BLENDFUNCTION
             {
                 BlendOp = AC_SRC_OVER,
@@ -767,10 +771,10 @@ public class ReportPopupForm : Form
         }
         finally
         {
-            SelectObject(memDc, oldBitmap);
-            DeleteObject(hBitmap);
-            DeleteDC(memDc);
-            ReleaseDC(IntPtr.Zero, screenDc);
+            if (oldBitmap != IntPtr.Zero) SelectObject(memDc, oldBitmap);
+            if (hBitmap != IntPtr.Zero) DeleteObject(hBitmap);
+            if (memDc != IntPtr.Zero) DeleteDC(memDc);
+            if (screenDc != IntPtr.Zero) ReleaseDC(IntPtr.Zero, screenDc);
         }
     }
 
@@ -1293,7 +1297,7 @@ public class ReportPopupForm : Form
     private void FormatKeywords(RichTextBox rtb, string[] keywords)
     {
         float baseSize = rtb.Font.Size;
-        Font highlightFont = new Font(rtb.Font.FontFamily, baseSize + 2, FontStyle.Bold);
+        using var highlightFont = new Font(rtb.Font.FontFamily, baseSize + 2, FontStyle.Bold);
         Color highlightColor = Color.White;
 
         foreach (var word in keywords)

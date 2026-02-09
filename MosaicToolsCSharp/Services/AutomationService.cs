@@ -17,8 +17,8 @@ public class AutomationService : IDisposable
 {
     private readonly UIA3Automation _automation;
     
-    // Cached window for fast repeated scrapes
-    private AutomationElement? _cachedSlimHubWindow;
+    // Cached window for fast repeated scrapes (volatile: read from STA thread, written from scrape thread)
+    private volatile AutomationElement? _cachedSlimHubWindow;
 
     // Cached report document name (detected once, reused for fast lookups)
     // e.g., "RADPAIR" on Mosaic 2.0.3+, or contains "Report" on older versions
@@ -586,12 +586,14 @@ public class AutomationService : IDisposable
             var filename = $"openreport{timestamp}.{pid}.xml";
             var filepath = Path.Combine(XmlInFolder, filename);
 
+            var safeAccession = System.Security.SecurityElement.Escape(accession);
+            var safeMrn = System.Security.SecurityElement.Escape(mrn);
             var xml = $@"<Message>
   <Type>OpenReport</Type>
   <AccessionNumbers>
-    <AccessionNumber>{accession}</AccessionNumber>
+    <AccessionNumber>{safeAccession}</AccessionNumber>
   </AccessionNumbers>
-  <MedicalRecordNumber>{mrn}</MedicalRecordNumber>
+  <MedicalRecordNumber>{safeMrn}</MedicalRecordNumber>
 </Message>";
 
             File.WriteAllText(filepath, xml);
@@ -1054,12 +1056,14 @@ public class AutomationService : IDisposable
                     if (!isValid)
                     {
                         _cachedSlimHubWindow = null;
+                        _cachedReportDocName = null; // Clear stale doc name when window changes
                         Logger.Trace("GetFinalReportFast: Cached window invalid/closed.");
                     }
                 }
                 catch
                 {
                     _cachedSlimHubWindow = null;
+                    _cachedReportDocName = null;
                 }
             }
 
@@ -1672,6 +1676,7 @@ public class AutomationService : IDisposable
         {
             Logger.Trace($"GetFinalReportFast error: {ex.Message} ({sw.ElapsedMilliseconds}ms)");
             _cachedSlimHubWindow = null; // Invalidate cache on error
+            _cachedReportDocName = null;
         }
         
         return null;
@@ -2322,6 +2327,8 @@ public class AutomationService : IDisposable
 
     public void Dispose()
     {
+        _cachedSlimHubWindow = null;
+        _cachedReportDocName = null;
         _automation.Dispose();
     }
 }

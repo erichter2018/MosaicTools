@@ -27,6 +27,9 @@
     <!-- Trim unused code to reduce size -->
     <PublishTrimmed>false</PublishTrimmed>
     
+    <!-- Allow unsafe code for LockBits pixel access -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
     <!-- Enable Windows-specific APIs -->
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
   </PropertyGroup>

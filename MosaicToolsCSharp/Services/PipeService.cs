@@ -286,6 +286,7 @@ public class PipeService : IDisposable
     public void Dispose()
     {
         _cts.Cancel();
+        _cts.Dispose();
         try { _pipe?.Dispose(); } catch { }
         _pipe = null;
     }

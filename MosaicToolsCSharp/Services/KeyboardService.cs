@@ -53,6 +53,8 @@ public class KeyboardService : IDisposable
     private readonly ConcurrentDictionary<string, Action> _hotkeyActions = new();
     private readonly ConcurrentDictionary<string, Action> _directHotkeyActions = new();
     private volatile bool _isRecording = false;
+    private long _lastHookCallbackTicks = DateTime.UtcNow.Ticks;
+    private System.Threading.Timer? _hookHealthTimer;
     private Action<string>? _recordCallback;
     private readonly ConcurrentDictionary<string, DateTime> _lastTriggers = new();
 
@@ -75,6 +77,8 @@ public class KeyboardService : IDisposable
             else
             {
                 Logger.Trace("Keyboard hook started (Win32)");
+                // Start hook health monitor - reinstall if OS silently removed it
+                _hookHealthTimer ??= new System.Threading.Timer(CheckHookHealth, null, 60_000, 60_000);
             }
         }
         catch (Exception ex)
@@ -125,8 +129,30 @@ public class KeyboardService : IDisposable
         _recordCallback = callback;
     }
 
+    private void CheckHookHealth(object? state)
+    {
+        try
+        {
+            // If no callbacks for 5 minutes and we have hotkeys registered, reinstall hook
+            if (_hookId != IntPtr.Zero &&
+                (_hotkeyActions.Count > 0 || _directHotkeyActions.Count > 0) &&
+                (DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastHookCallbackTicks)) > TimeSpan.FromMinutes(5).Ticks)
+            {
+                Logger.Trace("Hook health: No callbacks for 5 min, reinstalling hook");
+                Stop();
+                Start();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Hook health check error: {ex.Message}");
+        }
+    }
+
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
+        Interlocked.Exchange(ref _lastHookCallbackTicks, DateTime.UtcNow.Ticks);
+
         if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN))
         {
             try
@@ -261,6 +287,8 @@ public class KeyboardService : IDisposable
 
     public void Dispose()
     {
+        _hookHealthTimer?.Dispose();
+        _hookHealthTimer = null;
         Stop();
     }
 }

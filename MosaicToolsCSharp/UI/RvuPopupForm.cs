@@ -15,6 +15,8 @@ public class RvuPopupForm : Form
 {
     private readonly Panel _innerPanel;
     private readonly List<Control> _metricControls = new();
+    private readonly Font _labelFont = new("Segoe UI", 8.5f);
+    private readonly Font _valueFont = new("Segoe UI", 8.5f, FontStyle.Bold);
 
     /// <summary>
     /// When true, the popup won't auto-hide on mouse leave (used for drawer mode).
@@ -52,9 +54,6 @@ public class RvuPopupForm : Form
         SuspendLayout();
         _innerPanel.SuspendLayout();
 
-        var labelFont = new Font("Segoe UI", 8.5f);
-        var valueFont = new Font("Segoe UI", 8.5f, FontStyle.Bold);
-
         int neededControls = metrics.Count * 2; // label + value per metric
         bool rebuild = _metricControls.Count != neededControls;
 
@@ -70,7 +69,7 @@ public class RvuPopupForm : Form
             {
                 var lblLabel = new Label
                 {
-                    Font = labelFont,
+                    Font = _labelFont,
                     ForeColor = Color.FromArgb(140, 140, 140),
                     BackColor = Color.Black,
                     AutoSize = true
@@ -81,7 +80,7 @@ public class RvuPopupForm : Form
 
                 var lblValue = new Label
                 {
-                    Font = valueFont,
+                    Font = _valueFont,
                     BackColor = Color.Black,
                     AutoSize = true
                 };
@@ -95,7 +94,7 @@ public class RvuPopupForm : Form
         int maxLabelWidth = 0;
         foreach (var (label, _, _) in metrics)
         {
-            var size = TextRenderer.MeasureText(label, labelFont);
+            var size = TextRenderer.MeasureText(label, _labelFont);
             if (size.Width > maxLabelWidth)
                 maxLabelWidth = size.Width;
         }
@@ -117,11 +116,11 @@ public class RvuPopupForm : Form
             lblValue.Text = value;
             lblValue.ForeColor = color;
 
-            var labelSize = TextRenderer.MeasureText(label, labelFont);
+            var labelSize = TextRenderer.MeasureText(label, _labelFont);
             lblLabel.Location = new Point(valueColumnX - labelSize.Width, y);
             lblValue.Location = new Point(valueColumnX + 2, y);
 
-            var valueSize = TextRenderer.MeasureText(value, valueFont);
+            var valueSize = TextRenderer.MeasureText(value, _valueFont);
             int right = valueColumnX + 2 + valueSize.Width;
             if (right > maxRight) maxRight = right;
 
@@ -163,5 +162,15 @@ public class RvuPopupForm : Form
             cp.ExStyle |= 0x80; // WS_EX_TOOLWINDOW - don't show in taskbar/alt-tab
             return cp;
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _labelFont.Dispose();
+            _valueFont.Dispose();
+        }
+        base.Dispose(disposing);
     }
 }

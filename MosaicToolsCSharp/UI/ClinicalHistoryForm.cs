@@ -1580,6 +1580,7 @@ public class ClinicalHistoryForm : Form
             _blinkTimer?.Dispose();
             _transparentDragMenu?.Dispose();
             _transparentContentMenu?.Dispose();
+            _borderTooltip?.Dispose();
         }
         base.Dispose(disposing);
     }

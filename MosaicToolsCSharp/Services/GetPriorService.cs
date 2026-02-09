@@ -57,7 +57,13 @@ public class GetPriorService
                 }
                 
                 var dayMatch = Regex.Match(rawDateStr, @"(\d{1,2})\s+\d");
-                string day = dayMatch.Success ? dayMatch.Groups[1].Value : "1";
+                string day = "1";
+                if (dayMatch.Success)
+                {
+                    var dayNum = int.Parse(dayMatch.Groups[1].Value);
+                    if (dayNum >= 1 && dayNum <= 31)
+                        day = dayNum.ToString();
+                }
                 priorDate = $"{monthNum}/{int.Parse(day)}/{year}";
                 
                 // Format time (remove seconds)
@@ -297,6 +303,7 @@ public class GetPriorService
         if (!match.Success) return "";
         
         var desc = match.Value;
+        desc = desc.Replace("OcX", "Oct");
         desc = desc.Replace("CTA - ", "CTA ");
         desc = desc.Replace("CTA", "CTAPLACEHOLDER");
         // Remove leading CT modality indicator(s) - handle cases where description also starts with "CT"
@@ -380,7 +387,7 @@ public class GetPriorService
         if (match.Success)
         {
             var term = match.Groups[1].Value;
-            var cleaned = Regex.Replace(text, $@"\s*\b{term}\b\s*", " ", RegexOptions.IgnoreCase);
+            var cleaned = Regex.Replace(text, $@"\s*\b{Regex.Escape(term)}\b\s*", " ", RegexOptions.IgnoreCase);
             return $"{term} {cleaned.Trim()}".Trim();
         }
         

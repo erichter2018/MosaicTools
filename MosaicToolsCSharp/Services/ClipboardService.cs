@@ -19,6 +19,8 @@ public static class ClipboardService
             {
                 if (Clipboard.ContainsText())
                     return Clipboard.GetText();
+                else
+                    Thread.Sleep(50);
             }
             catch
             {

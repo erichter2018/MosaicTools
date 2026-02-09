@@ -11,8 +11,12 @@ namespace MosaicTools.Services;
 /// </summary>
 public class Configuration
 {
+    private static readonly object _saveLock = new();
+
     public static readonly string SettingsPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        string.IsNullOrEmpty(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData))
+            ? AppContext.BaseDirectory
+            : Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "MosaicTools", "MosaicToolsSettings.json");
 
     /// <summary>
@@ -386,9 +390,17 @@ public class Configuration
             catch (Exception ex)
             {
                 Logger.Trace($"Error loading settings: {ex.Message}");
+                // Back up corrupt file before overwriting
+                try
+                {
+                    var backupPath = SettingsPath + ".corrupt";
+                    File.Copy(SettingsPath, backupPath, overwrite: true);
+                    Logger.Trace($"Backed up corrupt settings to {backupPath}");
+                }
+                catch { }
             }
         }
-        
+
         // First run - show onboarding
         return ShowOnboarding();
     }
@@ -564,7 +576,10 @@ public class Configuration
 
             var options = new JsonSerializerOptions { WriteIndented = true };
             var json = JsonSerializer.Serialize(this, options);
-            File.WriteAllText(SettingsPath, json);
+            lock (_saveLock)
+            {
+                File.WriteAllText(SettingsPath, json);
+            }
         }
         catch (Exception ex)
         {

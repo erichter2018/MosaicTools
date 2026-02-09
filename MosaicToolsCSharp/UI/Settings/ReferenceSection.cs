@@ -38,24 +38,24 @@ public class ReferenceSection : SettingsSection
 "Send Windows Messages to trigger actions from\r\n" +
 "AutoHotkey or other programs:\r\n" +
 "\r\n" +
-"WM_TRIGGER_SCRAPE = 0x0401        # Critical Findings\r\n" +
-"WM_TRIGGER_BEEP = 0x0403          # System Beep\r\n" +
-"WM_TRIGGER_SHOW_REPORT = 0x0404   # Show Report\r\n" +
-"WM_TRIGGER_CAPTURE_SERIES = 0x0405 # Capture Series\r\n" +
-"WM_TRIGGER_GET_PRIOR = 0x0406     # Get Prior\r\n" +
-"WM_TRIGGER_TOGGLE_RECORD = 0x0407 # Toggle Record\r\n" +
-"WM_TRIGGER_PROCESS_REPORT = 0x0408 # Process Report\r\n" +
-"WM_TRIGGER_SIGN_REPORT = 0x0409   # Sign Report\r\n" +
-"WM_TRIGGER_OPEN_SETTINGS = 0x040A # Open Settings\r\n" +
-"WM_TRIGGER_CREATE_IMPRESSION = 0x040B # Create Impression\r\n" +
-"WM_TRIGGER_DISCARD_STUDY = 0x040C # Discard Study\r\n" +
-"WM_TRIGGER_CHECK_UPDATES = 0x040D # Check for Updates\r\n" +
-"WM_TRIGGER_SHOW_PICK_LISTS = 0x040E # Show Pick Lists\r\n" +
-"WM_TRIGGER_CREATE_CRITICAL_NOTE = 0x040F # Create Critical Note\r\n" +
+"WM_TRIGGER_SCRAPE = 0x8001        # Critical Findings\r\n" +
+"WM_TRIGGER_BEEP = 0x8003          # System Beep\r\n" +
+"WM_TRIGGER_SHOW_REPORT = 0x8004   # Show Report\r\n" +
+"WM_TRIGGER_CAPTURE_SERIES = 0x8005 # Capture Series\r\n" +
+"WM_TRIGGER_GET_PRIOR = 0x8006     # Get Prior\r\n" +
+"WM_TRIGGER_TOGGLE_RECORD = 0x8007 # Toggle Record\r\n" +
+"WM_TRIGGER_PROCESS_REPORT = 0x8008 # Process Report\r\n" +
+"WM_TRIGGER_SIGN_REPORT = 0x8009   # Sign Report\r\n" +
+"WM_TRIGGER_OPEN_SETTINGS = 0x800A # Open Settings\r\n" +
+"WM_TRIGGER_CREATE_IMPRESSION = 0x800B # Create Impression\r\n" +
+"WM_TRIGGER_DISCARD_STUDY = 0x800C # Discard Study\r\n" +
+"WM_TRIGGER_CHECK_UPDATES = 0x800D # Check for Updates\r\n" +
+"WM_TRIGGER_SHOW_PICK_LISTS = 0x800E # Show Pick Lists\r\n" +
+"WM_TRIGGER_CREATE_CRITICAL_NOTE = 0x800F # Create Critical Note\r\n" +
 "\r\n" +
 "Example AHK:\r\n" +
 "DetectHiddenWindows, On\r\n" +
-"PostMessage, 0x0401, 0, 0,, ahk_class WindowsForms\r\n" +
+"PostMessage, 0x8001, 0, 0,, ahk_class WindowsForms\r\n" +
 "\r\n" +
 "=== Debug Tips ===\r\n" +
 "\r\n" +

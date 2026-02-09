@@ -230,7 +230,7 @@ public class ConnectivityDetailsForm : Form
                 BackColor = GetStateColor(status.State)
             };
             // Make it round
-            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            using var path = new System.Drawing.Drawing2D.GraphicsPath();
             path.AddEllipse(0, 0, 12, 12);
             dotPanel.Region = new Region(path);
             itemPanel.Controls.Add(dotPanel);

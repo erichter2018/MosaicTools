@@ -51,7 +51,7 @@ public class ConnectivityService : IDisposable
     private readonly Dictionary<string, ServerStatus> _statuses = new();
     private readonly Dictionary<string, List<double>> _latencyHistory = new(); // rolling history for avg
     private const int LatencyHistorySize = 10;
-    private bool _isChecking;
+    private int _isChecking; // int for Interlocked atomicity
     private bool _disposed;
 
     /// <summary>
@@ -136,13 +136,12 @@ public class ConnectivityService : IDisposable
     /// </summary>
     public async Task CheckNowAsync()
     {
-        if (_isChecking)
+        if (Interlocked.CompareExchange(ref _isChecking, 1, 0) != 0)
         {
             Logger.Trace("ConnectivityService: Check already in progress, skipping");
             return;
         }
 
-        _isChecking = true;
         try
         {
             var enabledServers = _config.ConnectivityServers.Where(s => s.Enabled && !string.IsNullOrWhiteSpace(s.Host)).ToList();
@@ -173,7 +172,7 @@ public class ConnectivityService : IDisposable
         }
         finally
         {
-            _isChecking = false;
+            Interlocked.Exchange(ref _isChecking, 0);
         }
     }
 

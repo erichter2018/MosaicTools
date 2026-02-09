@@ -63,10 +63,10 @@ static class Program
             // Enable dark mode for scrollbars, menus, etc (must be before visual styles)
             NativeWindows.EnableDarkMode();
 
-            // Enable visual styles
+            // Enable visual styles (SetHighDpiMode must be called first per MS docs)
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
             
             // Initialize configuration
             var config = Configuration.Load();
@@ -129,12 +129,25 @@ static class Program
                 File.Move(targetPath, oldPath);
             }
 
-            // Rename self to MosaicTools.exe
-            File.Move(exePath, targetPath);
+            // Rename self to MosaicTools.exe -- rollback if this fails
+            try
+            {
+                File.Move(exePath, targetPath);
+            }
+            catch
+            {
+                // Rollback: restore original MosaicTools.exe so the app isn't left broken
+                var oldPath = Path.Combine(exeDir, "MosaicTools_old.exe");
+                if (File.Exists(oldPath) && !File.Exists(targetPath))
+                {
+                    try { File.Move(oldPath, targetPath); } catch { }
+                }
+                return false;
+            }
 
             // Restart from the correct path - preserve command line arguments (especially -headless)
             var args = Environment.GetCommandLineArgs();
-            var argsToPass = args.Length > 1 ? string.Join(" ", args.Skip(1)) : "";
+            var argsToPass = args.Length > 1 ? string.Join(" ", args.Skip(1).Select(a => a.Contains(' ') ? $"\"{ a}\"" : a)) : "";
 
             var startInfo = new System.Diagnostics.ProcessStartInfo
             {
@@ -145,9 +158,9 @@ static class Program
             System.Diagnostics.Process.Start(startInfo);
             return true;
         }
-        catch
+        catch (Exception ex)
         {
-            // If rename fails, continue running with current name
+            Logger.Trace($"NormalizeExecutableName failed: {ex.Message}");
             return false;
         }
     }
@@ -193,6 +206,17 @@ static class Program
     {
         var ex = e.ExceptionObject as Exception;
         LogCrash($"UNHANDLED EXCEPTION (Terminating: {e.IsTerminating})", ex);
+
+        if (e.IsTerminating)
+        {
+            try
+            {
+                MessageBox.Show(
+                    $"MosaicTools encountered an unexpected error and needs to close.\n\n{ex?.Message}\n\nDetails saved to mosaic_crash_log.txt",
+                    "MosaicTools Crash", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch { }
+        }
     }
 
     /// <summary>

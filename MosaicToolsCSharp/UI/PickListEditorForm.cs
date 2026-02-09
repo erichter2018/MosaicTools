@@ -2760,4 +2760,13 @@ public class PickListEditorForm : Form
         _config.PickListEditorWidth = Width;
         _config.PickListEditorHeight = Height;
     }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _styleToolTip?.Dispose();
+        }
+        base.Dispose(disposing);
+    }
 }

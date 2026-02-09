@@ -35,6 +35,8 @@ public class MainForm : Form
 
     // RVU multi-metric support
     private readonly List<Label> _rvuMetricLabels = new();
+    private static readonly Font _metricFontBold = new("Segoe UI", 9, FontStyle.Bold);
+    private static readonly Font _metricFontRegular = new("Segoe UI", 9, FontStyle.Regular);
     private System.Windows.Forms.Timer? _carouselTimer;
     private int _carouselIndex;
     private RvuPopupForm? _rvuPopup;
@@ -218,7 +220,7 @@ public class MainForm : Form
                 Tag = serverNames[i]
             };
             // Make it round
-            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            using var path = new System.Drawing.Drawing2D.GraphicsPath();
             path.AddEllipse(0, 0, dotSize, dotSize);
             _connectivityDots[i].Region = new Region(path);
             _connectivityDots[i].Click += OnConnectivityPanelClick;
@@ -650,7 +652,7 @@ public class MainForm : Form
         return new Label
         {
             Text = text,
-            Font = new Font("Segoe UI", 9, style),
+            Font = style == FontStyle.Bold ? _metricFontBold : _metricFontRegular,
             ForeColor = foreColor,
             BackColor = Color.Black,
             AutoSize = true
@@ -833,32 +835,6 @@ public class MainForm : Form
         timer.Start();
     }
 
-    private void CenterRvuLabels()
-    {
-        // Legacy centering - kept for compatibility but no longer primary
-        int totalWidth = _rvuValueLabel.PreferredWidth;
-        if (_rvuSeparatorLabel.Visible)
-            totalWidth += _rvuSeparatorLabel.PreferredWidth;
-        if (_rvuSuffixLabel.Visible)
-            totalWidth += _rvuSuffixLabel.PreferredWidth;
-
-        int startX = Math.Max(2, (_rvuPanel.Width - totalWidth) / 2);
-        int centerY = (_rvuPanel.Height - _rvuValueLabel.PreferredHeight) / 2;
-
-        _rvuValueLabel.Location = new Point(startX, centerY);
-        int nextX = _rvuValueLabel.Right;
-
-        if (_rvuSeparatorLabel.Visible)
-        {
-            _rvuSeparatorLabel.Location = new Point(nextX, centerY);
-            nextX = _rvuSeparatorLabel.Right;
-        }
-
-        if (_rvuSuffixLabel.Visible)
-        {
-            _rvuSuffixLabel.Location = new Point(nextX, centerY);
-        }
-    }
 
     #region Connectivity Monitor
 
@@ -1284,6 +1260,7 @@ public class MainForm : Form
         restartBtn.FlatAppearance.BorderSize = 0;
         restartBtn.Click += (_, _) =>
         {
+            _activeToasts.Remove(toast);
             toast.Close();
             UpdateService.RestartApp();
         };
@@ -1322,8 +1299,10 @@ public class MainForm : Form
     private void RepositionToasts()
     {
         // Stack from bottom-right upwards
-        var screenW = Screen.PrimaryScreen!.WorkingArea.Width;
-        var screenH = Screen.PrimaryScreen.WorkingArea.Height;
+        var screen = Screen.FromControl(this);
+        var workingArea = screen.WorkingArea;
+        var screenW = workingArea.Width;
+        var screenH = workingArea.Height;
         int currentY = screenH - 100;
         
         foreach (var toast in _activeToasts.AsEnumerable().Reverse())
@@ -1840,8 +1819,8 @@ public class MainForm : Form
 
     protected override void WndProc(ref Message m)
     {
-        // Log custom messages in our range (0x0400-0x040F)
-        if (m.Msg >= 0x0400 && m.Msg <= 0x040F)
+        // Log custom messages in our range (0x8001-0x800F)
+        if (m.Msg >= 0x8001 && m.Msg <= 0x800F)
         {
             Logger.Trace($"WndProc received message 0x{m.Msg:X4} from HWND {m.WParam}");
         }
@@ -1894,7 +1873,7 @@ public class MainForm : Form
                 break;
             case NativeWindows.WM_TRIGGER_CHECK_UPDATES:
                 Logger.Trace("WndProc: Triggering CheckForUpdates");
-                BeginInvoke(async () => await CheckForUpdatesManualAsync());
+                BeginInvoke(() => { _ = CheckForUpdatesManualAsync(); });
                 break;
             case NativeWindows.WM_TRIGGER_SHOW_PICK_LISTS:
                 Logger.Trace("WndProc: Triggering ShowPickLists");

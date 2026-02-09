@@ -128,6 +128,7 @@ public class CriticalStudiesPopup : Form
                         var menu = new ContextMenuStrip();
                         var removeItem = menu.Items.Add("Remove");
                         removeItem.Click += (ms, me) => RemoveSelectedEntry();
+                        menu.Closed += (ms, me) => menu.Dispose();
                         menu.Show(_listBox, e.Location);
                     }
                 }

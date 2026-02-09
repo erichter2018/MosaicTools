@@ -74,13 +74,18 @@ internal static class LayeredWindowHelper
     {
         if (!form.IsHandleCreated || form.IsDisposed) return;
 
-        IntPtr screenDc = GetDC(IntPtr.Zero);
-        IntPtr memDc = CreateCompatibleDC(screenDc);
-        IntPtr hBitmap = bitmap.GetHbitmap(Color.FromArgb(0));
-        IntPtr oldBitmap = SelectObject(memDc, hBitmap);
+        IntPtr screenDc = IntPtr.Zero;
+        IntPtr memDc = IntPtr.Zero;
+        IntPtr hBitmap = IntPtr.Zero;
+        IntPtr oldBitmap = IntPtr.Zero;
 
         try
         {
+            screenDc = GetDC(IntPtr.Zero);
+            memDc = CreateCompatibleDC(screenDc);
+            hBitmap = bitmap.GetHbitmap(Color.FromArgb(0));
+            oldBitmap = SelectObject(memDc, hBitmap);
+
             var blend = new BLENDFUNCTION
             {
                 BlendOp = AC_SRC_OVER,
@@ -98,10 +103,10 @@ internal static class LayeredWindowHelper
         }
         finally
         {
-            SelectObject(memDc, oldBitmap);
-            DeleteObject(hBitmap);
-            DeleteDC(memDc);
-            ReleaseDC(IntPtr.Zero, screenDc);
+            if (oldBitmap != IntPtr.Zero) SelectObject(memDc, oldBitmap);
+            if (hBitmap != IntPtr.Zero) DeleteObject(hBitmap);
+            if (memDc != IntPtr.Zero) DeleteDC(memDc);
+            if (screenDc != IntPtr.Zero) ReleaseDC(IntPtr.Zero, screenDc);
         }
     }
 

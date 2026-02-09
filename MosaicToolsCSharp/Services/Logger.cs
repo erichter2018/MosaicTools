@@ -9,7 +9,9 @@ namespace MosaicTools.Services;
 /// </summary>
 public static class Logger
 {
-    private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "mosaic_setup_trace.txt");
+    private static readonly string LogPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "MosaicTools", "mosaic_tools_log.txt");
     private static readonly object _lock = new();
     private const long MaxFileSize = 1024 * 1024; // 1MB
 
@@ -19,6 +21,8 @@ public static class Logger
         {
             lock (_lock)
             {
+                Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
+
                 var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
                 var line = $"{timestamp}: {message}\n";
 
@@ -45,11 +49,19 @@ public static class Logger
     {
         try
         {
-            // Read all lines, keep the last 50% to leave room for new entries
-            var lines = File.ReadAllLines(LogPath);
-            var keepCount = lines.Length / 2;
-            var linesToKeep = lines[^keepCount..]; // Keep last half
-            File.WriteAllLines(LogPath, linesToKeep);
+            var fi = new FileInfo(LogPath);
+            if (fi.Length < 1024 * 1024) return; // Only trim at 1MB
+
+            // Read bytes and find newline near the midpoint
+            var bytes = File.ReadAllBytes(LogPath);
+            int mid = bytes.Length / 2;
+            // Find next newline after midpoint
+            while (mid < bytes.Length && bytes[mid] != (byte)'\n') mid++;
+            if (mid < bytes.Length) mid++; // Skip past the newline
+
+            // Write second half
+            using var fs = new FileStream(LogPath, FileMode.Create, FileAccess.Write);
+            fs.Write(bytes, mid, bytes.Length - mid);
         }
         catch
         {

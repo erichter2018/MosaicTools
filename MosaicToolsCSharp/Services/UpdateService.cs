@@ -52,7 +52,7 @@ public class UpdateService
 
             // Use 15 second timeout for the API check
             using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(15));
-            var response = await _httpClient.GetAsync(GitHubApiUrl, cts.Token);
+            using var response = await _httpClient.GetAsync(GitHubApiUrl, cts.Token);
             if (!response.IsSuccessStatusCode)
             {
                 Logger.Trace($"GitHub API returned {response.StatusCode}");
@@ -128,7 +128,7 @@ public class UpdateService
         try
         {
             var exePath = Application.ExecutablePath;
-            var exeDir = Path.GetDirectoryName(exePath) ?? ".";
+            var exeDir = Path.GetDirectoryName(exePath) ?? AppContext.BaseDirectory;
             var newExePath = Path.Combine(exeDir, "MosaicTools_new.exe");
             var oldExePath = Path.Combine(exeDir, "MosaicTools_old.exe");
             var isZipDownload = DownloadUrl.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
@@ -146,13 +146,13 @@ public class UpdateService
             var totalBytes = response.Content.Headers.ContentLength ?? -1;
             var downloadedBytes = 0L;
 
-            await using var contentStream = await response.Content.ReadAsStreamAsync();
+            await using var contentStream = await response.Content.ReadAsStreamAsync(cts.Token);
             await using var fileStream = new FileStream(downloadPath, FileMode.Create, FileAccess.Write, FileShare.None);
 
             var buffer = new byte[81920];
             int bytesRead;
 
-            while ((bytesRead = await contentStream.ReadAsync(buffer)) > 0)
+            while ((bytesRead = await contentStream.ReadAsync(buffer, cts.Token)) > 0)
             {
                 await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead));
                 downloadedBytes += bytesRead;
@@ -216,8 +216,17 @@ public class UpdateService
             // Rename current exe to _old (Windows allows renaming running exe)
             File.Move(exePath, oldExePath);
 
-            // Rename new exe to current name
-            File.Move(newExePath, exePath);
+            // Rename new exe to current name -- rollback first rename on failure
+            try
+            {
+                File.Move(newExePath, exePath);
+            }
+            catch
+            {
+                // Rollback: restore original exe name so the app isn't left broken
+                try { File.Move(oldExePath, exePath); } catch { }
+                throw;
+            }
 
             Logger.Trace("Update files ready, restart required");
             UpdateReady = true;
@@ -228,7 +237,7 @@ public class UpdateService
             Logger.Trace($"Download failed: {ex.Message}");
 
             // Try to clean up
-            var exeDir = Path.GetDirectoryName(Application.ExecutablePath) ?? ".";
+            var exeDir = Path.GetDirectoryName(Application.ExecutablePath) ?? AppContext.BaseDirectory;
             var newExePath = Path.Combine(exeDir, "MosaicTools_new.exe");
             var zipPath = Path.Combine(exeDir, "MosaicTools_update.zip");
 
@@ -257,7 +266,7 @@ public class UpdateService
         {
             // Preserve original command line arguments (especially -headless)
             var args = Environment.GetCommandLineArgs();
-            var argsToPass = args.Length > 1 ? string.Join(" ", args.Skip(1)) : "";
+            var argsToPass = args.Length > 1 ? string.Join(" ", args.Skip(1).Select(a => a.Contains(' ') ? $"\"{a}\"" : a)) : "";
 
             Logger.Trace($"Restarting app for update (args: '{argsToPass}')...");
 
@@ -284,15 +293,25 @@ public class UpdateService
     {
         try
         {
-            var exeDir = Path.GetDirectoryName(Application.ExecutablePath) ?? ".";
+            var exeDir = Path.GetDirectoryName(Application.ExecutablePath) ?? AppContext.BaseDirectory;
             var oldExePath = Path.Combine(exeDir, "MosaicTools_old.exe");
+            var zipPath = Path.Combine(exeDir, "MosaicTools_update.zip");
+            var didCleanup = false;
 
             if (File.Exists(oldExePath))
             {
                 File.Delete(oldExePath);
                 Logger.Trace("Cleaned up old version - just updated");
-                return true;
+                didCleanup = true;
             }
+
+            // Clean up leftover zip from interrupted update
+            if (File.Exists(zipPath))
+            {
+                try { File.Delete(zipPath); } catch { }
+            }
+
+            if (didCleanup) return true;
         }
         catch (Exception ex)
         {

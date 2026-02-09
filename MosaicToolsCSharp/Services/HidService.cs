@@ -62,7 +62,7 @@ public class HidService : IDisposable
     };
 
     private HidDevice? _device;
-    private HidStream? _stream;
+    private volatile HidStream? _stream;
     private Thread? _listenerThread;
     private volatile bool _running;
     private bool _isPhilips;
@@ -187,6 +187,11 @@ public class HidService : IDisposable
                 }
                 catch
                 {
+                    if (lastRecordDown)
+                    {
+                        lastRecordDown = false;
+                        RecordButtonStateChanged?.Invoke(false);
+                    }
                     Disconnect();
                     continue;
                 }

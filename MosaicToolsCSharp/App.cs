@@ -10,5 +10,5 @@ public static class App
     /// In headless mode: no widget bar, no hotkeys, no indicator.
     /// PowerMic, floating buttons, toasts, and Windows messages still work.
     /// </summary>
-    public static bool IsHeadless { get; set; } = false;
+    public static bool IsHeadless { get; internal set; } = false;
 }

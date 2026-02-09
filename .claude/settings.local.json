@@ -1,19 +1,15 @@
 {
   "permissions": {
     "allow": [
+      "Bash(powershell.exe:*)",
+      "Bash(powershell:*)",
+      "Bash(git:*)",
       "Bash(dir:*)",
       "Bash(findstr:*)",
-      "Bash(powershell -Command:*)",
-      "Bash(cmd /c \"dir /b /ad C:\\\\Users\\\\erik.richter\\\\AppData\\\\Local\\\\*claude* 2>nul\")",
-      "Bash(c:Userserik.richterDesktopdotnetdotnet.exe build MosaicTools.csproj)",
       "Bash(chmod:*)",
-      "Bash(/c/Users/erik.richter/Desktop/dotnet/dotnet.exe build:*)",
-      "Bash(git add:*)",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\nFix number keys not working in hotkey capture fields\n\nThe hotkey capture UI used Keys.D6.ToString\\(\\) which produced \"D6\", but\nKeyboardService.VKToName produced \"6\" - so number-key hotkeys silently\nfailed to match. Also added PreviewKeyDown handler for Alt combinations\nand NumPad key support.\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "WebSearch",
-      "Bash(powershell -ExecutionPolicy Bypass -File \"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\read_shortcuts.ps1\")",
-      "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(/c/Users/erik.richter/Desktop/dotnet/dotnet.exe:*)",
+      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\":*)",
+      "WebSearch"
     ]
   }
 }

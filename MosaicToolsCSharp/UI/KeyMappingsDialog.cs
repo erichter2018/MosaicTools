@@ -21,6 +21,7 @@ public class KeyMappingsDialog : Form
     private readonly bool _isHeadless;
     private readonly Dictionary<string, TextBox> _hotkeyBoxes = new();
     private readonly Dictionary<string, ComboBox> _micCombos = new();
+    private ToolTip _toolTip = null!;
     private ComboBox _deviceCombo = null!;
     private Label _deviceStatusLabel = null!;
 
@@ -168,7 +169,7 @@ public class KeyMappingsDialog : Form
             [Actions.CreateCriticalNote] = "Create Critical Communication Note in Clario for current study."
         };
 
-        var toolTip = new ToolTip
+        _toolTip = new ToolTip
         {
             AutoPopDelay = 15000,
             InitialDelay = 300,
@@ -193,7 +194,7 @@ public class KeyMappingsDialog : Form
 
             if (actionDescriptions.TryGetValue(action, out var desc))
             {
-                toolTip.SetToolTip(lbl, desc);
+                _toolTip.SetToolTip(lbl, desc);
             }
 
             if (!_isHeadless)
@@ -375,6 +376,15 @@ public class KeyMappingsDialog : Form
         _controller.RefreshServices();
         DialogResult = DialogResult.OK;
         Close();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _toolTip.Dispose();
+        }
+        base.Dispose(disposing);
     }
 
     private void SaveMappingsForDevice(Dictionary<string, ActionMapping> targetMappings, bool isSpeechMike)

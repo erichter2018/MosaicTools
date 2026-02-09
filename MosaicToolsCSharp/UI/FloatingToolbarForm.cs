@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Linq;
 using System.Windows.Forms;
 using MosaicTools.Services;
 
@@ -136,7 +137,10 @@ public class FloatingToolbarForm : Form
     
     private void RenderButtons()
     {
+        // Dispose old controls before clearing
+        var oldControls = _buttonFrame.Controls.Cast<Control>().ToList();
         _buttonFrame.Controls.Clear();
+        foreach (var ctrl in oldControls) ctrl.Dispose();
 
         var buttons = _config.FloatingButtons.Buttons;
         int columns = _config.FloatingButtons.Columns;

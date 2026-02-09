@@ -13,10 +13,10 @@ public static class InputBox
     public static string Show(string prompt, string title, string defaultValue = "", bool multiline = false)
     {
         using var form = new Form();
-        using var label = new Label();
-        using var textBox = new TextBox();
-        using var buttonOk = new Button();
-        using var buttonCancel = new Button();
+        var label = new Label();
+        var textBox = new TextBox();
+        var buttonOk = new Button();
+        var buttonCancel = new Button();
 
         form.Text = title;
         label.Text = prompt;

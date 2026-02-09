@@ -63,7 +63,7 @@ public class OcrService
             ms.Position = 0;
             
             var decoder = await BitmapDecoder.CreateAsync(ms.AsRandomAccessStream());
-            var softwareBitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+            using var softwareBitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
             
             // Run OCR
             var result = await _engine.RecognizeAsync(softwareBitmap);
@@ -168,18 +168,35 @@ public class OcrService
             // List of detected yellow points (relative to bitmap)
             var yellowPoints = new System.Collections.Generic.List<Point>();
             
-            // 1. Scan for yellow pixels
-            for (int y = 0; y < vScreenHeight; y += 4) // Step 4 for speed (large box = many pixels)
+            // 1. Scan for yellow pixels using LockBits for performance
+            var bmpData = screenshot.LockBits(new Rectangle(0, 0, vScreenWidth, vScreenHeight),
+                System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            try
             {
-                for (int x = 0; x < vScreenWidth; x += 4)
+                unsafe
                 {
-                    var pixel = screenshot.GetPixel(x, y);
-                    // Yellow detection: R > 180, G > 160, B < 120
-                    if (pixel.R > 180 && pixel.G > 160 && pixel.B < 120)
+                    byte* scan0 = (byte*)bmpData.Scan0;
+                    int stride = bmpData.Stride;
+                    for (int y = 0; y < vScreenHeight; y += 4) // Step 4 for speed (large box = many pixels)
                     {
-                        yellowPoints.Add(new Point(x, y));
+                        for (int x = 0; x < vScreenWidth; x += 4)
+                        {
+                            byte* pixel = scan0 + y * stride + x * 4;
+                            byte pb = pixel[0]; // Blue
+                            byte pg = pixel[1]; // Green
+                            byte pr = pixel[2]; // Red
+                            // Yellow detection: R > 180, G > 160, B < 120
+                            if (pr > 180 && pg > 160 && pb < 120)
+                            {
+                                yellowPoints.Add(new Point(x, y));
+                            }
+                        }
                     }
                 }
+            }
+            finally
+            {
+                screenshot.UnlockBits(bmpData);
             }
             
             Logger.Trace($"Yellow scan found {yellowPoints.Count} points (step 4)");
@@ -368,8 +385,12 @@ public class OcrService
                     // If separator is ambiguous (looks like a digit/letter), enforce strict rules
                     // to avoid false positives (e.g. dates, or just "Image 1 of 5")
                     bool isAmbiguous = separator == "1" || separator == "I" || separator == "l";
-                    
+
                     // Rule: Current image must be <= Total images (and Total > 0)
+                    // When separator is ambiguous, also require image <= series to reduce OCR false positives
+                    if (isAmbiguous && finalSeries != null && int.TryParse(finalSeries, out int seriesNum) && current > seriesNum)
+                        continue;
+
                     if (total > 0 && current <= total)
                     {
                         finalImage = current.ToString();
