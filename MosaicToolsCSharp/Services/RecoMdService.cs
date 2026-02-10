@@ -120,11 +120,12 @@ public class RecoMdService : IDisposable
     {
         try
         {
-            Logger.Trace($"RecoMD: Report text FULL ({reportText.Length} chars):\n---BEGIN---\n{reportText}\n---END---");
             var content = new StringContent(reportText, Encoding.UTF8, "text/plain");
             var resp = await _http.PostAsync($"{BaseUrl}/dictation/report/{accession}", content);
 
-            Logger.Trace($"RecoMD: Send report text for {accession} ({reportText.Length} chars) → {(int)resp.StatusCode}");
+            var preview = reportText.Length > 200 ? reportText.Substring(0, 200) : reportText;
+            preview = preview.Replace("\r", "").Replace("\n", " ");
+            Logger.Trace($"RecoMD: Send report text for {accession} ({reportText.Length} chars) → {(int)resp.StatusCode}: {preview}");
             return resp.IsSuccessStatusCode;
         }
         catch (Exception ex)

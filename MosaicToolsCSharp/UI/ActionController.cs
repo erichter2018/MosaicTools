@@ -229,12 +229,9 @@ public class ActionController : IDisposable
         _hidService.SetPreferredDevice(_config.PreferredMicrophone);
         _hidService.Start();
 
-        // Register hotkeys (skip in headless mode)
-        if (!App.IsHeadless)
-        {
-            RegisterHotkeys();
-            _keyboardService.Start();
-        }
+        // Register hotkeys
+        RegisterHotkeys();
+        _keyboardService.Start();
 
         // Start background dictation sync (skip in headless mode)
         if (!App.IsHeadless && _config.IndicatorEnabled)
@@ -269,6 +266,7 @@ public class ActionController : IDisposable
         _getPriorService = new GetPriorService(_config.ComparisonTemplate);
         _hidService.SetPreferredDevice(_config.PreferredMicrophone);
         RegisterHotkeys();
+        _keyboardService.Start(); // ensure hook is running (idempotent)
 
         // Restart scraper to pick up any interval changes
         ToggleMosaicScraper(true);

@@ -1,3 +1,7 @@
+3.5.1
+- Fix hotkeys not working in headless mode
+- Reduce verbose RecoMD logging
+
 3.5.0
 - RecoMD integration: send report data to RecoMD for best practice recommendations
 - RecoMD auto-send option after Process Report
