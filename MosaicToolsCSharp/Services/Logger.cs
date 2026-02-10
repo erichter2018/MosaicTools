@@ -12,6 +12,7 @@ public static class Logger
     private static readonly string LogPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "MosaicTools", "mosaic_tools_log.txt");
+    public static string LogFilePath => LogPath;
     private static readonly object _lock = new();
     private const long MaxFileSize = 1024 * 1024; // 1MB
 

@@ -288,6 +288,7 @@ public class MainForm : Form
         // Context menu (for normal mode right-click)
         var contextMenu = new ContextMenuStrip();
         contextMenu.Items.Add("Settings", null, (_, _) => OpenSettings());
+        contextMenu.Items.Add("Show Log", null, (_, _) => ShowLogFile());
         contextMenu.Items.Add("Reload", null, (_, _) => ReloadApp());
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Exit", null, (_, _) => ExitApp());
@@ -296,6 +297,7 @@ public class MainForm : Form
         // Always create system tray icon
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("Settings", null, (_, _) => OpenSettings());
+        trayMenu.Items.Add("Show Log", null, (_, _) => ShowLogFile());
         trayMenu.Items.Add(new ToolStripSeparator());
         trayMenu.Items.Add("Exit", null, (_, _) => ExitApp());
 
@@ -1735,6 +1737,15 @@ public class MainForm : Form
         Application.Exit();
     }
     
+    private void ShowLogFile()
+    {
+        var logPath = Logger.LogFilePath;
+        if (File.Exists(logPath))
+            System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{logPath}\"");
+        else
+            System.Diagnostics.Process.Start("explorer.exe", Path.GetDirectoryName(logPath)!);
+    }
+
     private void ExitApp()
     {
         _controller.Stop();
@@ -1833,7 +1844,14 @@ public class MainForm : Form
 
     protected override void WndProc(ref Message m)
     {
-        // Log custom messages in our range (0x8001-0x800F)
+        // Legacy compat: translate old 0x04xx messages to new 0x80xx range (remove eventually)
+        if (m.Msg >= NativeWindows.WM_LEGACY_OFFSET && m.Msg <= NativeWindows.WM_LEGACY_END)
+        {
+            Logger.Trace($"WndProc: Legacy message 0x{m.Msg:X4} → 0x{m.Msg - NativeWindows.WM_LEGACY_OFFSET + 0x8001:X4}");
+            m.Msg = m.Msg - NativeWindows.WM_LEGACY_OFFSET + 0x8001;
+        }
+
+        // Log custom messages in our range
         if (m.Msg >= 0x8001 && m.Msg <= 0x8011)
         {
             Logger.Trace($"WndProc received message 0x{m.Msg:X4} from HWND {m.WParam}");

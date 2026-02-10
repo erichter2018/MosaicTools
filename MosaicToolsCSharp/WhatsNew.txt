@@ -1,3 +1,8 @@
+3.5.2
+- Backward compatibility for legacy AHK message IDs (0x04xx)
+- Right-click "Show Log" option on main bar and tray icon
+- RadAI and RecoMD message endpoints documented in Reference section
+
 3.5.1
 - Fix hotkeys not working in headless mode
 - Reduce verbose RecoMD logging

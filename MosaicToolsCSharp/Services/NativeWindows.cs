@@ -584,6 +584,10 @@ public static class NativeWindows
     public const int WM_TRIGGER_RADAI_IMPRESSION = 0x8010;
     public const int WM_TRIGGER_RECOMD = 0x8011;
 
+    // Legacy message range (v3.1.x) — kept for backward compat with old AHK scripts, remove eventually
+    public const int WM_LEGACY_OFFSET = 0x0401;  // old range started at 0x0401
+    public const int WM_LEGACY_END = 0x040F;      // old range ended at 0x040F
+
     #endregion
 
     #region WM_COPYDATA IPC (for RVUCounter integration)

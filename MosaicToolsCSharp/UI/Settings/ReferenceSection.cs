@@ -52,6 +52,8 @@ public class ReferenceSection : SettingsSection
 "WM_TRIGGER_CHECK_UPDATES = 0x800D # Check for Updates\r\n" +
 "WM_TRIGGER_SHOW_PICK_LISTS = 0x800E # Show Pick Lists\r\n" +
 "WM_TRIGGER_CREATE_CRITICAL_NOTE = 0x800F # Create Critical Note\r\n" +
+"WM_TRIGGER_RADAI_IMPRESSION = 0x8010 # RadAI Impression\r\n" +
+"WM_TRIGGER_RECOMD = 0x8011           # RecoMD\r\n" +
 "\r\n" +
 "Example AHK:\r\n" +
 "DetectHiddenWindows, On\r\n" +
