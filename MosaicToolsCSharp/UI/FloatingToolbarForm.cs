@@ -188,9 +188,9 @@ public class FloatingToolbarForm : Form
             var btn = new Button
             {
                 Text = !string.IsNullOrEmpty(btnCfg.Icon) ? btnCfg.Icon : btnCfg.Label,
-                Font = isWide 
+                Font = isWide
                     ? new Font("Segoe UI", 9, FontStyle.Bold)
-                    : new Font("Segoe UI Symbol", 14, FontStyle.Bold),
+                    : new Font("Segoe UI Symbol", 9, FontStyle.Bold),
                 ForeColor = offWhite,
                 BackColor = Color.Black,
                 FlatStyle = FlatStyle.Flat,

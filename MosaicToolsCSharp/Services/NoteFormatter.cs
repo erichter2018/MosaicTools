@@ -32,17 +32,22 @@ public class NoteFormatter
             var segments = new List<string>();
 
             // Prefer title-based matches (Dr., Nurse, NP, PA, etc.) — most reliable
-            var namePattern = @"((?:Dr\.?|Nurse|NP|PA|RN|MD)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is|and|&|connected|contacted|spoke|discussed|transferred|called|notified|informed|reached|paged)\b|\s*[-;:,]|\s+(?:Dr\.?|Nurse|NP|PA|RN|MD)|\s+\d{2}/\d{2}/|$)";
+            // \b prevents matching inside words (e.g. "RN" in "Eastern")
+            var namePattern = @"(\b(?:Dr\.?|Nurse|NP|PA|RN|MD|DO)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is|and|&|connected|contacted|spoke|discussed|transferred|called|notified|informed|reached|paged)\b|\s*[-;:,]|\s+\b(?:Dr\.?|Nurse|NP|PA|RN|MD|DO)|\s+\d{2}/\d{2}/|$)";
             var nameMatches = Regex.Matches(rawText, namePattern, RegexOptions.IgnoreCase);
             foreach (Match m in nameMatches)
             {
                 segments.Add(m.Groups[1].Value);
             }
 
-            // Fallback: verb-based extraction (only if no title-based match found)
+            string? titleAndName = TryExtractName(segments);
+
+            // Fallback: verb-based extraction if title-based found nothing usable
+            // (e.g. all title matches were the current doctor)
             // Negative lookbehind prevents matching passive "to be connected" / "been connected"
-            if (segments.Count == 0)
+            if (titleAndName == null)
             {
+                segments.Clear();
                 var verbPattern = @"(?<!\bto\s+be\s+)(?<!\bbeen\s+)(?:Transferred|Connected\s+with|Connected\s+to|Connected|Was\s+connected\s+with|Spoke\s+to|Spoke\s+with|Discussed\s+with)\s+(.+?)(?=\s+(?:at|@|said|confirmed|stated|reported|declined|who|are|is)|\s*[-;:,]|\s+\d{2}/\d{2}/|$)";
                 var verbMatch = Regex.Match(rawText, verbPattern, RegexOptions.IgnoreCase);
                 if (verbMatch.Success)
@@ -51,35 +56,10 @@ public class NoteFormatter
                     var parts = Regex.Split(fullSegment, @"\s+(?:to|with|w/|and|&)\s+", RegexOptions.IgnoreCase);
                     segments.AddRange(parts);
                 }
+                titleAndName = TryExtractName(segments);
             }
-            
-            string titleAndName = "Dr. / Nurse [Name not found]";
-            foreach (var s in segments)
-            {
-                var cleaned = s.Trim();
-                cleaned = Regex.Replace(cleaned, @"^(?:with|to|at|from|and|@|w/)\s+", "", RegexOptions.IgnoreCase);
 
-                // Skip if it's the current doctor or too short
-                // Check both "Firstname Lastname" and "Lastname, Firstname" formats
-                bool isCurrentDoctor = false;
-                if (!string.IsNullOrWhiteSpace(_doctorName))
-                {
-                    var nameParts = _doctorName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    // If any part of the doctor's name appears in this segment, skip it
-                    // Exclude common titles (Dr, Dr., Nurse, etc.) so they don't match every name
-                    isCurrentDoctor = nameParts.Any(part =>
-                        part.Length > 2
-                        && !TitleWords.Contains(part.TrimEnd('.', ','))
-                        && cleaned.Contains(part, StringComparison.OrdinalIgnoreCase));
-                }
-
-                if (!isCurrentDoctor && cleaned.Length > 2)
-                {
-                    cleaned = Regex.Split(cleaned, @"\s+(?:to|at|@|w/)\s+|[-;:,]", RegexOptions.IgnoreCase)[0];
-                    titleAndName = ToTitleCase(cleaned);
-                    break;
-                }
-            }
+            titleAndName ??= "Dr. / Nurse [Name not found]";
             
             // 2. Extract End Timestamp
             var endMatch = Regex.Match(rawText, @"(\d{2}/\d{2}/\d{4})\s+(\d{1,2}:\d{2}\s*(?:AM|PM))", RegexOptions.IgnoreCase);
@@ -342,6 +322,36 @@ public class NoteFormatter
 
         // Fallback: can't resolve zones, return original with target abbreviation
         return (sourceTime, GetTimezoneAbbreviation(_targetTimezone));
+    }
+
+    /// <summary>
+    /// Try to extract a usable name from a list of candidate segments.
+    /// Returns null if no usable name found (all are current doctor or too short).
+    /// </summary>
+    private string? TryExtractName(List<string> segments)
+    {
+        foreach (var s in segments)
+        {
+            var cleaned = s.Trim();
+            cleaned = Regex.Replace(cleaned, @"^(?:with|to|at|from|and|@|w/)\s+", "", RegexOptions.IgnoreCase);
+
+            bool isCurrentDoctor = false;
+            if (!string.IsNullOrWhiteSpace(_doctorName))
+            {
+                var nameParts = _doctorName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                isCurrentDoctor = nameParts.Any(part =>
+                    part.Length > 2
+                    && !TitleWords.Contains(part.TrimEnd('.', ','))
+                    && cleaned.Contains(part, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (!isCurrentDoctor && cleaned.Length > 2)
+            {
+                cleaned = Regex.Split(cleaned, @"\s+(?:to|at|@|w/)\s+|[-;:,]", RegexOptions.IgnoreCase)[0];
+                return ToTitleCase(cleaned);
+            }
+        }
+        return null;
     }
 
     /// <summary>Titles to ignore when matching DoctorName parts against extracted names.</summary>

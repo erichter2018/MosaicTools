@@ -252,10 +252,10 @@ public static class CorrelationService
         int colorIndex = 0;
         foreach (var (index, text) in impressionItems)
         {
-            // Skip generic negative impression statements — "no acute" matches too broadly
-            if (Regex.IsMatch(text, @"\bno\s+acute\b", RegexOptions.IgnoreCase))
+            // Skip negative/normal impression statements — these match too broadly
+            if (NegativeSentencePattern.IsMatch(text))
             {
-                Logger.Trace($"Correlate: Impression #{index} skipped (generic 'no acute' statement): {text.Substring(0, Math.Min(80, text.Length))}");
+                Logger.Trace($"Correlate: Impression #{index} skipped (negative statement): {text.Substring(0, Math.Min(80, text.Length))}");
                 continue;
             }
 
@@ -335,7 +335,9 @@ public static class CorrelationService
         @"|\b(?:was|has\s+been)\s+performed\b" +               // surgical history
         @"|\bdemonstrates?\s+no\s" +                            // mid-sentence negative
         @"|\bis\s+normal\s+in\b" +                              // normal descriptive
-        @"|\bnot\s+clearly\s+(?:seen|visualized|identified)\b", // non-visualization
+        @"|\bnot\s+clearly\s+(?:seen|visualized|identified)\b" + // non-visualization
+        @"|\b(?:is|are)\s+clear\b" +                            // "airways are clear"
+        @"|\bno\s+evidence\b",                                  // "no evidence of acute..."
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
@@ -438,8 +440,8 @@ public static class CorrelationService
 
             foreach (var (index, text) in impressionItems)
             {
-                // Skip generic negative impression statements — "no acute" matches too broadly
-                if (Regex.IsMatch(text, @"\bno\s+acute\b", RegexOptions.IgnoreCase))
+                // Skip negative/normal impression statements — these match too broadly
+                if (NegativeSentencePattern.IsMatch(text))
                     continue;
 
                 var impressionTerms = ExtractTerms(text, contextTerms);
@@ -458,10 +460,15 @@ public static class CorrelationService
             // Require at least one non-laterality shared term to count as a match
             if (bestSubstantiveScore >= 1 && bestImpressionIdx >= 0)
             {
-                Logger.Trace($"CorrelateReversed: MATCHED finding to Impression #{bestImpressionIdx} (score={bestScore}, substantive={bestSubstantiveScore})");
-                if (!matchedGroups.ContainsKey(bestImpressionIdx))
-                    matchedGroups[bestImpressionIdx] = (bestImpressionText, new List<string>());
-                matchedGroups[bestImpressionIdx].findings.Add(finding);
+                Logger.Trace($"CorrelateReversed: MATCHED finding to Impression #{bestImpressionIdx} (score={bestScore}, substantive={bestSubstantiveScore}, neg={isNegative})");
+                // Negative findings participate in scoring (so the impression gets matched)
+                // but are excluded from highlighted output to avoid highlighting boilerplate
+                if (!isNegative)
+                {
+                    if (!matchedGroups.ContainsKey(bestImpressionIdx))
+                        matchedGroups[bestImpressionIdx] = (bestImpressionText, new List<string>());
+                    matchedGroups[bestImpressionIdx].findings.Add(finding);
+                }
             }
             else if (!isNegative)
             {

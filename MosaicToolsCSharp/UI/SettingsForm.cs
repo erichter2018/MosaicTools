@@ -70,6 +70,7 @@ public class SettingsForm : Form
     private CheckBox _strokeDetectionUseClinicalHistoryCheck = null!;
     private CheckBox _strokeClickToCreateNoteCheck = null!;
     private CheckBox _strokeAutoCreateNoteCheck = null!;
+    private CheckBox _aidocScrapeEnabledCheck = null!;
     private CheckBox _trackCriticalStudiesCheck = null!;
     private CheckBox _showImpressionCheck = null!;
     private CheckBox _showReportAfterProcessCheck = null!;
@@ -1972,7 +1973,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         {
             Text = "Alert Triggers",
             Location = new Point(10, y),
-            Size = new Size(groupWidth, 195),
+            Size = new Size(groupWidth, 217),
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
@@ -2034,6 +2035,29 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         };
         alertsGroup.Controls.Add(flashingRedLabel);
         CreateTooltipLabel(alertsGroup, flashingRedLabel, "Flashing red border for gender-specific terms\nin wrong patient.");
+        ay += 22;
+
+        // Aidoc AI Detection
+        _aidocScrapeEnabledCheck = new CheckBox
+        {
+            Text = "Aidoc AI detection",
+            Location = new Point(10, ay),
+            AutoSize = true,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9)
+        };
+        alertsGroup.Controls.Add(_aidocScrapeEnabledCheck);
+
+        var orangeBorderLabel = new Label
+        {
+            Text = "(orange border)",
+            Location = new Point(170, ay + 2),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(230, 160, 0),
+            Font = new Font("Segoe UI", 8)
+        };
+        alertsGroup.Controls.Add(orangeBorderLabel);
+        CreateTooltipLabel(alertsGroup, orangeBorderLabel, "Orange border when Aidoc detects a relevant\nfinding for the current study type.");
         ay += 22;
 
         // Stroke Detection
@@ -3567,6 +3591,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         _genderCheckEnabledCheck.Enabled = notificationBoxEnabled;
         _strokeDetectionEnabledCheck.Enabled = notificationBoxEnabled;
         _strokeDetectionUseClinicalHistoryCheck.Enabled = notificationBoxEnabled && _strokeDetectionEnabledCheck.Checked;
+        _aidocScrapeEnabledCheck.Enabled = notificationBoxEnabled;
     }
 
     // Old CreateTemplatesTab removed - content moved to CreateTextAutomationTab
@@ -3750,6 +3775,7 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         _showDraftedIndicatorCheck.Checked = _config.ShowDraftedIndicator;
         _showTemplateMismatchCheck.Checked = _config.ShowTemplateMismatch;
         _genderCheckEnabledCheck.Checked = _config.GenderCheckEnabled;
+        _aidocScrapeEnabledCheck.Checked = _config.AidocScrapeEnabled;
         _strokeDetectionEnabledCheck.Checked = _config.StrokeDetectionEnabled;
         _strokeDetectionUseClinicalHistoryCheck.Checked = _config.StrokeDetectionUseClinicalHistory;
         _strokeClickToCreateNoteCheck.Checked = _config.StrokeClickToCreateNote;
@@ -4337,6 +4363,7 @@ SETTINGS FILE
         _config.ShowDraftedIndicator = _showDraftedIndicatorCheck.Checked;
         _config.ShowTemplateMismatch = _showTemplateMismatchCheck.Checked;
         _config.GenderCheckEnabled = _genderCheckEnabledCheck.Checked;
+        _config.AidocScrapeEnabled = _aidocScrapeEnabledCheck.Checked;
         _config.StrokeDetectionEnabled = _strokeDetectionEnabledCheck.Checked;
         _config.StrokeDetectionUseClinicalHistory = _strokeDetectionUseClinicalHistoryCheck.Checked;
         _config.StrokeClickToCreateNote = _strokeClickToCreateNoteCheck.Checked;

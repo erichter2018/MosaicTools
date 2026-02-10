@@ -79,8 +79,9 @@ public static class NativeWindows
     public const int VK_SHIFT = 0x10;
     public const int VK_END = 0x23;
     public const int VK_NEXT = 0x22; // Page Down
+    public const int KEYEVENTF_EXTENDEDKEY = 0x0001;
     public const int KEYEVENTF_KEYUP = 0x0002;
-    
+
     // Virtual key codes for common keys
     public static byte GetVirtualKeyCode(char c)
     {
@@ -170,9 +171,12 @@ public static class NativeWindows
 
         if (mainKey != 0)
         {
-            keybd_event(mainKey, 0, 0, UIntPtr.Zero);
+            // Navigation keys (Home, End, arrows, Insert, Delete, PgUp, PgDn) need
+            // KEYEVENTF_EXTENDEDKEY or Chromium/Electron apps may ignore them.
+            uint extFlag = (mainKey >= 0x21 && mainKey <= 0x2E) ? (uint)KEYEVENTF_EXTENDEDKEY : 0;
+            keybd_event(mainKey, 0, extFlag, UIntPtr.Zero);
             Thread.Sleep(10);
-            keybd_event(mainKey, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            keybd_event(mainKey, 0, extFlag | KEYEVENTF_KEYUP, UIntPtr.Zero);
             Thread.Sleep(5);
         }
 
@@ -577,6 +581,8 @@ public static class NativeWindows
     public const int WM_TRIGGER_CHECK_UPDATES = 0x800D;
     public const int WM_TRIGGER_SHOW_PICK_LISTS = 0x800E;
     public const int WM_TRIGGER_CREATE_CRITICAL_NOTE = 0x800F;
+    public const int WM_TRIGGER_RADAI_IMPRESSION = 0x8010;
+    public const int WM_TRIGGER_RECOMD = 0x8011;
 
     #endregion
 

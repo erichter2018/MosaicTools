@@ -127,6 +127,15 @@ public class Configuration
     [JsonPropertyName("gender_check_enabled")]
     public bool GenderCheckEnabled { get; set; } = false;
 
+    [JsonPropertyName("aidoc_scrape_enabled")]
+    public bool AidocScrapeEnabled { get; set; } = false;  // Off by default (not everyone has Aidoc)
+
+    [JsonPropertyName("recomd_enabled")]
+    public bool RecoMdEnabled { get; set; } = false;
+
+    [JsonPropertyName("recomd_auto_on_process")]
+    public bool RecoMdAutoOnProcess { get; set; } = false;
+
     [JsonPropertyName("stroke_detection_enabled")]
     public bool StrokeDetectionEnabled { get; set; } = false;
 
@@ -312,6 +321,12 @@ public class Configuration
 
     [JsonPropertyName("pick_list_popup_y")]
     public int PickListPopupY { get; set; } = 300;
+
+    [JsonPropertyName("radai_popup_x")]  // [RadAI]
+    public int RadAiPopupX { get; set; } = -1;
+
+    [JsonPropertyName("radai_popup_y")]  // [RadAI]
+    public int RadAiPopupY { get; set; } = -1;
 
     [JsonPropertyName("pick_list_editor_width")]
     public int PickListEditorWidth { get; set; } = 900;
@@ -778,10 +793,12 @@ public static class Actions
     public const string ShowPickLists = "Show Pick Lists";
     public const string CycleWindowLevel = "Cycle Window/Level";
     public const string CreateCriticalNote = "Create Critical Note";
+    public const string RadAiImpression = "RadAI Impression";  // [RadAI] — remove when RadAI integration is retired
+    public const string RecoMd = "RecoMD";
 
     public static readonly string[] All = {
         None, SystemBeep, GetPrior, CriticalFindings,
-        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression, DiscardStudy, ShowPickLists, CycleWindowLevel, CreateCriticalNote
+        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression, DiscardStudy, ShowPickLists, CycleWindowLevel, CreateCriticalNote, RadAiImpression, RecoMd
     };
 }
 

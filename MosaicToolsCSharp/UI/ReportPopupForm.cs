@@ -1576,7 +1576,7 @@ public class ReportPopupForm : Form
     /// - FINDINGS: subsections on own lines with blank lines between, sentences joined
     /// - IMPRESSION: numbered items on own lines
     /// </summary>
-    private static string FormatReportText(string text)
+    internal static string FormatReportText(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
             return text;
@@ -1761,7 +1761,7 @@ public class ReportPopupForm : Form
     /// that Mosaic's ProseMirror editor inserts. These render as visible boxes
     /// with GDI+ DrawString but are invisible in RichTextBox.
     /// </summary>
-    private static string SanitizeText(string text)
+    internal static string SanitizeText(string text)
     {
         if (string.IsNullOrEmpty(text)) return text;
 

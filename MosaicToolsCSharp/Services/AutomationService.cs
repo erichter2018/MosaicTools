@@ -16,6 +16,9 @@ namespace MosaicTools.Services;
 public class AutomationService : IDisposable
 {
     private readonly UIA3Automation _automation;
+
+    /// <summary>Expose the FlaUI automation instance for reuse by other services (e.g., AidocService).</summary>
+    public UIA3Automation Automation => _automation;
     
     // Cached window for fast repeated scrapes (volatile: read from STA thread, written from scrape thread)
     private volatile AutomationElement? _cachedSlimHubWindow;
@@ -47,6 +50,9 @@ public class AutomationService : IDisposable
 
     // Last scraped patient gender ("Male", "Female", or null if unknown)
     public string? LastPatientGender { get; private set; }
+
+    // Last extracted patient age (from "MALE, AGE 45" element)
+    public int? LastPatientAge { get; private set; }
 
     // Last extracted Clario Priority (e.g., "STAT", "Stroke", "Routine")
     public string? LastClarioPriority { get; private set; }
@@ -911,6 +917,244 @@ public class AutomationService : IDisposable
     }
 
     /// <summary>
+    /// Focus the Final Report text box in Mosaic (the one containing EXAM: / U+FFFC).
+    /// Used for pasting critical findings into the report body.
+    /// </summary>
+    public bool FocusFinalReportBox()
+    {
+        try
+        {
+            var window = _cachedSlimHubWindow ?? FindMosaicWindow();
+            if (window == null)
+            {
+                Logger.Trace("FocusFinalReportBox: Mosaic window not found");
+                return false;
+            }
+
+            var proseMirrors = window.FindAllDescendants(cf =>
+                cf.ByClassName("ProseMirror", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+
+            foreach (var pm in proseMirrors)
+            {
+                try
+                {
+                    var name = pm.Name ?? "";
+                    // Final Report editor contains EXAM: or U+FFFC
+                    if (!name.Contains("EXAM:") && !name.Contains('\uFFFC'))
+                        continue;
+
+                    var rect = pm.BoundingRectangle;
+                    if (rect.Width > 100 && rect.Height > 50)
+                    {
+                        var legacyPattern = pm.Patterns.LegacyIAccessible.PatternOrDefault;
+                        if (legacyPattern != null)
+                        {
+                            try
+                            {
+                                legacyPattern.Select(SELFLAG_TAKEFOCUS);
+                                Logger.Trace($"FocusFinalReportBox: Used LegacyIAccessible.Select on ProseMirror at {rect}");
+                                return true;
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Trace($"FocusFinalReportBox: LegacyIAccessible.Select failed: {ex.Message}, falling back to click");
+                            }
+                        }
+
+                        ClickAtCenter(rect);
+                        Logger.Trace($"FocusFinalReportBox: Clicked ProseMirror at {rect}");
+                        return true;
+                    }
+                }
+                catch { continue; }
+            }
+
+            Logger.Trace("FocusFinalReportBox: Final report box not found");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"FocusFinalReportBox error: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// [RadAI] Select the IMPRESSION section content in the Final Report editor.
+    /// Scrolls to bottom first (IMPRESSION is always last section), then uses UIA
+    /// child elements to find and click after the IMPRESSION header,
+    /// then Shift+Ctrl+End to select from there to end of document.
+    /// Returns true if impression content was selected (or cursor positioned for empty impression).
+    /// </summary>
+    public bool SelectImpressionContent()
+    {
+        try
+        {
+            var window = _cachedSlimHubWindow ?? FindMosaicWindow();
+            if (window == null)
+            {
+                Logger.Trace("SelectImpressionContent: Mosaic window not found");
+                return false;
+            }
+
+            var proseMirrors = window.FindAllDescendants(cf =>
+                cf.ByClassName("ProseMirror", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+
+            FlaUI.Core.AutomationElements.AutomationElement? reportBox = null;
+            foreach (var pm in proseMirrors)
+            {
+                try
+                {
+                    var name = pm.Name ?? "";
+                    if (name.Contains("EXAM:") || name.Contains('\uFFFC'))
+                    {
+                        reportBox = pm;
+                        break;
+                    }
+                }
+                catch { continue; }
+            }
+
+            // Mosaic 2.0.3 fallback: Name is empty, check child text elements
+            if (reportBox == null)
+            {
+                foreach (var pm in proseMirrors)
+                {
+                    try
+                    {
+                        var children = pm.FindAllDescendants(cf =>
+                            cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
+                        if (children.Any(c => (c.Name ?? "").Contains("EXAM:")))
+                        {
+                            reportBox = pm;
+                            break;
+                        }
+                    }
+                    catch { continue; }
+                }
+            }
+
+            if (reportBox == null)
+            {
+                Logger.Trace("SelectImpressionContent: Final report ProseMirror not found");
+                return false;
+            }
+
+            var editorRect = reportBox.BoundingRectangle;
+
+            // Focus the editor and scroll to bottom so IMPRESSION is visible
+            FocusFinalReportBox();
+            Thread.Sleep(100);
+            NativeWindows.SendHotkey("ctrl+End");
+            Thread.Sleep(200);
+
+            // Re-fetch child elements after scroll (positions have changed)
+            var childTexts = reportBox.FindAllDescendants(cf =>
+                cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
+
+            if (childTexts.Length == 0)
+            {
+                Logger.Trace("SelectImpressionContent: No child text elements found");
+                return false;
+            }
+
+            // Find the IMPRESSION header element
+            int impressionIdx = -1;
+            for (int i = 0; i < childTexts.Length; i++)
+            {
+                var name = (childTexts[i].Name ?? "").Trim();
+                if (name.StartsWith("IMPRESSION", StringComparison.OrdinalIgnoreCase))
+                {
+                    impressionIdx = i;
+                    Logger.Trace($"SelectImpressionContent: Found IMPRESSION at child index {i}: '{name}'");
+                    break;
+                }
+            }
+
+            if (impressionIdx < 0)
+            {
+                Logger.Trace("SelectImpressionContent: IMPRESSION element not found in children");
+                return false;
+            }
+
+            // Save mouse position
+            GetCursorPos(out POINT originalPos);
+
+            if (impressionIdx + 1 < childTexts.Length)
+            {
+                // Click at the LEFT edge of the first impression content element
+                var contentRect = childTexts[impressionIdx + 1].BoundingRectangle;
+                int x = contentRect.X + 2;
+                int y = contentRect.Y + contentRect.Height / 2;
+
+                // Validate click target is within visible editor area
+                if (y < editorRect.Top || y > editorRect.Bottom || x < editorRect.Left || x > editorRect.Right)
+                {
+                    Logger.Trace($"SelectImpressionContent: Content element at ({x},{y}) outside editor bounds {editorRect}, aborting");
+                    SetCursorPos(originalPos.X, originalPos.Y);
+                    return false;
+                }
+
+                SetCursorPos(x, y);
+                Thread.Sleep(50);
+                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, IntPtr.Zero);
+                Thread.Sleep(20);
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, IntPtr.Zero);
+                Thread.Sleep(50);
+
+                // Home to ensure cursor is at start of line
+                NativeWindows.SendHotkey("Home");
+                Thread.Sleep(30);
+
+                // Select from here to end of document
+                NativeWindows.SendHotkey("shift+ctrl+End");
+                Thread.Sleep(50);
+
+                Logger.Trace($"SelectImpressionContent: Clicked content element at ({x},{y}), selected to end");
+            }
+            else
+            {
+                // IMPRESSION is the last element with no content after it
+                // Click at end of IMPRESSION header, cursor will be positioned there
+                var headerRect = childTexts[impressionIdx].BoundingRectangle;
+                int x = headerRect.X + headerRect.Width - 2;
+                int y = headerRect.Y + headerRect.Height / 2;
+
+                if (y < editorRect.Top || y > editorRect.Bottom || x < editorRect.Left || x > editorRect.Right)
+                {
+                    Logger.Trace($"SelectImpressionContent: Header element at ({x},{y}) outside editor bounds {editorRect}, aborting");
+                    SetCursorPos(originalPos.X, originalPos.Y);
+                    return false;
+                }
+
+                SetCursorPos(x, y);
+                Thread.Sleep(50);
+                mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, IntPtr.Zero);
+                Thread.Sleep(20);
+                mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, IntPtr.Zero);
+                Thread.Sleep(50);
+
+                // Press End then Enter to start a new line after IMPRESSION:
+                NativeWindows.SendHotkey("End");
+                Thread.Sleep(30);
+                NativeWindows.SendHotkey("enter");
+                Thread.Sleep(30);
+
+                Logger.Trace("SelectImpressionContent: No content after IMPRESSION, positioned cursor for insert");
+            }
+
+            // Restore mouse position
+            SetCursorPos(originalPos.X, originalPos.Y);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"SelectImpressionContent error: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Click at the center of a rectangle using simulated mouse events.
     /// Saves and restores mouse position.
     /// </summary>
@@ -1104,6 +1348,7 @@ public class AutomationService : IDisposable
             LastTemplateName = null; // Reset - prevents stale template from previous study causing false mismatch
             LastAccession = null; // Reset - will be set if found, stays null if no study open
             LastPatientGender = null; // Reset - will be set if found
+            LastPatientAge = null; // Reset - will be set if found
             LastPatientName = null; // Reset - will be set if found
             LastSiteCode = null; // Reset - will be set if found
             LastMrn = null; // Reset - will be set if found
@@ -1190,6 +1435,17 @@ public class AutomationService : IDisposable
                                 {
                                     LastPatientGender = "Female";
                                     Logger.Trace($"Found Patient Gender: Female");
+                                }
+
+                                // Age extraction from same element (e.g., "MALE, AGE 45")
+                                if (LastPatientAge == null)
+                                {
+                                    var ageMatch = Regex.Match(textUpper, @"AGE\s*(\d+)");
+                                    if (ageMatch.Success)
+                                    {
+                                        LastPatientAge = int.Parse(ageMatch.Groups[1].Value);
+                                        Logger.Trace($"Found Patient Age: {LastPatientAge}");
+                                    }
                                 }
                             }
 
@@ -1925,7 +2181,7 @@ public class AutomationService : IDisposable
     {
         "HEAD", "BRAIN", "NECK", "CERVICAL", "C-SPINE", "CSPINE",
         "CHEST", "THORAX", "THORACIC", "T-SPINE", "TSPINE", "LUNG",
-        "ABDOMEN", "ABDOMINAL", "PELVIS", "PELVIC", "LUMBAR", "L-SPINE", "LSPINE",
+        "ABDOMEN", "ABDOMINAL", "ABD", "PELVIS", "PELVIC", "LUMBAR", "L-SPINE", "LSPINE",
         "SPINE", "UPPER EXTREMITY", "LOWER EXTREMITY", // No generic "EXTREMITY" to avoid false matches
         "ARM", "LEG", "SHOULDER", "HIP", "KNEE", "ANKLE", "WRIST", "ELBOW",
         "FOOT", "HAND", "FINGER", "TOE",
@@ -1935,6 +2191,15 @@ public class AutomationService : IDisposable
         "AORTA", "AORTIC", "RUNOFF", "CAROTID",
         "SINUS", "ORBIT", "FACE", "FACIAL", "MAXILLOFACIAL", "TEMPORAL", "IAC",
         "RENAL", "KIDNEY", "UROGRAM", "ENTEROGRAPHY", "LIVER", "PANCREAS"
+    };
+
+    /// <summary>
+    /// Organ-specific keywords that are ignored during template matching.
+    /// These often appear as clinical indications (e.g., "RENAL CALCULI") rather than body regions.
+    /// </summary>
+    private static readonly HashSet<string> OrganKeywords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "RENAL", "KIDNEY", "LIVER", "PANCREAS", "ENTEROGRAPHY", "UROGRAM"
     };
 
     /// <summary>
@@ -1972,7 +2237,7 @@ public class AutomationService : IDisposable
                 // Normalize some common variations
                 var normalized = part switch
                 {
-                    "ABDOMINAL" => "ABDOMEN",
+                    "ABDOMINAL" or "ABD" => "ABDOMEN",
                     "PELVIC" => "PELVIS",
                     "C-SPINE" or "CSPINE" => "CERVICAL",
                     "T-SPINE" or "TSPINE" => "THORACIC",
@@ -2011,8 +2276,16 @@ public class AutomationService : IDisposable
         NormalizeRunoffStudy(descParts);
         NormalizeRunoffStudy(templateParts);
 
-        // Require complete agreement - both sets must be equal
-        bool match = descParts.SetEquals(templateParts);
+        // Compare on primary body regions only — organ-specific keywords (RENAL, KIDNEY, LIVER, etc.)
+        // are ignored because they often appear as clinical indications in descriptions
+        // (e.g., "CT ABDOMEN PELVIS RENAL CALCULI" should match "CT ABDOMEN AND PELVIS")
+        var descRegions = new HashSet<string>(descParts.Where(p => !OrganKeywords.Contains(p)), StringComparer.OrdinalIgnoreCase);
+        var templateRegions = new HashSet<string>(templateParts.Where(p => !OrganKeywords.Contains(p)), StringComparer.OrdinalIgnoreCase);
+
+        if (descRegions.Count == 0 || templateRegions.Count == 0)
+            return true; // Can't determine after filtering, assume OK
+
+        bool match = descRegions.SetEquals(templateRegions);
 
         if (match)
         {
@@ -2067,19 +2340,33 @@ public class AutomationService : IDisposable
     /// </summary>
     private static readonly HashSet<string> PatientNameExclusions = new(StringComparer.OrdinalIgnoreCase)
     {
+        // UI labels and section headers
         "CURRENT STUDY", "SITE CODE", "FINDINGS", "EXAM", "IMPRESSION", "TECHNIQUE",
         "CLINICAL HISTORY", "COMPARISON", "INDICATION", "CONTRAST", "ADDENDUM",
         "REPORT", "ACCESSION", "PATIENT", "PHYSICIAN", "RADIOLOGIST", "DOCTOR",
+        "DRAFTED", "SIGNED", "PENDING", "FINAL", "PRELIMINARY", "ACTIONS",
+        // Demographics
         "MALE", "FEMALE", "AGE", "DOB", "MRN", "STATUS", "PRIORITY", "CLASS",
         "EMERGENCY", "INPATIENT", "OUTPATIENT", "STAT", "ROUTINE", "STROKE",
-        "DRAFTED", "SIGNED", "PENDING", "FINAL", "PRELIMINARY", "ACTIONS",
+        // Modalities and body parts
         "CT", "MRI", "MR", "XR", "US", "PET", "NM", "FLUORO", "MAMMOGRAM",
         "HEAD", "NECK", "CHEST", "ABDOMEN", "PELVIS", "SPINE", "BRAIN",
-        "WITHOUT", "WITH", "CONTRAST", "IV", "ORAL", "PROTOCOL",
+        "WITHOUT", "WITH", "IV", "ORAL", "PROTOCOL",
+        // UI elements
         "MY", "MACROS", "MY MACROS", "TEMPLATES", "MY TEMPLATES", "FAVORITES",
         "MY FAVORITES", "QUICK", "PICK", "PICK LIST", "TOOLS", "SETTINGS",
         "ALL", "STUDIES", "NEW", "ALL STUDIES", "ALL STUDIES NEW",
-        "WORKLIST", "SEARCH", "FILTER", "SORT", "VIEW", "OPEN", "CLOSE"
+        "WORKLIST", "SEARCH", "FILTER", "SORT", "VIEW", "OPEN", "CLOSE",
+        // Common medical/report words (from RVUCounter approach)
+        "NO", "NOT", "NONE", "NORMAL", "NEGATIVE", "POSITIVE", "CHANGE",
+        "AVAILABLE", "UNREMARKABLE", "STABLE", "ACUTE", "CHRONIC",
+        "IS", "ARE", "WAS", "WERE", "HAS", "HAVE", "THE", "AND", "FOR",
+        "SEEN", "NOTED", "FOUND", "GIVEN", "KNOWN", "PRIOR",
+        "LEFT", "RIGHT", "BILATERAL", "MIDLINE", "UPPER", "LOWER",
+        "CLEAR", "INTACT", "LIMITED", "COMPLETE", "PARTIAL",
+        // Common false-positive phrases
+        "NO CHANGE", "NONE AVAILABLE", "NOT AVAILABLE", "NO ACUTE",
+        "NO PRIOR", "NO COMPARISON", "NOT SEEN", "NO SIGNIFICANT"
     };
 
     /// <summary>

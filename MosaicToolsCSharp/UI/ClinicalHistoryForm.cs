@@ -17,7 +17,8 @@ public enum AlertType
 {
     TemplateMismatch,
     GenderMismatch,
-    StrokeDetected
+    StrokeDetected,
+    AidocFinding
 }
 
 /// <summary>
@@ -53,6 +54,7 @@ public class ClinicalHistoryForm : Form
     private static readonly Color DraftedBorderColor = Color.FromArgb(0, 180, 0); // Green - drafted status
     private static readonly Color StrokeBorderColor = Color.FromArgb(140, 80, 200); // Purple - stroke case
     private static readonly Color TemplateMismatchBorderColor = Color.FromArgb(220, 50, 50); // Red - template mismatch
+    private static readonly Color AidocBorderColor = Color.FromArgb(230, 160, 0); // Orange/amber - Aidoc finding
 
     // Text colors
     private static readonly Color NormalTextColor = Color.FromArgb(200, 200, 200); // White-ish
@@ -119,6 +121,11 @@ public class ClinicalHistoryForm : Form
     // Clinical history fix indicator
     private bool _historyFixInserted = false;
     private Label? _historyFixedIndicator;
+
+    // Aidoc append (shown below clinical history in orange, not included in paste)
+    private string? _aidocAppendText;
+    private bool _aidocActive = false;
+    private Label? _aidocLabel; // Opaque mode only
 
     // Alert-only mode state
     private bool _showingAlert = false;
@@ -255,6 +262,21 @@ public class ClinicalHistoryForm : Form
 
         // Content label
         layout.Controls.Add(_contentLabel, 0, 1);
+
+        // Aidoc append label (orange, below clinical history)
+        _aidocLabel = new Label
+        {
+            Text = "",
+            Font = new Font("Segoe UI", 10, FontStyle.Bold),
+            ForeColor = AidocBorderColor,
+            BackColor = Color.Black,
+            AutoSize = true,
+            Visible = false,
+            Margin = new Padding(ContentMarginLeft, 0, ContentMarginRight, ContentMarginBottom)
+        };
+        layout.RowCount = 3;
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(_aidocLabel, 0, 2);
 
         // Note created indicator (purple checkmark)
         _noteCreatedIndicator = new Label
@@ -411,8 +433,19 @@ public class ClinicalHistoryForm : Form
 
             using var sf = new StringFormat(StringFormat.GenericTypographic) { Trimming = StringTrimming.Word };
             using var brush = new SolidBrush(textColor);
-            g.DrawString(text, _contentFont, brush,
-                new RectangleF(textX, textY, maxWidth, h - textY), sf);
+            var contentRect = new RectangleF(textX, textY, maxWidth, h - textY);
+            g.DrawString(text, _contentFont, brush, contentRect, sf);
+
+            // Aidoc append text in orange (below clinical history)
+            if (_aidocActive && !string.IsNullOrEmpty(_aidocAppendText))
+            {
+                var contentSize = g.MeasureString(text, _contentFont, (int)maxWidth, sf);
+                float aidocY = textY + contentSize.Height + 4;
+                using var aidocFont = new Font("Segoe UI", 10, FontStyle.Bold);
+                using var aidocBrush = new SolidBrush(AidocBorderColor);
+                g.DrawString(_aidocAppendText, aidocFont, aidocBrush,
+                    new RectangleF(textX, aidocY, maxWidth, h - aidocY), sf);
+            }
         }
 
         LayeredWindowHelper.MergeTextLayer(bmp, textLayer, innerBg.R, innerBg.G, innerBg.B);
@@ -448,6 +481,15 @@ public class ClinicalHistoryForm : Form
 
         contentWidth = Math.Max(contentWidth, 50);
         contentHeight = Math.Max(contentHeight, _contentFont.Height);
+
+        // Account for Aidoc append text height
+        if (_aidocActive && !string.IsNullOrEmpty(_aidocAppendText))
+        {
+            using var aidocFont = new Font("Segoe UI", 10, FontStyle.Bold);
+            var aidocMeasured = g.MeasureString(_aidocAppendText, aidocFont, Math.Max(contentWidth, 100), sf);
+            contentHeight += 4 + (int)Math.Ceiling(aidocMeasured.Height);
+            contentWidth = Math.Max(contentWidth, (int)Math.Ceiling(aidocMeasured.Width));
+        }
 
         int formWidth = TransparentBorderWidth * 2 + ContentMarginLeft + contentWidth + ContentMarginRight;
         int formHeight = TransparentBorderWidth * 2 + DragBarHeight + ContentMarginTop + contentHeight + ContentMarginBottom;
@@ -677,6 +719,13 @@ public class ClinicalHistoryForm : Form
         _lastAutoFixTime = DateTime.MinValue;
         _templateMismatch = false;
         _strokeDetected = false;
+        _aidocActive = false;
+        _aidocAppendText = null;
+        if (_aidocLabel != null)
+        {
+            _aidocLabel.Text = "";
+            _aidocLabel.Visible = false;
+        }
         _noteCreated = false;
         _historyFixInserted = false;
         if (_noteCreatedIndicator != null)
@@ -731,6 +780,39 @@ public class ClinicalHistoryForm : Form
         RequestRender();
     }
 
+    /// <summary>
+    /// Set Aidoc finding text to append below clinical history in orange.
+    /// Pass null to clear. This text is NOT included when pasting to Mosaic.
+    /// </summary>
+    public void SetAidocAppend(string? findingType)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => SetAidocAppend(findingType));
+            return;
+        }
+
+        bool wasActive = _aidocActive;
+        _aidocActive = !string.IsNullOrWhiteSpace(findingType);
+        _aidocAppendText = _aidocActive ? $"Aidoc: {findingType}" : null;
+
+        // Update opaque mode label
+        if (_aidocLabel != null)
+        {
+            _aidocLabel.Text = _aidocAppendText ?? "";
+            _aidocLabel.Visible = _aidocActive;
+        }
+
+        // Update border: orange for Aidoc (lower priority than template/gender/stroke)
+        if (_aidocActive && !_templateMismatch && !_genderWarningActive && !_strokeDetected)
+            BackColor = AidocBorderColor;
+        else if (!_aidocActive && wasActive && !_templateMismatch && !_genderWarningActive && !_strokeDetected)
+            BackColor = NormalBorderColor;
+
+        UpdateBorderTooltip();
+        RequestRender();
+    }
+
     public void SetDraftedState(bool isDrafted)
     {
         if (InvokeRequired)
@@ -743,6 +825,8 @@ public class ClinicalHistoryForm : Form
             BackColor = TemplateMismatchBorderColor;
         else if (_strokeDetected)
             BackColor = StrokeBorderColor;
+        else if (_aidocActive)
+            BackColor = AidocBorderColor;
         else
             BackColor = isDrafted ? DraftedBorderColor : NormalBorderColor;
 
@@ -891,6 +975,13 @@ public class ClinicalHistoryForm : Form
                 _contentLabel.ForeColor = Color.FromArgb(200, 150, 255);
                 _contentLabel.Text = $"STROKE PROTOCOL\n{details}";
                 break;
+
+            case AlertType.AidocFinding:
+                BackColor = AidocBorderColor;
+                _contentLabel.BackColor = Color.Black;
+                _contentLabel.ForeColor = Color.FromArgb(255, 200, 80);
+                _contentLabel.Text = $"AIDOC: {details}";
+                break;
         }
 
         UpdateBorderTooltip();
@@ -941,6 +1032,9 @@ public class ClinicalHistoryForm : Form
             case AlertType.GenderMismatch:
                 return _genderWarningText ?? "Gender mismatch detected";
 
+            case AlertType.AidocFinding:
+                return "Aidoc AI finding detected";
+
             default:
                 return "";
         }
@@ -967,6 +1061,8 @@ public class ClinicalHistoryForm : Form
             else
                 tooltip = "Purple: Stroke protocol detected";
         }
+        else if (_aidocActive)
+            tooltip = $"Orange: Aidoc AI finding - {_aidocAppendText ?? "detected"}";
         else if (BackColor == DraftedBorderColor)
             tooltip = "Green: Report is drafted";
         else

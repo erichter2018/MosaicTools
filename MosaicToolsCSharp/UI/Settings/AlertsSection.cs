@@ -27,6 +27,9 @@ public class AlertsSection : SettingsSection
     private readonly CheckBox _strokeDetectionUseClinicalHistoryCheck;
     private readonly CheckBox _strokeClickToCreateNoteCheck;
     private readonly CheckBox _strokeAutoCreateNoteCheck;
+    private readonly CheckBox _aidocScrapeEnabledCheck;
+    private readonly CheckBox _recoMdEnabledCheck;
+    private readonly CheckBox _recoMdAutoOnProcessCheck;
 
     private readonly MainForm _mainForm;
     private readonly Configuration _config;
@@ -100,6 +103,27 @@ public class AlertsSection : SettingsSection
         flashingRedLabel.Font = new Font("Segoe UI", 8);
         _nextY += SubRowHeight;
 
+        // Aidoc AI Detection
+        _aidocScrapeEnabledCheck = AddCheckBox("Aidoc AI detection", LeftMargin, _nextY,
+            "Orange border when Aidoc detects a relevant finding\nfor the current study type.");
+        var orangeLabel = AddLabel("(orange border)", LeftMargin + 160, _nextY + 2);
+        orangeLabel.ForeColor = Color.FromArgb(230, 160, 0);
+        orangeLabel.Font = new Font("Segoe UI", 8);
+        _nextY += SubRowHeight;
+
+        // RecoMD Integration
+        _recoMdEnabledCheck = AddCheckBox("RecoMD integration", LeftMargin, _nextY,
+            "Send report data to RecoMD for best practice recommendations.");
+        _recoMdEnabledCheck.CheckedChanged += (s, e) => UpdateRecoMdSubStates();
+        _nextY += SubRowHeight;
+
+        _recoMdAutoOnProcessCheck = AddCheckBox("Auto-send on Process Report", LeftMargin + 25, _nextY,
+            "Automatically send report to RecoMD after Process Report.", true);
+        _nextY += SubRowHeight;
+
+        AddHintLabel("Requires 'Wait for Impression' to be OFF in RecoMD settings", LeftMargin + 25);
+        _nextY += SubRowHeight;
+
         // Stroke Detection
         _strokeDetectionEnabledCheck = AddCheckBox("Stroke detection", LeftMargin, _nextY,
             "Purple border for stroke-related studies.");
@@ -141,6 +165,13 @@ public class AlertsSection : SettingsSection
             ? Color.FromArgb(180, 180, 180) : Color.FromArgb(100, 100, 100);
         _autoFixClinicalHistoryCheck.ForeColor = subColor;
         _showDraftedIndicatorCheck.ForeColor = subColor;
+    }
+
+    private void UpdateRecoMdSubStates()
+    {
+        bool enabled = _recoMdEnabledCheck.Checked;
+        _recoMdAutoOnProcessCheck.Enabled = enabled;
+        _recoMdAutoOnProcessCheck.ForeColor = enabled ? Color.FromArgb(180, 180, 180) : Color.FromArgb(100, 100, 100);
     }
 
     private void UpdateStrokeSubStates()
@@ -185,12 +216,16 @@ public class AlertsSection : SettingsSection
         _showDraftedIndicatorCheck.Checked = config.ShowDraftedIndicator;
         _showTemplateMismatchCheck.Checked = config.ShowTemplateMismatch;
         _genderCheckEnabledCheck.Checked = config.GenderCheckEnabled;
+        _aidocScrapeEnabledCheck.Checked = config.AidocScrapeEnabled;
+        _recoMdEnabledCheck.Checked = config.RecoMdEnabled;
+        _recoMdAutoOnProcessCheck.Checked = config.RecoMdAutoOnProcess;
         _strokeDetectionEnabledCheck.Checked = config.StrokeDetectionEnabled;
         _strokeDetectionUseClinicalHistoryCheck.Checked = config.StrokeDetectionUseClinicalHistory;
         _strokeClickToCreateNoteCheck.Checked = config.StrokeClickToCreateNote;
         _strokeAutoCreateNoteCheck.Checked = config.StrokeAutoCreateNote;
 
         UpdateNotificationBoxStates();
+        UpdateRecoMdSubStates();
         UpdateStrokeSubStates();
     }
 
@@ -204,6 +239,9 @@ public class AlertsSection : SettingsSection
         config.ShowDraftedIndicator = _showDraftedIndicatorCheck.Checked;
         config.ShowTemplateMismatch = _showTemplateMismatchCheck.Checked;
         config.GenderCheckEnabled = _genderCheckEnabledCheck.Checked;
+        config.AidocScrapeEnabled = _aidocScrapeEnabledCheck.Checked;
+        config.RecoMdEnabled = _recoMdEnabledCheck.Checked;
+        config.RecoMdAutoOnProcess = _recoMdAutoOnProcessCheck.Checked;
         config.StrokeDetectionEnabled = _strokeDetectionEnabledCheck.Checked;
         config.StrokeDetectionUseClinicalHistory = _strokeDetectionUseClinicalHistoryCheck.Checked;
         config.StrokeClickToCreateNote = _strokeClickToCreateNoteCheck.Checked;

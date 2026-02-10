@@ -32,6 +32,9 @@ public class ActionController : IDisposable
     private readonly OcrService _ocrService;
     private readonly PipeService _pipeService;
     private readonly TemplateDatabase _templateDatabase;
+    private readonly AidocService _aidocService;
+    private readonly RadAiService? _radAiService;  // [RadAI] — null if RadAI not installed
+    private readonly RecoMdService _recoMdService;
 
     public PipeService PipeService => _pipeService;
 
@@ -103,6 +106,14 @@ public class ActionController : IDisposable
     private bool _pendingClarioPriorityRetry = false;
     private bool _clinicalHistoryVisible = false;
 
+    // Aidoc state tracking
+    private string? _lastAidocFindings; // comma-joined relevant finding types
+    private bool _lastAidocRelevant = false;
+
+    // RecoMD state tracking
+    private volatile bool _recoMdPendingAfterProcess;
+    private string? _reportTextBeforeProcess;
+
     // Critical note tracking - session-scoped set of accessions that already have critical notes
     private readonly ConcurrentDictionary<string, byte> _criticalNoteCreatedForAccessions = new();
 
@@ -145,11 +156,12 @@ public class ActionController : IDisposable
     public static readonly object PasteLock = new();
     public static DateTime LastPasteTime = DateTime.MinValue;
     
-    public ActionController(Configuration config, MainForm mainForm)
+    public ActionController(Configuration config, MainForm mainForm, RecoMdService recoMdService)
     {
         _config = config;
         _mainForm = mainForm;
-        
+        _recoMdService = recoMdService;
+
         _hidService = new HidService();
         _keyboardService = new KeyboardService();
         _automationService = new AutomationService();
@@ -159,6 +171,8 @@ public class ActionController : IDisposable
         _pipeService = new PipeService();
         _pipeService.Start();
         _templateDatabase = new TemplateDatabase();
+        _aidocService = new AidocService(_automationService.Automation);
+        _radAiService = RadAiService.TryCreate();  // [RadAI]
 
         _actionThread = new Thread(ActionLoop) { IsBackground = true };
         _actionThread.SetApartmentState(ApartmentState.STA);
@@ -446,11 +460,20 @@ public class ActionController : IDisposable
             case Actions.CreateCriticalNote:
                 PerformCreateCriticalNote();
                 break;
+            case Actions.RadAiImpression:  // [RadAI]
+                PerformRadAiImpression();
+                break;
+            case Actions.RecoMd:
+                PerformRecoMd();
+                break;
             case "__InsertMacros__":
                 PerformInsertMacros();
                 break;
             case "__InsertPickListText__":
                 PerformInsertPickListText();
+                break;
+            case "__RadAiInsert__":  // [RadAI]
+                PerformRadAiInsert();
                 break;
         }
     }
@@ -840,6 +863,14 @@ public class ActionController : IDisposable
             }
         }
 
+        // Auto-send to RecoMD if enabled
+        if (_config.RecoMdEnabled && _config.RecoMdAutoOnProcess)
+        {
+            _reportTextBeforeProcess = _automationService.LastFinalReport;
+            _recoMdPendingAfterProcess = true;
+            Logger.Trace("RecoMD: Pending auto-send after Process Report");
+        }
+
         // Popup will auto-update via scrape timer when report changes
     }
 
@@ -891,6 +922,16 @@ public class ActionController : IDisposable
                 _lastPopupReportText = null;
             });
         }
+        // [RadAI] Close RadAI impression popup on sign
+        if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
+        {
+            _pendingRadAiImpressionItems = null;
+            _mainForm.BeginInvoke(() =>
+            {
+                try { _currentRadAiPopup?.Close(); } catch { }
+                _currentRadAiPopup = null;
+            });
+        }
 
         // Mark current accession as signed for RVUCounter integration
         // This flag will be used when accession changes to send the appropriate notification
@@ -930,6 +971,13 @@ public class ActionController : IDisposable
             // Restore normal scrape rate
             RestartScrapeTimer(NormalScrapeIntervalMs);
         }
+
+        // RecoMD: close report on sign
+        if (_config.RecoMdEnabled)
+        {
+            _recoMdPendingAfterProcess = false;
+            Task.Run(async () => await _recoMdService.CloseReportAsync());
+        }
     }
 
     private void PerformDiscardStudy()
@@ -947,6 +995,16 @@ public class ActionController : IDisposable
                 try { _currentReportPopup?.Close(); } catch { }
                 _currentReportPopup = null;
                 _lastPopupReportText = null;
+            });
+        }
+        // [RadAI] Close RadAI impression popup on discard
+        if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
+        {
+            _pendingRadAiImpressionItems = null;
+            _mainForm.BeginInvoke(() =>
+            {
+                try { _currentRadAiPopup?.Close(); } catch { }
+                _currentRadAiPopup = null;
             });
         }
 
@@ -1004,6 +1062,12 @@ public class ActionController : IDisposable
             _mainForm.BeginInvoke(() => _mainForm.HideImpressionWindow());
         }
 
+        // RecoMD: close report on discard
+        if (_config.RecoMdEnabled)
+        {
+            _recoMdPendingAfterProcess = false;
+            Task.Run(async () => await _recoMdService.CloseReportAsync());
+        }
     }
 
     private void PerformCreateImpression()
@@ -1464,11 +1528,11 @@ public class ActionController : IDisposable
             // Format
             var formatted = _noteFormatter.FormatNote(rawNote);
 
-            // Paste into Mosaic (focus transcript box first, consistent with GetPrior)
+            // Paste into Mosaic final report box (not transcript)
             ClipboardService.SetText(formatted);
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(200);
-            _automationService.FocusTranscriptBox();
+            _automationService.FocusFinalReportBox();
             Thread.Sleep(100);
 
             NativeWindows.SendHotkey("ctrl+v");
@@ -1570,6 +1634,9 @@ public class ActionController : IDisposable
 
     // State for Report Popup Toggle (volatile: accessed from STA thread and UI thread)
     private volatile ReportPopupForm? _currentReportPopup;
+
+    private volatile Form? _currentRadAiPopup;          // [RadAI]
+    private volatile string[]? _pendingRadAiImpressionItems;  // [RadAI]
 
     private void PerformShowReport()
     {
@@ -1844,6 +1911,171 @@ public class ActionController : IDisposable
         }
     }
 
+    // [RadAI] — entire method; remove when RadAI integration is retired
+    private void PerformRadAiImpression()
+    {
+        Logger.Trace("RadAI Impression action triggered");
+
+        // If popup is already open, re-trigger acts as Insert
+        if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed && _pendingRadAiImpressionItems != null)
+        {
+            Logger.Trace("RadAI Impression: Popup already open, triggering insert");
+            PerformRadAiInsert();
+            return;
+        }
+
+        if (_radAiService == null)
+        {
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("RadAI not available (config not found)", 3000));
+            return;
+        }
+
+        var reportText = _automationService.LastFinalReport;
+        if (string.IsNullOrEmpty(reportText))
+        {
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No report text available", 2000));
+            return;
+        }
+
+        _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Generating RadAI impression...", 10000));
+
+        var result = Task.Run(async () => await _radAiService.GetImpressionAsync(
+            reportText,
+            _automationService.LastDescription,
+            _automationService.LastPatientGender
+        )).GetAwaiter().GetResult();
+
+        if (result.Success && !string.IsNullOrEmpty(result.Impression))
+        {
+            _pendingRadAiImpressionItems = result.ImpressionItems;
+
+            _mainForm.BeginInvoke(() =>
+            {
+                // Close existing popup if open
+                if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
+                {
+                    try { _currentRadAiPopup.Close(); } catch { }
+                }
+
+                var popup = RadAiService.ShowResultPopup(result.ImpressionItems, () =>
+                {
+                    TriggerAction("__RadAiInsert__", "Internal");
+                }, _config);
+                _currentRadAiPopup = popup;
+                popup.FormClosed += (s, e) => _currentRadAiPopup = null;
+            });
+        }
+        else
+        {
+            var errorMsg = result.Success ? "RadAI returned empty impression" : $"RadAI error: {result.Error}";
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(errorMsg, 4000));
+        }
+    }
+
+    private void PerformRecoMd()
+    {
+        Logger.Trace("RecoMD action triggered");
+
+        if (!_config.RecoMdEnabled)
+        {
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("RecoMD is not enabled", 2000));
+            return;
+        }
+
+        var alive = Task.Run(async () => await _recoMdService.IsAliveAsync()).GetAwaiter().GetResult();
+        if (!alive)
+        {
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("RecoMD is not running", 2000));
+            return;
+        }
+
+        // Capture metadata BEFORE GetFinalReportFast (which resets patient fields)
+        var accession = _automationService.LastAccession;
+        var description = _automationService.LastDescription;
+        var patientName = _automationService.LastPatientName;
+        var gender = _automationService.LastPatientGender;
+        var mrn = _automationService.LastMrn;
+        var age = _automationService.LastPatientAge ?? 0;
+
+        if (string.IsNullOrEmpty(accession))
+        {
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No study open", 2000));
+            return;
+        }
+
+        // Get current report text (this resets and re-scrapes patient fields)
+        _automationService.GetFinalReportFast();
+        var reportText = _automationService.LastFinalReport;
+        if (string.IsNullOrEmpty(reportText))
+        {
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No report text available", 2000));
+            return;
+        }
+
+        // Clean report text: remove U+FFFC object replacement chars and collapse blank lines
+        reportText = RecoMdService.CleanReportText(reportText);
+
+        var success = Task.Run(async () =>
+        {
+            var opened = await _recoMdService.OpenReportAsync(accession,
+                description, patientName, gender, mrn, age);
+            if (!opened) return false;
+
+            return await _recoMdService.SendReportTextAsync(accession, reportText);
+        }).GetAwaiter().GetResult();
+
+        if (success)
+        {
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Sent to RecoMD", 2000));
+        }
+        else
+        {
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("RecoMD: Failed to send", 3000));
+        }
+    }
+
+    // [RadAI] — entire method; remove when RadAI integration is retired
+    private void PerformRadAiInsert()
+    {
+        Logger.Trace("RadAI Insert action triggered");
+
+        var items = _pendingRadAiImpressionItems;
+
+        if (items == null || items.Length == 0)
+        {
+            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No RadAI impression to insert", 2000));
+            return;
+        }
+
+        // Join items without numbering — Mosaic auto-numbers impression lines
+        var newImpression = string.Join("\r\n", items);
+
+        lock (PasteLock)
+        {
+            NativeWindows.ActivateMosaicForcefully();
+            Thread.Sleep(100);
+
+            // Use UIA to find IMPRESSION content elements and select them
+            bool selected = _automationService.SelectImpressionContent();
+            if (!selected)
+            {
+                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section in editor", 3000));
+                return;
+            }
+
+            Thread.Sleep(50);
+
+            // Set clipboard and paste (replaces selection or inserts at cursor)
+            ClipboardService.SetText(newImpression);
+            Thread.Sleep(50);
+            NativeWindows.SendHotkey("ctrl+v");
+            Thread.Sleep(100);
+        }
+
+        Logger.Trace("RadAI Insert: Impression replaced in report");
+        _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("RadAI impression inserted", 3000));
+    }
+
     #endregion
 
     #region Dictation Sync
@@ -1900,6 +2132,32 @@ public class ActionController : IDisposable
 
                 // Bail out if user action started during the scrape
                 if (_isUserActive) return;
+
+                // RecoMD: detect processed report and send to RecoMD
+                if (_recoMdPendingAfterProcess && !string.IsNullOrEmpty(reportText))
+                {
+                    if (reportText != _reportTextBeforeProcess)
+                    {
+                        _recoMdPendingAfterProcess = false;
+                        _reportTextBeforeProcess = null;
+                        Logger.Trace("RecoMD: Report changed after Process Report, sending to RecoMD");
+                        // Capture all values now (before next scrape resets them)
+                        var recoReportText = RecoMdService.CleanReportText(reportText);
+                        var recoAcc = _automationService.LastAccession;
+                        var recoDesc = _automationService.LastDescription;
+                        var recoName = _automationService.LastPatientName;
+                        var recoGender = _automationService.LastPatientGender;
+                        var recoMrn = _automationService.LastMrn;
+                        var recoAge = _automationService.LastPatientAge ?? 0;
+                        Task.Run(async () =>
+                        {
+                            if (string.IsNullOrEmpty(recoAcc)) return;
+                            await _recoMdService.OpenReportAsync(recoAcc,
+                                recoDesc, recoName, recoGender, recoMrn, recoAge);
+                            await _recoMdService.SendReportTextAsync(recoAcc, recoReportText);
+                        });
+                    }
+                }
 
                 // Check for new study (non-empty accession different from last non-empty)
                 var currentAccession = _automationService.LastAccession;
@@ -2048,6 +2306,13 @@ public class ActionController : IDisposable
                         }
                     }
 
+                    // RecoMD: close previous study on accession change
+                    if (_config.RecoMdEnabled)
+                    {
+                        _recoMdPendingAfterProcess = false;
+                        Task.Run(async () => await _recoMdService.CloseReportAsync());
+                    }
+
                     // Reset state for new study
                     _currentAccessionSigned = false;
                     _discardDialogShownForCurrentAccession = false;
@@ -2068,6 +2333,14 @@ public class ActionController : IDisposable
                         _currentReportPopup = null;
                         _mainForm.BeginInvoke(() => { try { stalePopup.Close(); } catch { } });
                     }
+                    // [RadAI] Close stale RadAI impression popup from prior study
+                    if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
+                    {
+                        var staleRadAi = _currentRadAiPopup;
+                        _currentRadAiPopup = null;
+                        _pendingRadAiImpressionItems = null;
+                        _mainForm.BeginInvoke(() => { try { staleRadAi.Close(); } catch { } });
+                    }
                     _needsBaselineCapture = _config.ShowReportChanges || _config.CorrelationEnabled; // Baseline needed for Changes mode diff AND Rainbow mode dictated-sentence detection
                     // Speed up scraping to catch template flash before auto-processing
                     if (_needsBaselineCapture && !_searchingForImpression)
@@ -2078,6 +2351,8 @@ public class ActionController : IDisposable
                     _genderMismatchActive = false;
                     _strokeDetectedActive = false;
                     _pendingClarioPriorityRetry = false;
+                    _lastAidocFindings = null;
+                    _lastAidocRelevant = false;
 
                     // Reset Ignore Inpatient Drafted state
                     _macrosCompleteForCurrentAccession = false;
@@ -2280,9 +2555,10 @@ public class ActionController : IDisposable
                         Logger.Trace("Popup showing stale content - report being updated");
                         _mainForm.BeginInvoke(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
                     }
-                    else if (!string.IsNullOrEmpty(reportText))
+                    else if (!string.IsNullOrEmpty(reportText) && !_processReportPressedForCurrentAccession)
                     {
                         // Report text is available and matches last text - clear stale indicator if showing
+                        // Don't clear if Process Report was pressed (still waiting for report to regenerate)
                         _mainForm.BeginInvoke(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
                     }
                 }
@@ -2355,8 +2631,54 @@ public class ActionController : IDisposable
                         }
                     }
 
+                    // Aidoc scraping - check for AI-detected findings
+                    bool aidocAlertActive = false;
+                    string? aidocFindingText = null;
+                    bool prevAidocRelevant = _lastAidocRelevant;
+                    if (_config.AidocScrapeEnabled && !string.IsNullOrEmpty(currentAccession))
+                    {
+                        try
+                        {
+                            var aidocResult = _aidocService.ScrapeShortcutWidget();
+                            if (aidocResult != null && aidocResult.Findings.Count > 0)
+                            {
+                                var studyDescription = _automationService.LastDescription;
+                                // Only show findings that are both relevant to the study type AND positive
+                                var relevantFindings = aidocResult.Findings
+                                    .Where(f => f.IsPositive && AidocService.IsRelevantFinding(f.FindingType, studyDescription))
+                                    .Select(f => f.FindingType)
+                                    .ToList();
+
+                                if (relevantFindings.Count > 0)
+                                {
+                                    aidocAlertActive = true;
+                                    aidocFindingText = string.Join(", ", relevantFindings);
+
+                                    // Toast on first detection or change
+                                    if (!_lastAidocRelevant || _lastAidocFindings != aidocFindingText)
+                                    {
+                                        Logger.Trace($"Aidoc: Relevant findings '{aidocFindingText}' for study '{studyDescription}'");
+                                        _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"Aidoc: {aidocFindingText} detected", 5000));
+                                    }
+                                }
+
+                                _lastAidocFindings = aidocAlertActive ? aidocFindingText : null;
+                                _lastAidocRelevant = aidocAlertActive;
+                            }
+                            else
+                            {
+                                _lastAidocFindings = null;
+                                _lastAidocRelevant = false;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Trace($"Aidoc scrape error: {ex.Message}");
+                        }
+                    }
+
                     // Determine if any alerts are active
-                    bool anyAlertActive = newTemplateMismatch || newGenderMismatch || _strokeDetectedActive;
+                    bool anyAlertActive = newTemplateMismatch || newGenderMismatch || _strokeDetectedActive || aidocAlertActive;
 
                     // Handle visibility based on always-show vs alerts-only mode
                     if (_config.AlwaysShowClinicalHistory)
@@ -2389,6 +2711,18 @@ public class ActionController : IDisposable
                         {
                             _mainForm.BeginInvoke(() => _mainForm.UpdateGenderCheck(null, null));
                         }
+
+                        // Show Aidoc finding appended to clinical history in orange (not replacing it)
+                        if (aidocAlertActive && aidocFindingText != null)
+                        {
+                            var capturedFinding = aidocFindingText;
+                            _mainForm.BeginInvoke(() => _mainForm.SetAidocAppend(capturedFinding));
+                        }
+                        else if (!aidocAlertActive && prevAidocRelevant)
+                        {
+                            // Aidoc finding cleared - remove orange append
+                            _mainForm.BeginInvoke(() => _mainForm.SetAidocAppend(null));
+                        }
                     }
                     else
                     {
@@ -2420,6 +2754,11 @@ public class ActionController : IDisposable
                         {
                             alertToShow = AlertType.StrokeDetected;
                             alertDetails = "Study flagged as stroke protocol";
+                        }
+                        else if (aidocAlertActive && aidocFindingText != null)
+                        {
+                            alertToShow = AlertType.AidocFinding;
+                            alertDetails = aidocFindingText;
                         }
 
                         if (anyAlertActive)

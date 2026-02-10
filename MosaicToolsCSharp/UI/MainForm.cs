@@ -67,10 +67,13 @@ public class MainForm : Form
     // Update service
     private readonly UpdateService _updateService = new();
 
+    // RecoMD service
+    private readonly RecoMdService _recoMdService = new();
+
     public MainForm(Configuration config)
     {
         _config = config;
-        _controller = new ActionController(config, this);
+        _controller = new ActionController(config, this, _recoMdService);
         _rvuCounterService = new RvuCounterService(config);
         _connectivityService = new ConnectivityService(config);
         _connectivityTooltip = new ToolTip { InitialDelay = 200, ReshowDelay = 100 };
@@ -1563,6 +1566,14 @@ public class MainForm : Form
         _clinicalHistoryWindow.ClearAlert();
     }
 
+    public void SetAidocAppend(string? findingType)
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        _clinicalHistoryWindow.SetAidocAppend(findingType);
+    }
+
     public void ShowImpressionWindow()
     {
         if (_impressionWindow == null || _impressionWindow.IsDisposed)
@@ -1764,6 +1775,9 @@ public class MainForm : Form
             _rvuDrawer = null;
         }
 
+        // Cleanup RecoMD service
+        _recoMdService.Dispose();
+
         // Cleanup connectivity service
         _connectivityService.Dispose();
 
@@ -1820,7 +1834,7 @@ public class MainForm : Form
     protected override void WndProc(ref Message m)
     {
         // Log custom messages in our range (0x8001-0x800F)
-        if (m.Msg >= 0x8001 && m.Msg <= 0x800F)
+        if (m.Msg >= 0x8001 && m.Msg <= 0x8011)
         {
             Logger.Trace($"WndProc received message 0x{m.Msg:X4} from HWND {m.WParam}");
         }
@@ -1882,6 +1896,14 @@ public class MainForm : Form
             case NativeWindows.WM_TRIGGER_CREATE_CRITICAL_NOTE:
                 Logger.Trace("WndProc: Triggering CreateCriticalNote");
                 BeginInvoke(() => _controller.TriggerAction(Actions.CreateCriticalNote));
+                break;
+            case NativeWindows.WM_TRIGGER_RADAI_IMPRESSION:
+                Logger.Trace("WndProc: Triggering RadAI Impression");
+                BeginInvoke(() => _controller.TriggerAction(Actions.RadAiImpression));
+                break;
+            case NativeWindows.WM_TRIGGER_RECOMD:
+                Logger.Trace("WndProc: Triggering RecoMD");
+                BeginInvoke(() => _controller.TriggerAction(Actions.RecoMd));
                 break;
         }
 
