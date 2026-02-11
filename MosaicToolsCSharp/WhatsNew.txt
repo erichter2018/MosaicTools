@@ -1,3 +1,15 @@
+3.6.0
+- Deletable impression points: trash icons on report overlay to remove impression lines
+- Fix system lag caused by scrape timer stuck at 500ms after study close
+- Fix keyboard hook dying (hotkeys stop working) — faster recovery (90s vs 5min)
+- Fix RichTextBox crash on app close (missing CodePages encoding)
+- Performance: cache patient info between scrape ticks (skip expensive UI traversal)
+- Performance: cache RecoMD window handle, skip discard dialog check when idle
+- Use Ctrl+End instead of PageDown for impression scroll (fixes short reports)
+- Aidoc pixel verification for positive finding detection
+- RadAI overlay mode for impression display
+- Improved correlation/rainbow mode highlighting
+
 3.5.2
 - Backward compatibility for legacy AHK message IDs (0x04xx)
 - Right-click "Show Log" option on main bar and tray icon
