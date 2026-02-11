@@ -1,14 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(powershell.exe:*)",
-      "Bash(powershell:*)",
-      "Bash(git:*)",
-      "Bash(dir:*)",
-      "Bash(findstr:*)",
-      "Bash(chmod:*)",
-      "Bash(/c/Users/erik.richter/Desktop/dotnet/dotnet.exe:*)",
-      "Bash(\"C:\\\\Users\\\\erik.richter\\\\Desktop\\\\GH CLI\\\\gh.exe\":*)",
+      "Bash(*)",
       "WebSearch"
     ]
   }

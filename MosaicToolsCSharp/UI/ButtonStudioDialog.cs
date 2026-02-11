@@ -18,6 +18,7 @@ public class ButtonStudioDialog : Form
     private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
 
     private readonly Configuration _config;
+    private readonly Action? _onSaved;
     private List<FloatingButtonDef> _buttons = new();
     private int _columns = 2;
     private int _selectedIdx = 0;
@@ -44,9 +45,10 @@ public class ButtonStudioDialog : Form
         "◀", "▲", "▼", "◆", "○", "●", "□", "■", "△", "▷"
     };
 
-    public ButtonStudioDialog(Configuration config)
+    public ButtonStudioDialog(Configuration config, Action? onSaved = null)
     {
         _config = config;
+        _onSaved = onSaved;
 
         // Deep copy buttons
         _buttons = config.FloatingButtons.Buttons
@@ -74,7 +76,7 @@ public class ButtonStudioDialog : Form
     private void InitializeUI()
     {
         Text = "InteleViewer Button Studio";
-        Size = new Size(520, 480);
+        Size = new Size(520, 580);
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -116,20 +118,11 @@ public class ButtonStudioDialog : Form
         };
         topPanel.Controls.Add(_columnsNum);
 
-        topPanel.Controls.Add(new Label
-        {
-            Text = "(max 9 buttons)",
-            Location = new Point(125, 5),
-            AutoSize = true,
-            ForeColor = Color.Gray,
-            Font = new Font("Segoe UI", 8, FontStyle.Italic)
-        });
-
         // Left panel - preview and button list
         var leftPanel = new Panel
         {
             Location = new Point(10, 45),
-            Size = new Size(240, 330),
+            Size = new Size(240, 430),
             BackColor = Color.FromArgb(30, 30, 30)
         };
         Controls.Add(leftPanel);
@@ -146,7 +139,7 @@ public class ButtonStudioDialog : Form
         _previewPanel = new Panel
         {
             Location = new Point(0, 22),
-            Size = new Size(230, 160),
+            Size = new Size(230, 250),
             BackColor = Color.FromArgb(51, 51, 51),
             BorderStyle = BorderStyle.FixedSingle,
             AutoScroll = true
@@ -156,7 +149,7 @@ public class ButtonStudioDialog : Form
         leftPanel.Controls.Add(new Label
         {
             Text = "Button List",
-            Location = new Point(0, 190),
+            Location = new Point(0, 280),
             AutoSize = true,
             ForeColor = Color.White,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
@@ -164,19 +157,19 @@ public class ButtonStudioDialog : Form
 
         _buttonListPanel = new FlowLayoutPanel
         {
-            Location = new Point(0, 212),
-            Size = new Size(230, 60),
+            Location = new Point(0, 302),
+            Size = new Size(230, 80),
             BackColor = Color.FromArgb(51, 51, 51),
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = true,
-            AutoScroll = false
+            AutoScroll = true
         };
         leftPanel.Controls.Add(_buttonListPanel);
 
         // Control buttons
         var ctrlPanel = new FlowLayoutPanel
         {
-            Location = new Point(0, 280),
+            Location = new Point(0, 390),
             Size = new Size(230, 35),
             FlowDirection = FlowDirection.LeftToRight,
             BackColor = Color.FromArgb(30, 30, 30)
@@ -290,9 +283,23 @@ public class ButtonStudioDialog : Form
         SetupKeystrokeCapture(_keystrokeBox);
         editorPanel.Controls.Add(_keystrokeBox);
 
-        var recBtn = new Button { Text = "Rec", Location = new Point(170, ey - 3), Width = 40, Height = 23, FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
-        recBtn.Click += (s, e) => _keystrokeBox.Focus();
-        editorPanel.Controls.Add(recBtn);
+        var clearKeyBtn = new Button
+        {
+            Location = new Point(170, ey - 1),
+            Size = new Size(22, 22),
+            Text = "X",
+            Font = new Font("Segoe UI", 8, FontStyle.Bold),
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(100, 50, 50),
+            ForeColor = Color.White
+        };
+        clearKeyBtn.FlatAppearance.BorderSize = 0;
+        clearKeyBtn.Click += (s, e) =>
+        {
+            _keystrokeBox.Text = "";
+            ApplyEditorChanges();
+        };
+        editorPanel.Controls.Add(clearKeyBtn);
         ey += 30;
 
         // Action
@@ -362,6 +369,8 @@ public class ButtonStudioDialog : Form
 
     private void SetupKeystrokeCapture(TextBox box)
     {
+        box.PreviewKeyDown += (s, e) => e.IsInputKey = true;
+
         box.KeyDown += (s, e) =>
         {
             e.SuppressKeyPress = true;
@@ -374,15 +383,29 @@ public class ButtonStudioDialog : Form
                 return;
             }
 
-            var key = e.KeyCode.ToString();
+            var parts = new List<string>();
+            if (e.Control) parts.Add("Ctrl");
+            if (e.Alt) parts.Add("Alt");
+            if (e.Shift) parts.Add("Shift");
+
             if (e.KeyCode != Keys.ControlKey && e.KeyCode != Keys.Menu &&
                 e.KeyCode != Keys.ShiftKey && e.KeyCode != Keys.None)
             {
-                box.Text = key;
+                parts.Add(KeyCodeToDisplayName(e.KeyCode));
+                box.Text = string.Join("+", parts);
                 ApplyEditorChanges();
             }
         };
         box.Click += (s, e) => box.SelectAll();
+    }
+
+    private static string KeyCodeToDisplayName(Keys keyCode)
+    {
+        if (keyCode >= Keys.D0 && keyCode <= Keys.D9)
+            return ((char)('0' + (keyCode - Keys.D0))).ToString();
+        if (keyCode >= Keys.NumPad0 && keyCode <= Keys.NumPad9)
+            return ((char)('0' + (keyCode - Keys.NumPad0))).ToString();
+        return keyCode.ToString();
     }
 
     private void ShowIconPicker()
@@ -397,7 +420,7 @@ public class ButtonStudioDialog : Form
 
         _iconPickerPanel = new Panel
         {
-            Location = new Point(260, 320),
+            Location = new Point(260, 400),
             Size = new Size(240, 100),
             BackColor = Color.FromArgb(50, 50, 50),
             BorderStyle = BorderStyle.FixedSingle,
@@ -447,15 +470,17 @@ public class ButtonStudioDialog : Form
         foreach (var ctrl in oldControls) ctrl.Dispose();
 
         int btnSize = 50;
-        int wideWidth = btnSize * 2 + 5;
-        int spacing = 5;
+        int wideBtnHeight = 34;
+        int spacing = 3;
         int x = spacing, y = spacing;
         int colIdx = 0;
+        int buttonIndex = 0;
 
         foreach (var def in _buttons)
         {
             bool isWide = def.Type == "wide";
-            int btnWidth = isWide ? wideWidth : btnSize;
+            int btnWidth = isWide ? _columns * (btnSize + spacing) - spacing : btnSize;
+            int btnHeight = isWide ? wideBtnHeight : btnSize;
 
             if (isWide && colIdx > 0)
             {
@@ -467,23 +492,27 @@ public class ButtonStudioDialog : Form
             var btn = new Button
             {
                 Location = new Point(x, y),
-                Size = new Size(btnWidth, btnSize),
+                Size = new Size(btnWidth, btnHeight),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.FromArgb(70, 70, 70),
                 ForeColor = Color.White,
-                Font = new Font("Segoe UI Symbol", 10)
+                Font = isWide
+                    ? new Font("Segoe UI", 9, FontStyle.Bold)
+                    : new Font("Segoe UI Symbol", 9, FontStyle.Bold),
+                Text = !string.IsNullOrEmpty(def.Icon) ? def.Icon : def.Label ?? "",
+                Cursor = Cursors.Hand
             };
             btn.FlatAppearance.BorderColor = Color.Gray;
 
-            string display = !string.IsNullOrEmpty(def.Icon) ? def.Icon : def.Label ?? "";
-            btn.Text = display.Length > 6 ? display.Substring(0, 6) : display;
+            var idx = buttonIndex;
+            btn.Click += (s, e) => { _selectedIdx = idx; RenderButtonList(); LoadEditorFromSelection(); };
 
             _previewPanel.Controls.Add(btn);
 
             if (isWide)
             {
                 x = spacing;
-                y += btnSize + spacing;
+                y += btnHeight + spacing;
                 colIdx = 0;
             }
             else
@@ -497,6 +526,7 @@ public class ButtonStudioDialog : Form
                     colIdx = 0;
                 }
             }
+            buttonIndex++;
         }
     }
 
@@ -570,8 +600,6 @@ public class ButtonStudioDialog : Form
 
     private void AddButton()
     {
-        if (_buttons.Count >= 9) return;
-
         _buttons.Add(new FloatingButtonDef { Type = "square", Icon = "★", Label = "New" });
         _selectedIdx = _buttons.Count - 1;
         RenderPreview();
@@ -629,6 +657,7 @@ public class ButtonStudioDialog : Form
         _config.FloatingButtons.Buttons = _buttons;
         _config.FloatingButtons.Columns = _columns;
         _config.Save();
+        _onSaved?.Invoke();
         DialogResult = DialogResult.OK;
         Close();
     }

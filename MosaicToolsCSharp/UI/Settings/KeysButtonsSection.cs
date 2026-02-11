@@ -159,7 +159,7 @@ public class KeysButtonsSection : SettingsSection
             _openButtonsDialog.Activate();
             return;
         }
-        _openButtonsDialog = new ButtonStudioDialog(_config);
+        _openButtonsDialog = new ButtonStudioDialog(_config, () => _controller.RefreshFloatingToolbar());
         _openButtonsDialog.FormClosed += (_, _) => _openButtonsDialog = null;
         _openButtonsDialog.Show();
     }

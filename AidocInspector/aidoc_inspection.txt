@@ -1,0 +1,239 @@
+=== Aidoc UI Automation Inspector v3 ===
+Time: 2/10/2026 12:55:59 AM
+
+--- Step 0: Aidoc processes ---
+  PID=25056 Name="Aidoc Worklist" Title="aidoc-shortcut" Module="C:\Users\erik.richter\AppData\Local\Aidoc\aidocworklist\app-3.90.139\Aidoc Worklist.exe"
+  PID=18476 Name="Aidoc Worklist" Title="" Module="C:\Users\erik.richter\AppData\Local\Aidoc\aidocworklist\app-3.90.139\Aidoc Worklist.exe"
+  PID=6012 Name="Aidoc Worklist" Title="" Module="C:\Users\erik.richter\AppData\Local\Aidoc\aidocworklist\app-3.90.139\Aidoc Worklist.exe"
+  PID=24736 Name="Aidoc Worklist" Title="" Module="C:\Users\erik.richter\AppData\Local\Aidoc\aidocworklist\app-3.90.139\Aidoc Worklist.exe"
+  PID=26872 Name="Aidoc Worklist" Title="" Module="C:\Users\erik.richter\AppData\Local\Aidoc\aidocworklist\app-3.90.139\Aidoc Worklist.exe"
+  PID=11508 Name="Aidoc Worklist" Title="" Module="C:\Users\erik.richter\AppData\Local\Aidoc\aidocworklist\app-3.90.139\Aidoc Worklist.exe"
+  PID=21176 Name="Aidoc Worklist" Title="" Module="C:\Users\erik.richter\AppData\Local\Aidoc\aidocworklist\app-3.90.139\Aidoc Worklist.exe"
+  PID=19556 Name="Aidoc Worklist" Title="" Module="C:\Users\erik.richter\AppData\Local\Aidoc\aidocworklist\app-3.90.139\Aidoc Worklist.exe"
+  PID=19400 Name="Aidoc Worklist" Title="" Module="C:\Users\erik.richter\AppData\Local\Aidoc\aidocworklist\app-3.90.139\Aidoc Worklist.exe"
+  PID=15612 Name="AidocInspector" Title="" Module="C:\Users\erik.richter\Desktop\MosaicTools\AidocInspector\bin\Debug\net8.0-windows10.0.19041.0\AidocInspector.exe"
+  Aidoc PIDs: [25056, 18476, 6012, 24736, 26872, 11508, 21176, 19556, 19400]
+
+--- Step 0.5: Win32 EnumWindows for Aidoc PIDs ---
+  HWND=0x2C08C6 Title="aidoc-shortcut" Class="Chrome_WidgetWin_1" PID=25056 Visible=True
+  HWND=0x907EC Title="aidoc-preview" Class="Chrome_WidgetWin_1" PID=25056 Visible=False
+  HWND=0xE0796 Title="aidoc-worklist" Class="Chrome_WidgetWin_1" PID=25056 Visible=False
+  HWND=0xC0B18 Title="aidoc-detach-preview" Class="Chrome_WidgetWin_1" PID=25056 Visible=False
+  HWND=0x80ADA Title="" Class="Chrome_WidgetWin_0" PID=18476 Visible=False
+  HWND=0xB0794 Title="" Class="Chrome_WidgetWin_0" PID=18476 Visible=False
+  HWND=0x5407D2 Title="" Class="Chrome_WidgetWin_0" PID=18476 Visible=False
+  HWND=0x5807B2 Title="" Class="Chrome_WidgetWin_0" PID=18476 Visible=False
+  HWND=0x206F4 Title="" Class="crashpad_SessionEndWatcher" PID=24736 Visible=False
+  HWND=0x306E0 Title="" Class="Electron_SystemPreferencesHostWindow" PID=25056 Visible=False
+  HWND=0x206AE Title="" Class="Chrome_SystemMessageWindow" PID=25056 Visible=False
+  HWND=0x40686 Title="" Class="Chrome_WidgetWin_0" PID=25056 Visible=False
+  HWND=0x206A8 Title="" Class="Base_PowerMessageWindow" PID=25056 Visible=False
+  HWND=0x807B0 Title="MSCTFIME UI" Class="MSCTFIME UI" PID=25056 Visible=False
+  HWND=0x206F0 Title="Default IME" Class="IME" PID=25056 Visible=False
+  HWND=0x20098C Title="Default IME" Class="IME" PID=18476 Visible=False
+  HWND=0x808B2 Title="Default IME" Class="IME" PID=18476 Visible=False
+  HWND=0x10078C Title="Default IME" Class="IME" PID=18476 Visible=False
+  HWND=0x250950 Title="Default IME" Class="IME" PID=18476 Visible=False
+  HWND=0x306DA Title="Default IME" Class="IME" PID=24736 Visible=False
+  Total HWNDs: 20
+
+--- Step 1: FlaUI inspection of each Aidoc HWND ---
+
+  HWND=0x2C08C6 FlaUI: [Pane] Name="aidoc-shortcut" Class="Chrome_WidgetWin_1" (2380,-1241 392x64) Visible=True
+    Children: 3
+
+  HWND=0x907EC FlaUI: [Pane] Name="aidoc-preview" Class="Chrome_WidgetWin_1" (2461,-1183 479x660) Visible=False
+    Children: 1
+
+  HWND=0xE0796 FlaUI: [Pane] Name="aidoc-worklist" Class="Chrome_WidgetWin_1" (2373,-1175 306x1080) Visible=False
+    Children: 1
+
+  HWND=0xC0B18 FlaUI: [Pane] Name="aidoc-detach-preview" Class="Chrome_WidgetWin_1" (941,496 479x680) Visible=False
+    Children: 1
+
+  HWND=0x80ADA FlaUI: [Pane] Name="" Class="Chrome_WidgetWin_0" (0,0 0x0) Visible=False
+    Children: 0
+
+  HWND=0xB0794 FlaUI: [Pane] Name="" Class="Chrome_WidgetWin_0" (0,0 0x0) Visible=False
+    Children: 0
+
+  HWND=0x5407D2 FlaUI: [Pane] Name="" Class="Chrome_WidgetWin_0" (0,0 0x0) Visible=False
+    Children: 0
+
+  HWND=0x5807B2 FlaUI: [Pane] Name="" Class="Chrome_WidgetWin_0" (0,0 0x0) Visible=False
+    Children: 0
+
+  HWND=0x206F4 FlaUI: [Window] Name="" Class="crashpad_SessionEndWatcher" (0,0 136x39) Visible=False
+    Children: 1
+
+  HWND=0x306E0 FlaUI: [Pane] Name="" Class="Electron_SystemPreferencesHostWindow" (0,0 0x0) Visible=False
+    Children: 0
+
+  HWND=0x206AE FlaUI: [Window] Name="" Class="Chrome_SystemMessageWindow" (0,0 136x39) Visible=False
+    Children: 1
+
+  HWND=0x40686 FlaUI: [Window] Name="" Class="Chrome_WidgetWin_0" (26,26 1440x753) Visible=False
+    Children: 1
+
+  HWND=0x206A8 FlaUI: [Pane] Name="" Class="Base_PowerMessageWindow" (0,0 0x0) Visible=False
+    Children: 0
+
+  HWND=0x807B0 FlaUI: [Pane] Name="MSCTFIME UI" Class="MSCTFIME UI" (0,0 0x0) Visible=False
+    Children: 0
+
+  HWND=0x206F0 FlaUI: [Pane] Name="Default IME" Class="IME" (0,0 0x0) Visible=False
+    Children: 0
+
+  HWND=0x20098C FlaUI: [Pane] Name="Default IME" Class="IME" (0,0 0x0) Visible=False
+    Children: 0
+
+  HWND=0x808B2 FlaUI: [Pane] Name="Default IME" Class="IME" (0,0 0x0) Visible=False
+    Children: 0
+
+  HWND=0x10078C FlaUI: [Pane] Name="Default IME" Class="IME" (0,0 0x0) Visible=False
+    Children: 0
+
+  HWND=0x250950 FlaUI: [Pane] Name="Default IME" Class="IME" (0,0 0x0) Visible=False
+    Children: 0
+
+  HWND=0x306DA FlaUI: [Pane] Name="Default IME" Class="IME" (0,0 0x0) Visible=False
+    Children: 0
+
+================================================================================
+DEEP TREE WALKS
+================================================================================
+
+--- Tree: "aidoc-shortcut" (title="aidoc-shortcut") Visible=True (2380,-1241 392x64) ---
+[Pane] Name="aidoc-shortcut" Class="Chrome_WidgetWin_1" (2380,-1241 392x64) [Legacy,Window]
+  [Document] Id="97956544" Class="Chrome_RenderWidgetHostHWND" (2380,-1241 392x58) [Value,Text,Scroll,Legacy]
+    [Group] (2380,-1241 392x58) [Invoke,Legacy]
+      [Image] (2384,-1241 11x58) [Invoke,Legacy]
+      [Image] (2422,-1222 17x20) [Invoke,Legacy]
+      [Text] Name="VARELA MANUEL BENJAMIN" (2474,-1231 161x17) [Legacy]
+      [Text] Name="A000485274CVR" (2474,-1211 94x14) [Legacy]
+      [Text] Name="ED" (2664,-1212 15x13) [Legacy]
+      [Image] (2705,-1234 38x29) [Invoke,Legacy]
+      [Text] Name="FreeAir" (2707,-1203 34x14) [Legacy]
+      [Text] Name="" (2761,-1219 5x10) [Legacy]
+  [Pane] Class="Intermediate D3D Window" (2380,-1241 392x64) [Legacy]
+  [Pane] (2380,-1241 392x58) [Legacy]
+    [Pane] (2380,-1241 392x58) [Legacy]
+      [Pane] (2380,-1241 392x58) [Legacy]
+        [Pane] (2380,-1241 392x58) [Legacy]
+          [Pane] (2380,-1241 392x58) [Legacy]
+  Elements: 17
+
+--- Tree: "aidoc-preview" (title="aidoc-preview") Visible=False (2461,-1183 479x660) ---
+[Pane] Name="aidoc-preview" Class="Chrome_WidgetWin_1" (2461,-1183 479x660) [Legacy,Window,Transform]
+  [Pane] (2461,-1183 479x660) [Legacy]
+    [Pane] (2461,-1183 479x660) [Legacy]
+      [Pane] (2461,-1183 479x660) [Legacy]
+        [Pane] (2461,-1183 479x660) [Legacy]
+          [Pane] (2461,-1183 479x660) [Legacy]
+  Elements: 6
+
+--- Tree: "aidoc-worklist" (title="aidoc-worklist") Visible=False (2373,-1175 306x1080) ---
+[Pane] Name="aidoc-worklist" Class="Chrome_WidgetWin_1" (2373,-1175 306x1080) [Legacy,Window,Transform]
+  [Pane] (2373,-1175 306x1080) [Legacy]
+    [Pane] (2373,-1175 306x1080) [Legacy]
+      [Pane] (2373,-1175 306x1080) [Legacy]
+        [Pane] (2373,-1175 306x1080) [Legacy]
+          [Pane] (2373,-1175 306x1080) [Legacy]
+  Elements: 6
+
+--- Tree: "aidoc-detach-preview" (title="aidoc-detach-preview") Visible=False (941,496 479x680) ---
+[Pane] Name="aidoc-detach-preview" Class="Chrome_WidgetWin_1" (941,496 479x680) [Legacy,Window,Transform]
+  [Pane] (941,496 479x680) [Legacy]
+    [Pane] (941,496 479x680) [Legacy]
+      [Pane] (941,496 479x680) [Legacy]
+        [Pane] (941,496 479x680) [Legacy]
+          [Pane] (941,496 479x680) [Legacy]
+  Elements: 6
+
+--- Tree: "MSCTFIME UI" (title="MSCTFIME UI") Visible=False (0,0 0x0) ---
+[Pane] Name="MSCTFIME UI" Class="MSCTFIME UI" (0,0 0x0) [Legacy]
+  Elements: 1
+
+--- Tree: "Default IME" (title="Default IME") Visible=False (0,0 0x0) ---
+[Pane] Name="Default IME" Class="IME" (0,0 0x0) [Legacy]
+  Elements: 1
+
+--- Tree: "Default IME" (title="Default IME") Visible=False (0,0 0x0) ---
+[Pane] Name="Default IME" Class="IME" (0,0 0x0) [Legacy]
+  Elements: 1
+
+--- Tree: "Default IME" (title="Default IME") Visible=False (0,0 0x0) ---
+[Pane] Name="Default IME" Class="IME" (0,0 0x0) [Legacy]
+  Elements: 1
+
+--- Tree: "Default IME" (title="Default IME") Visible=False (0,0 0x0) ---
+[Pane] Name="Default IME" Class="IME" (0,0 0x0) [Legacy]
+  Elements: 1
+
+--- Tree: "Default IME" (title="Default IME") Visible=False (0,0 0x0) ---
+[Pane] Name="Default IME" Class="IME" (0,0 0x0) [Legacy]
+  Elements: 1
+
+--- Tree: "Default IME" (title="Default IME") Visible=False (0,0 0x0) ---
+[Pane] Name="Default IME" Class="IME" (0,0 0x0) [Legacy]
+  Elements: 1
+
+================================================================================
+TEXT CONTENT SCAN (all windows)
+================================================================================
+
+--- Text scan: "aidoc-shortcut" ---
+[Pane] Class="Chrome_WidgetWin_1" Id=""
+  Name: "aidoc-shortcut"
+  [Document] Class="Chrome_RenderWidgetHostHWND" Id="97956544"
+    Value: "file:///C:/Users/erik.richter/AppData/Local/Aidoc/aidocworklist/app-3.90.139/resources/app.asar/dist_electron/renderer/index.html?component=shortcut&renderer=shortcut"
+    TextPattern: "      VARELA MANUEL BENJAMINA000485274CVR ED     FreeAir          "
+    LegacyValue: "file:///C:/Users/erik.richter/AppData/Local/Aidoc/aidocworklist/app-3.90.139/resources/app.asar/dist_electron/renderer/index.html?component=shortcut&renderer=shortcut"
+      [Text] Class="" Id=""
+        Name: "VARELA MANUEL BENJAMIN"
+      [Text] Class="" Id=""
+        Name: "A000485274CVR"
+      [Text] Class="" Id=""
+        Name: "ED"
+      [Text] Class="" Id=""
+        Name: "FreeAir"
+
+--- Text scan: "aidoc-preview" ---
+[Pane] Class="Chrome_WidgetWin_1" Id=""
+  Name: "aidoc-preview"
+
+--- Text scan: "aidoc-worklist" ---
+[Pane] Class="Chrome_WidgetWin_1" Id=""
+  Name: "aidoc-worklist"
+
+--- Text scan: "aidoc-detach-preview" ---
+[Pane] Class="Chrome_WidgetWin_1" Id=""
+  Name: "aidoc-detach-preview"
+
+--- Text scan: "MSCTFIME UI" ---
+[Pane] Class="MSCTFIME UI" Id=""
+  Name: "MSCTFIME UI"
+
+--- Text scan: "Default IME" ---
+[Pane] Class="IME" Id=""
+  Name: "Default IME"
+
+--- Text scan: "Default IME" ---
+[Pane] Class="IME" Id=""
+  Name: "Default IME"
+
+--- Text scan: "Default IME" ---
+[Pane] Class="IME" Id=""
+  Name: "Default IME"
+
+--- Text scan: "Default IME" ---
+[Pane] Class="IME" Id=""
+  Name: "Default IME"
+
+--- Text scan: "Default IME" ---
+[Pane] Class="IME" Id=""
+  Name: "Default IME"
+
+--- Text scan: "Default IME" ---
+[Pane] Class="IME" Id=""
+  Name: "Default IME"

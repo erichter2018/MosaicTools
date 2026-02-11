@@ -1568,12 +1568,12 @@ public class MainForm : Form
         _clinicalHistoryWindow.ClearAlert();
     }
 
-    public void SetAidocAppend(string? findingType)
+    public void SetAidocAppend(List<FindingVerification>? findings)
     {
         if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
             return;
 
-        _clinicalHistoryWindow.SetAidocAppend(findingType);
+        _clinicalHistoryWindow.SetAidocAppend(findings);
     }
 
     public void ShowImpressionWindow()
@@ -1921,7 +1921,11 @@ public class MainForm : Form
                 break;
             case NativeWindows.WM_TRIGGER_RECOMD:
                 Logger.Trace("WndProc: Triggering RecoMD");
-                BeginInvoke(() => _controller.TriggerAction(Actions.RecoMd));
+                BeginInvoke(() => _controller.TriggerAction(Actions.TriggerRecoMd));
+                break;
+            case NativeWindows.WM_TRIGGER_PASTE_RECOMD:
+                Logger.Trace("WndProc: Triggering Paste RecoMD");
+                BeginInvoke(() => _controller.TriggerAction(Actions.PasteRecoMd));
                 break;
         }
 

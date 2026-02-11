@@ -125,10 +125,17 @@ public class CriticalStudiesPopup : Form
                     if (index >= 0 && index < _listBox.Items.Count && _listBox.Items[index] is CriticalStudyEntry)
                     {
                         _listBox.SelectedIndex = index;
+                        // Suspend deactivate-close while context menu is open,
+                        // otherwise the popup closes when the menu steals focus
+                        _allowDeactivateClose = false;
                         var menu = new ContextMenuStrip();
                         var removeItem = menu.Items.Add("Remove");
                         removeItem.Click += (ms, me) => RemoveSelectedEntry();
-                        menu.Closed += (ms, me) => menu.Dispose();
+                        menu.Closed += (ms, me) =>
+                        {
+                            _allowDeactivateClose = true;
+                            menu.Dispose();
+                        };
                         menu.Show(_listBox, e.Location);
                     }
                 }

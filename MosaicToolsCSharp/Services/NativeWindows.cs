@@ -77,6 +77,9 @@ public static class NativeWindows
     public const int VK_MENU = 0x12; // Alt
     public const int VK_CONTROL = 0x11;
     public const int VK_SHIFT = 0x10;
+    public const int VK_RETURN = 0x0D;
+    public const int VK_LEFT = 0x25;
+    public const int VK_RIGHT = 0x27;
     public const int VK_END = 0x23;
     public const int VK_NEXT = 0x22; // Page Down
     public const int KEYEVENTF_EXTENDEDKEY = 0x0001;
@@ -583,6 +586,7 @@ public static class NativeWindows
     public const int WM_TRIGGER_CREATE_CRITICAL_NOTE = 0x800F;
     public const int WM_TRIGGER_RADAI_IMPRESSION = 0x8010;
     public const int WM_TRIGGER_RECOMD = 0x8011;
+    public const int WM_TRIGGER_PASTE_RECOMD = 0x8012;
 
     // Legacy message range (v3.1.x) — kept for backward compat with old AHK scripts, remove eventually
     public const int WM_LEGACY_OFFSET = 0x0401;  // old range started at 0x0401
@@ -686,12 +690,184 @@ public static class NativeWindows
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_SHOWWINDOW = 0x0040;
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT
+    {
+        public int Left, Top, Right, Bottom;
+        public int Width => Right - Left;
+        public int Height => Bottom - Top;
+    }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetCursorPos(out POINT lpPoint);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct POINT { public int X, Y; }
+
+    [DllImport("user32.dll")]
+    public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, IntPtr dwExtraInfo);
+
+    public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    public const uint MOUSEEVENTF_LEFTUP = 0x0004;
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetDC(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    [DllImport("gdi32.dll")]
+    public static extern uint GetPixel(IntPtr hdc, int x, int y);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int width, int height);
+
+    [DllImport("gdi32.dll")]
+    public static extern IntPtr SelectObject(IntPtr hdc, IntPtr hObject);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool BitBlt(IntPtr hdcDest, int xDest, int yDest, int width, int height,
+        IntPtr hdcSrc, int xSrc, int ySrc, uint rop);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteObject(IntPtr hObject);
+
+    [DllImport("gdi32.dll")]
+    public static extern int GetDIBits(IntPtr hdc, IntPtr hbmp, uint start, uint lines,
+        byte[] lpvBits, ref BITMAPINFO lpbi, uint usage);
+
+    public const uint SRCCOPY = 0x00CC0020;
+    public const uint DIB_RGB_COLORS = 0;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BITMAPINFOHEADER
+    {
+        public uint biSize;
+        public int biWidth;
+        public int biHeight;
+        public ushort biPlanes;
+        public ushort biBitCount;
+        public uint biCompression;
+        public uint biSizeImage;
+        public int biXPelsPerMeter;
+        public int biYPelsPerMeter;
+        public uint biClrUsed;
+        public uint biClrImportant;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BITMAPINFO
+    {
+        public BITMAPINFOHEADER bmiHeader;
+    }
+
+    /// <summary>
+    /// Capture a screen region into a byte array (BGR, bottom-up rows).
+    /// Returns null on failure.
+    /// </summary>
+    public static byte[]? CaptureScreenRegion(int x, int y, int width, int height, out int stride)
+    {
+        stride = 0;
+        IntPtr hdcScreen = GetDC(IntPtr.Zero);
+        IntPtr hdcMem = CreateCompatibleDC(hdcScreen);
+        IntPtr hBitmap = CreateCompatibleBitmap(hdcScreen, width, height);
+        IntPtr hOldBmp = SelectObject(hdcMem, hBitmap);
+
+        try
+        {
+            if (!BitBlt(hdcMem, 0, 0, width, height, hdcScreen, x, y, SRCCOPY))
+                return null;
+
+            var bmi = new BITMAPINFO();
+            bmi.bmiHeader.biSize = (uint)Marshal.SizeOf<BITMAPINFOHEADER>();
+            bmi.bmiHeader.biWidth = width;
+            bmi.bmiHeader.biHeight = -height; // top-down
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32; // BGRA
+            bmi.bmiHeader.biCompression = 0; // BI_RGB
+
+            stride = width * 4;
+            var pixels = new byte[stride * height];
+            if (GetDIBits(hdcMem, hBitmap, 0, (uint)height, pixels, ref bmi, DIB_RGB_COLORS) == 0)
+                return null;
+
+            return pixels;
+        }
+        finally
+        {
+            SelectObject(hdcMem, hOldBmp);
+            DeleteObject(hBitmap);
+            DeleteDC(hdcMem);
+            ReleaseDC(IntPtr.Zero, hdcScreen);
+        }
+    }
+
+    /// <summary>
+    /// Click at screen coordinates. Saves/restores cursor position.
+    /// </summary>
+    public static void ClickAtScreenPos(int x, int y)
+    {
+        GetCursorPos(out POINT originalPos);
+        SetCursorPos(x, y);
+        Thread.Sleep(50);
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, IntPtr.Zero);
+        Thread.Sleep(20);
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, IntPtr.Zero);
+        Thread.Sleep(30);
+        SetCursorPos(originalPos.X, originalPos.Y);
+    }
+
     /// <summary>
     /// Forcibly set a window to be TopMost.
     /// </summary>
     public static void ForceTopMost(IntPtr hWnd)
     {
         SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    }
+
+    /// <summary>
+    /// Find the first visible window belonging to a process by name.
+    /// More reliable than title matching for apps that share common title keywords.
+    /// </summary>
+    public static IntPtr FindWindowByProcessName(string processName)
+    {
+        IntPtr found = IntPtr.Zero;
+        var targetName = processName.ToLowerInvariant();
+
+        EnumWindows((hWnd, _) =>
+        {
+            if (!IsWindowVisible(hWnd)) return true;
+
+            GetWindowThreadProcessId(hWnd, out uint pid);
+            try
+            {
+                var proc = System.Diagnostics.Process.GetProcessById((int)pid);
+                if (proc.ProcessName.Equals(targetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    found = hWnd;
+                    return false; // Stop
+                }
+            }
+            catch { }
+            return true;
+        }, IntPtr.Zero);
+
+        return found;
     }
 
     #endregion

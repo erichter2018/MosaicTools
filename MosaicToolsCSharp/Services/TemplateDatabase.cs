@@ -37,7 +37,7 @@ public class TemplateEntry
 public class TemplateDatabaseData
 {
     [JsonPropertyName("version")]
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
 
     [JsonPropertyName("templates")]
     public Dictionary<string, List<TemplateEntry>> Templates { get; set; } = new();
@@ -85,6 +85,19 @@ public class TemplateDatabase
                 if (data != null)
                 {
                     _data = data;
+
+                    // v1→v2 migration: reset all counts to rebuild cleanly
+                    // (v1 recorded templates after Process Report, contaminating them with dictated content)
+                    if (_data.Version < 2)
+                    {
+                        foreach (var entries in _data.Templates.Values)
+                            foreach (var entry in entries)
+                                entry.Count = 0;
+                        _data.Version = 2;
+                        Logger.Trace("TemplateDatabase: migrated v1→v2, reset all counts");
+                        Save();
+                    }
+
                     int totalTemplates = _data.Templates.Values.Sum(list => list.Count);
                     Logger.Trace($"TemplateDatabase loaded: {_data.Templates.Count} study types, {totalTemplates} templates");
                     return;

@@ -125,6 +125,8 @@ public class ClinicalHistoryForm : Form
     // Aidoc append (shown below clinical history in orange, not included in paste)
     private string? _aidocAppendText;
     private bool _aidocActive = false;
+    private bool _aidocAllAddressed = false;
+    private List<FindingVerification>? _aidocVerifications;
     private Label? _aidocLabel; // Opaque mode only
 
     // Alert-only mode state
@@ -378,6 +380,10 @@ public class ClinicalHistoryForm : Form
         string text = _contentLabel.Text;
         Color textColor = _contentLabel.ForeColor;
 
+        // Check if we need a gradient border (stroke + unaddressed aidoc)
+        bool useGradientBorder = _strokeDetected && _aidocActive && !_aidocAllAddressed
+            && !_genderWarningActive && !_templateMismatch;
+
         // Layer 1: semi-transparent background
         using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(bmp))
@@ -388,11 +394,26 @@ public class ClinicalHistoryForm : Form
             using var innerBrush = new SolidBrush(Color.FromArgb(_backgroundAlpha, innerBg.R, innerBg.G, innerBg.B));
             g.FillRectangle(innerBrush, bw, bw, w - bw * 2, h - bw * 2);
             // Border strips - fully opaque so state colors (green/purple/red) are always visible
-            using var borderBrush = new SolidBrush(Color.FromArgb(255, borderColor.R, borderColor.G, borderColor.B));
-            g.FillRectangle(borderBrush, 0, 0, w, bw);           // top
-            g.FillRectangle(borderBrush, 0, h - bw, w, bw);      // bottom
-            g.FillRectangle(borderBrush, 0, 0, bw, h);           // left
-            g.FillRectangle(borderBrush, w - bw, 0, bw, h);      // right
+            if (useGradientBorder && w > 1)
+            {
+                // Purple→Orange gradient for stroke + unaddressed aidoc
+                using var gradientBrush = new LinearGradientBrush(
+                    new Point(0, 0), new Point(w, 0),
+                    Color.FromArgb(255, StrokeBorderColor.R, StrokeBorderColor.G, StrokeBorderColor.B),
+                    Color.FromArgb(255, AidocBorderColor.R, AidocBorderColor.G, AidocBorderColor.B));
+                g.FillRectangle(gradientBrush, 0, 0, w, bw);           // top
+                g.FillRectangle(gradientBrush, 0, h - bw, w, bw);      // bottom
+                g.FillRectangle(gradientBrush, 0, 0, bw, h);           // left
+                g.FillRectangle(gradientBrush, w - bw, 0, bw, h);      // right
+            }
+            else
+            {
+                using var borderBrush = new SolidBrush(Color.FromArgb(255, borderColor.R, borderColor.G, borderColor.B));
+                g.FillRectangle(borderBrush, 0, 0, w, bw);           // top
+                g.FillRectangle(borderBrush, 0, h - bw, w, bw);      // bottom
+                g.FillRectangle(borderBrush, 0, 0, bw, h);           // left
+                g.FillRectangle(borderBrush, w - bw, 0, bw, h);      // right
+            }
         }
 
         // Layer 2: ClearType text on opaque inner background
@@ -436,13 +457,14 @@ public class ClinicalHistoryForm : Form
             var contentRect = new RectangleF(textX, textY, maxWidth, h - textY);
             g.DrawString(text, _contentFont, brush, contentRect, sf);
 
-            // Aidoc append text in orange (below clinical history)
+            // Aidoc append text (orange when unaddressed, green when all addressed)
             if (_aidocActive && !string.IsNullOrEmpty(_aidocAppendText))
             {
                 var contentSize = g.MeasureString(text, _contentFont, (int)maxWidth, sf);
                 float aidocY = textY + contentSize.Height + 4;
                 using var aidocFont = new Font("Segoe UI", 10, FontStyle.Bold);
-                using var aidocBrush = new SolidBrush(AidocBorderColor);
+                var aidocColor = _aidocAllAddressed ? Color.FromArgb(100, 200, 100) : AidocBorderColor;
+                using var aidocBrush = new SolidBrush(aidocColor);
                 g.DrawString(_aidocAppendText, aidocFont, aidocBrush,
                     new RectangleF(textX, aidocY, maxWidth, h - aidocY), sf);
             }
@@ -720,6 +742,8 @@ public class ClinicalHistoryForm : Form
         _templateMismatch = false;
         _strokeDetected = false;
         _aidocActive = false;
+        _aidocAllAddressed = false;
+        _aidocVerifications = null;
         _aidocAppendText = null;
         if (_aidocLabel != null)
         {
@@ -781,32 +805,46 @@ public class ClinicalHistoryForm : Form
     }
 
     /// <summary>
-    /// Set Aidoc finding text to append below clinical history in orange.
+    /// Set Aidoc finding verifications to append below clinical history.
+    /// Shows orange when unaddressed, green when all addressed.
     /// Pass null to clear. This text is NOT included when pasting to Mosaic.
     /// </summary>
-    public void SetAidocAppend(string? findingType)
+    public void SetAidocAppend(List<FindingVerification>? findings)
     {
         if (InvokeRequired)
         {
-            BeginInvoke(() => SetAidocAppend(findingType));
+            BeginInvoke(() => SetAidocAppend(findings));
             return;
         }
 
         bool wasActive = _aidocActive;
-        _aidocActive = !string.IsNullOrWhiteSpace(findingType);
-        _aidocAppendText = _aidocActive ? $"Aidoc: {findingType}" : null;
+        _aidocVerifications = findings;
+        _aidocActive = findings != null && findings.Count > 0;
+
+        if (_aidocActive && findings != null)
+        {
+            _aidocAllAddressed = findings.All(f => f.IsAddressed);
+            var parts = findings.Select(f => f.IsAddressed ? $"{f.FindingType} \u2713" : f.FindingType);
+            _aidocAppendText = "Aidoc: " + string.Join(", ", parts);
+        }
+        else
+        {
+            _aidocAllAddressed = false;
+            _aidocAppendText = null;
+        }
 
         // Update opaque mode label
         if (_aidocLabel != null)
         {
             _aidocLabel.Text = _aidocAppendText ?? "";
             _aidocLabel.Visible = _aidocActive;
+            _aidocLabel.ForeColor = _aidocAllAddressed ? Color.FromArgb(100, 200, 100) : AidocBorderColor;
         }
 
-        // Update border: orange for Aidoc (lower priority than template/gender/stroke)
-        if (_aidocActive && !_templateMismatch && !_genderWarningActive && !_strokeDetected)
+        // Update border: orange for unaddressed Aidoc (lower priority than template/gender/stroke)
+        if (_aidocActive && !_aidocAllAddressed && !_templateMismatch && !_genderWarningActive && !_strokeDetected)
             BackColor = AidocBorderColor;
-        else if (!_aidocActive && wasActive && !_templateMismatch && !_genderWarningActive && !_strokeDetected)
+        else if ((_aidocAllAddressed || !_aidocActive) && wasActive && !_templateMismatch && !_genderWarningActive && !_strokeDetected)
             BackColor = NormalBorderColor;
 
         UpdateBorderTooltip();
@@ -825,7 +863,7 @@ public class ClinicalHistoryForm : Form
             BackColor = TemplateMismatchBorderColor;
         else if (_strokeDetected)
             BackColor = StrokeBorderColor;
-        else if (_aidocActive)
+        else if (_aidocActive && !_aidocAllAddressed)
             BackColor = AidocBorderColor;
         else
             BackColor = isDrafted ? DraftedBorderColor : NormalBorderColor;
@@ -1054,15 +1092,25 @@ public class ClinicalHistoryForm : Form
             tooltip = "Red: Template mismatch - study description doesn't match the report template";
         else if (_strokeDetected)
         {
+            string strokeTip;
             if (_noteCreated)
-                tooltip = "Purple: Stroke protocol - Critical Communication Note created ✓";
+                strokeTip = "Stroke protocol - Critical Communication Note created \u2713";
             else if (_config.StrokeClickToCreateNote)
-                tooltip = "Purple: Stroke protocol - click to create critical note";
+                strokeTip = "Stroke protocol - click to create critical note";
             else
-                tooltip = "Purple: Stroke protocol detected";
+                strokeTip = "Stroke protocol detected";
+
+            if (_aidocActive && !_aidocAllAddressed)
+                tooltip = $"Purple/Orange: {strokeTip} + Aidoc finding not yet addressed";
+            else if (_aidocActive && _aidocAllAddressed)
+                tooltip = $"Purple: {strokeTip} (Aidoc findings addressed \u2713)";
+            else
+                tooltip = $"Purple: {strokeTip}";
         }
-        else if (_aidocActive)
-            tooltip = $"Orange: Aidoc AI finding - {_aidocAppendText ?? "detected"}";
+        else if (_aidocActive && !_aidocAllAddressed)
+            tooltip = "Orange: Aidoc finding not yet addressed in report";
+        else if (_aidocActive && _aidocAllAddressed)
+            tooltip = "Aidoc findings addressed in report \u2713";
         else if (BackColor == DraftedBorderColor)
             tooltip = "Green: Report is drafted";
         else
@@ -1365,9 +1413,11 @@ public class ClinicalHistoryForm : Form
                 continue;
 
             bool isDuplicate = false;
+            var normalizedNew = NormalizeForComparison(trimmed);
             foreach (var existing in uniqueLines)
             {
-                if (string.Equals(existing, trimmed, StringComparison.OrdinalIgnoreCase))
+                var normalizedExisting = NormalizeForComparison(existing);
+                if (normalizedExisting == normalizedNew || AreSameWordSet(normalizedExisting, normalizedNew))
                 {
                     isDuplicate = true;
                     break;
@@ -1432,9 +1482,11 @@ public class ClinicalHistoryForm : Form
         foreach (var line in allTrimmedLines)
         {
             bool isDuplicate = false;
+            var normalizedNew = NormalizeForComparison(line);
             foreach (var existing in uniqueLines)
             {
-                if (string.Equals(existing, line, StringComparison.OrdinalIgnoreCase))
+                var normalizedExisting = NormalizeForComparison(existing);
+                if (normalizedExisting == normalizedNew || AreSameWordSet(normalizedExisting, normalizedNew))
                 {
                     isDuplicate = true;
                     break;
@@ -1476,9 +1528,17 @@ public class ClinicalHistoryForm : Form
 
     private static string NormalizeForComparison(string text)
     {
-        var result = Regex.Replace(text, @"\s+", " ").Trim();
-        result = result.TrimEnd('.', ',', ';', ' ');
-        return result;
+        // Replace all non-alphanumeric chars with spaces, collapse, lowercase
+        var result = Regex.Replace(text, @"[^a-zA-Z0-9]+", " ").Trim();
+        result = Regex.Replace(result, @"\s+", " ");
+        return result.ToLowerInvariant();
+    }
+
+    private static bool AreSameWordSet(string normalized1, string normalized2)
+    {
+        var words1 = new HashSet<string>(normalized1.Split(' '), StringComparer.OrdinalIgnoreCase);
+        var words2 = new HashSet<string>(normalized2.Split(' '), StringComparer.OrdinalIgnoreCase);
+        return words1.SetEquals(words2);
     }
 
     #endregion

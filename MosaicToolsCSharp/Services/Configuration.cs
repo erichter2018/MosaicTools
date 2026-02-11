@@ -554,8 +554,20 @@ public class Configuration
                 }
             }
         }
+
+        // Migrate "RecoMD" action name to "Trigger RecoMD" (v3.6+)
+        void MigrateRecoMdAction(Dictionary<string, ActionMapping> mappings)
+        {
+            if (mappings.TryGetValue("RecoMD", out var mapping))
+            {
+                mappings.Remove("RecoMD");
+                mappings[Actions.TriggerRecoMd] = mapping;
+            }
+        }
+        MigrateRecoMdAction(ActionMappings);
+        MigrateRecoMdAction(SpeechMikeActionMappings);
     }
-    
+
     /// <summary>
     /// Check if a study matches the Ignore Inpatient Drafted criteria.
     /// Returns true if the study is inpatient XR (or inpatient chest XR if mode=1).
@@ -794,11 +806,12 @@ public static class Actions
     public const string CycleWindowLevel = "Cycle Window/Level";
     public const string CreateCriticalNote = "Create Critical Note";
     public const string RadAiImpression = "RadAI Impression";  // [RadAI] — remove when RadAI integration is retired
-    public const string RecoMd = "RecoMD";
+    public const string TriggerRecoMd = "Trigger RecoMD";
+    public const string PasteRecoMd = "Paste RecoMD";
 
     public static readonly string[] All = {
         None, SystemBeep, GetPrior, CriticalFindings,
-        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression, DiscardStudy, ShowPickLists, CycleWindowLevel, CreateCriticalNote, RadAiImpression, RecoMd
+        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression, DiscardStudy, ShowPickLists, CycleWindowLevel, CreateCriticalNote, RadAiImpression, TriggerRecoMd, PasteRecoMd
     };
 }
 

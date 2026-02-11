@@ -334,7 +334,7 @@ public static class CorrelationService
         @"|\bunremarkable\b|\bwithin\s+normal\b" +
         @"|\b(?:was|has\s+been)\s+performed\b" +               // surgical history
         @"|\bdemonstrates?\s+no\s" +                            // mid-sentence negative
-        @"|\bis\s+normal\s+in\b" +                              // normal descriptive
+        @"|\b(?:is|are)\s+normal\b" +                            // "is normal", "is normal in size/caliber"
         @"|\bnot\s+clearly\s+(?:seen|visualized|identified)\b" + // non-visualization
         @"|\b(?:is|are)\s+clear\b" +                            // "airways are clear"
         @"|\bno\s+evidence\b",                                  // "no evidence of acute..."
@@ -384,17 +384,21 @@ public static class CorrelationService
         }
 
         // Identify negative/normal statements (these can match impressions but won't become orphans)
+        // When dictatedSentences is provided, we KNOW which findings are dictated — negative
+        // findings that were confirmed dictated should still be highlighted (user said them),
+        // they just shouldn't become orphan warnings.
         var negativeFindings = new HashSet<string>(StringComparer.Ordinal);
+        bool hasDictatedFilter = dictatedSentences != null && dictatedSentences.Count > 0;
         foreach (var sentence in filteredFindings)
         {
             if (NegativeSentencePattern.IsMatch(sentence))
             {
                 negativeFindings.Add(sentence);
-                Logger.Trace($"CorrelateReversed: Negative finding (can match, won't orphan): {sentence.Substring(0, Math.Min(60, sentence.Length))}");
+                Logger.Trace($"CorrelateReversed: Negative finding (won't orphan{(hasDictatedFilter ? ", but will highlight" : "")}): {sentence.Substring(0, Math.Min(60, sentence.Length))}");
             }
         }
         int significantCount = filteredFindings.Count - negativeFindings.Count;
-        Logger.Trace($"CorrelateReversed: {significantCount} significant + {negativeFindings.Count} negative findings");
+        Logger.Trace($"CorrelateReversed: {significantCount} significant + {negativeFindings.Count} negative findings (dictatedFilter={hasDictatedFilter})");
 
         // Safety net: if no dictated sentences provided AND most findings are significant (suggesting
         // baseline wasn't captured), fall back to the old impression-first approach
@@ -404,7 +408,9 @@ public static class CorrelationService
             return Correlate(reportText, seed);
         }
 
-        if (significantCount == 0)
+        // When we have a dictated filter, negative findings count as significant
+        // (they're confirmed dictated content that should be correlated)
+        if (significantCount == 0 && !hasDictatedFilter)
             return result;
 
         // Shuffle color order for consistent colors per report
@@ -461,9 +467,10 @@ public static class CorrelationService
             if (bestSubstantiveScore >= 1 && bestImpressionIdx >= 0)
             {
                 Logger.Trace($"CorrelateReversed: MATCHED finding to Impression #{bestImpressionIdx} (score={bestScore}, substantive={bestSubstantiveScore}, neg={isNegative})");
-                // Negative findings participate in scoring (so the impression gets matched)
-                // but are excluded from highlighted output to avoid highlighting boilerplate
-                if (!isNegative)
+                // When we have a dictated filter, negative findings are confirmed dictated content
+                // and should be highlighted. Without a filter, exclude negatives to avoid
+                // highlighting boilerplate template content.
+                if (!isNegative || hasDictatedFilter)
                 {
                     if (!matchedGroups.ContainsKey(bestImpressionIdx))
                         matchedGroups[bestImpressionIdx] = (bestImpressionText, new List<string>());

@@ -38,6 +38,16 @@ public class ActionController : IDisposable
 
     public PipeService PipeService => _pipeService;
 
+    /// <summary>
+    /// Safe BeginInvoke that silently no-ops if the MainForm handle isn't created.
+    /// Prevents crash loops when timers fire during form creation/destruction.
+    /// </summary>
+    private void InvokeUI(Action action)
+    {
+        if (_mainForm.IsHandleCreated && !_mainForm.IsDisposed)
+            _mainForm.BeginInvoke(action);
+    }
+
     // Action Queue (Must be STA for Clipboard and SendKeys)
     private readonly ConcurrentQueue<ActionRequest> _actionQueue = new();
     private readonly AutoResetEvent _actionEvent = new(false);
@@ -89,6 +99,7 @@ public class ActionController : IDisposable
     private bool _needsBaselineCapture = false; // Set true on new study, cleared when baseline captured
     private bool _baselineIsFromTemplateDb = false; // True when baseline came from template DB fallback (section-only diffing)
     private int _baselineCaptureAttempts = 0; // Tick counter for template DB fallback timing
+    private bool _templateRecordedForStudy = false; // Only record template once per study, before Process Report
     private string? _lastPopupReportText; // Track what's currently displayed in popup for change detection
 
     // RVUCounter integration - track if discard dialog was shown for current accession
@@ -109,6 +120,7 @@ public class ActionController : IDisposable
     // Aidoc state tracking
     private string? _lastAidocFindings; // comma-joined relevant finding types
     private bool _lastAidocRelevant = false;
+    private readonly HashSet<string> _aidocConfirmedNegative = new(StringComparer.OrdinalIgnoreCase); // "once negative, stay negative" per study
 
     // RecoMD state tracking
     private volatile bool _recoMdPendingAfterProcess;
@@ -203,7 +215,7 @@ public class ActionController : IDisposable
                 catch (Exception ex)
                 {
                     Logger.Trace($"Action loop error ({req.Action}): {ex.Message}");
-                    _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"Error: {ex.Message}"));
+                    InvokeUI(() => _mainForm.ShowStatusToast($"Error: {ex.Message}"));
                 }
                 finally
                 {
@@ -212,7 +224,7 @@ public class ActionController : IDisposable
                     // Restore focus after action completes
                     NativeWindows.RestorePreviousFocus(50);
                     
-                    _mainForm.BeginInvoke(() => _mainForm.EnsureWindowsOnTop());
+                    InvokeUI(() => _mainForm.EnsureWindowsOnTop());
                 }
             }
         }
@@ -224,7 +236,7 @@ public class ActionController : IDisposable
         _hidService.ButtonPressed += OnMicButtonPressed;
         _hidService.RecordButtonStateChanged += OnRecordButtonStateChanged;
         _hidService.DeviceConnected += msg =>
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(msg));
+            InvokeUI(() => _mainForm.ShowStatusToast(msg));
 
         _hidService.SetPreferredDevice(_config.PreferredMicrophone);
         _hidService.Start();
@@ -271,6 +283,9 @@ public class ActionController : IDisposable
         // Restart scraper to pick up any interval changes
         ToggleMosaicScraper(true);
     }
+
+    public void RefreshFloatingToolbar() =>
+        InvokeUI(() => _mainForm.RefreshFloatingToolbar(_config.FloatingButtons));
 
     /// <summary>
     /// Get the name of the currently connected microphone, or null if not connected.
@@ -461,8 +476,11 @@ public class ActionController : IDisposable
             case Actions.RadAiImpression:  // [RadAI]
                 PerformRadAiImpression();
                 break;
-            case Actions.RecoMd:
+            case Actions.TriggerRecoMd:
                 PerformRecoMd();
+                break;
+            case Actions.PasteRecoMd:
+                PerformPasteRecoMd();
                 break;
             case "__InsertMacros__":
                 PerformInsertMacros();
@@ -548,7 +566,7 @@ public class ActionController : IDisposable
 
         // 3. Update internal state and UI
         _dictationActive = startingActive;
-        _mainForm.BeginInvoke(() => _mainForm.UpdateIndicatorState(_dictationActive));
+        InvokeUI(() => _mainForm.UpdateIndicatorState(_dictationActive));
         Logger.Trace($"System Beep: State toggled to {(_dictationActive ? "ON" : "OFF")}");
 
         // 4. Reality Check (Python Parity)
@@ -570,7 +588,7 @@ public class ActionController : IDisposable
             {
                 Logger.Trace("SYNC FIX: System is recording, but app state was OFF. Syncing to ON.");
                 _dictationActive = true;
-                _mainForm.BeginInvoke(() => _mainForm.UpdateIndicatorState(_dictationActive));
+                InvokeUI(() => _mainForm.UpdateIndicatorState(_dictationActive));
             }
             else if (isRealActive == false && _dictationActive)
             {
@@ -593,7 +611,7 @@ public class ActionController : IDisposable
             if (active)
             {
                 _consecutiveInactiveCount = 0;
-                _mainForm.BeginInvoke(() => _mainForm.UpdateIndicatorState(true));
+                InvokeUI(() => _mainForm.UpdateIndicatorState(true));
             }
             else
             {
@@ -601,7 +619,7 @@ public class ActionController : IDisposable
                 _consecutiveInactiveCount++;
                 if (_consecutiveInactiveCount >= 3)
                 {
-                    _mainForm.BeginInvoke(() => _mainForm.UpdateIndicatorState(false));
+                    InvokeUI(() => _mainForm.UpdateIndicatorState(false));
                 }
             }
 
@@ -831,7 +849,7 @@ public class ActionController : IDisposable
             if (popupAlreadyOpen)
             {
                 Logger.Trace("Process Report: Skipping auto-show (popup already open), marking as stale");
-                _mainForm.BeginInvoke(() => { if (popupRef != null && !popupRef.IsDisposed) popupRef.SetStaleState(true); });
+                InvokeUI(() => { if (popupRef != null && !popupRef.IsDisposed) popupRef.SetStaleState(true); });
             }
             else
             {
@@ -846,7 +864,7 @@ public class ActionController : IDisposable
             {
                 // Popup is open but auto-show is disabled or already done - still mark as stale during processing
                 Logger.Trace("Process Report: Marking popup as stale during processing");
-                _mainForm.BeginInvoke(() => { if (popupRef2 != null && !popupRef2.IsDisposed) popupRef2.SetStaleState(true); });
+                InvokeUI(() => { if (popupRef2 != null && !popupRef2.IsDisposed) popupRef2.SetStaleState(true); });
             }
         }
 
@@ -880,7 +898,7 @@ public class ActionController : IDisposable
         _impressionSearchStartTime = DateTime.Now; // Track when we started - wait 2s before showing
 
         // Show the impression window with waiting message
-        _mainForm.BeginInvoke(() => _mainForm.ShowImpressionWindow());
+        InvokeUI(() => _mainForm.ShowImpressionWindow());
 
         // Switch to fast scrape rate (1 second)
         RestartScrapeTimer(_fastScrapeIntervalMs);
@@ -892,7 +910,7 @@ public class ActionController : IDisposable
         _searchingForImpression = false;
 
         // Update the impression window with content
-        _mainForm.BeginInvoke(() => _mainForm.UpdateImpression(impression));
+        InvokeUI(() => _mainForm.UpdateImpression(impression));
 
         // Revert to configured scrape rate
         RestartScrapeTimer(NormalScrapeIntervalMs);
@@ -913,21 +931,30 @@ public class ActionController : IDisposable
         // Close report popup if open
         if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
         {
-            _mainForm.BeginInvoke(() =>
+            InvokeUI(() =>
             {
                 try { _currentReportPopup?.Close(); } catch { }
                 _currentReportPopup = null;
                 _lastPopupReportText = null;
             });
         }
-        // [RadAI] Close RadAI impression popup on sign
+        // [RadAI] Close RadAI impression popup/overlay on sign
         if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
         {
             _pendingRadAiImpressionItems = null;
-            _mainForm.BeginInvoke(() =>
+            InvokeUI(() =>
             {
                 try { _currentRadAiPopup?.Close(); } catch { }
                 _currentRadAiPopup = null;
+            });
+        }
+        if (_currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed)
+        {
+            _pendingRadAiImpressionItems = null;
+            InvokeUI(() =>
+            {
+                try { _currentRadAiOverlay?.Close(); } catch { }
+                _currentRadAiOverlay = null;
             });
         }
 
@@ -964,7 +991,7 @@ public class ActionController : IDisposable
         {
             _searchingForImpression = false;
             _impressionFromProcessReport = false; // Clear manual trigger flag
-            _mainForm.BeginInvoke(() => _mainForm.HideImpressionWindow());
+            InvokeUI(() => _mainForm.HideImpressionWindow());
 
             // Restore normal scrape rate
             RestartScrapeTimer(NormalScrapeIntervalMs);
@@ -974,6 +1001,7 @@ public class ActionController : IDisposable
         if (_config.RecoMdEnabled)
         {
             _recoMdPendingAfterProcess = false;
+            SendRecoMdToBack();
             Task.Run(async () => await _recoMdService.CloseReportAsync());
         }
     }
@@ -988,21 +1016,30 @@ public class ActionController : IDisposable
         // Close report popup if open
         if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
         {
-            _mainForm.BeginInvoke(() =>
+            InvokeUI(() =>
             {
                 try { _currentReportPopup?.Close(); } catch { }
                 _currentReportPopup = null;
                 _lastPopupReportText = null;
             });
         }
-        // [RadAI] Close RadAI impression popup on discard
+        // [RadAI] Close RadAI impression popup/overlay on discard
         if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
         {
             _pendingRadAiImpressionItems = null;
-            _mainForm.BeginInvoke(() =>
+            InvokeUI(() =>
             {
                 try { _currentRadAiPopup?.Close(); } catch { }
                 _currentRadAiPopup = null;
+            });
+        }
+        if (_currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed)
+        {
+            _pendingRadAiImpressionItems = null;
+            InvokeUI(() =>
+            {
+                try { _currentRadAiOverlay?.Close(); } catch { }
+                _currentRadAiOverlay = null;
             });
         }
 
@@ -1018,7 +1055,7 @@ public class ActionController : IDisposable
 
         if (success)
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Study discarded", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("Study discarded", 2000));
 
             // Send CLOSED_UNSIGNED immediately after successful discard
             if (!string.IsNullOrEmpty(accessionToDiscard))
@@ -1038,18 +1075,18 @@ public class ActionController : IDisposable
             // Hide clinical history window if configured to hide when no study
             if (_config.HideClinicalHistoryWhenNoStudy && _config.ShowClinicalHistory)
             {
-                _mainForm.BeginInvoke(() => _mainForm.ToggleClinicalHistory(false));
+                InvokeUI(() => _mainForm.ToggleClinicalHistory(false));
             }
 
             // Hide indicator window if configured to hide when no study
             if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
             {
-                _mainForm.BeginInvoke(() => _mainForm.ToggleIndicator(false));
+                InvokeUI(() => _mainForm.ToggleIndicator(false));
             }
         }
         else
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Discard failed - try manually", 3000));
+            InvokeUI(() => _mainForm.ShowStatusToast("Discard failed - try manually", 3000));
         }
 
         // Close impression window on discard (same as sign)
@@ -1057,13 +1094,14 @@ public class ActionController : IDisposable
         {
             _searchingForImpression = false;
             _impressionFromProcessReport = false;
-            _mainForm.BeginInvoke(() => _mainForm.HideImpressionWindow());
+            InvokeUI(() => _mainForm.HideImpressionWindow());
         }
 
         // RecoMD: close report on discard
         if (_config.RecoMdEnabled)
         {
             _recoMdPendingAfterProcess = false;
+            SendRecoMdToBack();
             Task.Run(async () => await _recoMdService.CloseReportAsync());
         }
     }
@@ -1075,11 +1113,11 @@ public class ActionController : IDisposable
         var success = _automationService.ClickCreateImpression();
         if (success)
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Create Impression", 1500));
+            InvokeUI(() => _mainForm.ShowStatusToast("Create Impression", 1500));
         }
         else
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Create Impression button not found", 2500));
+            InvokeUI(() => _mainForm.ShowStatusToast("Create Impression button not found", 2500));
         }
     }
 
@@ -1177,7 +1215,7 @@ public class ActionController : IDisposable
         if (IsAddendumOpen())
         {
             Logger.Trace("InsertMacros: Blocked - addendum is open");
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
+            InvokeUI(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
             return;
         }
 
@@ -1214,7 +1252,7 @@ public class ActionController : IDisposable
                     TrimTrackingSets();
                 }
 
-                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(
+                InvokeUI(() => _mainForm.ShowStatusToast(
                     count == 1 ? "Macro inserted" : $"{count} macros inserted", 2000));
 
                 // Mark macros complete for Ignore Inpatient Drafted feature
@@ -1249,14 +1287,14 @@ public class ActionController : IDisposable
         // Check if pick lists are enabled
         if (!_config.PickListsEnabled)
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Pick lists are disabled", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("Pick lists are disabled", 2000));
             return;
         }
 
         // Check if there are any pick lists
         if (_config.PickLists.Count == 0)
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No pick lists configured", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("No pick lists configured", 2000));
             return;
         }
 
@@ -1271,7 +1309,7 @@ public class ActionController : IDisposable
         if (matchingLists.Count == 0)
         {
             var studyInfo = string.IsNullOrEmpty(studyDescription) ? "no study" : $"'{studyDescription}'";
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"No pick lists match {studyInfo}", 2500));
+            InvokeUI(() => _mainForm.ShowStatusToast($"No pick lists match {studyInfo}", 2500));
             return;
         }
 
@@ -1280,7 +1318,7 @@ public class ActionController : IDisposable
         // If keep-open is enabled and popup exists, just bring it to front
         if (_config.PickListKeepOpen && _currentPickListPopup != null && !_currentPickListPopup.IsDisposed)
         {
-            _mainForm.BeginInvoke(() =>
+            InvokeUI(() =>
             {
                 _currentPickListPopup?.Activate();
                 _currentPickListPopup?.Focus();
@@ -1291,7 +1329,7 @@ public class ActionController : IDisposable
         // Close existing popup if open (and keep-open is disabled)
         if (_currentPickListPopup != null && !_currentPickListPopup.IsDisposed)
         {
-            _mainForm.BeginInvoke(() =>
+            InvokeUI(() =>
             {
                 try { _currentPickListPopup?.Close(); } catch { }
                 _currentPickListPopup = null;
@@ -1299,7 +1337,7 @@ public class ActionController : IDisposable
         }
 
         // Show popup on UI thread
-        _mainForm.BeginInvoke(() =>
+        InvokeUI(() =>
         {
             _currentPickListPopup = new PickListPopupForm(_config, matchingLists, studyDescription, OnPickListItemSelected);
             _currentPickListPopup.FormClosed += (s, e) => _currentPickListPopup = null;
@@ -1326,7 +1364,7 @@ public class ActionController : IDisposable
         if (IsAddendumOpen())
         {
             Logger.Trace("InsertPickListText: Blocked - addendum is open");
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
+            InvokeUI(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
             return;
         }
 
@@ -1356,12 +1394,12 @@ public class ActionController : IDisposable
                 NativeWindows.SendHotkey("ctrl+v");
                 Thread.Sleep(100);
 
-                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Pick list item inserted", 1500));
+                InvokeUI(() => _mainForm.ShowStatusToast("Pick list item inserted", 1500));
             }
             catch (Exception ex)
             {
                 Logger.Trace($"InsertPickListText error: {ex.Message}");
-                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"Error: {ex.Message}", 2500));
+                InvokeUI(() => _mainForm.ShowStatusToast($"Error: {ex.Message}", 2500));
             }
             finally
             {
@@ -1384,11 +1422,11 @@ public class ActionController : IDisposable
         if (IsAddendumOpen())
         {
             Logger.Trace("GetPrior: Blocked - addendum is open");
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
+            InvokeUI(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
             return;
         }
 
-        _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Extracting Prior..."));
+        InvokeUI(() => _mainForm.ShowStatusToast("Extracting Prior..."));
 
         {
             // Check if InteleViewer is active
@@ -1397,7 +1435,7 @@ public class ActionController : IDisposable
             
             if (!activeTitle.Contains("inteleviewer"))
             {
-                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("InteleViewer must be active!"));
+                InvokeUI(() => _mainForm.ShowStatusToast("InteleViewer must be active!"));
                 return;
             }
             
@@ -1447,7 +1485,7 @@ public class ActionController : IDisposable
             if (string.IsNullOrEmpty(rawText) || rawText.Length < 5)
             {
                 Logger.Trace("GetPrior: Failed to retrieve text after 3 attempts.");
-                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No text retrieved"));
+                InvokeUI(() => _mainForm.ShowStatusToast("No text retrieved"));
                 return;
             }
             
@@ -1457,7 +1495,7 @@ public class ActionController : IDisposable
             var formatted = _getPriorService.ProcessPriorText(rawText);
             if (string.IsNullOrEmpty(formatted))
             {
-                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Could not parse prior"));
+                InvokeUI(() => _mainForm.ShowStatusToast("Could not parse prior"));
                 return;
             }
             
@@ -1473,7 +1511,7 @@ public class ActionController : IDisposable
             NativeWindows.SendHotkey("ctrl+v");
 
             Logger.Trace($"Get Prior complete: {formatted}");
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Prior inserted"));
+            InvokeUI(() => _mainForm.ShowStatusToast("Prior inserted"));
         }
     }
     
@@ -1483,21 +1521,21 @@ public class ActionController : IDisposable
         {
             // Debug mode: scrape but show dialog instead of pasting
             Logger.Trace("Critical Findings DEBUG MODE");
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Debug mode: Scraping Clario...", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("Debug mode: Scraping Clario...", 2000));
 
             {
                 var rawNote = _automationService.PerformClarioScrape(msg =>
                 {
-                    _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(msg));
+                    InvokeUI(() => _mainForm.ShowStatusToast(msg));
                 });
 
                 // Update clinical history window if visible
-                _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistory(rawNote));
+                InvokeUI(() => _mainForm.UpdateClinicalHistory(rawNote));
 
                 var formatted = rawNote != null ? _noteFormatter.FormatNote(rawNote) : "No note found";
 
                 _mainForm.ShowDebugResults(rawNote ?? "None", formatted);
-                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(
+                InvokeUI(() => _mainForm.ShowStatusToast(
                     "Debug complete. Review the raw data above to troubleshoot extraction.", 10000));
             }
             return;
@@ -1505,23 +1543,23 @@ public class ActionController : IDisposable
 
         // Normal mode: scrape and paste
         Logger.Trace("Critical Findings (Clario Scrape)");
-        _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Scraping Clario..."));
+        InvokeUI(() => _mainForm.ShowStatusToast("Scraping Clario..."));
 
         {
             // Scrape with repeating toast callback
             var rawNote = _automationService.PerformClarioScrape(msg =>
             {
-                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(msg));
+                InvokeUI(() => _mainForm.ShowStatusToast(msg));
             });
 
             if (string.IsNullOrEmpty(rawNote))
             {
-                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No EXAM NOTE found"));
+                InvokeUI(() => _mainForm.ShowStatusToast("No EXAM NOTE found"));
                 return;
             }
 
             // Update clinical history window if visible
-            _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistory(rawNote));
+            InvokeUI(() => _mainForm.UpdateClinicalHistory(rawNote));
 
             // Format
             var formatted = _noteFormatter.FormatNote(rawNote);
@@ -1540,7 +1578,7 @@ public class ActionController : IDisposable
             // Remove from critical studies tracker (user has dealt with this study)
             UntrackCriticalStudy();
 
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(
+            InvokeUI(() => _mainForm.ShowStatusToast(
                 "Critical findings inserted.\nHold Win key and trigger again to debug.", 20000));
         }
     }
@@ -1584,7 +1622,7 @@ public class ActionController : IDisposable
         }
 
         // Notify UI
-        _mainForm.BeginInvoke(() => CriticalStudiesChanged?.Invoke());
+        InvokeUI(() => CriticalStudiesChanged?.Invoke());
     }
 
     /// <summary>
@@ -1616,7 +1654,7 @@ public class ActionController : IDisposable
         }
 
         // Notify UI
-        _mainForm.BeginInvoke(() => CriticalStudiesChanged?.Invoke());
+        InvokeUI(() => CriticalStudiesChanged?.Invoke());
     }
 
     public void RemoveCriticalStudy(CriticalStudyEntry entry)
@@ -1627,13 +1665,14 @@ public class ActionController : IDisposable
             _criticalStudies.Remove(entry);
         }
         Logger.Trace($"RemoveCriticalStudy: Manually removed entry for {entry.Accession}");
-        _mainForm.BeginInvoke(() => CriticalStudiesChanged?.Invoke());
+        InvokeUI(() => CriticalStudiesChanged?.Invoke());
     }
 
     // State for Report Popup Toggle (volatile: accessed from STA thread and UI thread)
     private volatile ReportPopupForm? _currentReportPopup;
 
     private volatile Form? _currentRadAiPopup;          // [RadAI]
+    private volatile RadAiOverlayForm? _currentRadAiOverlay;  // [RadAI] overlay mode (ShowReportAfterProcess)
     private volatile string[]? _pendingRadAiImpressionItems;  // [RadAI]
 
     private void PerformShowReport()
@@ -1643,7 +1682,7 @@ public class ActionController : IDisposable
         // Toggle Logic: If open, try click cycle first, then close
         if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
         {
-            _mainForm.BeginInvoke(() =>
+            InvokeUI(() =>
             {
                 try
                 {
@@ -1676,7 +1715,7 @@ public class ActionController : IDisposable
                 {
                     // We have an accession but no report yet - show popup with "loading" message
                     // The scrape timer will auto-update the popup when report becomes available
-                    _mainForm.BeginInvoke(() =>
+                    InvokeUI(() =>
                     {
                         _currentReportPopup = new ReportPopupForm(_config, "Report loading...", null,
                             changesEnabled: _config.ShowReportChanges,
@@ -1696,7 +1735,7 @@ public class ActionController : IDisposable
                 }
                 else
                 {
-                    _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No report available (scraping may be disabled)"));
+                    InvokeUI(() => _mainForm.ShowStatusToast("No report available (scraping may be disabled)"));
                 }
                 return;
             }
@@ -1712,7 +1751,7 @@ public class ActionController : IDisposable
                 Logger.Trace($"ShowReport: Passing baseline for diff ({baselineForDiff.Length} chars)");
             }
 
-            _mainForm.BeginInvoke(() =>
+            InvokeUI(() =>
             {
                 _currentReportPopup = new ReportPopupForm(_config, reportText, baselineForDiff,
                     changesEnabled: _config.ShowReportChanges,
@@ -1741,7 +1780,7 @@ public class ActionController : IDisposable
         catch (Exception ex)
         {
              Logger.Trace($"ShowReport error: {ex.Message}");
-             _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Error showing report"));
+             InvokeUI(() => _mainForm.ShowStatusToast("Error showing report"));
         }
     }
     
@@ -1750,12 +1789,12 @@ public class ActionController : IDisposable
         if (IsAddendumOpen())
         {
             Logger.Trace("CaptureSeries: Blocked - addendum is open");
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
+            InvokeUI(() => _mainForm.ShowStatusToast("Cannot paste into addendum", 2500));
             return;
         }
 
         Logger.Trace("Capture Series/Image");
-        _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Capturing..."));
+        InvokeUI(() => _mainForm.ShowStatusToast("Capturing..."));
         
         try
         {
@@ -1787,7 +1826,7 @@ public class ActionController : IDisposable
             
             if (string.IsNullOrEmpty(result))
             {
-                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Could not extract series/image"));
+                InvokeUI(() => _mainForm.ShowStatusToast("Could not extract series/image"));
                 return;
             }
             
@@ -1805,12 +1844,12 @@ public class ActionController : IDisposable
             
             NativeWindows.SendHotkey("ctrl+v");
             
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"Inserted: {result}"));
+            InvokeUI(() => _mainForm.ShowStatusToast($"Inserted: {result}"));
         }
         catch (Exception ex)
         {
             Logger.Trace($"CaptureSeries error: {ex.Message}");
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"OCR Error: {ex.Message}"));
+            InvokeUI(() => _mainForm.ShowStatusToast($"OCR Error: {ex.Message}"));
         }
     }
 
@@ -1879,13 +1918,13 @@ public class ActionController : IDisposable
         var accession = _automationService.LastAccession;
         if (string.IsNullOrEmpty(accession))
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No study loaded", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("No study loaded", 2000));
             return;
         }
 
         if (HasCriticalNoteForAccession(accession))
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Critical note already created", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("Critical note already created", 2000));
             return;
         }
 
@@ -1897,7 +1936,7 @@ public class ActionController : IDisposable
             // Track critical study for session-based tracker
             TrackCriticalStudy();
 
-            _mainForm.BeginInvoke(() =>
+            InvokeUI(() =>
             {
                 _mainForm.ShowStatusToast("Critical note created", 3000);
                 _mainForm.SetNoteCreatedState(true);
@@ -1905,7 +1944,7 @@ public class ActionController : IDisposable
         }
         else
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Failed to create critical note - Clario may not be open", 3000));
+            InvokeUI(() => _mainForm.ShowStatusToast("Failed to create critical note - Clario may not be open", 3000));
         }
     }
 
@@ -1914,28 +1953,30 @@ public class ActionController : IDisposable
     {
         Logger.Trace("RadAI Impression action triggered");
 
-        // If popup is already open, re-trigger acts as Insert
-        if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed && _pendingRadAiImpressionItems != null)
+        // If popup/overlay is already open, re-trigger acts as Insert
+        bool hasOverlay = _currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed;
+        bool hasPopup = _currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed;
+        if ((hasOverlay || hasPopup) && _pendingRadAiImpressionItems != null)
         {
-            Logger.Trace("RadAI Impression: Popup already open, triggering insert");
+            Logger.Trace("RadAI Impression: Display already open, triggering insert");
             PerformRadAiInsert();
             return;
         }
 
         if (_radAiService == null)
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("RadAI not available (config not found)", 3000));
+            InvokeUI(() => _mainForm.ShowStatusToast("RadAI not available (config not found)", 3000));
             return;
         }
 
         var reportText = _automationService.LastFinalReport;
         if (string.IsNullOrEmpty(reportText))
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No report text available", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("No report text available", 2000));
             return;
         }
 
-        _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Generating RadAI impression...", 10000));
+        InvokeUI(() => _mainForm.ShowStatusToast("Generating RadAI impression...", 10000));
 
         var result = Task.Run(async () => await _radAiService.GetImpressionAsync(
             reportText,
@@ -1947,26 +1988,61 @@ public class ActionController : IDisposable
         {
             _pendingRadAiImpressionItems = result.ImpressionItems;
 
-            _mainForm.BeginInvoke(() =>
+            if (_config.ShowReportAfterProcess)
             {
-                // Close existing popup if open
-                if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
+                // Overlay mode: show below report popup, matching its visual style
+                InvokeUI(() =>
                 {
-                    try { _currentRadAiPopup.Close(); } catch { }
-                }
+                    // Close existing overlay if open
+                    if (_currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed)
+                    {
+                        try { _currentRadAiOverlay.Close(); } catch { }
+                    }
 
-                var popup = RadAiService.ShowResultPopup(result.ImpressionItems, () =>
+                    var overlay = new RadAiOverlayForm(_config, result.ImpressionItems);
+
+                    // Link to report popup if it's open (follow its position/size)
+                    var reportPopup = _currentReportPopup;
+                    if (reportPopup != null && !reportPopup.IsDisposed && reportPopup.Visible)
+                    {
+                        overlay.LinkToForm(reportPopup);
+                    }
+                    else
+                    {
+                        // Standalone: position at saved report popup location
+                        overlay.Location = new Point(_config.ReportPopupX, _config.ReportPopupY + 200);
+                    }
+
+                    overlay.FormClosed += (s, e) => _currentRadAiOverlay = null;
+                    _currentRadAiOverlay = overlay;
+                    overlay.Show();
+
+                    _mainForm.ShowStatusToast("RadAI impression ready — press again to insert", 3000);
+                });
+            }
+            else
+            {
+                // Classic popup mode: standalone dialog with Insert/Copy/Close buttons
+                InvokeUI(() =>
                 {
-                    TriggerAction("__RadAiInsert__", "Internal");
-                }, _config);
-                _currentRadAiPopup = popup;
-                popup.FormClosed += (s, e) => _currentRadAiPopup = null;
-            });
+                    if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
+                    {
+                        try { _currentRadAiPopup.Close(); } catch { }
+                    }
+
+                    var popup = RadAiService.ShowResultPopup(result.ImpressionItems, () =>
+                    {
+                        TriggerAction("__RadAiInsert__", "Internal");
+                    }, _config);
+                    _currentRadAiPopup = popup;
+                    popup.FormClosed += (s, e) => _currentRadAiPopup = null;
+                });
+            }
         }
         else
         {
             var errorMsg = result.Success ? "RadAI returned empty impression" : $"RadAI error: {result.Error}";
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast(errorMsg, 4000));
+            InvokeUI(() => _mainForm.ShowStatusToast(errorMsg, 4000));
         }
     }
 
@@ -1976,14 +2052,14 @@ public class ActionController : IDisposable
 
         if (!_config.RecoMdEnabled)
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("RecoMD is not enabled", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("RecoMD is not enabled", 2000));
             return;
         }
 
         var alive = Task.Run(async () => await _recoMdService.IsAliveAsync()).GetAwaiter().GetResult();
         if (!alive)
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("RecoMD is not running", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("RecoMD is not running", 2000));
             return;
         }
 
@@ -1997,7 +2073,7 @@ public class ActionController : IDisposable
 
         if (string.IsNullOrEmpty(accession))
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No study open", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("No study open", 2000));
             return;
         }
 
@@ -2006,7 +2082,7 @@ public class ActionController : IDisposable
         var reportText = _automationService.LastFinalReport;
         if (string.IsNullOrEmpty(reportText))
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No report text available", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("No report text available", 2000));
             return;
         }
 
@@ -2024,12 +2100,196 @@ public class ActionController : IDisposable
 
         if (success)
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Sent to RecoMD", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("Sent to RecoMD", 2000));
+            BringRecoMdToFront();
         }
         else
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("RecoMD: Failed to send", 3000));
+            InvokeUI(() => _mainForm.ShowStatusToast("RecoMD: Failed to send", 3000));
         }
+    }
+
+    /// <summary>
+    /// Find the RecoMD window, activate it, and pin it topmost so it stays visible.
+    /// </summary>
+    private static void BringRecoMdToFront()
+    {
+        // Give RecoMD a moment to process the payload and show its UI
+        Thread.Sleep(500);
+        var hWnd = NativeWindows.FindWindowByProcessName("recoMD");
+        if (hWnd != IntPtr.Zero)
+        {
+            // Activate first (handles minimized, thread attachment, alt-key trick)
+            NativeWindows.ActivateWindow(hWnd, 1000);
+            // Then pin topmost so it stays on top
+            NativeWindows.ForceTopMost(hWnd);
+            Logger.Trace($"RecoMD: Window (HWND={hWnd}) activated and set topmost");
+        }
+        else
+        {
+            Logger.Trace("RecoMD: Window not found by process name");
+        }
+    }
+
+    /// <summary>
+    /// Remove topmost from the RecoMD window so it goes back to normal z-order.
+    /// </summary>
+    private static void SendRecoMdToBack()
+    {
+        var hWnd = NativeWindows.FindWindowByProcessName("recoMD");
+        if (hWnd != IntPtr.Zero)
+        {
+            NativeWindows.SetWindowPos(hWnd, NativeWindows.HWND_NOTOPMOST,
+                0, 0, 0, 0, NativeWindows.SWP_NOMOVE | NativeWindows.SWP_NOSIZE);
+            Logger.Trace("RecoMD: Window topmost removed");
+        }
+    }
+
+    /// <summary>
+    /// Click the green "ALL" accept button in RecoMD to copy recommendations,
+    /// then paste them into the IMPRESSION section in Mosaic.
+    /// </summary>
+    private void PerformPasteRecoMd()
+    {
+        Logger.Trace("Paste RecoMD action triggered");
+
+        if (!_config.RecoMdEnabled)
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("RecoMD is not enabled", 2000));
+            return;
+        }
+
+        // Step 1: Find the RecoMD window
+        var hWnd = NativeWindows.FindWindowByProcessName("recoMD");
+        if (hWnd == IntPtr.Zero)
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("RecoMD window not found", 2000));
+            return;
+        }
+
+        // Step 2: Get the window rect
+        if (!NativeWindows.GetWindowRect(hWnd, out var winRect))
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("Could not get RecoMD window bounds", 2000));
+            return;
+        }
+
+        Logger.Trace($"RecoMD window: ({winRect.Left},{winRect.Top}) {winRect.Width}x{winRect.Height}");
+
+        // Step 3: Pixel scan for the green "ALL" button in the top area of the window.
+        // The button is bright green (G dominant) — scan the top ~50px strip for green pixel clusters.
+        var greenCenter = FindGreenAllButton(winRect);
+        if (greenCenter == null)
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("Could not find RecoMD 'ALL' button", 3000));
+            return;
+        }
+
+        Logger.Trace($"RecoMD: Found green ALL button at ({greenCenter.Value.X},{greenCenter.Value.Y})");
+
+        // Step 4: Click the green "ALL" button (this copies recommendations to clipboard)
+        NativeWindows.ClickAtScreenPos(greenCenter.Value.X, greenCenter.Value.Y);
+        Thread.Sleep(300); // Give RecoMD time to copy to clipboard
+
+        Logger.Trace("RecoMD: Clicked ALL button, recommendations should be on clipboard");
+
+        // Step 5: Paste into impression — select impression to find the end, then append
+        lock (PasteLock)
+        {
+            NativeWindows.ActivateMosaicForcefully();
+            Thread.Sleep(100);
+
+            // Page down x2 to bring impression into view
+            for (int i = 0; i < 2; i++)
+            {
+                NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, 0, UIntPtr.Zero);
+                Thread.Sleep(10);
+                NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                Thread.Sleep(30);
+            }
+            Thread.Sleep(50);
+
+            // Select impression content (highlights from first impression line to end)
+            bool selected = _automationService.SelectImpressionContent();
+            if (!selected)
+            {
+                InvokeUI(() => _mainForm.ShowStatusToast("RecoMD copied but could not find IMPRESSION section", 3000));
+                return;
+            }
+            Thread.Sleep(50);
+
+            // Right arrow to collapse selection to the END (deselect), then Enter + paste
+            NativeWindows.keybd_event(NativeWindows.VK_RIGHT, 0, 0, UIntPtr.Zero);
+            Thread.Sleep(10);
+            NativeWindows.keybd_event(NativeWindows.VK_RIGHT, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+            Thread.Sleep(30);
+
+            NativeWindows.keybd_event(NativeWindows.VK_RETURN, 0, 0, UIntPtr.Zero);
+            Thread.Sleep(10);
+            NativeWindows.keybd_event(NativeWindows.VK_RETURN, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+            Thread.Sleep(50);
+
+            NativeWindows.SendHotkey("ctrl+v");
+            Thread.Sleep(100);
+        }
+
+        Logger.Trace("RecoMD: Pasted recommendations into impression");
+        InvokeUI(() => _mainForm.ShowStatusToast("RecoMD recommendations pasted", 2000));
+    }
+
+    /// <summary>
+    /// Scan the top portion of the RecoMD window for the green "ALL" thumbs-up button.
+    /// Uses BitBlt to capture the region in one shot (fast), then scans pixels in memory.
+    /// Returns screen coordinates of the button center, or null if not found.
+    /// </summary>
+    private static System.Drawing.Point? FindGreenAllButton(NativeWindows.RECT winRect)
+    {
+        int scanHeight = Math.Min(50, winRect.Height);
+        int scanWidth = Math.Min(400, winRect.Width);
+
+        var pixels = NativeWindows.CaptureScreenRegion(winRect.Left, winRect.Top, scanWidth, scanHeight, out int stride);
+        if (pixels == null)
+        {
+            Logger.Trace("RecoMD pixel scan: BitBlt capture failed");
+            return null;
+        }
+
+        int greenMinX = int.MaxValue, greenMaxX = 0;
+        int greenMinY = int.MaxValue, greenMaxY = 0;
+        int greenCount = 0;
+
+        // Scan with 2px step — pixels are BGRA (4 bytes per pixel, top-down)
+        for (int dy = 0; dy < scanHeight; dy += 2)
+        {
+            int rowOffset = dy * stride;
+            for (int dx = 0; dx < scanWidth; dx += 2)
+            {
+                int idx = rowOffset + dx * 4;
+                int b = pixels[idx];
+                int g = pixels[idx + 1];
+                int r = pixels[idx + 2];
+
+                // Bright green: G is dominant, R and B are low
+                if (g > 140 && r < 130 && b < 130 && g > r && g > b)
+                {
+                    greenCount++;
+                    int sx = winRect.Left + dx;
+                    int sy = winRect.Top + dy;
+                    if (sx < greenMinX) greenMinX = sx;
+                    if (sx > greenMaxX) greenMaxX = sx;
+                    if (sy < greenMinY) greenMinY = sy;
+                    if (sy > greenMaxY) greenMaxY = sy;
+                }
+            }
+        }
+
+        Logger.Trace($"RecoMD pixel scan: {greenCount} green pixels found in top {scanHeight}px");
+
+        if (greenCount < 5) return null;
+
+        int cx = (greenMinX + greenMaxX) / 2;
+        int cy = (greenMinY + greenMaxY) / 2;
+        return new System.Drawing.Point(cx, cy);
     }
 
     // [RadAI] — entire method; remove when RadAI integration is retired
@@ -2041,7 +2301,7 @@ public class ActionController : IDisposable
 
         if (items == null || items.Length == 0)
         {
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("No RadAI impression to insert", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("No RadAI impression to insert", 2000));
             return;
         }
 
@@ -2053,11 +2313,21 @@ public class ActionController : IDisposable
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(100);
 
+            // Scroll down to bring IMPRESSION section into view before selecting
+            for (int i = 0; i < 2; i++)
+            {
+                NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, 0, UIntPtr.Zero);
+                Thread.Sleep(10);
+                NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                Thread.Sleep(30);
+            }
+            Thread.Sleep(50);
+
             // Use UIA to find IMPRESSION content elements and select them
             bool selected = _automationService.SelectImpressionContent();
             if (!selected)
             {
-                _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section in editor", 3000));
+                InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section in editor", 3000));
                 return;
             }
 
@@ -2070,8 +2340,48 @@ public class ActionController : IDisposable
             Thread.Sleep(100);
         }
 
-        Logger.Trace("RadAI Insert: Impression replaced in report");
-        _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("RadAI impression inserted", 3000));
+        // Overlay mode: verify the paste succeeded, then auto-close
+        if (_currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed)
+        {
+            Thread.Sleep(500); // Give Mosaic time to process the paste
+            _automationService.GetFinalReportFast();
+            var updatedReport = _automationService.LastFinalReport ?? "";
+
+            // Verify: check if the first impression item appears in the report
+            bool verified = false;
+            if (items.Length > 0 && !string.IsNullOrEmpty(updatedReport))
+            {
+                var checkText = items[0].Trim();
+                if (checkText.Length > 30) checkText = checkText.Substring(0, 30);
+                verified = updatedReport.Contains(checkText, StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (verified)
+            {
+                Logger.Trace("RadAI Insert: Verified — impression found in report");
+                _pendingRadAiImpressionItems = null;
+                InvokeUI(() =>
+                {
+                    if (_currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed)
+                    {
+                        try { _currentRadAiOverlay.Close(); } catch { }
+                        _currentRadAiOverlay = null;
+                    }
+                    _mainForm.ShowStatusToast("RadAI impression inserted", 3000);
+                });
+            }
+            else
+            {
+                Logger.Trace("RadAI Insert: Verification failed — impression not found in report");
+                InvokeUI(() => _mainForm.ShowStatusToast("RadAI insert may have failed — try again", 4000));
+            }
+        }
+        else
+        {
+            // Classic popup mode: no verification, just toast
+            Logger.Trace("RadAI Insert: Impression replaced in report");
+            InvokeUI(() => _mainForm.ShowStatusToast("RadAI impression inserted", 3000));
+        }
     }
 
     #endregion
@@ -2096,7 +2406,7 @@ public class ActionController : IDisposable
                 if (state.Value && !_dictationActive)
                 {
                     _dictationActive = true;
-                    _mainForm.BeginInvoke(() => _mainForm.UpdateIndicatorState(true));
+                    InvokeUI(() => _mainForm.UpdateIndicatorState(true));
                 }
             }
             catch { }
@@ -2152,7 +2462,12 @@ public class ActionController : IDisposable
                             if (string.IsNullOrEmpty(recoAcc)) return;
                             await _recoMdService.OpenReportAsync(recoAcc,
                                 recoDesc, recoName, recoGender, recoMrn, recoAge);
-                            await _recoMdService.SendReportTextAsync(recoAcc, recoReportText);
+                            var sent = await _recoMdService.SendReportTextAsync(recoAcc, recoReportText);
+                            if (sent)
+                            {
+                                InvokeUI(() => _mainForm.ShowStatusToast("Sent to RecoMD", 2000));
+                                BringRecoMdToFront();
+                            }
                         });
                     }
                 }
@@ -2308,6 +2623,7 @@ public class ActionController : IDisposable
                     if (_config.RecoMdEnabled)
                     {
                         _recoMdPendingAfterProcess = false;
+                        SendRecoMdToBack();
                         Task.Run(async () => await _recoMdService.CloseReportAsync());
                     }
 
@@ -2322,6 +2638,7 @@ public class ActionController : IDisposable
                     _baselineReport = null;
                     _baselineIsFromTemplateDb = false;
                     _baselineCaptureAttempts = 0;
+                    _templateRecordedForStudy = false;
                     _lastPopupReportText = null;
                     _automationService.ClearLastReport();
                     // Close stale report popup from prior study
@@ -2329,15 +2646,22 @@ public class ActionController : IDisposable
                     {
                         var stalePopup = _currentReportPopup;
                         _currentReportPopup = null;
-                        _mainForm.BeginInvoke(() => { try { stalePopup.Close(); } catch { } });
+                        InvokeUI(() => { try { stalePopup.Close(); } catch { } });
                     }
-                    // [RadAI] Close stale RadAI impression popup from prior study
+                    // [RadAI] Close stale RadAI impression popup/overlay from prior study
                     if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
                     {
                         var staleRadAi = _currentRadAiPopup;
                         _currentRadAiPopup = null;
                         _pendingRadAiImpressionItems = null;
-                        _mainForm.BeginInvoke(() => { try { staleRadAi.Close(); } catch { } });
+                        InvokeUI(() => { try { staleRadAi.Close(); } catch { } });
+                    }
+                    if (_currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed)
+                    {
+                        var staleOverlay = _currentRadAiOverlay;
+                        _currentRadAiOverlay = null;
+                        _pendingRadAiImpressionItems = null;
+                        InvokeUI(() => { try { staleOverlay.Close(); } catch { } });
                     }
                     _needsBaselineCapture = _config.ShowReportChanges || _config.CorrelationEnabled; // Baseline needed for Changes mode diff AND Rainbow mode dictated-sentence detection
                     // Speed up scraping to catch template flash before auto-processing
@@ -2351,6 +2675,7 @@ public class ActionController : IDisposable
                     _pendingClarioPriorityRetry = false;
                     _lastAidocFindings = null;
                     _lastAidocRelevant = false;
+                    _aidocConfirmedNegative.Clear();
 
                     // Reset Ignore Inpatient Drafted state
                     _macrosCompleteForCurrentAccession = false;
@@ -2369,20 +2694,20 @@ public class ActionController : IDisposable
 
                         // Show toast (disabled - too noisy)
                         // Logger.Trace($"Showing New Study toast for {currentAccession}");
-                        // _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"New Study: {currentAccession}", 3000));
+                        // InvokeUI(() => _mainForm.ShowStatusToast($"New Study: {currentAccession}", 3000));
 
                         // Re-show clinical history window if it was hidden due to no study
                         // (only in always-show mode; alerts-only mode will show when alert triggers)
                         if (_config.HideClinicalHistoryWhenNoStudy && _config.ShowClinicalHistory && _config.AlwaysShowClinicalHistory)
                         {
-                            _mainForm.BeginInvoke(() => _mainForm.ToggleClinicalHistory(true));
+                            InvokeUI(() => _mainForm.ToggleClinicalHistory(true));
                             _clinicalHistoryVisible = true;
                         }
 
                         // Re-show indicator window if it was hidden due to no study
                         if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
                         {
-                            _mainForm.BeginInvoke(() => _mainForm.ToggleIndicator(true));
+                            InvokeUI(() => _mainForm.ToggleIndicator(true));
                         }
 
                         // Queue macros for insertion - they'll be inserted when clinical history is visible
@@ -2396,9 +2721,9 @@ public class ActionController : IDisposable
                         }
 
                         // Reset clinical history state on study change
-                        _mainForm.BeginInvoke(() => _mainForm.OnClinicalHistoryStudyChanged());
+                        InvokeUI(() => _mainForm.OnClinicalHistoryStudyChanged());
                         // Hide impression window on new study
-                        _mainForm.BeginInvoke(() => _mainForm.HideImpressionWindow());
+                        InvokeUI(() => _mainForm.HideImpressionWindow());
                         _searchingForImpression = false;
                         _impressionFromProcessReport = false;
 
@@ -2425,16 +2750,27 @@ public class ActionController : IDisposable
                         // (or always hide in alerts-only mode when no alerts)
                         if (_config.ShowClinicalHistory && (_config.HideClinicalHistoryWhenNoStudy || !_config.AlwaysShowClinicalHistory))
                         {
-                            _mainForm.BeginInvoke(() => _mainForm.ToggleClinicalHistory(false));
+                            InvokeUI(() => _mainForm.ToggleClinicalHistory(false));
                             _clinicalHistoryVisible = false;
                         }
 
                         // Hide indicator window if configured to hide when no study
                         if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
                         {
-                            _mainForm.BeginInvoke(() => _mainForm.ToggleIndicator(false));
+                            InvokeUI(() => _mainForm.ToggleIndicator(false));
                         }
                     }
+                }
+
+                // Record clean template to DB on the first scrape tick BEFORE Process Report
+                // (after Process Report, report contains user dictation and is no longer a clean template)
+                if (!_templateRecordedForStudy && !_processReportPressedForCurrentAccession
+                    && _config.TemplateDatabaseEnabled && !string.IsNullOrEmpty(reportText)
+                    && !string.IsNullOrEmpty(_automationService.LastDescription))
+                {
+                    _templateRecordedForStudy = true;
+                    _templateDatabase.RecordTemplate(_automationService.LastDescription, reportText,
+                        isDrafted: _automationService.LastDraftedState);
                 }
 
                 // Capture baseline if needed (deferred from study change detection)
@@ -2457,12 +2793,6 @@ public class ActionController : IDisposable
                                 _baselineReport = reportText;
                                 Logger.Trace($"Captured baseline from scrape (DRAFTED, immediate): {reportText.Length} chars, drafted={_automationService.LastDraftedState}");
                                 Logger.Trace($"Baseline content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
-
-                                // Record to template database (drafted = reduced weight)
-                                if (_config.TemplateDatabaseEnabled && !string.IsNullOrEmpty(_automationService.LastDescription))
-                                {
-                                    _templateDatabase.RecordTemplate(_automationService.LastDescription, reportText, isDrafted: true);
-                                }
 
                                 // Revert to normal scrape interval now that baseline is captured
                                 if (!_searchingForImpression)
@@ -2512,12 +2842,6 @@ public class ActionController : IDisposable
                             _baselineReport = reportText;
                             Logger.Trace($"Captured baseline from scrape ({reportText.Length} chars)");
 
-                            // Record to template database for future fallback
-                            if (_config.TemplateDatabaseEnabled && !string.IsNullOrEmpty(_automationService.LastDescription))
-                            {
-                                _templateDatabase.RecordTemplate(_automationService.LastDescription, reportText);
-                            }
-
                             // Revert to normal scrape interval now that baseline is captured
                             if (!_searchingForImpression)
                                 RestartScrapeTimer(NormalScrapeIntervalMs);
@@ -2545,19 +2869,19 @@ public class ActionController : IDisposable
                     {
                         Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
                         _lastPopupReportText = reportText;
-                        _mainForm.BeginInvoke(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
+                        InvokeUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
                     }
                     else if (string.IsNullOrEmpty(reportText) && !string.IsNullOrEmpty(_lastPopupReportText))
                     {
                         // Report text is gone (being updated in Mosaic) but popup is visible with cached content
                         Logger.Trace("Popup showing stale content - report being updated");
-                        _mainForm.BeginInvoke(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
+                        InvokeUI(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
                     }
                     else if (!string.IsNullOrEmpty(reportText) && !_processReportPressedForCurrentAccession)
                     {
                         // Report text is available and matches last text - clear stale indicator if showing
                         // Don't clear if Process Report was pressed (still waiting for report to regenerate)
-                        _mainForm.BeginInvoke(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
+                        InvokeUI(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
                     }
                 }
 
@@ -2632,6 +2956,7 @@ public class ActionController : IDisposable
                     // Aidoc scraping - check for AI-detected findings
                     bool aidocAlertActive = false;
                     string? aidocFindingText = null;
+                    List<string>? relevantFindings = null;
                     bool prevAidocRelevant = _lastAidocRelevant;
                     if (_config.AidocScrapeEnabled && !string.IsNullOrEmpty(currentAccession))
                     {
@@ -2641,9 +2966,21 @@ public class ActionController : IDisposable
                             if (aidocResult != null && aidocResult.Findings.Count > 0)
                             {
                                 var studyDescription = _automationService.LastDescription;
-                                // Only show findings that are both relevant to the study type AND positive
-                                var relevantFindings = aidocResult.Findings
-                                    .Where(f => f.IsPositive && AidocService.IsRelevantFinding(f.FindingType, studyDescription))
+
+                                // "Once negative, stay negative" — latch findings that sample as negative.
+                                // The Aidoc widget has a red/orange flashing animation when ANY positive
+                                // finding exists, which can cause false positives on individual icon pixels.
+                                // Real positive icons consistently show orange; false positives flicker.
+                                foreach (var f in aidocResult.Findings)
+                                {
+                                    if (!f.IsPositive)
+                                        _aidocConfirmedNegative.Add(f.FindingType);
+                                }
+
+                                // Only show findings that are relevant, sampled positive, AND not latched negative
+                                relevantFindings = aidocResult.Findings
+                                    .Where(f => f.IsPositive && !_aidocConfirmedNegative.Contains(f.FindingType)
+                                        && AidocService.IsRelevantFinding(f.FindingType, studyDescription))
                                     .Select(f => f.FindingType)
                                     .ToList();
 
@@ -2656,7 +2993,7 @@ public class ActionController : IDisposable
                                     if (!_lastAidocRelevant || _lastAidocFindings != aidocFindingText)
                                     {
                                         Logger.Trace($"Aidoc: Relevant findings '{aidocFindingText}' for study '{studyDescription}'");
-                                        _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast($"Aidoc: {aidocFindingText} detected", 5000));
+                                        InvokeUI(() => _mainForm.ShowStatusToast($"Aidoc: {aidocFindingText} detected", 5000));
                                     }
                                 }
 
@@ -2675,6 +3012,13 @@ public class ActionController : IDisposable
                         }
                     }
 
+                    // Verify Aidoc findings against report text
+                    List<FindingVerification>? aidocVerifications = null;
+                    if (aidocAlertActive && relevantFindings != null && !string.IsNullOrEmpty(reportText))
+                    {
+                        aidocVerifications = AidocFindingVerifier.VerifyFindings(relevantFindings, reportText);
+                    }
+
                     // Determine if any alerts are active
                     bool anyAlertActive = newTemplateMismatch || newGenderMismatch || _strokeDetectedActive || aidocAlertActive;
 
@@ -2686,40 +3030,40 @@ public class ActionController : IDisposable
                         // Only update if we have content - don't clear during brief processing gaps
                         if (!string.IsNullOrWhiteSpace(reportText))
                         {
-                            _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
-                            _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistoryTextColor(reportText));
+                            InvokeUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
+                            InvokeUI(() => _mainForm.UpdateClinicalHistoryTextColor(reportText));
                         }
 
                         // Update template mismatch state
-                        _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
+                        InvokeUI(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
 
                         // Update drafted state (green border when drafted) if enabled
                         if (_config.ShowDraftedIndicator)
                         {
                             bool isDrafted = _automationService.LastDraftedState;
-                            _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistoryDraftedState(isDrafted));
+                            InvokeUI(() => _mainForm.UpdateClinicalHistoryDraftedState(isDrafted));
                         }
 
                         // Update gender check
                         if (_config.GenderCheckEnabled)
                         {
-                            _mainForm.BeginInvoke(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
+                            InvokeUI(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
                         }
                         else
                         {
-                            _mainForm.BeginInvoke(() => _mainForm.UpdateGenderCheck(null, null));
+                            InvokeUI(() => _mainForm.UpdateGenderCheck(null, null));
                         }
 
                         // Show Aidoc finding appended to clinical history in orange (not replacing it)
                         if (aidocAlertActive && aidocFindingText != null)
                         {
-                            var capturedFinding = aidocFindingText;
-                            _mainForm.BeginInvoke(() => _mainForm.SetAidocAppend(capturedFinding));
+                            var captured = aidocVerifications;
+                            InvokeUI(() => _mainForm.SetAidocAppend(captured));
                         }
                         else if (!aidocAlertActive && prevAidocRelevant)
                         {
                             // Aidoc finding cleared - remove orange append
-                            _mainForm.BeginInvoke(() => _mainForm.SetAidocAppend(null));
+                            InvokeUI(() => _mainForm.SetAidocAppend(null));
                         }
                     }
                     else
@@ -2730,7 +3074,7 @@ public class ActionController : IDisposable
                         // (needed for auto-fix recheck to detect Mosaic self-corrections)
                         if (!string.IsNullOrWhiteSpace(reportText))
                         {
-                            _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
+                            InvokeUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
                         }
 
                         // Determine highest priority alert to show
@@ -2764,7 +3108,7 @@ public class ActionController : IDisposable
                             // Show notification box with alert
                             if (!_clinicalHistoryVisible)
                             {
-                                _mainForm.BeginInvoke(() => _mainForm.ToggleClinicalHistory(true));
+                                InvokeUI(() => _mainForm.ToggleClinicalHistory(true));
                                 _clinicalHistoryVisible = true;
                             }
 
@@ -2772,28 +3116,28 @@ public class ActionController : IDisposable
                             if (alertToShow == AlertType.GenderMismatch)
                             {
                                 // Gender mismatch uses the blinking display
-                                _mainForm.BeginInvoke(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
+                                InvokeUI(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
                             }
                             else if (alertToShow.HasValue)
                             {
                                 // Clear gender warning if not active
-                                _mainForm.BeginInvoke(() => _mainForm.UpdateGenderCheck(null, null));
+                                InvokeUI(() => _mainForm.UpdateGenderCheck(null, null));
                                 // Show the alert
-                                _mainForm.BeginInvoke(() => _mainForm.ShowAlertOnly(alertToShow.Value, alertDetails));
+                                InvokeUI(() => _mainForm.ShowAlertOnly(alertToShow.Value, alertDetails));
                             }
 
                             // Also update template mismatch border (for non-gender alerts)
                             if (alertToShow != AlertType.GenderMismatch)
                             {
-                                _mainForm.BeginInvoke(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
+                                InvokeUI(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
                             }
                         }
                         else if (_clinicalHistoryVisible)
                         {
                             // No alerts active - hide the notification box
-                            _mainForm.BeginInvoke(() => _mainForm.UpdateGenderCheck(null, null));
-                            _mainForm.BeginInvoke(() => _mainForm.ClearAlert());
-                            _mainForm.BeginInvoke(() => _mainForm.ToggleClinicalHistory(false));
+                            InvokeUI(() => _mainForm.UpdateGenderCheck(null, null));
+                            InvokeUI(() => _mainForm.ClearAlert());
+                            InvokeUI(() => _mainForm.ToggleClinicalHistory(false));
                             _clinicalHistoryVisible = false;
                         }
                     }
@@ -2828,14 +3172,14 @@ public class ActionController : IDisposable
                         // Don't auto-hide, just update if we have new content
                         if (!string.IsNullOrEmpty(impression))
                         {
-                            _mainForm.BeginInvoke(() => _mainForm.UpdateImpression(impression));
+                            InvokeUI(() => _mainForm.UpdateImpression(impression));
                         }
                     }
                     else if (isDrafted && !string.IsNullOrEmpty(impression))
                     {
                         // Auto-show impression when study is drafted (passive mode)
                         // Only show window if not already visible to avoid flashing
-                        _mainForm.BeginInvoke(() =>
+                        InvokeUI(() =>
                         {
                             _mainForm.ShowImpressionWindowIfNotVisible();
                             _mainForm.UpdateImpression(impression);
@@ -2845,7 +3189,7 @@ public class ActionController : IDisposable
                     {
                         // Hide impression window when study is not drafted (only for auto-shown)
                         // Don't hide if it was manually triggered by Process Report
-                        _mainForm.BeginInvoke(() => _mainForm.HideImpressionWindow());
+                        InvokeUI(() => _mainForm.HideImpressionWindow());
                     }
                 }
             }
@@ -2963,18 +3307,18 @@ public class ActionController : IDisposable
             Logger.Trace($"Stroke study detected for accession {accession}");
 
             // Auto-show clinical history if stroke detected (even if setting is off)
-            _mainForm.BeginInvoke(() =>
+            InvokeUI(() =>
             {
                 _mainForm.ToggleClinicalHistory(true);
                 _clinicalHistoryVisible = true;
                 _mainForm.SetStrokeState(true);
             });
 
-            _mainForm.BeginInvoke(() => _mainForm.ShowStatusToast("Stroke Protocol Detected", 4000));
+            InvokeUI(() => _mainForm.ShowStatusToast("Stroke Protocol Detected", 4000));
         }
         else
         {
-            _mainForm.BeginInvoke(() => _mainForm.SetStrokeState(false));
+            InvokeUI(() => _mainForm.SetStrokeState(false));
         }
     }
 
@@ -3033,7 +3377,7 @@ public class ActionController : IDisposable
             // Track critical study for session-based tracker
             TrackCriticalStudy();
 
-            _mainForm.BeginInvoke(() =>
+            InvokeUI(() =>
             {
                 _mainForm.ShowStatusToast("Critical note created", 3000);
                 _mainForm.SetNoteCreatedState(true);
