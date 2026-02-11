@@ -63,6 +63,10 @@ public class ActionController : IDisposable
     private bool _searchingForImpression = false;
     private bool _impressionFromProcessReport = false; // True if opened by Process Report (stays until Sign)
     private DateTime _impressionSearchStartTime; // When we started searching - used for initial delay
+
+    // Impression delete state
+    private string? _pendingImpressionReplaceText;
+    private volatile bool _impressionDeletePending;
     private int NormalScrapeIntervalMs => _config.ScrapeIntervalSeconds * 1000;
     private int _fastScrapeIntervalMs = 1000;
     private int _studyLoadScrapeIntervalMs = 500;
@@ -490,6 +494,9 @@ public class ActionController : IDisposable
                 break;
             case "__RadAiInsert__":  // [RadAI]
                 PerformRadAiInsert();
+                break;
+            case "__ReplaceImpression__":
+                PerformReplaceImpression();
                 break;
         }
     }
@@ -1724,6 +1731,7 @@ public class ActionController : IDisposable
                             accession: currentAccession);
                         _lastPopupReportText = null; // Will be set when real report arrives
 
+                        _currentReportPopup.ImpressionDeleteRequested += OnImpressionDeleteRequested;
                         _currentReportPopup.FormClosed += (s, e) =>
                         {
                             _currentReportPopup = null;
@@ -1760,6 +1768,7 @@ public class ActionController : IDisposable
                     accession: _automationService.LastAccession);
                 _lastPopupReportText = reportText;
 
+                _currentReportPopup.ImpressionDeleteRequested += OnImpressionDeleteRequested;
                 // Handle closure to clear references
                 _currentReportPopup.FormClosed += (s, e) =>
                 {
@@ -2112,11 +2121,23 @@ public class ActionController : IDisposable
     /// <summary>
     /// Find the RecoMD window, activate it, and pin it topmost so it stays visible.
     /// </summary>
+    private static IntPtr _cachedRecoMdHwnd;
+
+    private static IntPtr GetRecoMdWindow()
+    {
+        // Reuse cached handle if still valid
+        if (_cachedRecoMdHwnd != IntPtr.Zero && NativeWindows.IsWindow(_cachedRecoMdHwnd) && NativeWindows.IsWindowVisible(_cachedRecoMdHwnd))
+            return _cachedRecoMdHwnd;
+
+        _cachedRecoMdHwnd = NativeWindows.FindWindowByProcessName("recoMD");
+        return _cachedRecoMdHwnd;
+    }
+
     private static void BringRecoMdToFront()
     {
         // Give RecoMD a moment to process the payload and show its UI
         Thread.Sleep(500);
-        var hWnd = NativeWindows.FindWindowByProcessName("recoMD");
+        var hWnd = GetRecoMdWindow();
         if (hWnd != IntPtr.Zero)
         {
             // Activate first (handles minimized, thread attachment, alt-key trick)
@@ -2136,7 +2157,7 @@ public class ActionController : IDisposable
     /// </summary>
     private static void SendRecoMdToBack()
     {
-        var hWnd = NativeWindows.FindWindowByProcessName("recoMD");
+        var hWnd = GetRecoMdWindow();
         if (hWnd != IntPtr.Zero)
         {
             NativeWindows.SetWindowPos(hWnd, NativeWindows.HWND_NOTOPMOST,
@@ -2160,7 +2181,7 @@ public class ActionController : IDisposable
         }
 
         // Step 1: Find the RecoMD window
-        var hWnd = NativeWindows.FindWindowByProcessName("recoMD");
+        var hWnd = GetRecoMdWindow();
         if (hWnd == IntPtr.Zero)
         {
             InvokeUI(() => _mainForm.ShowStatusToast("RecoMD window not found", 2000));
@@ -2199,15 +2220,9 @@ public class ActionController : IDisposable
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(100);
 
-            // Page down x2 to bring impression into view
-            for (int i = 0; i < 2; i++)
-            {
-                NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, 0, UIntPtr.Zero);
-                Thread.Sleep(10);
-                NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
-                Thread.Sleep(30);
-            }
-            Thread.Sleep(50);
+            // Ctrl+End to scroll to bottom of report (works better than Page Down for short reports)
+            NativeWindows.SendHotkey("ctrl+end");
+            Thread.Sleep(100);
 
             // Select impression content (highlights from first impression line to end)
             bool selected = _automationService.SelectImpressionContent();
@@ -2313,15 +2328,9 @@ public class ActionController : IDisposable
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(100);
 
-            // Scroll down to bring IMPRESSION section into view before selecting
-            for (int i = 0; i < 2; i++)
-            {
-                NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, 0, UIntPtr.Zero);
-                Thread.Sleep(10);
-                NativeWindows.keybd_event(NativeWindows.VK_NEXT, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
-                Thread.Sleep(30);
-            }
-            Thread.Sleep(50);
+            // Ctrl+End to scroll to bottom of report (works better than Page Down for short reports)
+            NativeWindows.SendHotkey("ctrl+end");
+            Thread.Sleep(100);
 
             // Use UIA to find IMPRESSION content elements and select them
             bool selected = _automationService.SelectImpressionContent();
@@ -2384,10 +2393,95 @@ public class ActionController : IDisposable
         }
     }
 
+    private void OnImpressionDeleteRequested(string newText)
+    {
+        _pendingImpressionReplaceText = newText;
+        _impressionDeletePending = true;
+        TriggerAction("__ReplaceImpression__", "ImpressionDelete");
+    }
+
+    private void PerformReplaceImpression()
+    {
+        Logger.Trace("PerformReplaceImpression triggered");
+
+        var newText = _pendingImpressionReplaceText;
+        if (newText == null)
+        {
+            _impressionDeletePending = false;
+            InvokeUI(() => _currentReportPopup?.ClearDeletePending());
+            return;
+        }
+
+        lock (PasteLock)
+        {
+            NativeWindows.ActivateMosaicForcefully();
+            Thread.Sleep(100);
+
+            // Ctrl+End to scroll to bottom of report (works better than Page Down for short reports)
+            NativeWindows.SendHotkey("ctrl+end");
+            Thread.Sleep(100);
+
+            // Select impression content
+            bool selected = _automationService.SelectImpressionContent();
+            if (!selected)
+            {
+                Logger.Trace("PerformReplaceImpression: Could not find IMPRESSION section");
+                InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section", 3000));
+                _impressionDeletePending = false;
+                _pendingImpressionReplaceText = null;
+                InvokeUI(() => _currentReportPopup?.ClearDeletePending());
+                return;
+            }
+
+            Thread.Sleep(50);
+
+            if (string.IsNullOrEmpty(newText))
+            {
+                // All points deleted — send Delete key to clear impression
+                const byte VK_DELETE = 0x2E;
+                NativeWindows.keybd_event(VK_DELETE, 0, 0, UIntPtr.Zero);
+                Thread.Sleep(10);
+                NativeWindows.keybd_event(VK_DELETE, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+            }
+            else
+            {
+                ClipboardService.SetText(newText);
+                Thread.Sleep(50);
+                NativeWindows.SendHotkey("ctrl+v");
+            }
+            Thread.Sleep(100);
+        }
+
+        // Verify: re-scrape and update report popup display
+        Thread.Sleep(500);
+        _automationService.GetFinalReportFast();
+        var updatedReport = _automationService.LastFinalReport ?? "";
+
+        _pendingImpressionReplaceText = null;
+        _impressionDeletePending = false;
+
+        InvokeUI(() =>
+        {
+            _currentReportPopup?.ClearDeletePending();
+            // Update the report popup with the re-scraped content
+            if (!string.IsNullOrEmpty(updatedReport) && _currentReportPopup != null && !_currentReportPopup.IsDisposed)
+            {
+                _currentReportPopup.UpdateReport(updatedReport);
+                _lastPopupReportText = updatedReport;
+            }
+            // Also update impression window if visible
+            var updatedImpression = ImpressionForm.ExtractImpression(updatedReport);
+            if (!string.IsNullOrEmpty(updatedImpression))
+                _mainForm.UpdateImpression(updatedImpression);
+        });
+
+        Logger.Trace("PerformReplaceImpression completed");
+    }
+
     #endregion
 
     #region Dictation Sync
-    
+
     private System.Threading.Timer? _dictationSyncTimer;
 
     private void StartDictationSync()
@@ -2500,7 +2594,8 @@ public class ActionController : IDisposable
 
                 // Check for discard dialog (RVUCounter integration)
                 // Must check BEFORE accession change detection - dialog disappears when user clicks YES
-                if (_automationService.IsDiscardDialogVisible())
+                // Only check when a study is open (avoids unnecessary FlaUI tree search)
+                if (!string.IsNullOrEmpty(currentAccession) && _automationService.IsDiscardDialogVisible())
                 {
                     _discardDialogShownForCurrentAccession = true;
                     Logger.Trace("RVUCounter: Discard dialog detected for current accession");
@@ -2663,11 +2758,6 @@ public class ActionController : IDisposable
                         _pendingRadAiImpressionItems = null;
                         InvokeUI(() => { try { staleOverlay.Close(); } catch { } });
                     }
-                    _needsBaselineCapture = _config.ShowReportChanges || _config.CorrelationEnabled; // Baseline needed for Changes mode diff AND Rainbow mode dictated-sentence detection
-                    // Speed up scraping to catch template flash before auto-processing
-                    if (_needsBaselineCapture && !_searchingForImpression)
-                        RestartScrapeTimer(_studyLoadScrapeIntervalMs);
-
                     // Reset alert state tracking
                     _templateMismatchActive = false;
                     _genderMismatchActive = false;
@@ -2686,6 +2776,11 @@ public class ActionController : IDisposable
                     if (!studyClosed)
                     {
                         _lastNonEmptyAccession = currentAccession;
+
+                        _needsBaselineCapture = _config.ShowReportChanges || _config.CorrelationEnabled;
+                        // Speed up scraping to catch template flash before auto-processing
+                        if (_needsBaselineCapture && !_searchingForImpression)
+                            RestartScrapeTimer(_studyLoadScrapeIntervalMs);
 
                         // Baseline capture deferred to scrape timer to catch template flash
                         // (removing immediate capture fixes issue where dictated content like "appendix is normal"
@@ -2744,7 +2839,12 @@ public class ActionController : IDisposable
                     {
                         // Study closed without new one opening - clear the tracked accession
                         _lastNonEmptyAccession = null;
+                        _needsBaselineCapture = false;
                         Logger.Trace("Study closed, no new study opened");
+
+                        // Revert to normal scrape interval (prevents stuck 500ms from prior study)
+                        if (!_searchingForImpression)
+                            RestartScrapeTimer(NormalScrapeIntervalMs);
 
                         // Hide clinical history window if configured to hide when no study
                         // (or always hide in alerts-only mode when no alerts)
@@ -3150,6 +3250,10 @@ public class ActionController : IDisposable
                 // Handle impression display
                 if (_config.ShowImpression)
                 {
+                    // Skip impression updates while user is deleting points
+                    if (_impressionDeletePending)
+                        goto SkipImpression;
+
                     var impression = ImpressionForm.ExtractImpression(reportText);
                     bool isDrafted = _automationService.LastDraftedState;
 
@@ -3191,6 +3295,8 @@ public class ActionController : IDisposable
                         // Don't hide if it was manually triggered by Process Report
                         InvokeUI(() => _mainForm.HideImpressionWindow());
                     }
+
+                    SkipImpression:;
                 }
             }
             catch (Exception ex)

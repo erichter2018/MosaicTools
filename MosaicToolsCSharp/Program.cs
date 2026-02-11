@@ -1,4 +1,5 @@
 using System;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 using MosaicTools.UI;
@@ -16,6 +17,9 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        // Register CodePages encoding provider (required for RichTextBox RTF in self-contained deployment)
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
         // Install global exception handlers FIRST, before anything else
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += OnThreadException;

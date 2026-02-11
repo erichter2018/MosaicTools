@@ -123,6 +123,19 @@ public class ReportPopupForm : Form
     private Label? _modeLabel;
     private bool _isResizing;
 
+    // Deletable impression points (opaque mode only)
+    private readonly bool _deletableEnabled;
+    private List<Label> _trashIcons = new();
+    private List<(int charIndex, string itemText)>? _impressionItems;
+    private System.Windows.Forms.Timer? _debounceTimer;
+    private bool _deletePending;
+
+    /// <summary>
+    /// Fired after debounce when user deletes impression points.
+    /// The string is the new impression text (lines without numbers, joined by \r\n).
+    /// </summary>
+    public event Action<string>? ImpressionDeleteRequested;
+
     // Drag
     private Point _formPosOnMouseDown;
     private Point _dragStart;
@@ -150,6 +163,7 @@ public class ReportPopupForm : Form
         _correlationEnabled = correlationEnabled;
         _baselineIsSectionOnly = baselineIsSectionOnly;
         _useLayeredWindow = config.ReportPopupTransparent;
+        _deletableEnabled = !_useLayeredWindow && config.ImpressionDeletablePoints;
         _accessionSeed = accession?.GetHashCode();
 
         // Compute background alpha from transparency setting
@@ -279,15 +293,31 @@ public class ReportPopupForm : Form
         SetupOpaqueInteractions(this);
         SetupOpaqueInteractions(_richTextBox);
 
+        if (_deletableEnabled)
+        {
+            _debounceTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            _debounceTimer.Tick += OnDebounceTimerTick;
+        }
+
         this.Load += (s, e) =>
         {
             this.Activate();
             ActiveControl = null;
             ApplyCurrentModeFormatting();
             PerformResize();
+            if (_deletableEnabled) PositionTrashIcons();
         };
 
-        this.Resize += (s, e) => PositionModeLabel();
+        this.Resize += (s, e) =>
+        {
+            PositionModeLabel();
+            if (_deletableEnabled) PositionTrashIcons();
+        };
+
+        _richTextBox.VScroll += (s, e) =>
+        {
+            if (_deletableEnabled) PositionTrashIcons();
+        };
     }
 
     #endregion
@@ -348,6 +378,9 @@ public class ReportPopupForm : Form
     /// </summary>
     public void UpdateReport(string newReportText, string? baseline = null, bool baselineIsSectionOnly = false)
     {
+        // Don't overwrite while user is actively deleting impression points
+        if (_deletePending) return;
+
         _showingStaleContent = false; // Clear stale flag when we get new content
         if (baseline != null)
         {
@@ -1551,6 +1584,217 @@ public class ReportPopupForm : Form
 
     #endregion
 
+    #region Deletable Impression Points
+
+    /// <summary>
+    /// Parse impression items from the RichTextBox text and create/position trash icons.
+    /// </summary>
+    private void PositionTrashIcons()
+    {
+        if (_richTextBox == null || !_deletableEnabled) return;
+
+        // Parse impression items from RichTextBox text
+        var rtbText = _richTextBox.Text;
+        int impressionStart = rtbText.IndexOf("IMPRESSION:", StringComparison.OrdinalIgnoreCase);
+        if (impressionStart < 0)
+        {
+            ClearTrashIcons();
+            return;
+        }
+
+        // Find numbered items after IMPRESSION:
+        int searchFrom = impressionStart + "IMPRESSION:".Length;
+        var items = new List<(int charIndex, string itemText)>();
+        var regex = new Regex(@"^\d+\.\s*(.*)$", RegexOptions.Multiline);
+
+        foreach (Match m in regex.Matches(rtbText, searchFrom))
+        {
+            items.Add((m.Index, m.Groups[1].Value.Trim()));
+        }
+
+        if (items.Count == 0)
+        {
+            ClearTrashIcons();
+            return;
+        }
+
+        _impressionItems = items;
+
+        // Ensure we have the right number of trash icon labels
+        while (_trashIcons.Count < items.Count)
+        {
+            int idx = _trashIcons.Count;
+            var trashLabel = new Label
+            {
+                Text = "\u2715", // ✕
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                ForeColor = Color.FromArgb(100, 100, 100),
+                BackColor = Color.FromArgb(30, 30, 30),
+                Size = new Size(22, 22),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Cursor = Cursors.Hand,
+                Visible = false,
+                Tag = idx
+            };
+            trashLabel.MouseEnter += (_, _) => trashLabel.ForeColor = Color.FromArgb(220, 60, 60);
+            trashLabel.MouseLeave += (_, _) => trashLabel.ForeColor = Color.FromArgb(100, 100, 100);
+            trashLabel.Click += OnTrashIconClick;
+            Controls.Add(trashLabel);
+            trashLabel.BringToFront();
+            _trashIcons.Add(trashLabel);
+        }
+
+        // Hide excess icons
+        for (int i = items.Count; i < _trashIcons.Count; i++)
+            _trashIcons[i].Visible = false;
+
+        // Position each trash icon next to its impression line
+        for (int i = 0; i < items.Count; i++)
+        {
+            var (charIdx, _) = items[i];
+            var pos = _richTextBox.GetPositionFromCharIndex(charIdx);
+
+            // Convert RichTextBox-local position to form-local position
+            int formX = _richTextBox.Right - 24;
+            int formY = _richTextBox.Top + pos.Y;
+
+            _trashIcons[i].Tag = i;
+            _trashIcons[i].Location = new Point(formX, formY);
+            _trashIcons[i].Visible = (formY >= _richTextBox.Top && formY < _richTextBox.Bottom - 10);
+        }
+    }
+
+    private void ClearTrashIcons()
+    {
+        foreach (var icon in _trashIcons)
+            icon.Visible = false;
+        _impressionItems = null;
+    }
+
+    private void OnTrashIconClick(object? sender, EventArgs e)
+    {
+        if (sender is not Label label || _impressionItems == null || _richTextBox == null) return;
+        int index = (int)label.Tag!;
+        if (index < 0 || index >= _impressionItems.Count) return;
+
+        // Remove the line from the RichTextBox
+        var (charIdx, _) = _impressionItems[index];
+        int lineStart = charIdx;
+        int lineEnd = _richTextBox.Text.IndexOf('\n', charIdx);
+        if (lineEnd < 0) lineEnd = _richTextBox.Text.Length;
+        else lineEnd++; // Include the newline
+
+        // Also remove leading blank line if present
+        if (lineStart > 0 && _richTextBox.Text[lineStart - 1] == '\n')
+        {
+            // Don't remove if this would eat into non-impression content
+            // Only remove the preceding newline if the previous char is also a newline (blank line)
+        }
+
+        _richTextBox.Select(lineStart, lineEnd - lineStart);
+        _richTextBox.ReadOnly = false;
+        _richTextBox.SelectedText = "";
+        _richTextBox.ReadOnly = true;
+
+        // Renumber remaining impression items
+        RenumberImpressionItems();
+
+        // Re-apply formatting since we changed the text
+        _formattedText = _richTextBox.Text;
+        ApplyCurrentModeFormatting();
+
+        _deletePending = true;
+
+        // Reposition trash icons for updated content
+        PositionTrashIcons();
+
+        // Reset debounce timer
+        _debounceTimer?.Stop();
+        _debounceTimer?.Start();
+    }
+
+    private void RenumberImpressionItems()
+    {
+        if (_richTextBox == null) return;
+
+        var rtbText = _richTextBox.Text;
+        int impressionStart = rtbText.IndexOf("IMPRESSION:", StringComparison.OrdinalIgnoreCase);
+        if (impressionStart < 0) return;
+
+        int searchFrom = impressionStart + "IMPRESSION:".Length;
+        var regex = new Regex(@"^(\d+)\.\s", RegexOptions.Multiline);
+        var matches = regex.Matches(rtbText, searchFrom);
+
+        _richTextBox.ReadOnly = false;
+        int expectedNum = 1;
+        int offset = 0; // Track text length changes from renumbering
+
+        foreach (Match m in matches)
+        {
+            int adjustedIndex = m.Groups[1].Index + offset;
+            string currentNum = m.Groups[1].Value;
+            string expectedStr = expectedNum.ToString();
+
+            if (currentNum != expectedStr)
+            {
+                _richTextBox.Select(adjustedIndex, currentNum.Length);
+                _richTextBox.SelectedText = expectedStr;
+                offset += expectedStr.Length - currentNum.Length;
+            }
+            expectedNum++;
+        }
+        _richTextBox.ReadOnly = true;
+    }
+
+    private void OnDebounceTimerTick(object? sender, EventArgs e)
+    {
+        _debounceTimer?.Stop();
+
+        if (_richTextBox == null) return;
+
+        // Extract current impression items from the (modified) text
+        var rtbText = _richTextBox.Text;
+        int impressionStart = rtbText.IndexOf("IMPRESSION:", StringComparison.OrdinalIgnoreCase);
+
+        if (impressionStart < 0)
+        {
+            ImpressionDeleteRequested?.Invoke("");
+            return;
+        }
+
+        int searchFrom = impressionStart + "IMPRESSION:".Length;
+        var regex = new Regex(@"^\d+\.\s*(.*)$", RegexOptions.Multiline);
+        var matches = regex.Matches(rtbText, searchFrom);
+
+        var itemTexts = new List<string>();
+        foreach (Match m in matches)
+        {
+            var text = m.Groups[1].Value.Trim();
+            if (!string.IsNullOrEmpty(text))
+                itemTexts.Add(text);
+        }
+
+        // Join without numbers — Mosaic auto-numbers impression lines
+        var newText = string.Join("\r\n", itemTexts);
+        ImpressionDeleteRequested?.Invoke(newText);
+    }
+
+    /// <summary>
+    /// Clear the delete-pending flag so scrape updates resume.
+    /// Called by ActionController after paste completes.
+    /// </summary>
+    public void ClearDeletePending()
+    {
+        if (InvokeRequired)
+        {
+            Invoke(ClearDeletePending);
+            return;
+        }
+        _deletePending = false;
+    }
+
+    #endregion
+
     #region Disposal
 
     protected override void Dispose(bool disposing)
@@ -1561,6 +1805,11 @@ public class ReportPopupForm : Form
             _headerFont?.Dispose();
             _modeLabelFont?.Dispose();
             _staleIndicatorFont?.Dispose();
+            if (_debounceTimer != null)
+            {
+                _debounceTimer.Stop();
+                _debounceTimer.Dispose();
+            }
         }
         base.Dispose(disposing);
     }

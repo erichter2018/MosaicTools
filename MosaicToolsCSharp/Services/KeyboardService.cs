@@ -136,9 +136,9 @@ public class KeyboardService : IDisposable
             // If no callbacks for 5 minutes and we have hotkeys registered, reinstall hook
             if (_hookId != IntPtr.Zero &&
                 (_hotkeyActions.Count > 0 || _directHotkeyActions.Count > 0) &&
-                (DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastHookCallbackTicks)) > TimeSpan.FromMinutes(5).Ticks)
+                (DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastHookCallbackTicks)) > TimeSpan.FromSeconds(90).Ticks)
             {
-                Logger.Trace("Hook health: No callbacks for 5 min, reinstalling hook");
+                Logger.Trace("Hook health: No callbacks for 90s, reinstalling hook");
                 Stop();
                 Start();
             }

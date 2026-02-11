@@ -24,6 +24,7 @@ public class ReportDisplaySection : SettingsSection
     private readonly Label _reportTransparencyLabel;
     private readonly CheckBox _showReportAfterProcessCheck;
     private readonly CheckBox _showImpressionCheck;
+    private readonly CheckBox _impressionDeletableCheck;
 
     private Color _reportChangesColor = Color.FromArgb(144, 238, 144);
 
@@ -32,6 +33,10 @@ public class ReportDisplaySection : SettingsSection
         // Show Report After Process
         _showReportAfterProcessCheck = AddCheckBox("Show Report overlay after Process Report", LeftMargin, _nextY,
             "Automatically open report popup after Process Report.\nShows Changes or Rainbow highlighting if enabled.");
+        _nextY += RowHeight;
+
+        _impressionDeletableCheck = AddCheckBox("Show delete buttons on impression points", LeftMargin + 25, _nextY,
+            "Add trash icons next to numbered impression points in the report overlay.\nClick to remove a point; changes paste into Mosaic after 1 second.\nRequires opaque mode (transparent overlay OFF).");
         _nextY += RowHeight;
 
         _showImpressionCheck = AddCheckBox("Show Impression popup after Process Report", LeftMargin, _nextY,
@@ -149,6 +154,7 @@ public class ReportDisplaySection : SettingsSection
     {
         _showReportAfterProcessCheck.Checked = config.ShowReportAfterProcess;
         _showImpressionCheck.Checked = config.ShowImpression;
+        _impressionDeletableCheck.Checked = config.ImpressionDeletablePoints;
         _showReportChangesCheck.Checked = config.ShowReportChanges;
 
         // Parse hex color string (e.g., "#90EE90")
@@ -180,6 +186,7 @@ public class ReportDisplaySection : SettingsSection
     {
         config.ShowReportAfterProcess = _showReportAfterProcessCheck.Checked;
         config.ShowImpression = _showImpressionCheck.Checked;
+        config.ImpressionDeletablePoints = _impressionDeletableCheck.Checked;
         config.ShowReportChanges = _showReportChangesCheck.Checked;
 
         // Save as hex color string

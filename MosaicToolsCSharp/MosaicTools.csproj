@@ -47,6 +47,9 @@
     <!-- JSON Configuration -->
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
 
+    <!-- Required for RichTextBox RTF encoding in self-contained deployment -->
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
+
     <!-- WebView2 for embedded HTML UI -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2739.15" />
   </ItemGroup>

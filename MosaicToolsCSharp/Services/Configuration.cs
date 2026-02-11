@@ -176,6 +176,9 @@ public class Configuration
     [JsonPropertyName("show_impression")]
     public bool ShowImpression { get; set; } = false;
 
+    [JsonPropertyName("impression_deletable_points")]
+    public bool ImpressionDeletablePoints { get; set; } = false;
+
     [JsonPropertyName("impression_x")]
     public int ImpressionX { get; set; } = 300;
 

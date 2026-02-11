@@ -31,7 +31,7 @@ public class AutomationService : IDisposable
     public string? LastFinalReport { get; private set; }
 
     /// <summary>Clear cached report text (call on accession change to prevent stale data).</summary>
-    public void ClearLastReport() => LastFinalReport = null;
+    public void ClearLastReport() { LastFinalReport = null; _lastPatientInfoAccession = null; }
 
     // Addendum detection: set during scraping when any ProseMirror candidate starts with "Addendum"
     public bool IsAddendumDetected { get; private set; }
@@ -72,7 +72,10 @@ public class AutomationService : IDisposable
     // Last scraped MRN (Medical Record Number) - required for XML file drop
     public string? LastMrn { get; private set; }
 
-    
+    // Accession for which patient info (gender, MRN, site code, name) was last extracted
+    // Used to skip expensive FindAllDescendants when the same study is still open
+    private string? _lastPatientInfoAccession;
+
     public AutomationService()
     {
         _automation = new UIA3Automation();
@@ -1347,11 +1350,6 @@ public class AutomationService : IDisposable
             LastDescription = null; // Reset
             LastTemplateName = null; // Reset - prevents stale template from previous study causing false mismatch
             LastAccession = null; // Reset - will be set if found, stays null if no study open
-            LastPatientGender = null; // Reset - will be set if found
-            LastPatientAge = null; // Reset - will be set if found
-            LastPatientName = null; // Reset - will be set if found
-            LastSiteCode = null; // Reset - will be set if found
-            LastMrn = null; // Reset - will be set if found
 
             // Extract accession: find "Current Study" text and the next text element after it
             try
@@ -1403,10 +1401,24 @@ public class AutomationService : IDisposable
 
 
             // Extract patient info from all descendants in a single traversal.
+            // Skip if accession hasn't changed — patient info (gender, MRN, etc.) is stable per study.
+            bool needsPatientInfoExtraction = LastAccession != _lastPatientInfoAccession;
+            if (needsPatientInfoExtraction)
+            {
+                LastPatientGender = null;
+                LastPatientAge = null;
+                LastPatientName = null;
+                LastSiteCode = null;
+                LastMrn = null;
+                if (!string.IsNullOrEmpty(LastAccession))
+                    _lastPatientInfoAccession = LastAccession;
+            }
+
             // Handles both Mosaic 2.0.2 (combined Text "Description: XR CHEST") and
             // 2.0.3 (separate Text "Description:" + Button "XR CHEST") in one pass.
             // BEGIN Mosaic 2.0.2 compat: When 2.0.2 is retired, the pendingInfoField/Button
             // logic becomes the only path and the Text-based regex extraction can be removed.
+            if (needsPatientInfoExtraction)
             try
             {
                 var allInfoElements = _cachedSlimHubWindow.FindAllDescendants();
@@ -2364,9 +2376,17 @@ public class AutomationService : IDisposable
         "SEEN", "NOTED", "FOUND", "GIVEN", "KNOWN", "PRIOR",
         "LEFT", "RIGHT", "BILATERAL", "MIDLINE", "UPPER", "LOWER",
         "CLEAR", "INTACT", "LIMITED", "COMPLETE", "PARTIAL",
+        // Common clinical/radiology terms that look like names
+        "WALL", "THICKENING", "FILLING", "DEFECT", "FRACTURE", "LESION",
+        "MASS", "NODULE", "EFFUSION", "EDEMA", "STENOSIS", "OCCLUSION",
+        "DISSECTION", "ANEURYSM", "CALCIFICATION", "ENHANCEMENT",
+        "OPACIFICATION", "CONSOLIDATION", "ATELECTASIS", "PNEUMOTHORAX",
+        "HERNIA", "OBSTRUCTION", "PERFORATION", "ABSCESS", "COLLECTION",
+        "DISPLACEMENT", "DILATION", "DISTENSION", "INFLAMMATION",
         // Common false-positive phrases
         "NO CHANGE", "NONE AVAILABLE", "NOT AVAILABLE", "NO ACUTE",
-        "NO PRIOR", "NO COMPARISON", "NOT SEEN", "NO SIGNIFICANT"
+        "NO PRIOR", "NO COMPARISON", "NOT SEEN", "NO SIGNIFICANT",
+        "WALL THICKENING", "FILLING DEFECT", "BONE MARROW"
     };
 
     /// <summary>
