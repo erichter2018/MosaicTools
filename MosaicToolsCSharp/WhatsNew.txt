@@ -1,3 +1,7 @@
+3.6.2
+- Fix keyboard slowdown: stuck 500ms scrape timer, aggressive idle backoff, Win32 pre-checks
+- Default scrape interval changed from 1s to 3s (adjustable in Settings)
+
 3.6.1
 - Another attempt at slowdown fix
 

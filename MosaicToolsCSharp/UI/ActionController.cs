@@ -70,7 +70,7 @@ public class ActionController : IDisposable
     private int NormalScrapeIntervalMs => _config.ScrapeIntervalSeconds * 1000;
     private int _fastScrapeIntervalMs = 1000;
     private int _studyLoadScrapeIntervalMs = 500;
-    private const int IdleScrapeIntervalMs = 3000; // Slow polling when no study is open
+    private const int IdleScrapeIntervalMs = 5000; // Slow polling when no study is open
     private int _consecutiveIdleScrapes = 0; // Counts scrapes with no report content
     private int _scrapesSinceLastGc = 0; // Counter for periodic GC to release FlaUI COM wrappers
 
@@ -132,6 +132,7 @@ public class ActionController : IDisposable
     // RecoMD state tracking
     private volatile bool _recoMdPendingAfterProcess;
     private string? _reportTextBeforeProcess;
+    private DateTime _recoMdPendingSince;
 
     // Critical note tracking - session-scoped set of accessions that already have critical notes
     private readonly ConcurrentDictionary<string, byte> _criticalNoteCreatedForAccessions = new();
@@ -894,6 +895,7 @@ public class ActionController : IDisposable
         {
             _reportTextBeforeProcess = _automationService.LastFinalReport;
             _recoMdPendingAfterProcess = true;
+            _recoMdPendingSince = DateTime.UtcNow;
             Logger.Trace("RecoMD: Pending auto-send after Process Report");
         }
 
@@ -2538,15 +2540,16 @@ public class ActionController : IDisposable
                 // Bail out if user action started during the scrape
                 if (_isUserActive) return;
 
-                // Idle backoff: slow down scraping when no study is open to reduce
-                // FlaUI COM wrapper accumulation and system-wide UIA overhead
-                if (string.IsNullOrEmpty(reportText) && string.IsNullOrEmpty(_automationService.LastAccession))
+                // Idle backoff: slow down scraping when no report content is found
+                // (either no study open, or study visible but ProseMirror not accessible)
+                if (string.IsNullOrEmpty(reportText))
                 {
                     _consecutiveIdleScrapes++;
-                    if (_consecutiveIdleScrapes == 5 && !_searchingForImpression)
+                    if (_consecutiveIdleScrapes >= 3 && !_searchingForImpression && !_needsBaselineCapture)
                     {
                         RestartScrapeTimer(IdleScrapeIntervalMs);
-                        Logger.Trace("Scrape idle backoff: slowing to 3s (no study open)");
+                        if (_consecutiveIdleScrapes == 3)
+                            Logger.Trace("Scrape idle backoff: slowing to 5s (no report content)");
                     }
                 }
                 else if (_consecutiveIdleScrapes > 0)
@@ -2570,11 +2573,13 @@ public class ActionController : IDisposable
                 // RecoMD: detect processed report and send to RecoMD
                 if (_recoMdPendingAfterProcess && !string.IsNullOrEmpty(reportText))
                 {
-                    if (reportText != _reportTextBeforeProcess)
+                    bool textChanged = reportText != _reportTextBeforeProcess;
+                    bool timedOut = (DateTime.UtcNow - _recoMdPendingSince).TotalSeconds > 5;
+                    if (textChanged || timedOut)
                     {
                         _recoMdPendingAfterProcess = false;
                         _reportTextBeforeProcess = null;
-                        Logger.Trace("RecoMD: Report changed after Process Report, sending to RecoMD");
+                        Logger.Trace($"RecoMD: Sending after Process Report (changed={textChanged}, timedOut={timedOut})");
                         // Capture all values now (before next scrape resets them)
                         var recoReportText = RecoMdService.CleanReportText(reportText);
                         var recoAcc = _automationService.LastAccession;
@@ -2874,9 +2879,9 @@ public class ActionController : IDisposable
                         _needsBaselineCapture = false;
                         Logger.Trace("Study closed, no new study opened");
 
-                        // Revert to normal scrape interval (prevents stuck 500ms from prior study)
+                        // Revert to idle scrape interval — no study open, no reason to scrape fast
                         if (!_searchingForImpression)
-                            RestartScrapeTimer(NormalScrapeIntervalMs);
+                            RestartScrapeTimer(IdleScrapeIntervalMs);
 
                         // Hide clinical history window if configured to hide when no study
                         // (or always hide in alerts-only mode when no alerts)
@@ -2964,17 +2969,31 @@ public class ActionController : IDisposable
                             }
                         }
                     }
-                    else if (!string.IsNullOrEmpty(reportText))
+                    else
                     {
-                        // Non-drafted: wait for impression to appear - report is generated top-to-bottom after Process Report
-                        var impression = ImpressionForm.ExtractImpression(reportText);
-                        if (!string.IsNullOrEmpty(impression))
+                        _baselineCaptureAttempts++;
+
+                        if (!string.IsNullOrEmpty(reportText))
+                        {
+                            // Non-drafted: wait for impression to appear - report is generated top-to-bottom after Process Report
+                            var impression = ImpressionForm.ExtractImpression(reportText);
+                            if (!string.IsNullOrEmpty(impression))
+                            {
+                                _needsBaselineCapture = false;
+                                _baselineReport = reportText;
+                                Logger.Trace($"Captured baseline from scrape ({reportText.Length} chars)");
+
+                                // Revert to normal scrape interval now that baseline is captured
+                                if (!_searchingForImpression)
+                                    RestartScrapeTimer(NormalScrapeIntervalMs);
+                            }
+                        }
+
+                        // Timeout: give up after ~4 seconds (8 attempts at 500ms) to prevent stuck fast timer
+                        if (_needsBaselineCapture && _baselineCaptureAttempts >= 8)
                         {
                             _needsBaselineCapture = false;
-                            _baselineReport = reportText;
-                            Logger.Trace($"Captured baseline from scrape ({reportText.Length} chars)");
-
-                            // Revert to normal scrape interval now that baseline is captured
+                            Logger.Trace($"Baseline capture timed out (non-drafted, {_baselineCaptureAttempts} attempts). Restoring normal scrape interval.");
                             if (!_searchingForImpression)
                                 RestartScrapeTimer(NormalScrapeIntervalMs);
                         }
@@ -3145,8 +3164,10 @@ public class ActionController : IDisposable
                     }
 
                     // Verify Aidoc findings against report text
+                    // Only verify against text with U+FFFC (real report editor), not the transcript
                     List<FindingVerification>? aidocVerifications = null;
-                    if (aidocAlertActive && relevantFindings != null && !string.IsNullOrEmpty(reportText))
+                    if (aidocAlertActive && relevantFindings != null && !string.IsNullOrEmpty(reportText)
+                        && reportText.Contains('\uFFFC'))
                     {
                         aidocVerifications = AidocFindingVerifier.VerifyFindings(relevantFindings, reportText);
                     }

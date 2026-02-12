@@ -31,7 +31,10 @@ public class AutomationService : IDisposable
     public string? LastFinalReport { get; private set; }
 
     /// <summary>Clear cached report text (call on accession change to prevent stale data).</summary>
-    public void ClearLastReport() { LastFinalReport = null; _lastPatientInfoAccession = null; }
+    /// Note: _lastPatientInfoAccession is NOT cleared here — patient info re-extraction
+    /// is already triggered when the accession changes (different from previous), and clearing
+    /// it here caused expensive FindAllDescendants to run redundantly on every study change.
+    public void ClearLastReport() { LastFinalReport = null; }
 
     // Addendum detection: set during scraping when any ProseMirror candidate starts with "Addendum"
     public bool IsAddendumDetected { get; private set; }
@@ -751,6 +754,10 @@ public class AutomationService : IDisposable
     {
         try
         {
+            // Fast Win32 pre-check before expensive UIA desktop enumeration
+            var hwnd = NativeWindows.FindWindowByTitle(new[] { "mosaic" });
+            if (hwnd == IntPtr.Zero) return null;
+
             var desktop = _automation.GetDesktop();
             var windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
             
@@ -1317,6 +1324,14 @@ public class AutomationService : IDisposable
             // Find Mosaic window if not cached
             if (_cachedSlimHubWindow == null)
             {
+                // Fast Win32 pre-check: skip expensive UIA desktop enumeration if Mosaic isn't running
+                var hwnd = NativeWindows.FindWindowByTitle(new[] { "mosaic" });
+                if (hwnd == IntPtr.Zero)
+                {
+                    Logger.Trace($"GetFinalReportFast: Mosaic window not found (Win32 pre-check, {sw.ElapsedMilliseconds}ms)");
+                    return null;
+                }
+
                 var desktop = _automation.GetDesktop();
                 var windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
                 

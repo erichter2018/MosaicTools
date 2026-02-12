@@ -107,7 +107,7 @@ public class Configuration
     public bool ScrapeMosaicEnabled { get; set; } = true;  // Always true, not user-configurable
 
     [JsonPropertyName("scrape_interval_seconds")]
-    public int ScrapeIntervalSeconds { get; set; } = 1;
+    public int ScrapeIntervalSeconds { get; set; } = 3;
 
     [JsonPropertyName("show_clinical_history")]
     public bool ShowClinicalHistory { get; set; } = false;
@@ -569,6 +569,7 @@ public class Configuration
         }
         MigrateRecoMdAction(ActionMappings);
         MigrateRecoMdAction(SpeechMikeActionMappings);
+
     }
 
     /// <summary>
