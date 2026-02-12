@@ -18,6 +18,7 @@ namespace MosaicTools.Services;
 public class UpdateService
 {
     private const string GitHubApiUrl = "https://api.github.com/repos/erichter2018/MosaicTools/releases/latest";
+    private const string GitHubAllReleasesUrl = "https://api.github.com/repos/erichter2018/MosaicTools/releases";
     private static readonly HttpClient _httpClient;
 
     public string? LatestVersion { get; private set; }
@@ -252,6 +253,130 @@ public class UpdateService
                 catch { /* ignore */ }
             }
 
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Fetch all releases from GitHub, excluding the current version.
+    /// Returns list sorted newest-first with download URLs resolved.
+    /// </summary>
+    public async Task<List<(string Tag, string DownloadUrl)>> GetAllReleasesAsync()
+    {
+        var results = new List<(string Tag, string DownloadUrl)>();
+        try
+        {
+            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(15));
+            using var response = await _httpClient.GetAsync(GitHubAllReleasesUrl, cts.Token);
+            if (!response.IsSuccessStatusCode) return results;
+
+            var releases = await response.Content.ReadFromJsonAsync<List<GitHubRelease>>(cancellationToken: cts.Token);
+            if (releases == null) return results;
+
+            var currentVersion = GetCurrentVersion();
+
+            foreach (var release in releases)
+            {
+                var tagVersion = release.TagName?.TrimStart('v', 'V') ?? "0.0";
+                if (!Version.TryParse(NormalizeVersion(tagVersion), out var ver)) continue;
+                if (ver == currentVersion) continue;
+
+                // Prefer zip, fall back to exe
+                var zipAsset = release.Assets?.Find(a =>
+                    a.Name?.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) == true);
+                var exeAsset = release.Assets?.Find(a =>
+                    a.Name?.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) == true);
+                var asset = zipAsset ?? exeAsset;
+
+                if (asset?.BrowserDownloadUrl != null)
+                    results.Add((release.TagName!, asset.BrowserDownloadUrl));
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Failed to fetch releases: {ex.Message}");
+        }
+        return results;
+    }
+
+    /// <summary>
+    /// Download and install a specific version from a given URL.
+    /// Same rename-trick logic as DownloadUpdateAsync but with an explicit URL.
+    /// </summary>
+    public async Task<bool> DownloadAndInstallVersionAsync(string downloadUrl)
+    {
+        try
+        {
+            var exePath = Application.ExecutablePath;
+            var exeDir = Path.GetDirectoryName(exePath) ?? AppContext.BaseDirectory;
+            var newExePath = Path.Combine(exeDir, "MosaicTools_new.exe");
+            var oldExePath = Path.Combine(exeDir, "MosaicTools_old.exe");
+            var isZip = downloadUrl.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+            var downloadPath = isZip ? Path.Combine(exeDir, "MosaicTools_update.zip") : newExePath;
+
+            Logger.Trace($"Rollback: downloading from {downloadUrl}");
+
+            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromMinutes(5));
+            using var response = await _httpClient.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            response.EnsureSuccessStatusCode();
+
+            await using var contentStream = await response.Content.ReadAsStreamAsync(cts.Token);
+            await using var fileStream = new FileStream(downloadPath, FileMode.Create, FileAccess.Write, FileShare.None);
+            await contentStream.CopyToAsync(fileStream, cts.Token);
+            fileStream.Close();
+
+            if (isZip)
+            {
+                try
+                {
+                    using var archive = ZipFile.OpenRead(downloadPath);
+                    var exeEntry = archive.Entries.FirstOrDefault(e =>
+                        e.Name.Equals("MosaicTools.exe", StringComparison.OrdinalIgnoreCase));
+                    if (exeEntry == null)
+                    {
+                        Logger.Trace("Rollback: no MosaicTools.exe in zip");
+                        File.Delete(downloadPath);
+                        return false;
+                    }
+                    exeEntry.ExtractToFile(newExePath, overwrite: true);
+                }
+                finally
+                {
+                    try { File.Delete(downloadPath); } catch { }
+                }
+            }
+
+            var fileInfo = new FileInfo(newExePath);
+            if (fileInfo.Length < 100000)
+            {
+                Logger.Trace("Rollback: downloaded file too small");
+                File.Delete(newExePath);
+                return false;
+            }
+
+            if (File.Exists(oldExePath))
+                try { File.Delete(oldExePath); } catch { }
+
+            File.Move(exePath, oldExePath);
+            try
+            {
+                File.Move(newExePath, exePath);
+            }
+            catch
+            {
+                try { File.Move(oldExePath, exePath); } catch { }
+                throw;
+            }
+
+            Logger.Trace("Rollback: files ready, restart required");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Rollback download failed: {ex.Message}");
+            var exeDir = Path.GetDirectoryName(Application.ExecutablePath) ?? AppContext.BaseDirectory;
+            try { File.Delete(Path.Combine(exeDir, "MosaicTools_new.exe")); } catch { }
+            try { File.Delete(Path.Combine(exeDir, "MosaicTools_update.zip")); } catch { }
             return false;
         }
     }

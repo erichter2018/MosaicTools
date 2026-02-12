@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using MosaicTools.Services;
 
@@ -11,6 +12,9 @@ namespace MosaicTools.UI.Settings;
 /// </summary>
 public class DesktopSection : SettingsSection
 {
+    [DllImport("dwmapi.dll", PreserveSig = true)]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
     public override string SectionId => "desktop";
 
     private readonly TextBox _ivHotkeyBox;
@@ -123,6 +127,10 @@ public class DesktopSection : SettingsSection
         }, "Manually check for available updates now.");
         _nextY += RowHeight;
 
+        AddButton("Rollback to Previous Version", LeftMargin, _nextY - 2, 200, 24, RollbackButton_Click,
+            "Install a previous version. Auto-update will be disabled to prevent re-updating.");
+        _nextY += RowHeight;
+
         UpdateHeight();
     }
 
@@ -220,5 +228,124 @@ public class DesktopSection : SettingsSection
     {
         if (volume <= 0) return 0;
         return Math.Clamp((int)Math.Round(50.0 * Math.Log10(volume * 99.0 + 1.0)), 0, 100);
+    }
+
+    private async void RollbackButton_Click(object? sender, EventArgs e)
+    {
+        var btn = sender as Button;
+        if (btn != null) { btn.Enabled = false; btn.Text = "Loading versions..."; }
+
+        try
+        {
+            var updateService = new UpdateService();
+            var releases = await updateService.GetAllReleasesAsync();
+
+            if (btn != null) { btn.Text = "Rollback to Previous Version"; btn.Enabled = true; }
+
+            if (releases.Count == 0)
+            {
+                MessageBox.Show("No other versions found.", "Rollback", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using var picker = new Form
+            {
+                Text = "Rollback Version",
+                Size = new Size(300, 350),
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                BackColor = Color.FromArgb(40, 40, 40)
+            };
+
+            var darkMode = 1;
+            DwmSetWindowAttribute(picker.Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref darkMode, sizeof(int));
+
+            var infoLabel = new Label
+            {
+                Text = "Select a version to install.\nAuto-update will be disabled.",
+                Location = new Point(15, 10),
+                Size = new Size(260, 35),
+                ForeColor = Color.LightGray,
+                Font = new Font("Segoe UI", 9)
+            };
+            picker.Controls.Add(infoLabel);
+
+            var listBox = new ListBox
+            {
+                Location = new Point(15, 50),
+                Size = new Size(255, 200),
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 10),
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            foreach (var (tag, _) in releases)
+                listBox.Items.Add(tag);
+            if (listBox.Items.Count > 0) listBox.SelectedIndex = 0;
+            picker.Controls.Add(listBox);
+
+            var installBtn = new Button
+            {
+                Text = "Install",
+                Location = new Point(15, 260),
+                Size = new Size(120, 30),
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                DialogResult = DialogResult.OK,
+                Cursor = Cursors.Hand
+            };
+            installBtn.FlatAppearance.BorderColor = Color.Gray;
+            picker.Controls.Add(installBtn);
+
+            var cancelBtn = new Button
+            {
+                Text = "Cancel",
+                Location = new Point(150, 260),
+                Size = new Size(120, 30),
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                DialogResult = DialogResult.Cancel,
+                Cursor = Cursors.Hand
+            };
+            cancelBtn.FlatAppearance.BorderColor = Color.Gray;
+            picker.Controls.Add(cancelBtn);
+
+            picker.AcceptButton = installBtn;
+            picker.CancelButton = cancelBtn;
+
+            if (picker.ShowDialog(FindForm()) != DialogResult.OK || listBox.SelectedIndex < 0)
+                return;
+
+            var selectedTag = releases[listBox.SelectedIndex].Tag;
+            var selectedUrl = releases[listBox.SelectedIndex].DownloadUrl;
+
+            if (btn != null) { btn.Enabled = false; btn.Text = $"Installing {selectedTag}..."; }
+
+            var success = await updateService.DownloadAndInstallVersionAsync(selectedUrl);
+            if (success)
+            {
+                // Disable auto-update so it doesn't immediately re-update
+                var config = Configuration.Load();
+                config.AutoUpdateEnabled = false;
+                config.Save();
+                _mainForm.ShowStatusToast($"Rolled back to {selectedTag} — auto-update disabled", 3000);
+                UpdateService.RestartApp();
+            }
+            else
+            {
+                if (btn != null) { btn.Text = "Rollback to Previous Version"; btn.Enabled = true; }
+                MessageBox.Show("Download failed. Try again later.", "Rollback", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Rollback error: {ex.Message}");
+            if (btn != null) { btn.Text = "Rollback to Previous Version"; btn.Enabled = true; }
+            MessageBox.Show($"Rollback failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 }
