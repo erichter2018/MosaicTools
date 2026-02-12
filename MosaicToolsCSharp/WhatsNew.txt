@@ -1,3 +1,6 @@
+3.6.1
+- Another attempt at slowdown fix
+
 3.6.0
 - Deletable impression points: trash icons on report overlay to remove impression lines
 - Fix system lag caused by scrape timer stuck at 500ms after study close

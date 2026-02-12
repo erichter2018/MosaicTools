@@ -30,7 +30,7 @@ public class RvuCounterService
     /// </summary>
     public bool IsAvailable()
     {
-        return _config.RvuCounterEnabled && GetDatabasePath() != null;
+        return GetDatabasePath() != null;
     }
 
     /// <summary>
@@ -39,9 +39,6 @@ public class RvuCounterService
     /// </summary>
     public double? GetCurrentShiftRvuTotal()
     {
-        if (!_config.RvuCounterEnabled)
-            return null;
-
         var dbPath = GetDatabasePath();
         if (dbPath == null)
         {
@@ -88,9 +85,6 @@ public class RvuCounterService
     /// </summary>
     public ShiftInfo? GetCurrentShiftInfo()
     {
-        if (!_config.RvuCounterEnabled)
-            return null;
-
         var dbPath = GetDatabasePath();
         if (dbPath == null)
             return null;

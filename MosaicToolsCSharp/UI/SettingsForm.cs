@@ -86,7 +86,6 @@ public class SettingsForm : Form
     private TextBox? _windowLevelKeysBox;
 
     // Experimental tab controls
-    private CheckBox _rvuCounterEnabledCheck = null!;
     private ComboBox _rvuDisplayModeCombo = null!;
     private CheckBox _rvuGoalEnabledCheck = null!;
     private NumericUpDown _rvuGoalValueBox = null!;
@@ -2543,35 +2542,6 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
 
         int ry = 20;
 
-        _rvuCounterEnabledCheck = new CheckBox
-        {
-            Text = "Send study events to RVUCounter",
-            Location = new Point(10, ry),
-            AutoSize = true,
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI", 9)
-        };
-        _rvuCounterEnabledCheck.CheckedChanged += (s, e) =>
-        {
-            if (!_rvuCounterEnabledCheck.Checked)
-            {
-                var result = MessageBox.Show(
-                    "Warning: Disabling RVUCounter integration will prevent MosaicTools from tracking your RVU counts.\n\n" +
-                    "Only disable this if you know what you're doing and don't use RVUCounter.\n\n" +
-                    "Are you sure you want to disable it?",
-                    "Disable RVUCounter?",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Warning);
-                if (result == DialogResult.No)
-                {
-                    _rvuCounterEnabledCheck.Checked = true;
-                }
-            }
-        };
-        rvuGroup.Controls.Add(_rvuCounterEnabledCheck);
-        CreateTooltipLabel(rvuGroup, _rvuCounterEnabledCheck, "When enabled, sends signed study events to RVUCounter\nso it can track your RVU productivity.");
-        ry += 22;
-
         // Metrics checkboxes
         var metricsLabel = new Label
         {
@@ -3015,17 +2985,6 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
             Font = new Font("Segoe UI", 10, FontStyle.Bold)
         };
         scrollPanel.Controls.Add(rvuHeader);
-        y += 25;
-
-        // RVUCounter enabled checkbox
-        _rvuCounterEnabledCheck = new CheckBox
-        {
-            Text = "Read RVUCounter shift total",
-            Location = new Point(20, y),
-            AutoSize = true,
-            ForeColor = Color.White
-        };
-        scrollPanel.Controls.Add(_rvuCounterEnabledCheck);
         y += 25;
 
         // Metrics checkboxes
@@ -3805,7 +3764,6 @@ Settings: %LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json
         _ignoreInpatientChestOnlyRadio.Enabled = _config.IgnoreInpatientDrafted;
 
         // RVUCounter and Report Changes (no longer in Experimental section)
-        _rvuCounterEnabledCheck.Checked = _config.RvuCounterEnabled;
         _rvuDisplayModeCombo.SelectedIndex = (int)_config.RvuDisplayMode;
         // Load metric flags into checkboxes
         _rvuMetricTotalCheck.Checked = _config.RvuMetrics.HasFlag(RvuMetric.Total);
@@ -4395,7 +4353,6 @@ SETTINGS FILE
         _config.IgnoreInpatientDraftedMode = _ignoreInpatientChestOnlyRadio.Checked ? 1 : 0;
 
         // RVUCounter and Report Changes
-        _config.RvuCounterEnabled = _rvuCounterEnabledCheck.Checked;
         _config.RvuDisplayMode = (RvuDisplayMode)_rvuDisplayModeCombo.SelectedIndex;
         // Save metric flags from checkboxes
         var metrics = RvuMetric.None;

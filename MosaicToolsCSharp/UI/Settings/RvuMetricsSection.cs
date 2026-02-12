@@ -14,8 +14,6 @@ public class RvuMetricsSection : SettingsSection
 {
     public override string SectionId => "rvu";
 
-    private readonly CheckBox _rvuCounterEnabledCheck;
-    private bool _isLoading;
     private readonly CheckBox _rvuMetricTotalCheck;
     private readonly CheckBox _rvuMetricPerHourCheck;
     private readonly CheckBox _rvuMetricCurrentHourCheck;
@@ -30,29 +28,6 @@ public class RvuMetricsSection : SettingsSection
 
     public RvuMetricsSection(ToolTip toolTip) : base("RVU & Metrics", toolTip)
     {
-        // RVUCounter Enable
-        _rvuCounterEnabledCheck = AddCheckBox("Send study events to RVUCounter", LeftMargin, _nextY,
-            "When enabled, sends signed study events to RVUCounter\nso it can track your RVU productivity.");
-        _rvuCounterEnabledCheck.CheckedChanged += (s, e) =>
-        {
-            if (_isLoading) return;
-            if (!_rvuCounterEnabledCheck.Checked)
-            {
-                var result = MessageBox.Show(
-                    "Warning: Disabling RVUCounter integration will prevent MosaicTools from tracking your RVU counts.\n\n" +
-                    "Only disable this if you know what you're doing and don't use RVUCounter.\n\n" +
-                    "Are you sure you want to disable it?",
-                    "Disable RVUCounter?",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Warning);
-                if (result == DialogResult.No)
-                {
-                    _rvuCounterEnabledCheck.Checked = true;
-                }
-            }
-        };
-        _nextY += RowHeight + 5;
-
         // Metrics Selection
         AddSectionDivider("Display Metrics");
 
@@ -166,9 +141,6 @@ public class RvuMetricsSection : SettingsSection
 
     public override void LoadSettings(Configuration config)
     {
-        _isLoading = true;
-        _rvuCounterEnabledCheck.Checked = config.RvuCounterEnabled;
-
         // Load metrics from flags enum
         _rvuMetricTotalCheck.Checked = config.RvuMetrics.HasFlag(RvuMetric.Total);
         _rvuMetricPerHourCheck.Checked = config.RvuMetrics.HasFlag(RvuMetric.PerHour);
@@ -184,13 +156,10 @@ public class RvuMetricsSection : SettingsSection
         _rvuCounterPathBox.Text = config.RvuCounterPath ?? "";
 
         UpdateOverflowLayoutState();
-        _isLoading = false;
     }
 
     public override void SaveSettings(Configuration config)
     {
-        config.RvuCounterEnabled = _rvuCounterEnabledCheck.Checked;
-
         // Save metrics as flags enum
         var metrics = RvuMetric.None;
         if (_rvuMetricTotalCheck.Checked) metrics |= RvuMetric.Total;

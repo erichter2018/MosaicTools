@@ -70,6 +70,9 @@ public class ActionController : IDisposable
     private int NormalScrapeIntervalMs => _config.ScrapeIntervalSeconds * 1000;
     private int _fastScrapeIntervalMs = 1000;
     private int _studyLoadScrapeIntervalMs = 500;
+    private const int IdleScrapeIntervalMs = 3000; // Slow polling when no study is open
+    private int _consecutiveIdleScrapes = 0; // Counts scrapes with no report content
+    private int _scrapesSinceLastGc = 0; // Counter for periodic GC to release FlaUI COM wrappers
 
     // PTT (Push-to-talk) state (int for Interlocked atomicity)
     private int _pttBusy = 0;
@@ -2534,6 +2537,35 @@ public class ActionController : IDisposable
 
                 // Bail out if user action started during the scrape
                 if (_isUserActive) return;
+
+                // Idle backoff: slow down scraping when no study is open to reduce
+                // FlaUI COM wrapper accumulation and system-wide UIA overhead
+                if (string.IsNullOrEmpty(reportText) && string.IsNullOrEmpty(_automationService.LastAccession))
+                {
+                    _consecutiveIdleScrapes++;
+                    if (_consecutiveIdleScrapes == 5 && !_searchingForImpression)
+                    {
+                        RestartScrapeTimer(IdleScrapeIntervalMs);
+                        Logger.Trace("Scrape idle backoff: slowing to 3s (no study open)");
+                    }
+                }
+                else if (_consecutiveIdleScrapes > 0)
+                {
+                    _consecutiveIdleScrapes = 0;
+                    // Restore normal rate (unless fast/study-load mode is active)
+                    if (!_searchingForImpression && !_needsBaselineCapture)
+                        RestartScrapeTimer(NormalScrapeIntervalMs);
+                }
+
+                // Periodic GC: release accumulated FlaUI COM wrappers (IUIAutomationElement RCWs)
+                // to prevent progressive system slowdown from stale UIA references
+                _scrapesSinceLastGc++;
+                if (_scrapesSinceLastGc >= 60)
+                {
+                    _scrapesSinceLastGc = 0;
+                    GC.Collect(2, GCCollectionMode.Optimized, false);
+                    GC.WaitForPendingFinalizers();
+                }
 
                 // RecoMD: detect processed report and send to RecoMD
                 if (_recoMdPendingAfterProcess && !string.IsNullOrEmpty(reportText))

@@ -148,7 +148,7 @@ public class MainForm : Form
             BackColor = Color.Black,
             Width = rvuWidth,
             Dock = DockStyle.Right,
-            Visible = _config.RvuCounterEnabled
+            Visible = _config.RvuMetrics != RvuMetric.None
         };
         typeof(Panel).GetProperty("DoubleBuffered",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
@@ -381,7 +381,7 @@ public class MainForm : Form
         }
 
         // Start RVU counter timer if enabled (skip in headless mode - no UI to display it)
-        if (_config.RvuCounterEnabled && !App.IsHeadless)
+        if (_config.RvuMetrics != RvuMetric.None && !App.IsHeadless)
         {
             UpdateRvuDisplay(); // Initial update
             _rvuTimer = new System.Windows.Forms.Timer { Interval = 5000 }; // Update every 5 seconds
@@ -455,7 +455,7 @@ public class MainForm : Form
     /// </summary>
     private int GetRvuPanelWidth()
     {
-        if (!_config.RvuCounterEnabled)
+        if (_config.RvuMetrics == RvuMetric.None)
             return 0;
 
         var metrics = _config.RvuMetrics;
@@ -503,11 +503,9 @@ public class MainForm : Form
 
     private void UpdateRvuDisplay()
     {
-        Logger.Trace("UpdateRvuDisplay called");
-        if (!_config.RvuCounterEnabled)
+        if (_config.RvuMetrics == RvuMetric.None)
         {
             _rvuPanel.Visible = false;
-            Logger.Trace("UpdateRvuDisplay: RVU counter not enabled");
             return;
         }
 
@@ -523,12 +521,10 @@ public class MainForm : Form
                 ShiftStart = pipeShift.ShiftStart ?? "",
                 ShiftId = 0
             };
-            Logger.Trace($"UpdateRvuDisplay: Using pipe shift info, total={shiftInfo.TotalRvu:F1}");
         }
         else
         {
             shiftInfo = _rvuCounterService.GetCurrentShiftInfo();
-            Logger.Trace($"UpdateRvuDisplay: Got SQLite shift info = {(shiftInfo != null ? $"total={shiftInfo.TotalRvu:F1}" : "null")}");
         }
 
         // Hide the 3 legacy labels - we use _rvuMetricLabels now
@@ -999,10 +995,10 @@ public class MainForm : Form
         if (Height != 40)
             Height = 40;
 
-        _rvuPanel.Visible = _config.RvuCounterEnabled;
+        _rvuPanel.Visible = _config.RvuMetrics != RvuMetric.None;
 
         // Restart or stop timer
-        if (_config.RvuCounterEnabled && !App.IsHeadless)
+        if (_config.RvuMetrics != RvuMetric.None && !App.IsHeadless)
         {
             if (_rvuTimer == null)
             {
