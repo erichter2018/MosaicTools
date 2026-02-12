@@ -1,3 +1,8 @@
+3.6.3
+- Fix keyboard lag and hotkeys dying: hook reinstall now on UI thread (was ThreadPool — no message pump)
+- Smarter hook health: uses GetLastInputInfo to detect dead hook vs idle user, checks every 15s
+- Remove legacy 0x04xx WndProc message translation
+
 3.6.2
 - Fix keyboard slowdown: stuck 500ms scrape timer, aggressive idle backoff, Win32 pre-checks
 - Default scrape interval changed from 1s to 3s (adjustable in Settings)

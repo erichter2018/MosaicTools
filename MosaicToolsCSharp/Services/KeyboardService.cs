@@ -33,6 +33,16 @@ public class KeyboardService : IDisposable
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
 
+    [DllImport("user32.dll")]
+    private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LASTINPUTINFO
+    {
+        public uint cbSize;
+        public uint dwTime;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct KBDLLHOOKSTRUCT
     {
@@ -58,6 +68,10 @@ public class KeyboardService : IDisposable
     private Action<string>? _recordCallback;
     private readonly ConcurrentDictionary<string, DateTime> _lastTriggers = new();
 
+    // UI thread synchronization: hook must be reinstalled on a thread with a message pump.
+    // Set this from the main form to enable safe reinstall from the health timer.
+    public System.Windows.Forms.Control? UiSyncTarget { get; set; }
+
     public void Start()
     {
         if (_hookId != IntPtr.Zero) return;
@@ -77,8 +91,10 @@ public class KeyboardService : IDisposable
             else
             {
                 Logger.Trace("Keyboard hook started (Win32)");
+                Interlocked.Exchange(ref _lastHookCallbackTicks, DateTime.UtcNow.Ticks);
                 // Start hook health monitor - reinstall if OS silently removed it
-                _hookHealthTimer ??= new System.Threading.Timer(CheckHookHealth, null, 60_000, 60_000);
+                // Check every 15s for fast recovery; uses GetLastInputInfo to avoid false positives
+                _hookHealthTimer ??= new System.Threading.Timer(CheckHookHealth, null, 15_000, 15_000);
             }
         }
         catch (Exception ex)
@@ -129,18 +145,53 @@ public class KeyboardService : IDisposable
         _recordCallback = callback;
     }
 
+    /// <summary>
+    /// Returns seconds since last user input (keyboard OR mouse).
+    /// </summary>
+    private static double GetIdleSeconds()
+    {
+        var info = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
+        if (!GetLastInputInfo(ref info)) return 0;
+        return (Environment.TickCount - (int)info.dwTime) / 1000.0;
+    }
+
     private void CheckHookHealth(object? state)
     {
         try
         {
-            // If no callbacks for 5 minutes and we have hotkeys registered, reinstall hook
-            if (_hookId != IntPtr.Zero &&
-                (_hotkeyActions.Count > 0 || _directHotkeyActions.Count > 0) &&
-                (DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastHookCallbackTicks)) > TimeSpan.FromSeconds(90).Ticks)
+            if (_hookId == IntPtr.Zero) return;
+            if (_hotkeyActions.Count == 0 && _directHotkeyActions.Count == 0) return;
+
+            var secondsSinceCallback = (DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastHookCallbackTicks))
+                                        / (double)TimeSpan.TicksPerSecond;
+            var idleSeconds = GetIdleSeconds();
+
+            // Only reinstall if: user has been active (mouse/keyboard input within 30s)
+            // but our hook hasn't received any callbacks for 30s.
+            // This distinguishes "hook is dead" from "user isn't typing".
+            if (secondsSinceCallback > 30 && idleSeconds < 30)
             {
-                Logger.Trace("Hook health: No callbacks for 90s, reinstalling hook");
-                Stop();
-                Start();
+                Logger.Trace($"Hook health: User active (idle {idleSeconds:F0}s) but no hook callbacks for {secondsSinceCallback:F0}s — reinstalling");
+
+                // CRITICAL: Must reinstall on a thread with a message pump (UI thread).
+                // WH_KEYBOARD_LL hooks installed on ThreadPool threads (no message pump) cause
+                // system-wide keyboard lag — Windows waits for LowLevelHooksTimeout (300ms) on
+                // every keystroke when the hook thread can't process callbacks.
+                var syncTarget = UiSyncTarget;
+                if (syncTarget != null && syncTarget.IsHandleCreated && !syncTarget.IsDisposed)
+                {
+                    syncTarget.BeginInvoke(() =>
+                    {
+                        Stop();
+                        Start();
+                    });
+                }
+                else
+                {
+                    Logger.Trace("Hook health: WARNING - no UI sync target, reinstalling on timer thread");
+                    Stop();
+                    Start();
+                }
             }
         }
         catch (Exception ex)

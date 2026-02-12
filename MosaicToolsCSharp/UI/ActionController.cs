@@ -184,6 +184,7 @@ public class ActionController : IDisposable
 
         _hidService = new HidService();
         _keyboardService = new KeyboardService();
+        _keyboardService.UiSyncTarget = mainForm;
         _automationService = new AutomationService();
         _noteFormatter = new NoteFormatter(config.DoctorName, config.CriticalFindingsTemplate, config.TargetTimezone);
         _getPriorService = new GetPriorService(_config.ComparisonTemplate);

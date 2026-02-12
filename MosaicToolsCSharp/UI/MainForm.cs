@@ -466,18 +466,18 @@ public class MainForm : Form
 
         if (count <= 2)
         {
-            // Horizontal layout: ~65px per metric + right padding
-            return count * 65 + 8;
+            // Horizontal layout: ~80px per metric + right padding
+            return count * 80 + 8;
         }
 
         // 3+ metrics: depends on layout
         return _config.RvuOverflowLayout switch
         {
-            RvuOverflowLayout.Horizontal => count * 65 + 8,
+            RvuOverflowLayout.Horizontal => count * 80 + 8,
             RvuOverflowLayout.VerticalStack => 0, // All metrics in drawer
-            RvuOverflowLayout.HoverPopup => 65,    // First metric inline, rest on hover
-            RvuOverflowLayout.Carousel => 75,      // Single metric slot
-            _ => count * 65
+            RvuOverflowLayout.HoverPopup => 80,    // First metric inline, rest on hover
+            RvuOverflowLayout.Carousel => 85,      // Single metric slot
+            _ => count * 80
         };
     }
 
@@ -635,14 +635,14 @@ public class MainForm : Form
         {
             var raw = pipeShift?.CurrentHourRvu;
             var val = raw.HasValue ? $"~{raw.Value:F1}" : "--";
-            result.Add(($"{val} hr", "This hr:", val, carolinaBlue));
+            result.Add(($"{val} this", "This hr:", val, carolinaBlue));
         }
 
         if (metrics.HasFlag(RvuMetric.EstimatedTotal))
         {
             var raw = pipeShift?.EstimatedTotalRvu;
             var val = raw.HasValue ? $"~{raw.Value:F0}" : "--";
-            result.Add(($"{val} est", "Total:", val, carolinaBlue));
+            result.Add(($"{val} total", "Total:", val, carolinaBlue));
         }
 
         return result;
@@ -1841,12 +1841,6 @@ public class MainForm : Form
     protected override void WndProc(ref Message m)
     {
         // Legacy compat: translate old 0x04xx messages to new 0x80xx range (remove eventually)
-        if (m.Msg >= NativeWindows.WM_LEGACY_OFFSET && m.Msg <= NativeWindows.WM_LEGACY_END)
-        {
-            Logger.Trace($"WndProc: Legacy message 0x{m.Msg:X4} → 0x{m.Msg - NativeWindows.WM_LEGACY_OFFSET + 0x8001:X4}");
-            m.Msg = m.Msg - NativeWindows.WM_LEGACY_OFFSET + 0x8001;
-        }
-
         // Log custom messages in our range
         if (m.Msg >= 0x8001 && m.Msg <= 0x8011)
         {
