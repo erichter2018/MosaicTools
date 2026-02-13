@@ -141,6 +141,15 @@ public class ReportPopupForm : Form
     private Point _dragStart;
     private bool _dragging;
 
+    // Horizontal resize
+    private const int ResizeGripWidth = 6;
+    private const int MinFormWidth = 400;
+    private bool _resizingLeft;
+    private bool _resizingRight;
+    private int _resizeStartX;
+    private int _resizeStartWidth;
+    private int _resizeStartLeft;
+
     protected override CreateParams CreateParams
     {
         get
@@ -236,6 +245,8 @@ public class ReportPopupForm : Form
         this.Size = new Size(width, formHeight);
 
         this.MouseDown += OnLayeredMouseDown;
+        this.MouseMove += OnLayeredMouseMove;
+        this.MouseUp += OnLayeredMouseUp;
         this.MouseWheel += OnLayeredMouseWheel;
 
         this.Load += (s, e) =>
@@ -271,6 +282,8 @@ public class ReportPopupForm : Form
 
         _richTextBox.ContentsResized += RichTextBox_ContentsResized;
         _richTextBox.ForeColor = Color.Gainsboro;
+        if (_deletableEnabled)
+            _richTextBox.RightMargin = _richTextBox.Width - 26;
         _richTextBox.Text = _formattedText;
 
         Controls.Add(_richTextBox);
@@ -396,10 +409,11 @@ public class ReportPopupForm : Form
 
         if (contentChanged)
         {
-            // Genuine content change - force fresh correlation, don't use anti-regression
-            _previousCorrelation = null;
+            // Content changed - preserve previous correlation for anti-regression
+            // (scraping during Process Report can catch transitional states with fewer matches)
+            _previousCorrelation = _correlationResult;
             _correlationResult = null;
-            Logger.Trace($"UpdateReport: Content changed, forcing fresh correlation");
+            Logger.Trace($"UpdateReport: Content changed, forcing fresh correlation (anti-regression preserved)");
         }
         else
         {
@@ -436,6 +450,11 @@ public class ReportPopupForm : Form
             UpdateModeLabel();
             ApplyCurrentModeFormatting();
             PerformResize();
+
+            // Deferred reposition: RTB layout from ContentsResized is async,
+            // so trash icons may need repositioning after the form finishes resizing
+            if (_deletableEnabled)
+                BeginInvoke(new Action(PositionTrashIcons));
         }
 
         Logger.Trace($"ReportPopup updated: {newReportText.Length} chars, baseline={_baselineReport?.Length ?? 0} chars, mode={_displayMode}");
@@ -959,14 +978,21 @@ public class ReportPopupForm : Form
             _correlationResult ??= CorrelationService.CorrelateReversed(_formattedText, dictated, _accessionSeed);
 
             // Don't regress: if previous correlation had more matched groups, keep it
-            // (scrape noise can cause transient correlation failures)
+            // (scrape noise / transitional states during Process Report can cause transient correlation failures)
             if (_previousCorrelation != null)
             {
-                int prevMatched = _previousCorrelation.Items.Count(i => !string.IsNullOrEmpty(i.ImpressionText));
+                // Validate previous correlation still applies to current text
+                int prevMatched = 0;
+                foreach (var item in _previousCorrelation.Items)
+                {
+                    if (string.IsNullOrEmpty(item.ImpressionText)) continue;
+                    if (_formattedText.Contains(item.ImpressionText, StringComparison.Ordinal))
+                        prevMatched++;
+                }
                 int curMatched = _correlationResult.Items.Count(i => !string.IsNullOrEmpty(i.ImpressionText));
                 if (prevMatched > curMatched)
                 {
-                    Logger.Trace($"Rainbow mode: Keeping previous correlation ({prevMatched} matched > {curMatched} current)");
+                    Logger.Trace($"Rainbow mode: Keeping previous correlation ({prevMatched} valid matches > {curMatched} current)");
                     _correlationResult = _previousCorrelation;
                 }
                 _previousCorrelation = null;
@@ -983,7 +1009,7 @@ public class ReportPopupForm : Form
 
             foreach (var item in _correlationResult.Items)
             {
-                var paletteColor = CorrelationService.Palette[item.ColorIndex];
+                var paletteColor = item.HighlightColor ?? CorrelationService.Palette[item.ColorIndex];
                 var blended = CorrelationService.BlendWithBackground(paletteColor, bgColor);
                 var hlColor = Color.FromArgb(160, blended.R, blended.G, blended.B);
 
@@ -1035,7 +1061,7 @@ public class ReportPopupForm : Form
                 // Only show orphan findings (items with no impression match)
                 if (!string.IsNullOrEmpty(item.ImpressionText)) continue;
 
-                var paletteColor = CorrelationService.Palette[item.ColorIndex];
+                var paletteColor = item.HighlightColor ?? CorrelationService.Palette[item.ColorIndex];
                 var blended = CorrelationService.BlendWithBackground(paletteColor, bgColor);
                 var hlColor = Color.FromArgb(160, blended.R, blended.G, blended.B);
 
@@ -1067,6 +1093,23 @@ public class ReportPopupForm : Form
     {
         if (e.Button == MouseButtons.Left)
         {
+            // Check if on resize edge
+            if (e.X <= ResizeGripWidth)
+            {
+                _resizingLeft = true;
+                _resizeStartX = Cursor.Position.X;
+                _resizeStartWidth = Width;
+                _resizeStartLeft = Left;
+                return;
+            }
+            if (e.X >= Width - ResizeGripWidth)
+            {
+                _resizingRight = true;
+                _resizeStartX = Cursor.Position.X;
+                _resizeStartWidth = Width;
+                return;
+            }
+
             _formPosOnMouseDown = this.Location;
 
             ReleaseCapture();
@@ -1085,6 +1128,50 @@ public class ReportPopupForm : Form
         else if (e.Button == MouseButtons.Right)
         {
             Close();
+        }
+    }
+
+    private void OnLayeredMouseMove(object? sender, MouseEventArgs e)
+    {
+        if (_resizingLeft || _resizingRight)
+        {
+            int delta = Cursor.Position.X - _resizeStartX;
+            int newWidth;
+
+            if (_resizingLeft)
+            {
+                newWidth = Math.Max(MinFormWidth, _resizeStartWidth - delta);
+                int actualDelta = _resizeStartWidth - newWidth;
+                Left = _resizeStartLeft + actualDelta;
+            }
+            else
+            {
+                newWidth = Math.Max(MinFormWidth, _resizeStartWidth + delta);
+            }
+
+            Width = newWidth;
+            _totalContentHeight = MeasureContentHeight(Width);
+            var screen = Screen.FromControl(this);
+            int maxHeight = screen.WorkingArea.Height - 50;
+            Height = Math.Clamp(_totalContentHeight, 100, maxHeight);
+            RenderAndUpdate();
+            return;
+        }
+
+        // Update cursor for edge hover
+        if (e.X <= ResizeGripWidth || e.X >= Width - ResizeGripWidth)
+            Cursor = Cursors.SizeWE;
+        else
+            Cursor = Cursors.Default;
+    }
+
+    private void OnLayeredMouseUp(object? sender, MouseEventArgs e)
+    {
+        if ((_resizingLeft || _resizingRight) && e.Button == MouseButtons.Left)
+        {
+            _config.ReportPopupWidth = Width;
+            _resizingLeft = false;
+            _resizingRight = false;
         }
     }
 
@@ -1206,13 +1293,21 @@ public class ReportPopupForm : Form
             _correlationResult ??= CorrelationService.CorrelateReversed(_richTextBox.Text, dictated, _accessionSeed);
 
             // Don't regress: if previous correlation had more matched groups, keep it
+            // (scrape noise / transitional states during Process Report can cause transient correlation failures)
             if (_previousCorrelation != null)
             {
-                int prevMatched = _previousCorrelation.Items.Count(i => !string.IsNullOrEmpty(i.ImpressionText));
+                var rtbTextForValidation = _richTextBox.Text;
+                int prevMatched = 0;
+                foreach (var item in _previousCorrelation.Items)
+                {
+                    if (string.IsNullOrEmpty(item.ImpressionText)) continue;
+                    if (rtbTextForValidation.Contains(item.ImpressionText, StringComparison.Ordinal))
+                        prevMatched++;
+                }
                 int curMatched = _correlationResult.Items.Count(i => !string.IsNullOrEmpty(i.ImpressionText));
                 if (prevMatched > curMatched)
                 {
-                    Logger.Trace($"Rainbow mode: Keeping previous correlation ({prevMatched} matched > {curMatched} current)");
+                    Logger.Trace($"Rainbow mode: Keeping previous correlation ({prevMatched} valid matches > {curMatched} current)");
                     _correlationResult = _previousCorrelation;
                 }
                 _previousCorrelation = null;
@@ -1233,7 +1328,7 @@ public class ReportPopupForm : Form
 
             foreach (var item in _correlationResult.Items)
             {
-                var paletteColor = CorrelationService.Palette[item.ColorIndex];
+                var paletteColor = item.HighlightColor ?? CorrelationService.Palette[item.ColorIndex];
                 var blended = CorrelationService.BlendWithBackground(paletteColor, bg);
 
                 // Only highlight impression for matched groups (not orphans)
@@ -1300,7 +1395,7 @@ public class ReportPopupForm : Form
                 // Only show orphan findings (items with no impression match)
                 if (!string.IsNullOrEmpty(item.ImpressionText)) continue;
 
-                var paletteColor = CorrelationService.Palette[item.ColorIndex];
+                var paletteColor = item.HighlightColor ?? CorrelationService.Palette[item.ColorIndex];
                 var blended = CorrelationService.BlendWithBackground(paletteColor, bg);
 
                 foreach (var finding in item.MatchedFindings)
@@ -1532,6 +1627,24 @@ public class ReportPopupForm : Form
         {
             if (e.Button == MouseButtons.Left)
             {
+                // Check resize edges (form-level coordinates)
+                int formX = (control == this) ? e.X : e.X + control.Left;
+                if (formX <= ResizeGripWidth)
+                {
+                    _resizingLeft = true;
+                    _resizeStartX = Cursor.Position.X;
+                    _resizeStartWidth = Width;
+                    _resizeStartLeft = Left;
+                    return;
+                }
+                if (formX >= Width - ResizeGripWidth)
+                {
+                    _resizingRight = true;
+                    _resizeStartX = Cursor.Position.X;
+                    _resizeStartWidth = Width;
+                    return;
+                }
+
                 formPosOnMouseDown = this.Location;
 
                 _dragStart = new Point(e.X, e.Y);
@@ -1558,6 +1671,37 @@ public class ReportPopupForm : Form
 
         control.MouseMove += (s, e) =>
         {
+            if (_resizingLeft || _resizingRight)
+            {
+                int delta = Cursor.Position.X - _resizeStartX;
+                int newWidth;
+
+                if (_resizingLeft)
+                {
+                    newWidth = Math.Max(MinFormWidth, _resizeStartWidth - delta);
+                    int actualDelta = _resizeStartWidth - newWidth;
+                    Left = _resizeStartLeft + actualDelta;
+                }
+                else
+                {
+                    newWidth = Math.Max(MinFormWidth, _resizeStartWidth + delta);
+                }
+
+                if (newWidth != Width)
+                {
+                    Width = newWidth;
+                    if (_richTextBox != null)
+                    {
+                        int padding = 20;
+                        _richTextBox.Width = Width - (padding * 2);
+                        if (_deletableEnabled)
+                            _richTextBox.RightMargin = _richTextBox.Width - 26;
+                    }
+                    PerformResize();
+                }
+                return;
+            }
+
             if (_dragging)
             {
                 Point currentScreenPos = Cursor.Position;
@@ -1566,10 +1710,26 @@ public class ReportPopupForm : Form
                     currentScreenPos.Y - _dragStart.Y
                 );
             }
+            else
+            {
+                // Update cursor for edge hover
+                int formX = (control == this) ? e.X : e.X + control.Left;
+                if (formX <= ResizeGripWidth || formX >= Width - ResizeGripWidth)
+                    control.Cursor = Cursors.SizeWE;
+                else
+                    control.Cursor = Cursors.Hand;
+            }
         };
 
         control.MouseUp += (s, e) =>
         {
+            if ((_resizingLeft || _resizingRight) && e.Button == MouseButtons.Left)
+            {
+                _config.ReportPopupWidth = Width;
+                _resizingLeft = false;
+                _resizingRight = false;
+                return;
+            }
             if (_dragging && e.Button == MouseButtons.Left)
             {
                 if (this.Location == formPosOnMouseDown)
@@ -1660,7 +1820,7 @@ public class ReportPopupForm : Form
 
             _trashIcons[i].Tag = i;
             _trashIcons[i].Location = new Point(formX, formY);
-            _trashIcons[i].Visible = (formY >= _richTextBox.Top && formY < _richTextBox.Bottom - 10);
+            _trashIcons[i].Visible = (formY >= _richTextBox.Top && formY + 10 < _richTextBox.Bottom);
         }
     }
 

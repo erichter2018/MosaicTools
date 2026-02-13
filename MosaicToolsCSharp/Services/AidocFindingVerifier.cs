@@ -64,24 +64,33 @@ public static class AidocFindingVerifier
         // Extract only FINDINGS and IMPRESSION sections
         var relevantText = ExtractFindingsAndImpression(cleaned);
         if (string.IsNullOrWhiteSpace(relevantText))
-            relevantText = cleaned; // Fallback to full text if no sections found
+        {
+            // No FINDINGS/IMPRESSION sections found — this is not a valid report to verify against
+            // (likely a transcript or partial scrape). Mark all findings as not addressed.
+            Logger.Trace($"AidocVerifier: No FINDINGS/IMPRESSION sections found, skipping verification ({cleaned.Length} chars)");
+            foreach (var ft in findingTypes)
+                results.Add(new FindingVerification(ft, false));
+            return results;
+        }
 
         foreach (var findingType in findingTypes)
         {
             if (FindingTerms.TryGetValue(findingType, out var terms))
             {
                 bool addressed = false;
+                string? matchedTerm = null;
                 foreach (var term in terms)
                 {
                     if (IsTermPositivelyMentioned(relevantText, term))
                     {
                         addressed = true;
+                        matchedTerm = term;
                         break;
                     }
                 }
                 results.Add(new FindingVerification(findingType, addressed));
                 if (addressed)
-                    Logger.Trace($"AidocVerifier: '{findingType}' addressed (term match in report)");
+                    Logger.Trace($"AidocVerifier: '{findingType}' addressed (matched term '{matchedTerm}' in report)");
             }
             else
             {

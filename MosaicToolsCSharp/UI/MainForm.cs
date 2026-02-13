@@ -1372,6 +1372,19 @@ public class MainForm : Form
         }
     }
     
+    /// <summary>
+    /// Re-creates the indicator window if it was hidden but should be visible
+    /// (e.g., user is dictating but scrape timer failed to detect study open).
+    /// </summary>
+    public void EnsureIndicatorVisible()
+    {
+        if (_indicatorWindow == null || _indicatorWindow.IsDisposed)
+        {
+            _indicatorWindow = new IndicatorForm(_config);
+            _indicatorWindow.Show();
+        }
+    }
+
     public void UpdateIndicatorState(bool isRecording)
     {
         _indicatorWindow?.SetState(isRecording);

@@ -491,14 +491,23 @@ public class RadAiOverlayForm : Form
             return;
         }
 
-        // Only allow drag when not linked to another form
-        if (e.Button == MouseButtons.Left && _linkedForm == null)
+        if (e.Button == MouseButtons.Left)
         {
+            // When linked, left-click dismisses (no drag allowed)
+            if (_linkedForm != null)
+            {
+                Close();
+                return;
+            }
+
+            // When unlinked, allow drag; close if user didn't drag
             _formPosOnMouseDown = this.Location;
             ReleaseCapture();
             SendMessage(this.Handle, WM_NCLBUTTONDOWN, HT_CAPTION, 0);
 
-            if (this.Location != _formPosOnMouseDown)
+            if (this.Location == _formPosOnMouseDown)
+                Close();
+            else
                 RenderAndUpdate();
         }
     }
@@ -588,6 +597,7 @@ public class RadAiOverlayForm : Form
     private void SetupOpaqueInteractions(Control control)
     {
         Point dragStart = Point.Empty;
+        Point formPosOnMouseDown = Point.Empty;
         bool dragging = false;
 
         control.MouseDown += (s, e) =>
@@ -598,13 +608,26 @@ public class RadAiOverlayForm : Form
                 return;
             }
 
-            if (e.Button == MouseButtons.Left && _linkedForm == null)
+            if (e.Button == MouseButtons.Left)
             {
+                // When linked, left-click dismisses (no drag allowed)
+                if (_linkedForm != null)
+                {
+                    Close();
+                    return;
+                }
+
+                formPosOnMouseDown = this.Location;
+
                 if (control != this)
                 {
                     ReleaseCapture();
                     SendMessage(this.Handle, WM_NCLBUTTONDOWN, HT_CAPTION, 0);
                     dragging = false;
+
+                    // Close if user didn't drag
+                    if (this.Location == formPosOnMouseDown)
+                        Close();
                 }
                 else
                 {
@@ -627,6 +650,12 @@ public class RadAiOverlayForm : Form
 
         control.MouseUp += (s, e) =>
         {
+            if (dragging && e.Button == MouseButtons.Left)
+            {
+                // Close if user didn't drag
+                if (this.Location == formPosOnMouseDown)
+                    Close();
+            }
             dragging = false;
         };
     }

@@ -18,6 +18,11 @@ public class CriticalStudiesPopup : Form
     private readonly ListBox _listBox;
     private bool _allowDeactivateClose = false;
     private int _hoveredIndex = -1;
+    private bool _hoveringDelete = false;  // true when mouse is over the X button area
+
+    // Delete button hit area: 24x24 in top-right of each row
+    private const int DeleteBtnSize = 24;
+    private const int DeleteBtnMargin = 4;
 
     public CriticalStudiesPopup(IReadOnlyList<CriticalStudyEntry> studies, Point location, AutomationService? automationService = null, Action<CriticalStudyEntry>? onRemoveStudy = null)
     {
@@ -110,37 +115,10 @@ public class CriticalStudiesPopup : Form
         };
         _listBox.DrawItem += ListBox_DrawItem;
         _listBox.MouseMove += ListBox_MouseMove;
-        _listBox.MouseLeave += (s, e) => { _hoveredIndex = -1; _listBox.Invalidate(); };
+        _listBox.MouseLeave += (s, e) => { _hoveredIndex = -1; _hoveringDelete = false; _listBox.Invalidate(); };
+        _listBox.MouseClick += ListBox_MouseClick;
         _listBox.DoubleClick += ListBox_DoubleClick;
         _listBox.Cursor = Cursors.Hand;
-
-        // Right-click context menu for removing entries
-        if (onRemoveStudy != null)
-        {
-            _listBox.MouseDown += (s, e) =>
-            {
-                if (e.Button == MouseButtons.Right)
-                {
-                    var index = _listBox.IndexFromPoint(e.Location);
-                    if (index >= 0 && index < _listBox.Items.Count && _listBox.Items[index] is CriticalStudyEntry)
-                    {
-                        _listBox.SelectedIndex = index;
-                        // Suspend deactivate-close while context menu is open,
-                        // otherwise the popup closes when the menu steals focus
-                        _allowDeactivateClose = false;
-                        var menu = new ContextMenuStrip();
-                        var removeItem = menu.Items.Add("Remove");
-                        removeItem.Click += (ms, me) => RemoveSelectedEntry();
-                        menu.Closed += (ms, me) =>
-                        {
-                            _allowDeactivateClose = true;
-                            menu.Dispose();
-                        };
-                        menu.Show(_listBox, e.Location);
-                    }
-                }
-            };
-        }
 
         // Populate list
         if (studies.Count == 0)
@@ -205,6 +183,18 @@ public class CriticalStudiesPopup : Form
         };
     }
 
+    /// <summary>
+    /// Returns the delete-button rectangle for a given item bounds.
+    /// </summary>
+    private Rectangle GetDeleteButtonRect(Rectangle itemBounds)
+    {
+        return new Rectangle(
+            itemBounds.Right - DeleteBtnSize - DeleteBtnMargin,
+            itemBounds.Y + (itemBounds.Height - DeleteBtnSize) / 2,
+            DeleteBtnSize,
+            DeleteBtnSize);
+    }
+
     private void ListBox_DrawItem(object? sender, DrawItemEventArgs e)
     {
         if (e.Index < 0 || e.Index >= _listBox.Items.Count) return;
@@ -229,11 +219,12 @@ public class CriticalStudiesPopup : Form
             using var nameFont = new Font("Segoe UI", 9, FontStyle.Bold);
             e.Graphics.DrawString(nameText, nameFont, nameBrush, e.Bounds.X + 10, e.Bounds.Y + 5);
 
-            // Site code on right side of line 1
+            // Site code on right side of line 1 (shift left if delete button visible)
+            var rightMargin = _onRemoveStudy != null ? DeleteBtnSize + DeleteBtnMargin + 4 : 10;
             using var siteBrush = new SolidBrush(Color.FromArgb(100, 180, 255)); // Light blue
             using var siteFont = new Font("Segoe UI", 8);
             var siteSize = e.Graphics.MeasureString(siteText, siteFont);
-            e.Graphics.DrawString(siteText, siteFont, siteBrush, e.Bounds.Right - siteSize.Width - 10, e.Bounds.Y + 6);
+            e.Graphics.DrawString(siteText, siteFont, siteBrush, e.Bounds.Right - siteSize.Width - rightMargin, e.Bounds.Y + 6);
 
             // Line 2: Description + Time
             var descText = TruncateDescription(entry.Description, 25);
@@ -246,7 +237,22 @@ public class CriticalStudiesPopup : Form
             // Time on right side of line 2
             using var timeBrush = new SolidBrush(Color.FromArgb(150, 150, 150));
             var timeSize = e.Graphics.MeasureString(timeText, descFont);
-            e.Graphics.DrawString(timeText, descFont, timeBrush, e.Bounds.Right - timeSize.Width - 10, e.Bounds.Y + 26);
+            e.Graphics.DrawString(timeText, descFont, timeBrush, e.Bounds.Right - timeSize.Width - rightMargin, e.Bounds.Y + 26);
+
+            // Delete (X) button — shown on hovered rows
+            if (_onRemoveStudy != null && isHovered)
+            {
+                var btnRect = GetDeleteButtonRect(e.Bounds);
+                var btnColor = _hoveringDelete
+                    ? Color.FromArgb(255, 80, 80)   // Red when hovering the X
+                    : Color.FromArgb(120, 120, 120); // Gray otherwise
+                using var xFont = new Font("Segoe UI", 9, FontStyle.Bold);
+                using var xBrush = new SolidBrush(btnColor);
+                var xSize = e.Graphics.MeasureString("X", xFont);
+                e.Graphics.DrawString("X", xFont, xBrush,
+                    btnRect.X + (btnRect.Width - xSize.Width) / 2,
+                    btnRect.Y + (btnRect.Height - xSize.Height) / 2);
+            }
 
             // Separator line
             if (e.Index < _listBox.Items.Count - 1)
@@ -267,10 +273,42 @@ public class CriticalStudiesPopup : Form
     private void ListBox_MouseMove(object? sender, MouseEventArgs e)
     {
         var index = _listBox.IndexFromPoint(e.Location);
-        if (index != _hoveredIndex)
+        var wasHoveringDelete = _hoveringDelete;
+
+        // Check if mouse is over the delete button area
+        if (_onRemoveStudy != null && index >= 0 && index < _listBox.Items.Count && _listBox.Items[index] is CriticalStudyEntry)
+        {
+            var itemRect = _listBox.GetItemRectangle(index);
+            var btnRect = GetDeleteButtonRect(itemRect);
+            _hoveringDelete = btnRect.Contains(e.Location);
+        }
+        else
+        {
+            _hoveringDelete = false;
+        }
+
+        if (index != _hoveredIndex || wasHoveringDelete != _hoveringDelete)
         {
             _hoveredIndex = index;
             _listBox.Invalidate();
+            _listBox.Cursor = _hoveringDelete ? Cursors.Hand : Cursors.Default;
+        }
+    }
+
+    private void ListBox_MouseClick(object? sender, MouseEventArgs e)
+    {
+        if (_onRemoveStudy == null || e.Button != MouseButtons.Left) return;
+
+        var index = _listBox.IndexFromPoint(e.Location);
+        if (index < 0 || index >= _listBox.Items.Count) return;
+        if (_listBox.Items[index] is not CriticalStudyEntry) return;
+
+        var itemRect = _listBox.GetItemRectangle(index);
+        var btnRect = GetDeleteButtonRect(itemRect);
+        if (btnRect.Contains(e.Location))
+        {
+            _listBox.SelectedIndex = index;
+            RemoveSelectedEntry();
         }
     }
 
@@ -324,6 +362,11 @@ public class CriticalStudiesPopup : Form
         if (keyData == Keys.Escape)
         {
             Close();
+            return true;
+        }
+        if (keyData == Keys.Delete && _onRemoveStudy != null)
+        {
+            RemoveSelectedEntry();
             return true;
         }
         return base.ProcessCmdKey(ref msg, keyData);

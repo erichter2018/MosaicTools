@@ -1,3 +1,10 @@
+3.6.4
+- Fix RecoMD paste: recommendations now insert inside IMPRESSION section reliably
+- Win32 clipboard API for reading Chromium clipboard (fixes empty reads from RecoMD)
+- RecoMD send throttle: report text sent every 3rd tick instead of every tick
+- Version rollback feature
+- Remove dead code cleanup
+
 3.6.3
 - Fix keyboard lag and hotkeys dying: hook reinstall now on UI thread (was ThreadPool — no message pump)
 - Smarter hook health: uses GetLastInputInfo to detect dead hook vs idle user, checks every 15s

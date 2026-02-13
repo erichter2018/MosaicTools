@@ -15,6 +15,7 @@ public class CorrelationItem
     public string ImpressionText { get; set; } = "";
     public List<string> MatchedFindings { get; set; } = new();
     public int ColorIndex { get; set; }
+    public Color? HighlightColor { get; set; }
 }
 
 /// <summary>
@@ -27,13 +28,25 @@ public class CorrelationResult
 }
 
 /// <summary>
+/// Body-part categories for stable rainbow-mode coloring.
+/// </summary>
+public enum BodyPartCategory
+{
+    Brain, OrbitsSinusesEars, FaceSkull, NeckThroat, Thyroid, LymphNodes,
+    Vascular, Heart, Mediastinum, LungsPleura, Airway,
+    LiverBiliary, Spleen, Pancreas, KidneysAdrenals, GIBowel,
+    PelvisReproductive, Peritoneum, SpineDiscs, BonesJoints, SoftTissues,
+    LinesTubes, Other
+}
+
+/// <summary>
 /// Heuristic-based correlation between FINDINGS and IMPRESSION sections of a radiology report.
 /// Extracts canonical medical terms and matches impression items to their supporting findings.
 /// </summary>
 public static class CorrelationService
 {
     /// <summary>
-    /// Color palette for correlation highlighting (8 muted pastels).
+    /// Color palette for correlation highlighting (legacy fallback).
     /// </summary>
     public static readonly Color[] Palette = new[]
     {
@@ -45,6 +58,485 @@ public static class CorrelationService
         Color.FromArgb(75, 0, 180),     // Indigo
         Color.FromArgb(180, 0, 255),    // Violet
     };
+
+    /// <summary>
+    /// Semantically chosen color for each body-part category.
+    /// </summary>
+    public static readonly Dictionary<BodyPartCategory, Color> CategoryColors = new()
+    {
+        { BodyPartCategory.Brain,              Color.FromArgb(180, 130, 255) }, // Purple
+        { BodyPartCategory.OrbitsSinusesEars,   Color.FromArgb(200, 160, 255) }, // Light purple
+        { BodyPartCategory.FaceSkull,           Color.FromArgb(170, 170, 220) }, // Slate blue
+        { BodyPartCategory.NeckThroat,          Color.FromArgb(0, 200, 200) },   // Teal
+        { BodyPartCategory.Thyroid,             Color.FromArgb(0, 180, 180) },   // Dark teal
+        { BodyPartCategory.LymphNodes,          Color.FromArgb(180, 220, 100) }, // Yellow-green
+        { BodyPartCategory.Vascular,            Color.FromArgb(255, 80, 80) },   // Bright red
+        { BodyPartCategory.Heart,               Color.FromArgb(255, 50, 50) },   // Red
+        { BodyPartCategory.Mediastinum,         Color.FromArgb(255, 140, 100) }, // Salmon
+        { BodyPartCategory.LungsPleura,         Color.FromArgb(80, 160, 255) },  // Blue
+        { BodyPartCategory.Airway,              Color.FromArgb(100, 200, 255) }, // Light blue
+        { BodyPartCategory.LiverBiliary,        Color.FromArgb(180, 120, 60) },  // Brown
+        { BodyPartCategory.Spleen,              Color.FromArgb(200, 80, 150) },  // Magenta-pink
+        { BodyPartCategory.Pancreas,            Color.FromArgb(220, 180, 80) },  // Gold
+        { BodyPartCategory.KidneysAdrenals,     Color.FromArgb(255, 180, 0) },   // Orange
+        { BodyPartCategory.GIBowel,             Color.FromArgb(200, 200, 100) }, // Yellow-olive
+        { BodyPartCategory.PelvisReproductive,  Color.FromArgb(255, 130, 180) }, // Pink
+        { BodyPartCategory.Peritoneum,          Color.FromArgb(160, 180, 140) }, // Sage green
+        { BodyPartCategory.SpineDiscs,          Color.FromArgb(100, 220, 100) }, // Green
+        { BodyPartCategory.BonesJoints,         Color.FromArgb(200, 200, 200) }, // Light gray
+        { BodyPartCategory.SoftTissues,         Color.FromArgb(180, 160, 140) }, // Tan
+        { BodyPartCategory.LinesTubes,          Color.FromArgb(255, 255, 100) }, // Bright yellow
+        { BodyPartCategory.Other,               Color.FromArgb(150, 150, 180) }, // Muted blue-gray
+    };
+
+    /// <summary>
+    /// Maps ALL-CAPS subsection headers to body-part categories.
+    /// </summary>
+    private static readonly Dictionary<string, BodyPartCategory> HeaderToCategory =
+        new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Brain
+        { "BRAIN", BodyPartCategory.Brain },
+        { "BRAIN AND VENTRICLES", BodyPartCategory.Brain },
+        { "BRAIN, ORBITS AND SINUSES", BodyPartCategory.Brain },
+        { "CTA HEAD", BodyPartCategory.Brain },
+
+        // Orbits, Sinuses, Ears
+        { "ORBITS", BodyPartCategory.OrbitsSinusesEars },
+        { "SINUSES", BodyPartCategory.OrbitsSinusesEars },
+        { "SINUSES AND MASTOIDS", BodyPartCategory.OrbitsSinusesEars },
+        { "MASTOID AIR CELLS", BodyPartCategory.OrbitsSinusesEars },
+        { "EXTERNAL AUDITORY CANAL", BodyPartCategory.OrbitsSinusesEars },
+        { "INNER EAR", BodyPartCategory.OrbitsSinusesEars },
+        { "INTERNAL AUDITORY CANAL", BodyPartCategory.OrbitsSinusesEars },
+        { "MIDDLE EAR CAVITY", BodyPartCategory.OrbitsSinusesEars },
+        { "SALIVARY GLANDS", BodyPartCategory.OrbitsSinusesEars },
+
+        // Face/Skull
+        { "FACIAL BONES", BodyPartCategory.FaceSkull },
+        { "SOFT TISSUES AND SKULL", BodyPartCategory.FaceSkull },
+
+        // Neck/Throat
+        { "AERODIGESTIVE TRACT", BodyPartCategory.NeckThroat },
+        { "EPIGLOTTIS", BodyPartCategory.NeckThroat },
+        { "CTA NECK", BodyPartCategory.NeckThroat },
+
+        // Thyroid
+        { "THYROID", BodyPartCategory.Thyroid },
+
+        // Lymph Nodes
+        { "LYMPH NODES", BodyPartCategory.LymphNodes },
+        { "ABDOMINAL AND PELVIS LYMPH NODES", BodyPartCategory.LymphNodes },
+        { "MEDIASTINUM AND LYMPH NODES", BodyPartCategory.LymphNodes },
+
+        // Vascular
+        { "AORTA", BodyPartCategory.Vascular },
+        { "AORTIC ARCH AND ARCH VESSELS", BodyPartCategory.Vascular },
+        { "CERVICAL CAROTID ARTERIES", BodyPartCategory.Vascular },
+        { "CERVICAL VERTEBRAL ARTERIES", BodyPartCategory.Vascular },
+        { "INTERNAL CAROTID ARTERIES", BodyPartCategory.Vascular },
+        { "VERTEBRAL ARTERIES", BodyPartCategory.Vascular },
+        { "ANTERIOR CEREBRAL ARTERIES", BodyPartCategory.Vascular },
+        { "MIDDLE CEREBRAL ARTERIES", BodyPartCategory.Vascular },
+        { "POSTERIOR CEREBRAL ARTERIES", BodyPartCategory.Vascular },
+        { "ANTERIOR CIRCULATION", BodyPartCategory.Vascular },
+        { "POSTERIOR CIRCULATION", BodyPartCategory.Vascular },
+        { "BASILAR ARTERY", BodyPartCategory.Vascular },
+        { "CELIAC TRUNK", BodyPartCategory.Vascular },
+        { "SUPERIOR MESENTERIC ARTERY", BodyPartCategory.Vascular },
+        { "INFERIOR MESENTERIC ARTERY", BodyPartCategory.Vascular },
+        { "RENAL ARTERIES", BodyPartCategory.Vascular },
+        { "ILIAC ARTERIES", BodyPartCategory.Vascular },
+        { "LEFT ILIAC ARTERIES", BodyPartCategory.Vascular },
+        { "RIGHT ILIAC ARTERIES", BodyPartCategory.Vascular },
+        { "LEFT FEMORAL ARTERIES", BodyPartCategory.Vascular },
+        { "RIGHT FEMORAL ARTERIES", BodyPartCategory.Vascular },
+        { "RIGHT FEMORAL SRTERIES", BodyPartCategory.Vascular }, // typo in templates
+        { "LEFT POPLITEAL ARTERY", BodyPartCategory.Vascular },
+        { "RIGHT POPLITEAL ARTERY", BodyPartCategory.Vascular },
+        { "LEFT CALF ARTERIES", BodyPartCategory.Vascular },
+        { "RIGHT CALF ARTERIES", BodyPartCategory.Vascular },
+        { "GREAT VESSELS OF AORTIC ARCH", BodyPartCategory.Vascular },
+        { "PULMONARY ARTERIES", BodyPartCategory.Vascular },
+        { "VASCULAR", BodyPartCategory.Vascular },
+        { "VASCULATURE", BodyPartCategory.Vascular },
+        { "VASULATURE", BodyPartCategory.Vascular }, // typo in templates
+
+        // Heart
+        { "CARDIAC MORPHOLOGY", BodyPartCategory.Heart },
+        { "HEART AND MEDIASTINUM", BodyPartCategory.Heart },
+        { "HEART AND PERICARDIUM", BodyPartCategory.Heart },
+        { "RATE OF CARDIAC ACTIVITY", BodyPartCategory.Heart },
+
+        // Mediastinum
+        { "MEDIASTINUM", BodyPartCategory.Mediastinum },
+        { "EXTRACARDIAC FINDINGS", BodyPartCategory.Mediastinum },
+
+        // Lungs/Pleura
+        { "LUNGS AND PLEURA", BodyPartCategory.LungsPleura },
+        { "LUNGS AND MEDIASTINUM", BodyPartCategory.LungsPleura },
+        { "CHEST", BodyPartCategory.LungsPleura },
+        { "LOWER CHEST", BodyPartCategory.LungsPleura },
+        { "LUNG BASE", BodyPartCategory.LungsPleura },
+
+        // Liver/Biliary
+        { "LIVER", BodyPartCategory.LiverBiliary },
+        { "GALLBLADDER AND BILE DUCTS", BodyPartCategory.LiverBiliary },
+        { "GALLBLADDER AND BILIARY SYSTEM", BodyPartCategory.LiverBiliary },
+        { "HEPATOBILIARY", BodyPartCategory.LiverBiliary },
+
+        // Spleen
+        { "SPLEEN", BodyPartCategory.Spleen },
+
+        // Pancreas
+        { "PANCREAS", BodyPartCategory.Pancreas },
+        { "PANCREAS/PANCREATIC DUCT", BodyPartCategory.Pancreas },
+
+        // Kidneys/Adrenals
+        { "KIDNEYS", BodyPartCategory.KidneysAdrenals },
+        { "KIDNEYS, URETERS AND BLADDER", BodyPartCategory.KidneysAdrenals },
+        { "ADRENAL GLANDS", BodyPartCategory.KidneysAdrenals },
+
+        // GI/Bowel
+        { "BOWEL", BodyPartCategory.GIBowel },
+        { "GI AND BOWEL", BodyPartCategory.GIBowel },
+        { "UPPER ABDOMEN", BodyPartCategory.GIBowel },
+        { "ABDOMEN AND PELVIS", BodyPartCategory.GIBowel },
+
+        // Pelvis/Reproductive
+        { "REPRODUCTIVE", BodyPartCategory.PelvisReproductive },
+        { "REPRODUCTIVE ORGANS", BodyPartCategory.PelvisReproductive },
+        { "UTERUS", BodyPartCategory.PelvisReproductive },
+        { "LEFT OVARY", BodyPartCategory.PelvisReproductive },
+        { "RIGHT OVARY", BodyPartCategory.PelvisReproductive },
+        { "INTRAPELVIC CONTENTS", BodyPartCategory.PelvisReproductive },
+        { "GESTATIONAL SAC(S)", BodyPartCategory.PelvisReproductive },
+        { "CROWN RUMP LENGTH", BodyPartCategory.PelvisReproductive },
+        { "ESTIMATED DUE DATE", BodyPartCategory.PelvisReproductive },
+        { "ESTIMATED GESTATIONAL AGE BY CURRENT ULTRASOUND", BodyPartCategory.PelvisReproductive },
+        { "ESTIMATED GESTATIONAL AGE BY LMP/PRIOR ULTRASOUND", BodyPartCategory.PelvisReproductive },
+        { "YOLK SAC", BodyPartCategory.PelvisReproductive },
+
+        // Peritoneum
+        { "PERITONEUM", BodyPartCategory.Peritoneum },
+        { "PERITONEUM AND RETROPERITONEUM", BodyPartCategory.Peritoneum },
+        { "PERITONEUM AND RETRPERITONEUM", BodyPartCategory.Peritoneum }, // typo
+        { "FREE FLUID", BodyPartCategory.Peritoneum },
+        { "ABDOMINAL WALL", BodyPartCategory.Peritoneum },
+
+        // Spine/Discs
+        { "LUMBAR SPINE", BodyPartCategory.SpineDiscs },
+        { "THORACIC SPINE", BodyPartCategory.SpineDiscs },
+        { "BONES AND ALIGNMENT", BodyPartCategory.SpineDiscs },
+        { "DEGENERATIVE CHANGES", BodyPartCategory.SpineDiscs },
+        { "DISC SPACES", BodyPartCategory.SpineDiscs },
+        { "DISCS AND DEGENERATIVE CHANGES", BodyPartCategory.SpineDiscs },
+
+        // Bones/Joints
+        { "BONES", BodyPartCategory.BonesJoints },
+        { "BONES AND JOINTS", BodyPartCategory.BonesJoints },
+        { "BONE MARROW", BodyPartCategory.BonesJoints },
+        { "JOINT SPACES", BodyPartCategory.BonesJoints },
+        { "JOINTS", BodyPartCategory.BonesJoints },
+        { "ABDOMINAL BONES AND SOFT TISSUES", BodyPartCategory.BonesJoints },
+        { "THORACIC BONES AND SOFT TISSUES", BodyPartCategory.BonesJoints },
+
+        // Soft Tissues
+        { "SOFT TISSUES", BodyPartCategory.SoftTissues },
+        { "SOFT TISSUES AND BONES", BodyPartCategory.SoftTissues },
+        { "SOFT TISSUES/BONES", BodyPartCategory.SoftTissues },
+        { "ACHILLES TENDON", BodyPartCategory.SoftTissues },
+        { "ANTERIOR TENDONS", BodyPartCategory.SoftTissues },
+        { "LATERAL TENDONS", BodyPartCategory.SoftTissues },
+        { "MEDIAL TENDONS", BodyPartCategory.SoftTissues },
+        { "DELTOID LIGAMENT COMPLEX", BodyPartCategory.SoftTissues },
+        { "LATERAL COLLATERAL LIGAMENT COMPLEX", BodyPartCategory.SoftTissues },
+        { "SYNDESMOTIC LIGAMENTS", BodyPartCategory.SoftTissues },
+        { "SINUS TARSI AND SPRING LIGAMENT", BodyPartCategory.SoftTissues },
+        { "TARSAL TUNNEL", BodyPartCategory.SoftTissues },
+        { "PLANTAR FASCIA", BodyPartCategory.SoftTissues },
+
+        // Lines/Tubes
+        { "LINES, TUBES AND DEVICES", BodyPartCategory.LinesTubes },
+
+        // Other
+        { "OTHER", BodyPartCategory.Other },
+        { "MISCELLANEOUS", BodyPartCategory.Other },
+        { "EXAM QUALITY", BodyPartCategory.Other },
+    };
+
+    /// <summary>
+    /// Keyword-based fallback for headers not in the explicit mapping.
+    /// Checked in order; first match wins.
+    /// </summary>
+    private static readonly (string Keyword, BodyPartCategory Category)[] CategoryKeywords =
+    {
+        ("brain", BodyPartCategory.Brain),
+        ("orbit", BodyPartCategory.OrbitsSinusesEars),
+        ("sinus", BodyPartCategory.OrbitsSinusesEars),
+        ("ear", BodyPartCategory.OrbitsSinusesEars),
+        ("mastoid", BodyPartCategory.OrbitsSinusesEars),
+        ("face", BodyPartCategory.FaceSkull),
+        ("skull", BodyPartCategory.FaceSkull),
+        ("neck", BodyPartCategory.NeckThroat),
+        ("throat", BodyPartCategory.NeckThroat),
+        ("thyroid", BodyPartCategory.Thyroid),
+        ("lymph", BodyPartCategory.LymphNodes),
+        ("arter", BodyPartCategory.Vascular),
+        ("aort", BodyPartCategory.Vascular),
+        ("vascular", BodyPartCategory.Vascular),
+        ("vessel", BodyPartCategory.Vascular),
+        ("cardiac", BodyPartCategory.Heart),
+        ("heart", BodyPartCategory.Heart),
+        ("pericardi", BodyPartCategory.Heart),
+        ("mediastin", BodyPartCategory.Mediastinum),
+        ("lung", BodyPartCategory.LungsPleura),
+        ("pleura", BodyPartCategory.LungsPleura),
+        ("chest", BodyPartCategory.LungsPleura),
+        ("airway", BodyPartCategory.Airway),
+        ("liver", BodyPartCategory.LiverBiliary),
+        ("hepat", BodyPartCategory.LiverBiliary),
+        ("gallbladder", BodyPartCategory.LiverBiliary),
+        ("biliary", BodyPartCategory.LiverBiliary),
+        ("spleen", BodyPartCategory.Spleen),
+        ("pancrea", BodyPartCategory.Pancreas),
+        ("kidney", BodyPartCategory.KidneysAdrenals),
+        ("renal", BodyPartCategory.KidneysAdrenals),
+        ("adrenal", BodyPartCategory.KidneysAdrenals),
+        ("bowel", BodyPartCategory.GIBowel),
+        ("abdomen", BodyPartCategory.GIBowel),
+        ("pelvi", BodyPartCategory.PelvisReproductive),
+        ("uterus", BodyPartCategory.PelvisReproductive),
+        ("ovary", BodyPartCategory.PelvisReproductive),
+        ("reproduct", BodyPartCategory.PelvisReproductive),
+        ("peritoneum", BodyPartCategory.Peritoneum),
+        ("retroperiton", BodyPartCategory.Peritoneum),
+        ("spine", BodyPartCategory.SpineDiscs),
+        ("disc", BodyPartCategory.SpineDiscs),
+        ("disk", BodyPartCategory.SpineDiscs),
+        ("degen", BodyPartCategory.SpineDiscs),
+        ("bone", BodyPartCategory.BonesJoints),
+        ("joint", BodyPartCategory.BonesJoints),
+        ("soft tissue", BodyPartCategory.SoftTissues),
+        ("tendon", BodyPartCategory.SoftTissues),
+        ("ligament", BodyPartCategory.SoftTissues),
+        ("line", BodyPartCategory.LinesTubes),
+        ("tube", BodyPartCategory.LinesTubes),
+        ("device", BodyPartCategory.LinesTubes),
+    };
+
+    /// <summary>
+    /// Look up the body-part category for a subsection header.
+    /// </summary>
+    internal static BodyPartCategory GetCategoryForHeader(string? header)
+    {
+        if (string.IsNullOrWhiteSpace(header))
+            return BodyPartCategory.Other;
+
+        if (HeaderToCategory.TryGetValue(header.Trim(), out var cat))
+            return cat;
+
+        // Keyword fallback
+        var lower = header.ToLowerInvariant();
+        foreach (var (keyword, category) in CategoryKeywords)
+        {
+            if (lower.Contains(keyword))
+                return category;
+        }
+
+        return BodyPartCategory.Other;
+    }
+
+    /// <summary>
+    /// Get the stable color for a body-part category.
+    /// </summary>
+    internal static Color GetColorForCategory(BodyPartCategory category)
+    {
+        return CategoryColors.TryGetValue(category, out var color)
+            ? color
+            : CategoryColors[BodyPartCategory.Other];
+    }
+
+    /// <summary>
+    /// Content-level keywords that map to a specific body-part category.
+    /// Used to refine broad header categories (e.g., "MEDIASTINUM" containing heart findings).
+    /// Checked in order; first match wins.
+    /// </summary>
+    private static readonly (string Keyword, BodyPartCategory Category)[] ContentKeywords =
+    {
+        ("heart", BodyPartCategory.Heart),
+        ("pericardial", BodyPartCategory.Heart),
+        ("pericardium", BodyPartCategory.Heart),
+        ("cardiac", BodyPartCategory.Heart),
+        ("cardiomegaly", BodyPartCategory.Heart),
+        ("myocardial", BodyPartCategory.Heart),
+        ("atrial", BodyPartCategory.Heart),
+        ("ventricular", BodyPartCategory.Heart),
+        ("valve", BodyPartCategory.Heart),
+        ("pulmonary embol", BodyPartCategory.Vascular),
+        ("aorta", BodyPartCategory.Vascular),
+        ("aortic", BodyPartCategory.Vascular),
+        ("aneurysm", BodyPartCategory.Vascular),
+        ("liver", BodyPartCategory.LiverBiliary),
+        ("hepatic", BodyPartCategory.LiverBiliary),
+        ("gallbladder", BodyPartCategory.LiverBiliary),
+        ("biliary", BodyPartCategory.LiverBiliary),
+        ("spleen", BodyPartCategory.Spleen),
+        ("splenic", BodyPartCategory.Spleen),
+        ("pancrea", BodyPartCategory.Pancreas),
+        ("kidney", BodyPartCategory.KidneysAdrenals),
+        ("renal", BodyPartCategory.KidneysAdrenals),
+        ("adrenal", BodyPartCategory.KidneysAdrenals),
+        ("pleural", BodyPartCategory.LungsPleura),
+        ("pulmonary", BodyPartCategory.LungsPleura),
+        ("lung", BodyPartCategory.LungsPleura),
+        ("nodule", BodyPartCategory.LungsPleura),
+        ("thyroid", BodyPartCategory.Thyroid),
+        ("lymph node", BodyPartCategory.LymphNodes),
+        ("lymphadenopathy", BodyPartCategory.LymphNodes),
+        ("fracture", BodyPartCategory.BonesJoints),
+        ("osseous", BodyPartCategory.BonesJoints),
+        ("skeletal", BodyPartCategory.BonesJoints),
+        ("vertebra", BodyPartCategory.SpineDiscs),
+        ("disc", BodyPartCategory.SpineDiscs),
+        ("spine", BodyPartCategory.SpineDiscs),
+    };
+
+    /// <summary>
+    /// Refine a header-based category by scanning the actual findings content.
+    /// Only overrides when content points to a more specific category than the header.
+    /// For example, "heart is enlarged" under MEDIASTINUM → Heart instead of Mediastinum.
+    /// </summary>
+    internal static BodyPartCategory RefineCategoryFromContent(BodyPartCategory headerCategory, List<string> findings)
+    {
+        // Only refine broad/container categories — specific ones are already correct
+        if (headerCategory != BodyPartCategory.Mediastinum &&
+            headerCategory != BodyPartCategory.GIBowel &&
+            headerCategory != BodyPartCategory.SoftTissues &&
+            headerCategory != BodyPartCategory.Other)
+            return headerCategory;
+
+        // Count keyword hits per category across all findings
+        var hits = new Dictionary<BodyPartCategory, int>();
+        var lowerFindings = string.Join(" ", findings).ToLowerInvariant();
+
+        foreach (var (keyword, category) in ContentKeywords)
+        {
+            if (lowerFindings.Contains(keyword))
+            {
+                hits.TryGetValue(category, out int count);
+                hits[category] = count + 1;
+            }
+        }
+
+        if (hits.Count == 0)
+            return headerCategory;
+
+        // Return the category with the most keyword hits
+        return hits.OrderByDescending(kv => kv.Value).First().Key;
+    }
+
+    /// <summary>
+    /// Post-process correlation items so that items sharing the same HighlightColor
+    /// get visually distinct variants (hue-rotated + lightness-shifted).
+    /// Items with unique colors are left unchanged.
+    /// </summary>
+    internal static void DiversifyCategoryColors(List<CorrelationItem> items)
+    {
+        // Group by HighlightColor ARGB value
+        var groups = new Dictionary<int, List<CorrelationItem>>();
+        foreach (var item in items)
+        {
+            if (item.HighlightColor == null) continue;
+            int key = item.HighlightColor.Value.ToArgb();
+            if (!groups.ContainsKey(key))
+                groups[key] = new List<CorrelationItem>();
+            groups[key].Add(item);
+        }
+
+        foreach (var group in groups.Values)
+        {
+            if (group.Count <= 1) continue;
+
+            var baseColor = group[0].HighlightColor!.Value;
+            var (h, s, l) = RgbToHsl(baseColor);
+
+            for (int i = 1; i < group.Count; i++)
+            {
+                int step = (i + 1) / 2;            // 1, 1, 2, 2, 3, 3, ...
+                int sign = (i % 2 == 1) ? 1 : -1;  // +, -, +, -, ...
+
+                double newH = h + sign * step * 25.0;
+                double newL = l + sign * step * 0.07;
+
+                // For near-neutral colors, inject saturation so hue rotation is visible
+                double newS = s < 0.15 ? 0.20 + step * 0.05 : s;
+
+                // Clamp
+                newH = ((newH % 360.0) + 360.0) % 360.0;
+                newS = Math.Clamp(newS, 0.0, 0.6);
+                newL = Math.Clamp(newL, 0.25, 0.85);
+
+                group[i].HighlightColor = HslToRgb(newH, newS, newL);
+            }
+        }
+    }
+
+    private static (double H, double S, double L) RgbToHsl(Color c)
+    {
+        double r = c.R / 255.0, g = c.G / 255.0, b = c.B / 255.0;
+        double max = Math.Max(r, Math.Max(g, b));
+        double min = Math.Min(r, Math.Min(g, b));
+        double l = (max + min) / 2.0;
+        double h = 0, s = 0;
+
+        if (max != min)
+        {
+            double d = max - min;
+            s = l > 0.5 ? d / (2.0 - max - min) : d / (max + min);
+
+            if (max == r)
+                h = ((g - b) / d + (g < b ? 6 : 0)) * 60.0;
+            else if (max == g)
+                h = ((b - r) / d + 2) * 60.0;
+            else
+                h = ((r - g) / d + 4) * 60.0;
+        }
+
+        return (h, s, l);
+    }
+
+    private static Color HslToRgb(double h, double s, double l)
+    {
+        if (s == 0)
+        {
+            int v = (int)Math.Round(l * 255);
+            return Color.FromArgb(v, v, v);
+        }
+
+        double q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        double p = 2 * l - q;
+        double hNorm = h / 360.0;
+
+        double r = HueToRgb(p, q, hNorm + 1.0 / 3.0);
+        double g = HueToRgb(p, q, hNorm);
+        double b = HueToRgb(p, q, hNorm - 1.0 / 3.0);
+
+        return Color.FromArgb(
+            (int)Math.Round(r * 255),
+            (int)Math.Round(g * 255),
+            (int)Math.Round(b * 255));
+    }
+
+    private static double HueToRgb(double p, double q, double t)
+    {
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1.0 / 6.0) return p + (q - p) * 6 * t;
+        if (t < 1.0 / 2.0) return q;
+        if (t < 2.0 / 3.0) return p + (q - p) * (2.0 / 3.0 - t) * 6;
+        return p;
+    }
 
     /// <summary>
     /// Blend a palette color at ~30% alpha with a dark background.
@@ -104,7 +596,7 @@ public static class CorrelationService
         { "pelvic", "pelvis" },
 
         // Pathology
-        { "nephrolithiasis", "kidney stone" }, { "urolithiasis", "kidney stone" },
+        { "nephrolithiasis", "stone" }, { "urolithiasis", "stone" },
         { "cholelithiasis", "gallstone" }, { "gallbladder stone", "gallstone" },
         { "calculus", "stone" }, { "calculi", "stone" }, { "calcified", "calcification" },
         { "thrombus", "clot" }, { "thrombosis", "clot" }, { "thrombotic", "clot" },
@@ -240,15 +732,6 @@ public static class CorrelationService
         var findingsBlocks = GroupFindingsBySubsection(findingsText);
         Logger.Trace($"Correlate: {findingsBlocks.Count} findings subsection blocks");
 
-        // Shuffle color order — seed from report text so same report gets same colors
-        var colorOrder = Enumerable.Range(0, Palette.Length).ToList();
-        var rng = new Random(seed ?? reportText.GetHashCode());
-        for (int i = colorOrder.Count - 1; i > 0; i--)
-        {
-            int j = rng.Next(i + 1);
-            (colorOrder[i], colorOrder[j]) = (colorOrder[j], colorOrder[i]);
-        }
-
         int colorIndex = 0;
         foreach (var (index, text) in impressionItems)
         {
@@ -268,13 +751,13 @@ public static class CorrelationService
             // This prevents a single common word from spreading across the whole report
             int bestScore = 0;
             int bestSubstantiveScore = 0;
-            List<string>? bestBlock = null;
+            (string? Header, List<string> Sentences)? bestBlock = null;
 
             foreach (var block in findingsBlocks)
             {
                 // Pool all terms from the block's sentences
                 var blockTerms = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var sentence in block)
+                foreach (var sentence in block.Sentences)
                 {
                     foreach (var t in ExtractTerms(sentence, contextTerms))
                         blockTerms.Add(t);
@@ -296,7 +779,7 @@ public static class CorrelationService
             {
                 // Only include sentences from the best block that actually share substantive terms
                 var matchedSentences = new List<string>();
-                foreach (var sentence in bestBlock)
+                foreach (var sentence in bestBlock.Value.Sentences)
                 {
                     var sentenceTerms = ExtractTerms(sentence, contextTerms);
                     var sentenceShared = impressionTerms.Intersect(sentenceTerms, StringComparer.OrdinalIgnoreCase).ToList();
@@ -308,18 +791,22 @@ public static class CorrelationService
 
                 if (matchedSentences.Count > 0)
                 {
+                    var category = GetCategoryForHeader(bestBlock.Value.Header);
+                    category = RefineCategoryFromContent(category, matchedSentences);
                     result.Items.Add(new CorrelationItem
                     {
                         ImpressionIndex = index,
                         ImpressionText = text,
                         MatchedFindings = matchedSentences,
-                        ColorIndex = colorOrder[colorIndex % colorOrder.Count]
+                        ColorIndex = colorIndex % Palette.Length,
+                        HighlightColor = GetColorForCategory(category)
                     });
                     colorIndex++;
                 }
             }
         }
 
+        DiversifyCategoryColors(result.Items);
         return result;
     }
 
@@ -330,7 +817,7 @@ public static class CorrelationService
     /// Unanchored patterns match anywhere for unambiguous indicators.
     /// </summary>
     private static readonly Regex NegativeSentencePattern = new(
-        @"^\s*(?:no\s|normal\b|negative\b|stable\b|there\s+(?:is|are)\s+no\s|not\s)" +
+        @"^\s*(?:no\s|normal\b|negative\b|there\s+(?:is|are)\s+no\s|not\s)" +
         @"|\bunremarkable\b|\bwithin\s+normal\b" +
         @"|\b(?:was|has\s+been)\s+performed\b" +               // surgical history
         @"|\bdemonstrates?\s+no\s" +                            // mid-sentence negative
@@ -394,7 +881,7 @@ public static class CorrelationService
             if (NegativeSentencePattern.IsMatch(sentence))
             {
                 negativeFindings.Add(sentence);
-                Logger.Trace($"CorrelateReversed: Negative finding (won't orphan{(hasDictatedFilter ? ", but will highlight" : "")}): {sentence.Substring(0, Math.Min(60, sentence.Length))}");
+                Logger.Trace($"CorrelateReversed: Negative finding{(hasDictatedFilter ? " (dictated, will highlight+orphan)" : " (template, won't orphan)")}: {sentence.Substring(0, Math.Min(60, sentence.Length))}");
             }
         }
         int significantCount = filteredFindings.Count - negativeFindings.Count;
@@ -413,13 +900,17 @@ public static class CorrelationService
         if (significantCount == 0 && !hasDictatedFilter)
             return result;
 
-        // Shuffle color order for consistent colors per report
-        var colorOrder = Enumerable.Range(0, Palette.Length).ToList();
-        var rng = new Random(seed ?? reportText.GetHashCode());
-        for (int i = colorOrder.Count - 1; i > 0; i--)
+        // Build subsection blocks so we can look up header for each finding sentence
+        var findingsBlocks = GroupFindingsBySubsection(findingsText);
+
+        // Build a lookup: finding sentence → subsection header
+        var sentenceToHeader = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var (header, sentences) in findingsBlocks)
         {
-            int j = rng.Next(i + 1);
-            (colorOrder[i], colorOrder[j]) = (colorOrder[j], colorOrder[i]);
+            foreach (var sentence in sentences)
+            {
+                sentenceToHeader.TryAdd(sentence, header);
+            }
         }
 
         // For each finding, find the best-matching impression item
@@ -477,44 +968,62 @@ public static class CorrelationService
                     matchedGroups[bestImpressionIdx].findings.Add(finding);
                 }
             }
-            else if (!isNegative)
+            else if (!isNegative || hasDictatedFilter)
             {
-                Logger.Trace($"CorrelateReversed: ORPHAN finding (bestScore={bestScore}, substantive={bestSubstantiveScore})");
+                // Orphan: positive finding, or dictated pertinent negative with no impression match
+                Logger.Trace($"CorrelateReversed: ORPHAN finding (bestScore={bestScore}, substantive={bestSubstantiveScore}, neg={isNegative}, dictated={hasDictatedFilter})");
                 orphanFindings.Add(finding);
             }
             else
             {
-                Logger.Trace($"CorrelateReversed: Negative finding unmatched, not orphaned");
+                Logger.Trace($"CorrelateReversed: Negative template finding unmatched, not orphaned");
             }
         }
 
-        // Build result: matched groups get a color shared between impression item and findings
+        // Build result: matched groups get a color based on body-part category
         int colorIndex = 0;
         foreach (var (groupIdx, (groupText, groupFindings)) in matchedGroups)
         {
+            // Determine color from the first finding's subsection header
+            string? header = null;
+            foreach (var f in groupFindings)
+            {
+                if (sentenceToHeader.TryGetValue(f, out header) && header != null)
+                    break;
+            }
+            var category = GetCategoryForHeader(header);
+            category = RefineCategoryFromContent(category, groupFindings);
+
             result.Items.Add(new CorrelationItem
             {
                 ImpressionIndex = groupIdx,
                 ImpressionText = groupText,
                 MatchedFindings = groupFindings,
-                ColorIndex = colorOrder[colorIndex % colorOrder.Count]
+                ColorIndex = colorIndex % Palette.Length,
+                HighlightColor = GetColorForCategory(category)
             });
             colorIndex++;
         }
 
-        // Orphan findings: each gets its own color, no impression text
+        // Orphan findings: color from body-part category
         foreach (var orphan in orphanFindings)
         {
+            sentenceToHeader.TryGetValue(orphan, out var orphanHeader);
+            var category = GetCategoryForHeader(orphanHeader);
+            category = RefineCategoryFromContent(category, new List<string> { orphan });
+
             result.Items.Add(new CorrelationItem
             {
                 ImpressionIndex = -1,
                 ImpressionText = "",
                 MatchedFindings = new List<string> { orphan },
-                ColorIndex = colorOrder[colorIndex % colorOrder.Count]
+                ColorIndex = colorIndex % Palette.Length,
+                HighlightColor = GetColorForCategory(category)
             });
             colorIndex++;
         }
 
+        DiversifyCategoryColors(result.Items);
         Logger.Trace($"CorrelateReversed: {matchedGroups.Count} matched groups, {orphanFindings.Count} orphans");
         return result;
     }
@@ -699,11 +1208,13 @@ public static class CorrelationService
     /// Group findings text into subsection blocks. Each block is a list of sentences
     /// under the same subsection header. Sentences without a subsection header form their own block.
     /// This ensures correlation matches contiguous related sentences, not scattered ones.
+    /// Returns the header text (before colon) for each block, or null if no header was found.
     /// </summary>
-    private static List<List<string>> GroupFindingsBySubsection(string findingsText)
+    private static List<(string? Header, List<string> Sentences)> GroupFindingsBySubsection(string findingsText)
     {
-        var blocks = new List<List<string>>();
+        var blocks = new List<(string? Header, List<string> Sentences)>();
         var currentBlock = new List<string>();
+        string? currentHeader = null;
 
         var lines = findingsText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
@@ -714,23 +1225,32 @@ public static class CorrelationService
 
             // Check if this line starts a new subsection (ALL CAPS header with colon)
             bool isHeader = false;
+            string? detectedHeader = null;
             int colonIdx = line.IndexOf(':');
             if (colonIdx > 0 && colonIdx < line.Length - 1)
             {
                 var prefix = line.Substring(0, colonIdx);
-                isHeader = IsAllCapsHeader(prefix);
+                if (IsAllCapsHeader(prefix))
+                {
+                    isHeader = true;
+                    detectedHeader = prefix.Trim();
+                }
             }
             else if (IsAllCapsHeader(line))
             {
                 isHeader = true;
+                detectedHeader = line.TrimEnd(':').Trim();
             }
 
             if (isHeader && currentBlock.Count > 0)
             {
                 // Save previous block, start new one
-                blocks.Add(currentBlock);
+                blocks.Add((currentHeader, currentBlock));
                 currentBlock = new List<string>();
             }
+
+            if (isHeader)
+                currentHeader = detectedHeader;
 
             // Strip header prefix and split into sentences
             string content = StripSubsectionHeader(line);
@@ -746,14 +1266,14 @@ public static class CorrelationService
         }
 
         if (currentBlock.Count > 0)
-            blocks.Add(currentBlock);
+            blocks.Add((currentHeader, currentBlock));
 
         // If no subsection headers were found (simple reports), treat all sentences as one block
         if (blocks.Count == 0 && findingsText.Length > 0)
         {
             var allSentences = ParseFindingsSentences(findingsText);
             if (allSentences.Count > 0)
-                blocks.Add(allSentences);
+                blocks.Add((null, allSentences));
         }
 
         return blocks;

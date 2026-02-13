@@ -820,7 +820,7 @@ public static class NativeWindows
     /// <summary>
     /// Click at screen coordinates. Saves/restores cursor position.
     /// </summary>
-    public static void ClickAtScreenPos(int x, int y)
+    public static void ClickAtScreenPos(int x, int y, bool restoreCursor = true)
     {
         GetCursorPos(out POINT originalPos);
         SetCursorPos(x, y);
@@ -829,7 +829,8 @@ public static class NativeWindows
         Thread.Sleep(20);
         mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, IntPtr.Zero);
         Thread.Sleep(30);
-        SetCursorPos(originalPos.X, originalPos.Y);
+        if (restoreCursor)
+            SetCursorPos(originalPos.X, originalPos.Y);
     }
 
     /// <summary>
@@ -929,6 +930,57 @@ public static class NativeWindows
         {
             Logger.Trace($"GetRunAtStartup error: {ex.Message}");
             return false;
+        }
+    }
+
+    #endregion
+
+    #region Win32 Clipboard (bypasses .NET OLE clipboard which fails with Chromium apps)
+
+    [DllImport("user32.dll")]
+    private static extern bool OpenClipboard(IntPtr hWndNewOwner);
+
+    [DllImport("user32.dll")]
+    private static extern bool CloseClipboard();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetClipboardData(uint uFormat);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GlobalLock(IntPtr hMem);
+
+    [DllImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalUnlock(IntPtr hMem);
+
+    private const uint CF_UNICODETEXT = 13;
+
+    /// <summary>
+    /// Read clipboard text using raw Win32 API. This works for Chromium delayed-rendering
+    /// clipboard where .NET's Clipboard.GetText() returns empty.
+    /// </summary>
+    public static string? GetClipboardTextWin32()
+    {
+        if (!OpenClipboard(IntPtr.Zero)) return null;
+        try
+        {
+            IntPtr hData = GetClipboardData(CF_UNICODETEXT);
+            if (hData == IntPtr.Zero) return null;
+
+            IntPtr pData = GlobalLock(hData);
+            if (pData == IntPtr.Zero) return null;
+            try
+            {
+                return Marshal.PtrToStringUni(pData);
+            }
+            finally
+            {
+                GlobalUnlock(hData);
+            }
+        }
+        finally
+        {
+            CloseClipboard();
         }
     }
 

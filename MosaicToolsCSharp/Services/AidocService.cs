@@ -42,10 +42,10 @@ public class AidocService
     private string? _lastLoggedState;
 
     /// <summary>
-    /// Check if a finding icon has a red dot (positive finding indicator).
-    /// Samples pixels across the icon looking for red-ish colors.
+    /// Check if a finding icon has a red/orange dot (positive finding indicator).
+    /// Samples pixels across the icon looking for warm indicator colors.
     /// </summary>
-    private static bool HasRedDot(System.Drawing.Rectangle iconRect)
+    private static bool HasRedDot(System.Drawing.Rectangle iconRect, string? findingType = null)
     {
         IntPtr hdc = GetDC(IntPtr.Zero);
         try
@@ -54,10 +54,12 @@ public class AidocService
             int w = iconRect.Width;
             int h = iconRect.Height;
             int orangeCount = 0;
+            int warmCount = 0;  // broader warm-color detection
+            var sampledColors = new List<string>();
 
-            for (int dy = 0; dy < h; dy += Math.Max(1, h / 5))
+            for (int dy = 0; dy < h; dy += Math.Max(1, h / 6))
             {
-                for (int dx = 0; dx < w; dx += Math.Max(1, w / 5))
+                for (int dx = 0; dx < w; dx += Math.Max(1, w / 6))
                 {
                     int sx = iconRect.Left + dx;
                     int sy = iconRect.Top + dy;
@@ -68,13 +70,31 @@ public class AidocService
                     int g = (int)((pixel >> 8) & 0xFF);
                     int b = (int)((pixel >> 16) & 0xFF);
 
-                    // Positive indicator dot is orange (R≈253, G≈92, B≈20)
+                    // Strict orange: R≈253, G≈92, B≈20
                     if (r > 200 && g < 130 && b < 80)
                         orangeCount++;
+
+                    // Broader warm detection: red-dominant and clearly not gray/white/black
+                    if (r > 150 && r > g + 30 && r > b + 30)
+                        warmCount++;
+
+                    // Collect non-background colors for diagnostic logging
+                    if (r > 50 || g > 50 || b > 50) // skip near-black
+                        if (!(r > 200 && g > 200 && b > 200)) // skip near-white
+                            sampledColors.Add($"({r},{g},{b})");
                 }
             }
 
-            return orangeCount >= 2; // Need at least 2 orange pixels to confirm positive
+            bool isPositive = orangeCount >= 2 || warmCount >= 3;
+
+            // Log diagnostic pixel info when detection is negative (potential false negative)
+            if (!isPositive && sampledColors.Count > 0)
+            {
+                var uniqueColors = sampledColors.Distinct().Take(10);
+                Logger.Trace($"Aidoc HasRedDot({findingType}): NEGATIVE at [{iconRect.X},{iconRect.Y} {iconRect.Width}x{iconRect.Height}] orange={orangeCount} warm={warmCount} colors=[{string.Join(" ", uniqueColors)}]");
+            }
+
+            return isPositive;
         }
         finally
         {
@@ -174,7 +194,7 @@ public class AidocService
                 if (el.Type == "Image" && el.Rect.Width >= 25 && next.Type == "Text"
                     && !string.IsNullOrWhiteSpace(next.Text))
                 {
-                    bool isPositive = el.Rect.Width > 0 && HasRedDot(el.Rect);
+                    bool isPositive = el.Rect.Width > 0 && HasRedDot(el.Rect, next.Text);
                     findings.Add(new AidocFinding(next.Text, isPositive));
                     Logger.Trace($"Aidoc finding: {next.Text} positive={isPositive}");
                 }

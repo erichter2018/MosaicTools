@@ -1482,17 +1482,32 @@ public class ClinicalHistoryForm : Form
         foreach (var line in allTrimmedLines)
         {
             bool isDuplicate = false;
+            int replaceIndex = -1;
             var normalizedNew = NormalizeForComparison(line);
-            foreach (var existing in uniqueLines)
+            for (int i = 0; i < uniqueLines.Count; i++)
             {
-                var normalizedExisting = NormalizeForComparison(existing);
+                var normalizedExisting = NormalizeForComparison(uniqueLines[i]);
                 if (normalizedExisting == normalizedNew || AreSameWordSet(normalizedExisting, normalizedNew))
                 {
                     isDuplicate = true;
                     break;
                 }
+                // Check if the new line is an abbreviated version of an existing line → skip new
+                if (IsAbbreviatedDuplicate(line, uniqueLines[i]))
+                {
+                    isDuplicate = true;
+                    break;
+                }
+                // Check if an existing line is an abbreviated version of the new line → replace with longer
+                if (IsAbbreviatedDuplicate(uniqueLines[i], line))
+                {
+                    replaceIndex = i;
+                    break;
+                }
             }
-            if (!isDuplicate)
+            if (replaceIndex >= 0)
+                uniqueLines[replaceIndex] = line;
+            else if (!isDuplicate)
                 uniqueLines.Add(line);
         }
 
@@ -1539,6 +1554,105 @@ public class ClinicalHistoryForm : Form
         var words1 = new HashSet<string>(normalized1.Split(' '), StringComparer.OrdinalIgnoreCase);
         var words2 = new HashSet<string>(normalized2.Split(' '), StringComparer.OrdinalIgnoreCase);
         return words1.SetEquals(words2);
+    }
+
+    /// <summary>
+    /// Check if shortLine is an abbreviated/condensed version of longLine.
+    /// Splits each into phrases (by comma/semicolon) and checks if every phrase
+    /// in shortLine has a match in longLine, accounting for medical initialisms
+    /// (e.g. "AMS" matching "Altered Mental Status").
+    /// </summary>
+    private static bool IsAbbreviatedDuplicate(string shortLine, string longLine)
+    {
+        var phrasesShort = SplitIntoPhrases(shortLine);
+        var phrasesLong = SplitIntoPhrases(longLine);
+
+        if (phrasesShort.Count == 0) return true;
+        if (phrasesLong.Count == 0) return false;
+
+        // Every phrase in the short line must match a phrase in the long line
+        foreach (var phraseS in phrasesShort)
+        {
+            bool matched = false;
+            foreach (var phraseL in phrasesLong)
+            {
+                if (PhrasesMatchWithAbbreviations(phraseS, phraseL))
+                {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) return false;
+        }
+        return true;
+    }
+
+    private static List<string> SplitIntoPhrases(string text)
+    {
+        return text.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                   .Select(p => p.Trim())
+                   .Where(p => !string.IsNullOrWhiteSpace(p))
+                   .ToList();
+    }
+
+    /// <summary>
+    /// Check if two phrases are semantically equivalent, accounting for initialisms.
+    /// e.g. "AMS" matches "Altered mental status", "upper abdominal pain" matches "upper abdominal pain".
+    /// </summary>
+    private static bool PhrasesMatchWithAbbreviations(string phraseA, string phraseB)
+    {
+        var wordsA = ExtractContentWords(phraseA);
+        var wordsB = ExtractContentWords(phraseB);
+
+        if (wordsA.Count == 0 || wordsB.Count == 0) return false;
+
+        // Direct: all words in A appear in B
+        if (wordsA.All(w => wordsB.Any(wb => wb.Equals(w, StringComparison.OrdinalIgnoreCase))))
+            return true;
+
+        // With abbreviation expansion: each word in A must be found in B or be an initialism of words in B
+        foreach (var wordA in wordsA)
+        {
+            bool found = wordsB.Any(w => w.Equals(wordA, StringComparison.OrdinalIgnoreCase));
+            if (!found && IsInitialism(wordA))
+                found = InitialismMatchesConsecutiveWords(wordA, wordsB);
+            if (!found) return false;
+        }
+        return true;
+    }
+
+    private static List<string> ExtractContentWords(string phrase)
+    {
+        return Regex.Replace(phrase, @"[^a-zA-Z0-9]+", " ").Trim()
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                    .ToList();
+    }
+
+    private static bool IsInitialism(string word)
+    {
+        return word.Length >= 2 && word.Length <= 6 && word.All(char.IsUpper);
+    }
+
+    /// <summary>
+    /// Check if an initialism's letters match the first letters of consecutive words.
+    /// e.g. "AMS" matches ["altered", "mental", "status"] starting at any position.
+    /// </summary>
+    private static bool InitialismMatchesConsecutiveWords(string initialism, List<string> words)
+    {
+        for (int start = 0; start <= words.Count - initialism.Length; start++)
+        {
+            bool match = true;
+            for (int i = 0; i < initialism.Length; i++)
+            {
+                if (char.ToUpperInvariant(words[start + i][0]) != initialism[i])
+                {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) return true;
+        }
+        return false;
     }
 
     #endregion

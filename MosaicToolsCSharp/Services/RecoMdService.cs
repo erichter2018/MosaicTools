@@ -123,9 +123,8 @@ public class RecoMdService : IDisposable
             var content = new StringContent(reportText, Encoding.UTF8, "text/plain");
             var resp = await _http.PostAsync($"{BaseUrl}/dictation/report/{accession}", content);
 
-            var preview = reportText.Length > 200 ? reportText.Substring(0, 200) : reportText;
-            preview = preview.Replace("\r", "").Replace("\n", " ");
-            Logger.Trace($"RecoMD: Send report text for {accession} ({reportText.Length} chars) → {(int)resp.StatusCode}: {preview}");
+            if (!resp.IsSuccessStatusCode)
+                Logger.Trace($"RecoMD: Send report text for {accession} ({reportText.Length} chars) → {(int)resp.StatusCode}");
             return resp.IsSuccessStatusCode;
         }
         catch (Exception ex)

@@ -944,42 +944,71 @@ public class AutomationService : IDisposable
             var proseMirrors = window.FindAllDescendants(cf =>
                 cf.ByClassName("ProseMirror", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
 
+            // First pass: check ProseMirror Name for EXAM: or U+FFFC
+            FlaUI.Core.AutomationElements.AutomationElement? reportBox = null;
             foreach (var pm in proseMirrors)
             {
                 try
                 {
                     var name = pm.Name ?? "";
-                    // Final Report editor contains EXAM: or U+FFFC
-                    if (!name.Contains("EXAM:") && !name.Contains('\uFFFC'))
-                        continue;
-
-                    var rect = pm.BoundingRectangle;
-                    if (rect.Width > 100 && rect.Height > 50)
+                    if (name.Contains("EXAM:") || name.Contains('\uFFFC'))
                     {
-                        var legacyPattern = pm.Patterns.LegacyIAccessible.PatternOrDefault;
-                        if (legacyPattern != null)
-                        {
-                            try
-                            {
-                                legacyPattern.Select(SELFLAG_TAKEFOCUS);
-                                Logger.Trace($"FocusFinalReportBox: Used LegacyIAccessible.Select on ProseMirror at {rect}");
-                                return true;
-                            }
-                            catch (Exception ex)
-                            {
-                                Logger.Trace($"FocusFinalReportBox: LegacyIAccessible.Select failed: {ex.Message}, falling back to click");
-                            }
-                        }
-
-                        ClickAtCenter(rect);
-                        Logger.Trace($"FocusFinalReportBox: Clicked ProseMirror at {rect}");
-                        return true;
+                        reportBox = pm;
+                        break;
                     }
                 }
                 catch { continue; }
             }
 
-            Logger.Trace("FocusFinalReportBox: Final report box not found");
+            // Mosaic 2.0.3+ fallback: Name is empty, check child text elements
+            if (reportBox == null)
+            {
+                foreach (var pm in proseMirrors)
+                {
+                    try
+                    {
+                        var children = pm.FindAllDescendants(cf =>
+                            cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
+                        if (children.Any(c => (c.Name ?? "").Contains("EXAM:")))
+                        {
+                            reportBox = pm;
+                            break;
+                        }
+                    }
+                    catch { continue; }
+                }
+            }
+
+            if (reportBox == null)
+            {
+                Logger.Trace("FocusFinalReportBox: Final report box not found");
+                return false;
+            }
+
+            var rect = reportBox.BoundingRectangle;
+            if (rect.Width > 100 && rect.Height > 50)
+            {
+                var legacyPattern = reportBox.Patterns.LegacyIAccessible.PatternOrDefault;
+                if (legacyPattern != null)
+                {
+                    try
+                    {
+                        legacyPattern.Select(SELFLAG_TAKEFOCUS);
+                        Logger.Trace($"FocusFinalReportBox: Used LegacyIAccessible.Select on ProseMirror at {rect}");
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Trace($"FocusFinalReportBox: LegacyIAccessible.Select failed: {ex.Message}, falling back to click");
+                    }
+                }
+
+                ClickAtCenter(rect);
+                Logger.Trace($"FocusFinalReportBox: Clicked ProseMirror at {rect}");
+                return true;
+            }
+
+            Logger.Trace("FocusFinalReportBox: Report box found but too small");
             return false;
         }
         catch (Exception ex)
@@ -1417,7 +1446,9 @@ public class AutomationService : IDisposable
 
             // Extract patient info from all descendants in a single traversal.
             // Skip if accession hasn't changed — patient info (gender, MRN, etc.) is stable per study.
-            bool needsPatientInfoExtraction = LastAccession != _lastPatientInfoAccession;
+            // Also retry if previous attempt found nothing (e.g. UI was still loading).
+            bool needsPatientInfoExtraction = LastAccession != _lastPatientInfoAccession
+                || (!string.IsNullOrEmpty(LastAccession) && LastPatientGender == null && LastMrn == null);
             if (needsPatientInfoExtraction)
             {
                 LastPatientGender = null;
@@ -1425,8 +1456,6 @@ public class AutomationService : IDisposable
                 LastPatientName = null;
                 LastSiteCode = null;
                 LastMrn = null;
-                if (!string.IsNullOrEmpty(LastAccession))
-                    _lastPatientInfoAccession = LastAccession;
             }
 
             // Handles both Mosaic 2.0.2 (combined Text "Description: XR CHEST") and
@@ -1606,6 +1635,14 @@ public class AutomationService : IDisposable
             catch (Exception ex)
             {
                 Logger.Trace($"Patient info extraction error: {ex.Message}");
+            }
+
+            // Only mark extraction complete if we actually found patient info.
+            // If the UI was still loading (only chrome elements visible), we'll retry next scrape.
+            if (needsPatientInfoExtraction && !string.IsNullOrEmpty(LastAccession)
+                && (LastPatientGender != null || LastMrn != null))
+            {
+                _lastPatientInfoAccession = LastAccession;
             }
 
             // END Mosaic 2.0.2 compat

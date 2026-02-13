@@ -256,6 +256,8 @@ public class GetPriorService
         // Remove leading modality indicator(s) - handle cases where description also starts with modality
         desc = Regex.Replace(desc, modalityPattern, "", RegexOptions.IgnoreCase);
         desc = desc.Replace(" SIGNXED", "").Trim();
+        // Strip InteleViewer prefixes like "RAD - ", "DX - ", "DR - "
+        desc = Regex.Replace(desc, @"^(RAD|DX|DR)\s*-\s*", "", RegexOptions.IgnoreCase);
 
         desc = ProcessRadiographDescription(desc.ToLower());
         return desc;
@@ -265,6 +267,8 @@ public class GetPriorService
     {
         text = text.Replace(" vw", " view(s)").Replace(" 2v", " PA and lateral");
         text = text.Replace(" pa lat", " PA and lateral").Replace(" (kub)", "").Trim();
+        // "Single Portable" = single view portable; "single" is redundant with "portable"
+        text = Regex.Replace(text, @"\bsingle\s+portable\b", "portable", RegexOptions.IgnoreCase);
         
         text = ReorderLaterality(text);
         

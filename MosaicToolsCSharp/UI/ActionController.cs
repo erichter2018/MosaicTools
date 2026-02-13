@@ -48,6 +48,22 @@ public class ActionController : IDisposable
             _mainForm.BeginInvoke(action);
     }
 
+    // Batched UI updates: collects multiple UI actions and executes them in a single
+    // BeginInvoke call. This reduces WM_USER message spam on the UI thread, preventing
+    // the low-level keyboard hook from being silently removed by Windows when the
+    // message pump can't service hook callbacks fast enough (LowLevelHooksTimeout).
+    private readonly List<Action> _uiBatch = new();
+
+    private void BatchUI(Action action) => _uiBatch.Add(action);
+
+    private void FlushUI()
+    {
+        if (_uiBatch.Count == 0) return;
+        var actions = _uiBatch.ToArray();
+        _uiBatch.Clear();
+        InvokeUI(() => { foreach (var a in actions) a(); });
+    }
+
     // Action Queue (Must be STA for Clipboard and SendKeys)
     private readonly ConcurrentQueue<ActionRequest> _actionQueue = new();
     private readonly AutoResetEvent _actionEvent = new(false);
@@ -57,6 +73,7 @@ public class ActionController : IDisposable
     private volatile bool _dictationActive = false;
     private volatile bool _isUserActive = false;
     private int _scrapeRunning = 0; // Reentrancy guard for scrape timer
+    private long _scrapeStartedTicks; // Watchdog: when current scrape started (Interlocked)
     private volatile bool _stopThread = false;
 
     // Impression search state
@@ -73,6 +90,7 @@ public class ActionController : IDisposable
     private const int IdleScrapeIntervalMs = 5000; // Slow polling when no study is open
     private int _consecutiveIdleScrapes = 0; // Counts scrapes with no report content
     private int _scrapesSinceLastGc = 0; // Counter for periodic GC to release FlaUI COM wrappers
+    private int _scrapeHeartbeatCount = 0; // Heartbeat counter for diagnostic logging
 
     // PTT (Push-to-talk) state (int for Interlocked atomicity)
     private int _pttBusy = 0;
@@ -129,10 +147,9 @@ public class ActionController : IDisposable
     private bool _lastAidocRelevant = false;
     private readonly HashSet<string> _aidocConfirmedNegative = new(StringComparer.OrdinalIgnoreCase); // "once negative, stay negative" per study
 
-    // RecoMD state tracking
-    private volatile bool _recoMdPendingAfterProcess;
-    private string? _reportTextBeforeProcess;
-    private DateTime _recoMdPendingSince;
+    // RecoMD state tracking — continuous send on every scrape tick
+    private string? _recoMdOpenedForAccession; // accession currently opened in RecoMD
+    private string? _lastRecoMdSentText;       // last text sent (to detect changes for logging)
 
     // Critical note tracking - session-scoped set of accessions that already have critical notes
     private readonly ConcurrentDictionary<string, byte> _criticalNoteCreatedForAccessions = new();
@@ -175,6 +192,11 @@ public class ActionController : IDisposable
     // Shared paste lock to prevent concurrent clipboard operations
     public static readonly object PasteLock = new();
     public static DateTime LastPasteTime = DateTime.MinValue;
+
+    // Guard to skip duplicate RecoMD paste actions queued by impatient button presses
+    private volatile bool _recoMdPasteInProgress;
+    // RecoMD send throttle — only send every Nth scrape tick to reduce chatter
+    private int _recoMdSendTickCounter;
     
     public ActionController(Configuration config, MainForm mainForm, RecoMdService recoMdService)
     {
@@ -623,7 +645,14 @@ public class ActionController : IDisposable
             if (active)
             {
                 _consecutiveInactiveCount = 0;
-                InvokeUI(() => _mainForm.UpdateIndicatorState(true));
+                InvokeUI(() =>
+                {
+                    // Safety net: if user is dictating but indicator was hidden (e.g. scrape
+                    // failed to detect study re-open), force-show it.
+                    if (_config.IndicatorEnabled && _config.HideIndicatorWhenNoStudy)
+                        _mainForm.EnsureIndicatorVisible();
+                    _mainForm.UpdateIndicatorState(true);
+                });
             }
             else
             {
@@ -891,13 +920,31 @@ public class ActionController : IDisposable
             }
         }
 
-        // Auto-send to RecoMD if enabled
+        // Auto-send to RecoMD if enabled — kick-start immediately, then scrape timer continues
         if (_config.RecoMdEnabled && _config.RecoMdAutoOnProcess)
         {
-            _reportTextBeforeProcess = _automationService.LastFinalReport;
-            _recoMdPendingAfterProcess = true;
-            _recoMdPendingSince = DateTime.UtcNow;
-            Logger.Trace("RecoMD: Pending auto-send after Process Report");
+            var immediateText = _automationService.LastFinalReport;
+            if (!string.IsNullOrEmpty(immediateText))
+            {
+                var recoText = RecoMdService.CleanReportText(immediateText);
+                var recoAcc = _automationService.LastAccession;
+                var recoDesc = _automationService.LastDescription;
+                var recoName = _automationService.LastPatientName;
+                var recoGender = _automationService.LastPatientGender;
+                var recoMrn = _automationService.LastMrn;
+                var recoAge = _automationService.LastPatientAge ?? 0;
+                Logger.Trace("RecoMD: Immediate send after Process Report");
+                _recoMdOpenedForAccession = recoAcc;
+                _lastRecoMdSentText = recoText;
+                Task.Run(async () =>
+                {
+                    if (string.IsNullOrEmpty(recoAcc)) return;
+                    await _recoMdService.OpenReportAsync(recoAcc,
+                        recoDesc, recoName, recoGender, recoMrn, recoAge);
+                    await _recoMdService.SendReportTextAsync(recoAcc, recoText);
+                });
+            }
+            BringRecoMdToFront();
         }
 
         // Popup will auto-update via scrape timer when report changes
@@ -1013,7 +1060,8 @@ public class ActionController : IDisposable
         // RecoMD: close report on sign
         if (_config.RecoMdEnabled)
         {
-            _recoMdPendingAfterProcess = false;
+            _recoMdOpenedForAccession = null;
+            _lastRecoMdSentText = null;
             SendRecoMdToBack();
             Task.Run(async () => await _recoMdService.CloseReportAsync());
         }
@@ -1113,7 +1161,8 @@ public class ActionController : IDisposable
         // RecoMD: close report on discard
         if (_config.RecoMdEnabled)
         {
-            _recoMdPendingAfterProcess = false;
+            _recoMdOpenedForAccession = null;
+            _lastRecoMdSentText = null;
             SendRecoMdToBack();
             Task.Run(async () => await _recoMdService.CloseReportAsync());
         }
@@ -2104,6 +2153,10 @@ public class ActionController : IDisposable
         // Clean report text: remove U+FFFC object replacement chars and collapse blank lines
         reportText = RecoMdService.CleanReportText(reportText);
 
+        // Update tracking so continuous send in scrape timer knows report is opened
+        _recoMdOpenedForAccession = accession;
+        _lastRecoMdSentText = reportText;
+
         var success = Task.Run(async () =>
         {
             var opened = await _recoMdService.OpenReportAsync(accession,
@@ -2178,6 +2231,25 @@ public class ActionController : IDisposable
     /// </summary>
     private void PerformPasteRecoMd()
     {
+        // Skip if another paste is already in progress (user pressed button multiple times)
+        if (_recoMdPasteInProgress)
+        {
+            Logger.Trace("Paste RecoMD skipped — already in progress");
+            return;
+        }
+        _recoMdPasteInProgress = true;
+        try
+        {
+        PerformPasteRecoMdCore();
+        }
+        finally
+        {
+            _recoMdPasteInProgress = false;
+        }
+    }
+
+    private void PerformPasteRecoMdCore()
+    {
         Logger.Trace("Paste RecoMD action triggered");
 
         if (!_config.RecoMdEnabled)
@@ -2186,7 +2258,6 @@ public class ActionController : IDisposable
             return;
         }
 
-        // Step 1: Find the RecoMD window
         var hWnd = GetRecoMdWindow();
         if (hWnd == IntPtr.Zero)
         {
@@ -2194,67 +2265,107 @@ public class ActionController : IDisposable
             return;
         }
 
-        // Step 2: Get the window rect
+        // Step 1: Click RecoMD ALL button — puts recommendations on clipboard.
+        NativeWindows.ActivateWindow(hWnd, 500);
+        NativeWindows.ForceTopMost(hWnd);
+        Thread.Sleep(300);
+
         if (!NativeWindows.GetWindowRect(hWnd, out var winRect))
         {
-            InvokeUI(() => _mainForm.ShowStatusToast("Could not get RecoMD window bounds", 2000));
+            InvokeUI(() => _mainForm.ShowStatusToast("RecoMD window not found", 2000));
             return;
         }
 
-        Logger.Trace($"RecoMD window: ({winRect.Left},{winRect.Top}) {winRect.Width}x{winRect.Height}");
-
-        // Step 3: Pixel scan for the green "ALL" button in the top area of the window.
-        // The button is bright green (G dominant) — scan the top ~50px strip for green pixel clusters.
         var greenCenter = FindGreenAllButton(winRect);
         if (greenCenter == null)
         {
-            InvokeUI(() => _mainForm.ShowStatusToast("Could not find RecoMD 'ALL' button", 3000));
+            Logger.Trace("RecoMD: Could not find green ALL button");
+            InvokeUI(() => _mainForm.ShowStatusToast("RecoMD: No recommendations available", 2000));
             return;
         }
 
-        Logger.Trace($"RecoMD: Found green ALL button at ({greenCenter.Value.X},{greenCenter.Value.Y})");
+        Logger.Trace($"RecoMD: Clicking ALL button at ({greenCenter.Value.X},{greenCenter.Value.Y})");
+        NativeWindows.ClickAtScreenPos(greenCenter.Value.X, greenCenter.Value.Y, restoreCursor: false);
+        Thread.Sleep(500);
+        SendRecoMdToBack();
 
-        // Step 4: Click the green "ALL" button (this copies recommendations to clipboard)
-        NativeWindows.ClickAtScreenPos(greenCenter.Value.X, greenCenter.Value.Y);
-        Thread.Sleep(300); // Give RecoMD time to copy to clipboard
+        // Step 2: Read RecoMD clipboard via Win32 API (bypasses .NET's broken Chromium support).
+        var recoText = NativeWindows.GetClipboardTextWin32();
+        if (string.IsNullOrWhiteSpace(recoText))
+        {
+            Logger.Trace("RecoMD: Win32 clipboard read returned empty");
+            InvokeUI(() => _mainForm.ShowStatusToast("RecoMD: Could not read recommendations from clipboard", 3000));
+            return;
+        }
+        Logger.Trace($"RecoMD: Got {recoText.Length} chars from clipboard via Win32");
 
-        Logger.Trace("RecoMD: Clicked ALL button, recommendations should be on clipboard");
+        // Step 3: Get existing impression from the already-scraped report.
+        var reportText = _automationService.LastFinalReport;
+        if (string.IsNullOrEmpty(reportText))
+        {
+            Logger.Trace("RecoMD: No scraped report available, attempting fresh scrape");
+            reportText = _automationService.GetFinalReportFast();
+        }
 
-        // Step 5: Paste into impression — select impression to find the end, then append
+        string existingImpression = "";
+        if (!string.IsNullOrEmpty(reportText))
+        {
+            var (_, impression) = Services.CorrelationService.ExtractSections(reportText);
+            existingImpression = impression;
+        }
+
+        // Clean existing impression: remove U+FFFC chars, blank lines, and strip
+        // auto-numbering (e.g., "1. text" → "text") since Mosaic re-adds numbering on paste.
+        if (!string.IsNullOrEmpty(existingImpression))
+        {
+            var cleanLines = existingImpression.Split('\n')
+                .Select(l => l.Replace("\uFFFC", "").Trim())
+                .Where(l => !string.IsNullOrWhiteSpace(l))
+                .Select(l => System.Text.RegularExpressions.Regex.Replace(l, @"^\d+[.)]\s*", ""))
+                .Where(l => !string.IsNullOrWhiteSpace(l))
+                .ToList();
+            existingImpression = string.Join("\r\n", cleanLines);
+        }
+
+        // Step 4: Combine existing impression + RecoMD recommendations.
+        string combined;
+        if (string.IsNullOrWhiteSpace(existingImpression))
+        {
+            combined = recoText.Trim();
+        }
+        else
+        {
+            combined = existingImpression.TrimEnd() + "\r\n" + recoText.Trim();
+        }
+
+        Logger.Trace($"RecoMD: Combined impression ({existingImpression.Length} existing + {recoText.Trim().Length} reco = {combined.Length} chars)");
+
+        // Step 5: Replace impression content — exact same pattern as RadAI insert.
         lock (PasteLock)
         {
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(100);
 
-            // Ctrl+End to scroll to bottom of report (works better than Page Down for short reports)
+            _automationService.FocusFinalReportBox();
+            Thread.Sleep(100);
             NativeWindows.SendHotkey("ctrl+end");
             Thread.Sleep(100);
 
-            // Select impression content (highlights from first impression line to end)
             bool selected = _automationService.SelectImpressionContent();
             if (!selected)
             {
-                InvokeUI(() => _mainForm.ShowStatusToast("RecoMD copied but could not find IMPRESSION section", 3000));
+                InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section", 3000));
                 return;
             }
             Thread.Sleep(50);
 
-            // Right arrow to collapse selection to the END (deselect), then Enter + paste
-            NativeWindows.keybd_event(NativeWindows.VK_RIGHT, 0, 0, UIntPtr.Zero);
-            Thread.Sleep(10);
-            NativeWindows.keybd_event(NativeWindows.VK_RIGHT, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
-            Thread.Sleep(30);
-
-            NativeWindows.keybd_event(NativeWindows.VK_RETURN, 0, 0, UIntPtr.Zero);
-            Thread.Sleep(10);
-            NativeWindows.keybd_event(NativeWindows.VK_RETURN, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+            ClipboardService.SetText(combined);
             Thread.Sleep(50);
-
             NativeWindows.SendHotkey("ctrl+v");
             Thread.Sleep(100);
         }
 
-        Logger.Trace("RecoMD: Pasted recommendations into impression");
+        Logger.Trace("RecoMD: Pasted recommendations into Mosaic impression");
         InvokeUI(() => _mainForm.ShowStatusToast("RecoMD recommendations pasted", 2000));
     }
 
@@ -2334,7 +2445,9 @@ public class ActionController : IDisposable
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(100);
 
-            // Ctrl+End to scroll to bottom of report (works better than Page Down for short reports)
+            // Focus report editor and scroll to bottom
+            _automationService.FocusFinalReportBox();
+            Thread.Sleep(100);
             NativeWindows.SendHotkey("ctrl+end");
             Thread.Sleep(100);
 
@@ -2525,7 +2638,25 @@ public class ActionController : IDisposable
         _scrapeTimer = new System.Threading.Timer(_ =>
         {
             if (_isUserActive) return; // Don't scrape during user actions
-            if (Interlocked.CompareExchange(ref _scrapeRunning, 1, 0) != 0) return; // Prevent overlapping scrapes
+            if (Interlocked.CompareExchange(ref _scrapeRunning, 1, 0) != 0)
+            {
+                // Watchdog: if a scrape has been running for >30s, it's probably hung in a COM call.
+                // Force-release the guard so future scrapes aren't permanently blocked.
+                var startTicks = Interlocked.Read(ref _scrapeStartedTicks);
+                if (startTicks > 0)
+                {
+                    var elapsed = (DateTime.UtcNow.Ticks - startTicks) / (double)TimeSpan.TicksPerSecond;
+                    if (elapsed > 30)
+                    {
+                        Logger.Trace($"Scrape watchdog: force-releasing hung scrape after {elapsed:F0}s");
+                        Interlocked.Exchange(ref _scrapeRunning, 0);
+                        Interlocked.Exchange(ref _scrapeStartedTicks, 0);
+                        // Don't proceed on this tick — let the next timer fire start fresh
+                    }
+                }
+                return;
+            }
+            Interlocked.Exchange(ref _scrapeStartedTicks, DateTime.UtcNow.Ticks);
 
             try
             {
@@ -2561,6 +2692,15 @@ public class ActionController : IDisposable
                         RestartScrapeTimer(NormalScrapeIntervalMs);
                 }
 
+                // Scrape heartbeat: log every ~120 ticks (~4 min at 2s) to confirm timer is alive
+                _scrapeHeartbeatCount++;
+                if (_scrapeHeartbeatCount >= 120)
+                {
+                    _scrapeHeartbeatCount = 0;
+                    var acc = _automationService.LastAccession ?? "(none)";
+                    Logger.Trace($"Scrape heartbeat: acc={acc}, idle={_consecutiveIdleScrapes}, clinHist={_clinicalHistoryVisible}");
+                }
+
                 // Periodic GC: release accumulated FlaUI COM wrappers (IUIAutomationElement RCWs)
                 // to prevent progressive system slowdown from stale UIA references
                 _scrapesSinceLastGc++;
@@ -2569,39 +2709,6 @@ public class ActionController : IDisposable
                     _scrapesSinceLastGc = 0;
                     GC.Collect(2, GCCollectionMode.Optimized, false);
                     GC.WaitForPendingFinalizers();
-                }
-
-                // RecoMD: detect processed report and send to RecoMD
-                if (_recoMdPendingAfterProcess && !string.IsNullOrEmpty(reportText))
-                {
-                    bool textChanged = reportText != _reportTextBeforeProcess;
-                    bool timedOut = (DateTime.UtcNow - _recoMdPendingSince).TotalSeconds > 5;
-                    if (textChanged || timedOut)
-                    {
-                        _recoMdPendingAfterProcess = false;
-                        _reportTextBeforeProcess = null;
-                        Logger.Trace($"RecoMD: Sending after Process Report (changed={textChanged}, timedOut={timedOut})");
-                        // Capture all values now (before next scrape resets them)
-                        var recoReportText = RecoMdService.CleanReportText(reportText);
-                        var recoAcc = _automationService.LastAccession;
-                        var recoDesc = _automationService.LastDescription;
-                        var recoName = _automationService.LastPatientName;
-                        var recoGender = _automationService.LastPatientGender;
-                        var recoMrn = _automationService.LastMrn;
-                        var recoAge = _automationService.LastPatientAge ?? 0;
-                        Task.Run(async () =>
-                        {
-                            if (string.IsNullOrEmpty(recoAcc)) return;
-                            await _recoMdService.OpenReportAsync(recoAcc,
-                                recoDesc, recoName, recoGender, recoMrn, recoAge);
-                            var sent = await _recoMdService.SendReportTextAsync(recoAcc, recoReportText);
-                            if (sent)
-                            {
-                                InvokeUI(() => _mainForm.ShowStatusToast("Sent to RecoMD", 2000));
-                                BringRecoMdToFront();
-                            }
-                        });
-                    }
                 }
 
                 // Check for new study (non-empty accession different from last non-empty)
@@ -2755,7 +2862,8 @@ public class ActionController : IDisposable
                     // RecoMD: close previous study on accession change
                     if (_config.RecoMdEnabled)
                     {
-                        _recoMdPendingAfterProcess = false;
+                        _recoMdOpenedForAccession = null;
+                        _lastRecoMdSentText = null;
                         SendRecoMdToBack();
                         Task.Run(async () => await _recoMdService.CloseReportAsync());
                     }
@@ -2779,7 +2887,7 @@ public class ActionController : IDisposable
                     {
                         var stalePopup = _currentReportPopup;
                         _currentReportPopup = null;
-                        InvokeUI(() => { try { stalePopup.Close(); } catch { } });
+                        BatchUI(() => { try { stalePopup.Close(); } catch { } });
                     }
                     // [RadAI] Close stale RadAI impression popup/overlay from prior study
                     if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
@@ -2787,14 +2895,14 @@ public class ActionController : IDisposable
                         var staleRadAi = _currentRadAiPopup;
                         _currentRadAiPopup = null;
                         _pendingRadAiImpressionItems = null;
-                        InvokeUI(() => { try { staleRadAi.Close(); } catch { } });
+                        BatchUI(() => { try { staleRadAi.Close(); } catch { } });
                     }
                     if (_currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed)
                     {
                         var staleOverlay = _currentRadAiOverlay;
                         _currentRadAiOverlay = null;
                         _pendingRadAiImpressionItems = null;
-                        InvokeUI(() => { try { staleOverlay.Close(); } catch { } });
+                        BatchUI(() => { try { staleOverlay.Close(); } catch { } });
                     }
                     // Reset alert state tracking
                     _templateMismatchActive = false;
@@ -2833,14 +2941,14 @@ public class ActionController : IDisposable
                         // (only in always-show mode; alerts-only mode will show when alert triggers)
                         if (_config.HideClinicalHistoryWhenNoStudy && _config.ShowClinicalHistory && _config.AlwaysShowClinicalHistory)
                         {
-                            InvokeUI(() => _mainForm.ToggleClinicalHistory(true));
+                            BatchUI(() => _mainForm.ToggleClinicalHistory(true));
                             _clinicalHistoryVisible = true;
                         }
 
                         // Re-show indicator window if it was hidden due to no study
                         if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
                         {
-                            InvokeUI(() => _mainForm.ToggleIndicator(true));
+                            BatchUI(() => _mainForm.ToggleIndicator(true));
                         }
 
                         // Queue macros for insertion - they'll be inserted when clinical history is visible
@@ -2854,9 +2962,9 @@ public class ActionController : IDisposable
                         }
 
                         // Reset clinical history state on study change
-                        InvokeUI(() => _mainForm.OnClinicalHistoryStudyChanged());
+                        BatchUI(() => _mainForm.OnClinicalHistoryStudyChanged());
                         // Hide impression window on new study
-                        InvokeUI(() => _mainForm.HideImpressionWindow());
+                        BatchUI(() => _mainForm.HideImpressionWindow());
                         _searchingForImpression = false;
                         _impressionFromProcessReport = false;
 
@@ -2888,14 +2996,58 @@ public class ActionController : IDisposable
                         // (or always hide in alerts-only mode when no alerts)
                         if (_config.ShowClinicalHistory && (_config.HideClinicalHistoryWhenNoStudy || !_config.AlwaysShowClinicalHistory))
                         {
-                            InvokeUI(() => _mainForm.ToggleClinicalHistory(false));
+                            BatchUI(() => _mainForm.ToggleClinicalHistory(false));
                             _clinicalHistoryVisible = false;
                         }
 
                         // Hide indicator window if configured to hide when no study
                         if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
                         {
-                            InvokeUI(() => _mainForm.ToggleIndicator(false));
+                            BatchUI(() => _mainForm.ToggleIndicator(false));
+                        }
+                    }
+                }
+
+                // RecoMD: continuous send on every scrape tick (mimics Powerscribe sync)
+                if (_config.RecoMdEnabled && !string.IsNullOrEmpty(currentAccession) && !string.IsNullOrEmpty(reportText))
+                {
+                    var recoText = RecoMdService.CleanReportText(reportText);
+                    var recoAcc = currentAccession;
+                    var needsOpen = _recoMdOpenedForAccession != recoAcc;
+                    var textChanged = recoText != _lastRecoMdSentText;
+                    _lastRecoMdSentText = recoText;
+
+                    if (needsOpen)
+                    {
+                        // First send for this accession — open report then send text
+                        _recoMdOpenedForAccession = recoAcc;
+                        _recoMdSendTickCounter = 0;
+                        var recoDesc = _automationService.LastDescription;
+                        var recoName = _automationService.LastPatientName;
+                        var recoGender = _automationService.LastPatientGender;
+                        var recoMrn = _automationService.LastMrn;
+                        var recoAge = _automationService.LastPatientAge ?? 0;
+                        Logger.Trace($"RecoMD: Opening + sending for {recoAcc}");
+                        Task.Run(async () =>
+                        {
+                            await _recoMdService.OpenReportAsync(recoAcc, recoDesc, recoName, recoGender, recoMrn, recoAge);
+                            await _recoMdService.SendReportTextAsync(recoAcc, recoText);
+                        });
+                    }
+                    else
+                    {
+                        // Send immediately on text change, otherwise throttle to every 3rd tick
+                        _recoMdSendTickCounter++;
+                        if (textChanged)
+                        {
+                            _recoMdSendTickCounter = 0;
+                            Logger.Trace("RecoMD: Text changed, sending update");
+                            Task.Run(async () => await _recoMdService.SendReportTextAsync(recoAcc, recoText));
+                        }
+                        else if (_recoMdSendTickCounter >= 3)
+                        {
+                            _recoMdSendTickCounter = 0;
+                            Task.Run(async () => await _recoMdService.SendReportTextAsync(recoAcc, recoText));
                         }
                     }
                 }
@@ -3021,19 +3173,19 @@ public class ActionController : IDisposable
                     {
                         Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
                         _lastPopupReportText = reportText;
-                        InvokeUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
+                        BatchUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
                     }
                     else if (string.IsNullOrEmpty(reportText) && !string.IsNullOrEmpty(_lastPopupReportText))
                     {
                         // Report text is gone (being updated in Mosaic) but popup is visible with cached content
                         Logger.Trace("Popup showing stale content - report being updated");
-                        InvokeUI(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
+                        BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
                     }
                     else if (!string.IsNullOrEmpty(reportText) && !_processReportPressedForCurrentAccession)
                     {
                         // Report text is available and matches last text - clear stale indicator if showing
                         // Don't clear if Process Report was pressed (still waiting for report to regenerate)
-                        InvokeUI(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
+                        BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
                     }
                 }
 
@@ -3145,7 +3297,7 @@ public class ActionController : IDisposable
                                     if (!_lastAidocRelevant || _lastAidocFindings != aidocFindingText)
                                     {
                                         Logger.Trace($"Aidoc: Relevant findings '{aidocFindingText}' for study '{studyDescription}'");
-                                        InvokeUI(() => _mainForm.ShowStatusToast($"Aidoc: {aidocFindingText} detected", 5000));
+                                        BatchUI(() => _mainForm.ShowStatusToast($"Aidoc: {aidocFindingText} detected", 5000));
                                     }
                                 }
 
@@ -3180,44 +3332,45 @@ public class ActionController : IDisposable
                     if (_config.AlwaysShowClinicalHistory)
                     {
                         // ALWAYS-SHOW MODE: Current behavior - window always visible, show clinical history + border colors
+                        // Uses BatchUI to consolidate into single BeginInvoke (reduces WM_USER spam that kills keyboard hook)
 
                         // Only update if we have content - don't clear during brief processing gaps
                         if (!string.IsNullOrWhiteSpace(reportText))
                         {
-                            InvokeUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
-                            InvokeUI(() => _mainForm.UpdateClinicalHistoryTextColor(reportText));
+                            BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
+                            BatchUI(() => _mainForm.UpdateClinicalHistoryTextColor(reportText));
                         }
 
                         // Update template mismatch state
-                        InvokeUI(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
+                        BatchUI(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
 
                         // Update drafted state (green border when drafted) if enabled
                         if (_config.ShowDraftedIndicator)
                         {
                             bool isDrafted = _automationService.LastDraftedState;
-                            InvokeUI(() => _mainForm.UpdateClinicalHistoryDraftedState(isDrafted));
+                            BatchUI(() => _mainForm.UpdateClinicalHistoryDraftedState(isDrafted));
                         }
 
                         // Update gender check
                         if (_config.GenderCheckEnabled)
                         {
-                            InvokeUI(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
+                            BatchUI(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
                         }
                         else
                         {
-                            InvokeUI(() => _mainForm.UpdateGenderCheck(null, null));
+                            BatchUI(() => _mainForm.UpdateGenderCheck(null, null));
                         }
 
                         // Show Aidoc finding appended to clinical history in orange (not replacing it)
                         if (aidocAlertActive && aidocFindingText != null)
                         {
                             var captured = aidocVerifications;
-                            InvokeUI(() => _mainForm.SetAidocAppend(captured));
+                            BatchUI(() => _mainForm.SetAidocAppend(captured));
                         }
                         else if (!aidocAlertActive && prevAidocRelevant)
                         {
                             // Aidoc finding cleared - remove orange append
-                            InvokeUI(() => _mainForm.SetAidocAppend(null));
+                            BatchUI(() => _mainForm.SetAidocAppend(null));
                         }
                     }
                     else
@@ -3228,7 +3381,7 @@ public class ActionController : IDisposable
                         // (needed for auto-fix recheck to detect Mosaic self-corrections)
                         if (!string.IsNullOrWhiteSpace(reportText))
                         {
-                            InvokeUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
+                            BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
                         }
 
                         // Determine highest priority alert to show
@@ -3262,7 +3415,7 @@ public class ActionController : IDisposable
                             // Show notification box with alert
                             if (!_clinicalHistoryVisible)
                             {
-                                InvokeUI(() => _mainForm.ToggleClinicalHistory(true));
+                                BatchUI(() => _mainForm.ToggleClinicalHistory(true));
                                 _clinicalHistoryVisible = true;
                             }
 
@@ -3270,28 +3423,28 @@ public class ActionController : IDisposable
                             if (alertToShow == AlertType.GenderMismatch)
                             {
                                 // Gender mismatch uses the blinking display
-                                InvokeUI(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
+                                BatchUI(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
                             }
                             else if (alertToShow.HasValue)
                             {
                                 // Clear gender warning if not active
-                                InvokeUI(() => _mainForm.UpdateGenderCheck(null, null));
+                                BatchUI(() => _mainForm.UpdateGenderCheck(null, null));
                                 // Show the alert
-                                InvokeUI(() => _mainForm.ShowAlertOnly(alertToShow.Value, alertDetails));
+                                BatchUI(() => _mainForm.ShowAlertOnly(alertToShow.Value, alertDetails));
                             }
 
                             // Also update template mismatch border (for non-gender alerts)
                             if (alertToShow != AlertType.GenderMismatch)
                             {
-                                InvokeUI(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
+                                BatchUI(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
                             }
                         }
                         else if (_clinicalHistoryVisible)
                         {
                             // No alerts active - hide the notification box
-                            InvokeUI(() => _mainForm.UpdateGenderCheck(null, null));
-                            InvokeUI(() => _mainForm.ClearAlert());
-                            InvokeUI(() => _mainForm.ToggleClinicalHistory(false));
+                            BatchUI(() => _mainForm.UpdateGenderCheck(null, null));
+                            BatchUI(() => _mainForm.ClearAlert());
+                            BatchUI(() => _mainForm.ToggleClinicalHistory(false));
                             _clinicalHistoryVisible = false;
                         }
                     }
@@ -3330,14 +3483,14 @@ public class ActionController : IDisposable
                         // Don't auto-hide, just update if we have new content
                         if (!string.IsNullOrEmpty(impression))
                         {
-                            InvokeUI(() => _mainForm.UpdateImpression(impression));
+                            BatchUI(() => _mainForm.UpdateImpression(impression));
                         }
                     }
                     else if (isDrafted && !string.IsNullOrEmpty(impression))
                     {
                         // Auto-show impression when study is drafted (passive mode)
                         // Only show window if not already visible to avoid flashing
-                        InvokeUI(() =>
+                        BatchUI(() =>
                         {
                             _mainForm.ShowImpressionWindowIfNotVisible();
                             _mainForm.UpdateImpression(impression);
@@ -3347,11 +3500,16 @@ public class ActionController : IDisposable
                     {
                         // Hide impression window when study is not drafted (only for auto-shown)
                         // Don't hide if it was manually triggered by Process Report
-                        InvokeUI(() => _mainForm.HideImpressionWindow());
+                        BatchUI(() => _mainForm.HideImpressionWindow());
                     }
 
                     SkipImpression:;
                 }
+
+                // Re-assert topmost on all tool windows periodically.
+                // Other apps (Chrome, InteleViewer) can steal topmost status;
+                // without this, our windows stay behind until an action is triggered.
+                BatchUI(() => _mainForm.EnsureWindowsOnTop());
             }
             catch (Exception ex)
             {
@@ -3359,6 +3517,11 @@ public class ActionController : IDisposable
             }
             finally
             {
+                // Flush all batched UI updates in a single BeginInvoke call.
+                // This reduces WM_USER message spam that can cause Windows to
+                // silently remove the low-level keyboard hook.
+                FlushUI();
+                Interlocked.Exchange(ref _scrapeStartedTicks, 0);
                 Interlocked.Exchange(ref _scrapeRunning, 0);
             }
         }, null, 0, NormalScrapeIntervalMs);
