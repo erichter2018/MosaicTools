@@ -1,4 +1,6 @@
 using System.IO.Pipes;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -106,12 +108,20 @@ public class PipeService : IDisposable
         {
             try
             {
-                _pipe = new NamedPipeServerStream(
+                var pipeSecurity = new PipeSecurity();
+                pipeSecurity.AddAccessRule(new PipeAccessRule(
+                    WindowsIdentity.GetCurrent().User!,
+                    PipeAccessRights.FullControl,
+                    AccessControlType.Allow));
+
+                _pipe = NamedPipeServerStreamAcl.Create(
                     PipeName,
                     PipeDirection.InOut,
                     1,
                     PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous);
+                    PipeOptions.Asynchronous,
+                    0, 0,
+                    pipeSecurity);
 
                 Logger.Trace("PipeService: Waiting for connection...");
                 await _pipe.WaitForConnectionAsync(_cts.Token);

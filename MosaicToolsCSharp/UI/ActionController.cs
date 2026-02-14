@@ -126,6 +126,7 @@ public class ActionController : IDisposable
     private int _baselineCaptureAttempts = 0; // Tick counter for template DB fallback timing
     private bool _templateRecordedForStudy = false; // Only record template once per study, before Process Report
     private string? _lastPopupReportText; // Track what's currently displayed in popup for change detection
+    private DateTime _staleSetTime; // When SetStaleState(true) was last triggered
 
     // RVUCounter integration - track if discard dialog was shown for current accession
     // If dialog was shown while on accession X, and then X changes, X was discarded
@@ -1837,6 +1838,7 @@ public class ActionController : IDisposable
                 // (report is being processed, so current content may be stale)
                 if (_processReportPressedForCurrentAccession)
                 {
+                    _staleSetTime = DateTime.UtcNow;
                     _currentReportPopup.SetStaleState(true);
                 }
             });
@@ -3179,12 +3181,15 @@ public class ActionController : IDisposable
                     {
                         // Report text is gone (being updated in Mosaic) but popup is visible with cached content
                         Logger.Trace("Popup showing stale content - report being updated");
+                        _staleSetTime = DateTime.UtcNow;
                         BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
                     }
-                    else if (!string.IsNullOrEmpty(reportText) && !_processReportPressedForCurrentAccession)
+                    else if (!string.IsNullOrEmpty(reportText) &&
+                        (!_processReportPressedForCurrentAccession || (DateTime.UtcNow - _staleSetTime).TotalSeconds > 10))
                     {
-                        // Report text is available and matches last text - clear stale indicator if showing
-                        // Don't clear if Process Report was pressed (still waiting for report to regenerate)
+                        // Report text is available and matches last text - clear stale indicator if showing.
+                        // Don't clear if Process Report was just pressed (still waiting for report to regenerate),
+                        // but force-clear after 10s to prevent stuck stale indicator.
                         BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
                     }
                 }

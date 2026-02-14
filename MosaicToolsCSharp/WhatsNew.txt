@@ -1,3 +1,10 @@
+3.6.5
+- Get Prior: better parsing of InteleViewer descriptions (order codes, abbreviations, missing "contrast")
+- Fix named pipe access denied errors (explicit ACL)
+- Fix stale indicator getting stuck on report popup (10s auto-clear)
+- Report popup: pulsing yellow border and centered label when report is updating
+- Report popup: fix max height clipping at screen bottom
+
 3.6.4
 - Fix RecoMD paste: recommendations now insert inside IMPRESSION section reliably
 - Win32 clipboard API for reading Chromium clipboard (fixes empty reads from RecoMD)

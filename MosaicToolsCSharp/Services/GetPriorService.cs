@@ -173,8 +173,14 @@ public class GetPriorService
         // Remove leading MR modality indicator(s) - handle cases where description also starts with "MR"
         desc = Regex.Replace(desc, @"^(MR\s+)+", "", RegexOptions.IgnoreCase);
         desc = desc.Replace(" SIGNXED", "").Trim();
-        desc = desc.Replace(" + ", " and ").Replace(" W/O", " without").Replace(" W/", " with");
+        // Strip leading "- " and InteleViewer order code prefixes
+        desc = Regex.Replace(desc, @"^-\s+", "");
+        desc = Regex.Replace(desc, @"^[A-Z]{2,5}-\s*", "", RegexOptions.IgnoreCase);
+        desc = desc.Replace(" + ", " and ");
+        desc = Regex.Replace(desc, @"\bw/o\b", "without", RegexOptions.IgnoreCase);
+        desc = desc.Replace(" W/O", " without").Replace(" W/", " with");
         desc = desc.Replace(" W WO", " with and without").Replace(" WO", " without").Replace(" IV ", " ");
+        desc = Regex.Replace(desc, @"\bcont\b(?!rast)", "contrast", RegexOptions.IgnoreCase);
         // Normalize "without then with" to "with and without"
         desc = Regex.Replace(desc, @"\s+without\s+then\s+with\b", " with and without", RegexOptions.IgnoreCase);
 
@@ -213,6 +219,9 @@ public class GetPriorService
 
         if (!modifierFound)
             desc += " MR";
+
+        // Append "contrast" if "with" or "without" appears at the end without it
+        desc = Regex.Replace(desc, @"\b(with|without)\s*$", "$1 contrast");
 
         return desc;
     }
@@ -313,23 +322,36 @@ public class GetPriorService
         // Remove leading CT modality indicator(s) - handle cases where description also starts with "CT"
         desc = Regex.Replace(desc, @"^(CT\s+)+", "", RegexOptions.IgnoreCase);
         desc = desc.Replace("CTAPLACEHOLDER", "CTA").Replace(" SIGNXED", "").Trim();
-        
+
+        // Strip leading "- " (from "CT - Description" format)
+        desc = Regex.Replace(desc, @"^-\s+", "");
+
+        // Strip InteleViewer order code prefixes (e.g., "ICCT-", "ICT-", "NCCT-")
+        desc = Regex.Replace(desc, @"^[A-Z]{2,5}-\s*", "", RegexOptions.IgnoreCase);
+
         // Substitutions
         desc = desc.Replace(" + ", " and ").Replace("+", " and ").Replace(" imags", "").Replace("Head Or Brain", "brain");
         desc = desc.Replace(" W/CONTRST INCL W/O", " with and without contrast").Replace(" W/O", " without");
         desc = desc.Replace(" W/ ", " with ").Replace(" W/", " with ");
+        desc = Regex.Replace(desc, @"\bw/o\b", "without", RegexOptions.IgnoreCase);
         desc = Regex.Replace(desc, @"\s+W\s+", " with ", RegexOptions.IgnoreCase);
         desc = desc.Replace(" W WO", " with and without").Replace(" WO", " without").Replace(" IV ", " ");
-        
+
+        // Expand "cont" → "contrast" (standalone word, not part of "contrast" already)
+        desc = Regex.Replace(desc, @"\bcont\b(?!rast)", "contrast", RegexOptions.IgnoreCase);
+
+        // Lowercase before body part replacements so case-sensitive Replace works
+        desc = desc.ToLower();
+
         desc = desc.Replace("ab pe", "abdomen and pelvis").Replace("abd & pelvis", "abdomen and pelvis");
         desc = desc.Replace("abd/pelvis", "abdomen and pelvis").Replace(" abd pel ", " abdomen and pelvis ");
         desc = desc.Replace("abdomen/pelvis", "abdomen and pelvis").Replace("chest/abdomen/pelvis", "chest, abdomen, and pelvis");
-        desc = desc.Replace("Thorax", "chest").Replace("thorax", "chest").Replace("P.E", "PE").Replace("p.e", "PE");
-        desc = Regex.Replace(desc, @"\s+protocol\s*$", "", RegexOptions.IgnoreCase);
+        desc = desc.Replace("thorax", "chest").Replace("p.e", "PE");
+        desc = Regex.Replace(desc, @"\s+protocol\s*$", "");
         // Normalize "without then with" to "with and without"
-        desc = Regex.Replace(desc, @"\s+without\s+then\s+with\b", " with and without", RegexOptions.IgnoreCase);
+        desc = Regex.Replace(desc, @"\s+without\s+then\s+with\b", " with and without");
 
-        desc = ReorderLaterality(desc.ToLower());
+        desc = ReorderLaterality(desc);
         
         bool modifierFound = false;
         bool hasCta = false;
@@ -378,7 +400,10 @@ public class GetPriorService
         
         if (!modifierFound && !hasCta)
             desc += " CT";
-        
+
+        // Append "contrast" if "with" or "without" appears at the end without it
+        desc = Regex.Replace(desc, @"\b(with|without)\s*$", "$1 contrast");
+
         return desc;
     }
     

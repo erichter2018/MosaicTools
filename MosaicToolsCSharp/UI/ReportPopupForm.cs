@@ -104,6 +104,8 @@ public class ReportPopupForm : Form
     private CorrelationResult? _correlationResult;
     private CorrelationResult? _previousCorrelation; // Retained to prevent regression on noisy scrapes
     private bool _showingStaleContent; // True when showing cached report while live report is being updated
+    private System.Windows.Forms.Timer? _stalePulseTimer;
+    private float _stalePulsePhase; // 0..2π for smooth sine wave
     private int? _accessionSeed; // Hash of accession for consistent rainbow colors per study
 
     // Transparent mode rendering
@@ -114,6 +116,7 @@ public class ReportPopupForm : Form
     private readonly Font _headerFont;
     private readonly Font _modeLabelFont;
     private readonly Font _staleIndicatorFont;
+    private readonly Font _staleLabelFont; // Larger font for opaque mode stale label
 
     private readonly record struct HighlightEntry(string Text, Color BackColor);
     private List<HighlightEntry> _highlights = new();
@@ -191,7 +194,8 @@ public class ReportPopupForm : Form
         _normalFont = new Font(config.ReportPopupFontFamily, config.ReportPopupFontSize);
         _headerFont = new Font(config.ReportPopupFontFamily, config.ReportPopupFontSize + 2, FontStyle.Bold);
         _modeLabelFont = new Font("Segoe UI", 8f);
-        _staleIndicatorFont = new Font("Segoe UI", 11f, FontStyle.Bold);
+        _staleIndicatorFont = new Font("Segoe UI", 13f, FontStyle.Bold);
+        _staleLabelFont = new Font("Segoe UI", 13f, FontStyle.Bold);
 
         // Form properties
         FormBorderStyle = FormBorderStyle.None;
@@ -239,7 +243,7 @@ public class ReportPopupForm : Form
         _totalContentHeight = contentHeight;
 
         var screen = Screen.FromPoint(new Point(_config.ReportPopupX, _config.ReportPopupY));
-        int maxHeight = screen.WorkingArea.Height - 50;
+        int maxHeight = screen.WorkingArea.Bottom - _config.ReportPopupY - 10;
         int formHeight = Math.Clamp(contentHeight, 100, maxHeight);
 
         this.Size = new Size(width, formHeight);
@@ -432,7 +436,7 @@ public class ReportPopupForm : Form
             _totalContentHeight = contentHeight;
 
             var screen = Screen.FromControl(this);
-            int maxHeight = screen.WorkingArea.Height - 50;
+            int maxHeight = screen.WorkingArea.Bottom - Top - 10;
             int formHeight = Math.Clamp(contentHeight, 100, maxHeight);
 
             this.Size = new Size(Width, formHeight);
@@ -469,13 +473,40 @@ public class ReportPopupForm : Form
         {
             _showingStaleContent = isStale;
 
-            if (_useLayeredWindow)
+            if (isStale)
             {
-                RenderAndUpdate(); // Explicit repaint needed for layered windows
+                // Start pulsing border animation
+                _stalePulsePhase = 0;
+                if (_stalePulseTimer == null)
+                {
+                    _stalePulseTimer = new System.Windows.Forms.Timer { Interval = 40 }; // ~25fps
+                    _stalePulseTimer.Tick += (_, _) =>
+                    {
+                        _stalePulsePhase += 0.12f; // ~2.4s full cycle
+                        if (_stalePulsePhase > (float)(2 * Math.PI)) _stalePulsePhase -= (float)(2 * Math.PI);
+
+                        if (_useLayeredWindow)
+                            RenderAndUpdate();
+                        else
+                            Invalidate(); // triggers OnPaint for border
+                    };
+                }
+                _stalePulseTimer.Start();
             }
             else
             {
-                UpdateModeLabel(); // Update label for RichTextBox mode
+                // Stop pulsing
+                _stalePulseTimer?.Stop();
+            }
+
+            if (_useLayeredWindow)
+            {
+                RenderAndUpdate();
+            }
+            else
+            {
+                UpdateModeLabel();
+                Invalidate();
             }
         }
     }
@@ -505,6 +536,7 @@ public class ReportPopupForm : Form
             g.TextRenderingHint = TextRenderingHint.AntiAlias;
             g.Clear(Color.FromArgb(_backgroundAlpha, 20, 20, 20));
             DrawModeLabel(g);
+            DrawStalePulseBorder(g);
         }
 
         // Layer 2: highlights + ClearType text on opaque dark background
@@ -650,12 +682,12 @@ public class ReportPopupForm : Form
             string staleLabel = "Updating...";
             var staleSize = g.MeasureString(staleLabel, _staleIndicatorFont);
             float staleX = (Width - staleSize.Width) / 2; // Center horizontally
-            float staleY = 6;
+            float staleY = 8;
 
             // Semi-transparent yellow background banner
             using (var bgBrush = new SolidBrush(Color.FromArgb(180, 200, 180, 0)))
             {
-                g.FillRectangle(bgBrush, 0, 0, Width, staleSize.Height + 12);
+                g.FillRectangle(bgBrush, 0, 0, Width, staleSize.Height + 16);
             }
 
             // Black text on yellow background for contrast
@@ -685,6 +717,31 @@ public class ReportPopupForm : Form
 
         using var brush = new SolidBrush(Color.FromArgb(200, 140, 140, 140));
         g.DrawString(label, _modeLabelFont, brush, x, y);
+    }
+
+    /// <summary>
+    /// Draw a pulsing yellow border when showing stale content.
+    /// Opacity oscillates smoothly via sine wave.
+    /// </summary>
+    private void DrawStalePulseBorder(Graphics g)
+    {
+        if (!_showingStaleContent) return;
+
+        // Sine wave: oscillate alpha between 40 and 160
+        float t = (float)((Math.Sin(_stalePulsePhase) + 1.0) / 2.0); // 0..1
+        int alpha = (int)(40 + t * 120);
+        int borderWidth = 2;
+
+        using var pen = new Pen(Color.FromArgb(alpha, 220, 180, 0), borderWidth);
+        g.DrawRectangle(pen, borderWidth / 2, borderWidth / 2,
+            Width - borderWidth, Height - borderWidth);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        if (!_useLayeredWindow)
+            DrawStalePulseBorder(e.Graphics);
     }
 
     private int MeasureContentHeight(int width)
@@ -1152,7 +1209,7 @@ public class ReportPopupForm : Form
             Width = newWidth;
             _totalContentHeight = MeasureContentHeight(Width);
             var screen = Screen.FromControl(this);
-            int maxHeight = screen.WorkingArea.Height - 50;
+            int maxHeight = screen.WorkingArea.Bottom - Top - 10;
             Height = Math.Clamp(_totalContentHeight, 100, maxHeight);
             RenderAndUpdate();
             return;
@@ -1199,10 +1256,11 @@ public class ReportPopupForm : Form
         // Show stale indicator when report is being updated
         if (_showingStaleContent)
         {
-            _modeLabel.Text = "Updating...";
-            _modeLabel.Font = _staleIndicatorFont;
+            _modeLabel.Text = "  Updating...  ";
+            _modeLabel.Font = _staleLabelFont;
             _modeLabel.ForeColor = Color.FromArgb(200, 180, 0); // Yellow
             _modeLabel.BackColor = Color.FromArgb(80, 60, 0); // Dark yellow background
+            _modeLabel.Padding = new Padding(4, 2, 4, 2);
             _modeLabel.Visible = true;
         }
         else if ((_changesEnabled && _correlationEnabled) ||
@@ -1218,6 +1276,7 @@ public class ReportPopupForm : Form
             _modeLabel.Font = _modeLabelFont; // Restore normal font
             _modeLabel.ForeColor = Color.FromArgb(140, 140, 140); // Gray (default)
             _modeLabel.BackColor = Color.FromArgb(30, 30, 30); // Dark background (default)
+            _modeLabel.Padding = Padding.Empty;
             _modeLabel.Visible = true;
         }
         else
@@ -1231,7 +1290,15 @@ public class ReportPopupForm : Form
     {
         if (_modeLabel != null && _modeLabel.Visible)
         {
-            _modeLabel.Location = new Point(this.ClientSize.Width - _modeLabel.Width - 8, 4);
+            if (_showingStaleContent)
+            {
+                // Center horizontally for stale indicator
+                _modeLabel.Location = new Point((this.ClientSize.Width - _modeLabel.Width) / 2, 4);
+            }
+            else
+            {
+                _modeLabel.Location = new Point(this.ClientSize.Width - _modeLabel.Width - 8, 4);
+            }
         }
     }
 
@@ -1576,7 +1643,7 @@ public class ReportPopupForm : Form
         if (requiredTotalHeight < 100) requiredTotalHeight = 100;
 
         Rectangle workArea = Screen.FromControl(this).WorkingArea;
-        int maxHeight = workArea.Height - 50;
+        int maxHeight = workArea.Bottom - Top - 10;
 
         int finalFormHeight;
         bool needsScroll;
@@ -1965,10 +2032,16 @@ public class ReportPopupForm : Form
             _headerFont?.Dispose();
             _modeLabelFont?.Dispose();
             _staleIndicatorFont?.Dispose();
+            _staleLabelFont?.Dispose();
             if (_debounceTimer != null)
             {
                 _debounceTimer.Stop();
                 _debounceTimer.Dispose();
+            }
+            if (_stalePulseTimer != null)
+            {
+                _stalePulseTimer.Stop();
+                _stalePulseTimer.Dispose();
             }
         }
         base.Dispose(disposing);
