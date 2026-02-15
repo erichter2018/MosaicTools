@@ -1,3 +1,7 @@
+3.7.1
+- Fix system beep sounds during STT dictation (ReadOnly RichTextBox in preview)
+- Post-process dictation: spoken "colon" no longer converted to punctuation
+
 3.7.0
 - Custom STT Mode: cloud speech-to-text via Deepgram Nova-3 Medical (3.45% WER)
 - Direct-to-Mosaic dictation: transcription pastes directly into Mosaic's transcript box

@@ -130,6 +130,9 @@ public class TranscriptionForm : Form
     {
         if (InvokeRequired) { BeginInvoke(() => AppendResult(result)); return; }
 
+        // Temporarily allow edits — ReadOnly RichTextBox produces system beeps on modification
+        _textBox.ReadOnly = false;
+
         if (result.IsFinal)
         {
             // Clear and show the final text briefly before it disappears
@@ -161,12 +164,15 @@ public class TranscriptionForm : Form
             _textBox.SelectionStart = _textBox.TextLength;
             AutoGrowHeight();
         }
+
+        _textBox.ReadOnly = true;
     }
 
     private void RemoveInterimText()
     {
         if (_interimText.Length > 0)
         {
+            _textBox.ReadOnly = false;
             if (_insertionPoint + _interimText.Length <= _textBox.TextLength)
             {
                 _textBox.SelectionStart = _insertionPoint;
@@ -174,15 +180,18 @@ public class TranscriptionForm : Form
                 _textBox.SelectedText = "";
             }
             _interimText = "";
+            _textBox.ReadOnly = true;
         }
     }
 
     public void ClearTranscript()
     {
         if (InvokeRequired) { BeginInvoke(ClearTranscript); return; }
+        _textBox.ReadOnly = false;
         _textBox.Clear();
         _insertionPoint = 0;
         _interimText = "";
+        _textBox.ReadOnly = true;
         AutoGrowHeight();
     }
 

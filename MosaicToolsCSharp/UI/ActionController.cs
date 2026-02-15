@@ -363,7 +363,11 @@ public class ActionController : IDisposable
             // stays alive through the entire activate → focus → paste sequence.
             if (result.IsFinal && !string.IsNullOrEmpty(result.Transcript) && _sttDirectPasteActive)
             {
-                var textToPaste = " " + result.Transcript + " ";
+                // Dictation mode converts spoken "colon" to ":" — reverse it
+                // for medical context (body part). Preserve colon in times like 3:45.
+                var transcript = System.Text.RegularExpressions.Regex.Replace(
+                    result.Transcript, @"(?<!\d):(?!\d)", "colon");
+                var textToPaste = " " + transcript + " ";
                 var svc = _automationService;
                 var t = new Thread(() =>
                 {

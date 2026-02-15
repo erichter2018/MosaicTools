@@ -618,6 +618,7 @@ public static class NativeWindows
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     public static extern IntPtr SendMessage(IntPtr hWnd, int Msg, IntPtr wParam, ref COPYDATASTRUCT lParam);
 
+
     /// <summary>
     /// Send a string message to RVUCounter via WM_COPYDATA.
     /// </summary>
@@ -689,6 +690,7 @@ public static class NativeWindows
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_SHOWWINDOW = 0x0040;
+    public const uint SWP_NOACTIVATE = 0x0010;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
