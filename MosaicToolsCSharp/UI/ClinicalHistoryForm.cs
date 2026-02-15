@@ -740,7 +740,9 @@ public class ClinicalHistoryForm : Form
         _lastAutoFixedAccession = null;
         _lastAutoFixTime = DateTime.MinValue;
         _templateMismatch = false;
-        _strokeDetected = false;
+        // Note: _strokeDetected NOT cleared here — PerformStrokeDetection sets it explicitly.
+        // Clearing here caused a race condition: OnStudyChanged (double-BeginInvoke) would
+        // process AFTER SetStrokeState(true) and wipe the purple border.
         _aidocActive = false;
         _aidocAllAddressed = false;
         _aidocVerifications = null;

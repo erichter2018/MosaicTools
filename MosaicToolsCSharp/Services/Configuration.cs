@@ -344,15 +344,6 @@ public class Configuration
     [JsonPropertyName("stt_auto_punctuate")]
     public bool SttAutoPunctuate { get; set; } = false;
 
-    [JsonPropertyName("stt_show_confidence")]
-    public bool SttShowConfidence { get; set; } = true;
-
-    [JsonPropertyName("stt_low_confidence_threshold")]
-    public float SttLowConfidenceThreshold { get; set; } = 0.7f;
-
-    [JsonPropertyName("stt_auto_clear_on_process")]
-    public bool SttAutoClearOnProcess { get; set; } = false;
-
     [JsonPropertyName("stt_start_beep_enabled")]
     public bool SttStartBeepEnabled { get; set; } = true;
 
@@ -364,9 +355,6 @@ public class Configuration
 
     [JsonPropertyName("stt_stop_beep_volume")]
     public double SttStopBeepVolume { get; set; } = 0.08;
-
-    [JsonPropertyName("stt_grow_from_top")]
-    public bool SttGrowFromTop { get; set; } = true;
 
     [JsonPropertyName("stt_show_indicator")]
     public bool SttShowIndicator { get; set; } = true;

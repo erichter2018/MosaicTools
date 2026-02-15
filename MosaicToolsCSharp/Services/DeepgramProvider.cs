@@ -43,11 +43,13 @@ public class DeepgramProvider : ISttProvider
             _ws = new ClientWebSocket();
             _ws.Options.SetRequestHeader("Authorization", $"Token {_apiKey}");
 
-            // When auto-punctuate is off, use dictation mode so spoken
-            // "period", "comma", etc. are converted to punctuation marks
+            // Auto-punctuate: Deepgram adds punctuation based on speech patterns.
+            // Manual punctuation: no server-side punctuation — spoken punctuation
+            // words ("period", "comma", etc.) are converted client-side in ActionController,
+            // which lets us keep "colon" as a word (body part) instead of punctuation.
             var punctParams = _autoPunctuate
                 ? "&punctuate=true&smart_format=true"
-                : "&punctuate=false&dictation=true";
+                : "&punctuate=false";
 
             var uri = new Uri(
                 $"wss://api.deepgram.com/v1/listen" +

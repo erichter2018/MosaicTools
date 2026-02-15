@@ -1,3 +1,9 @@
+3.7.2
+- STT: restore focus to previous app (InteleViewer) after pasting into Mosaic
+- STT: fix spoken "colon" being swallowed — client-side punctuation replaces Deepgram dictation mode
+- STT: remove unused settings (grow direction, auto-clear, confidence highlighting)
+- Fix stroke detection purple border race condition
+
 3.7.1
 - Fix system beep sounds during STT dictation (ReadOnly RichTextBox in preview)
 - Post-process dictation: spoken "colon" no longer converted to punctuation

@@ -21,15 +21,12 @@ public class SttSection : SettingsSection
     private readonly Button _getKeyButton;
     private readonly ComboBox _audioDeviceCombo;
     private readonly CheckBox _autoPunctuateCheck;
-    private readonly CheckBox _showConfidenceCheck;
-    private readonly CheckBox _autoClearCheck;
     private readonly CheckBox _startBeepCheck;
     private readonly CheckBox _stopBeepCheck;
     private readonly TrackBar _startBeepVolume;
     private readonly TrackBar _stopBeepVolume;
     private readonly Label _startBeepVolLabel;
     private readonly Label _stopBeepVolLabel;
-    private readonly ComboBox _growDirectionCombo;
     private readonly CheckBox _showIndicatorCheck;
 
     // Hotkey capture boxes
@@ -139,22 +136,8 @@ public class SttSection : SettingsSection
         // Display options
         AddSectionDivider("Display");
 
-        _showConfidenceCheck = AddCheckBox("Highlight low-confidence words", LeftMargin + 25, _nextY,
-            "Words with confidence < 70% shown in amber, < 40% in red.");
-        _nextY += RowHeight;
-
-        _autoClearCheck = AddCheckBox("Auto-clear transcript on Process Report", LeftMargin + 25, _nextY,
-            "Clear transcription window after text is pasted into Mosaic.");
-        _nextY += RowHeight;
-
         _showIndicatorCheck = AddCheckBox("Show dictation indicator", LeftMargin + 25, _nextY,
             "Show a floating indicator with live transcription text while dictating.");
-        _nextY += RowHeight;
-
-        AddLabel("Grow direction:", LeftMargin + 25, _nextY + 3);
-        _growDirectionCombo = AddComboBox(LeftMargin + 140, _nextY, 150,
-            new[] { "Up (bottom anchored)", "Down (top anchored)" },
-            "Direction the transcription box grows as text fills. 'Up' keeps the bottom edge fixed.");
         _nextY += RowHeight;
 
         UpdateHeight();
@@ -243,10 +226,7 @@ public class SttSection : SettingsSection
         _stopBeepCheck.Enabled = enabled;
         _startBeepVolume.Enabled = enabled;
         _stopBeepVolume.Enabled = enabled;
-        _showConfidenceCheck.Enabled = enabled;
-        _autoClearCheck.Enabled = enabled;
         _showIndicatorCheck.Enabled = enabled;
-        _growDirectionCombo.Enabled = enabled;
     }
 
     private void OnGetKeyClick(object? sender, EventArgs e)
@@ -313,10 +293,7 @@ public class SttSection : SettingsSection
         _stopBeepCheck.Checked = config.SttStopBeepEnabled;
         _startBeepVolume.Value = Math.Clamp((int)(config.SttStartBeepVolume * 100), 0, 100);
         _stopBeepVolume.Value = Math.Clamp((int)(config.SttStopBeepVolume * 100), 0, 100);
-        _showConfidenceCheck.Checked = config.SttShowConfidence;
-        _autoClearCheck.Checked = config.SttAutoClearOnProcess;
         _showIndicatorCheck.Checked = config.SttShowIndicator;
-        _growDirectionCombo.SelectedIndex = config.SttGrowFromTop ? 0 : 1;
 
         UpdateControlStates();
     }
@@ -355,10 +332,7 @@ public class SttSection : SettingsSection
         config.SttStopBeepEnabled = _stopBeepCheck.Checked;
         config.SttStartBeepVolume = _startBeepVolume.Value / 100.0;
         config.SttStopBeepVolume = _stopBeepVolume.Value / 100.0;
-        config.SttShowConfidence = _showConfidenceCheck.Checked;
-        config.SttAutoClearOnProcess = _autoClearCheck.Checked;
         config.SttShowIndicator = _showIndicatorCheck.Checked;
-        config.SttGrowFromTop = _growDirectionCombo.SelectedIndex == 0;
     }
 
     /// <summary>

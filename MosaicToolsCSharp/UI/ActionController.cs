@@ -363,10 +363,9 @@ public class ActionController : IDisposable
             // stays alive through the entire activate → focus → paste sequence.
             if (result.IsFinal && !string.IsNullOrEmpty(result.Transcript) && _sttDirectPasteActive)
             {
-                // Dictation mode converts spoken "colon" to ":" — reverse it
-                // for medical context (body part). Preserve colon in times like 3:45.
-                var transcript = System.Text.RegularExpressions.Regex.Replace(
-                    result.Transcript, @"(?<!\d):(?!\d)", "colon");
+                // Client-side spoken punctuation → symbols (replaces Deepgram dictation mode
+                // so we can keep "colon" as a word for medical context).
+                var transcript = ApplySpokenPunctuation(result.Transcript);
                 var textToPaste = " " + transcript + " ";
                 var svc = _automationService;
                 var t = new Thread(() =>
@@ -387,6 +386,14 @@ public class ActionController : IDisposable
 
                         // Clear the indicator immediately after successful paste
                         InvokeUI(() => _mainForm.ClearTranscriptionForm());
+
+                        // Restore focus to the app the user was in before paste
+                        var restoreHwnd = _sttPasteTargetWindow;
+                        if (restoreHwnd != IntPtr.Zero && NativeWindows.IsWindow(restoreHwnd))
+                        {
+                            Thread.Sleep(50);
+                            NativeWindows.SetForegroundWindow(restoreHwnd);
+                        }
                     }
                 });
                 t.SetApartmentState(ApartmentState.STA);
@@ -3186,6 +3193,10 @@ public class ActionController : IDisposable
                         {
                             PerformStrokeDetection(currentAccession, reportText);
                         }
+                        else
+                        {
+                            InvokeUI(() => _mainForm.SetStrokeState(false));
+                        }
                     }
                     else
                     {
@@ -3789,6 +3800,40 @@ public class ActionController : IDisposable
         {
             Logger.Trace($"ExtractClarioPriorityAndClass error: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// [CustomSTT] Convert spoken punctuation words to symbols, except "colon" (medical term).
+    /// Replaces Deepgram's dictation mode so we have full control over which words convert.
+    /// </summary>
+    private static string ApplySpokenPunctuation(string text)
+    {
+        // Order matters: multi-word phrases first, then single words.
+        // Case-insensitive replacements with word boundaries.
+        // "colon" intentionally omitted — it's a body part, not punctuation.
+        var replacements = new (string pattern, string replacement)[]
+        {
+            (@"\bnew\s+paragraph\b",  "\n\n"),
+            (@"\bnew\s+line\b",       "\n"),
+            (@"\bexclamation\s+mark\b", "!"),
+            (@"\bquestion\s+mark\b",  "?"),
+            (@"\bperiod\b",           "."),
+            (@"\bcomma\b",            ","),
+            (@"\bsemicolon\b",        ";"),
+            (@"\bhyphen\b",           "-"),
+        };
+
+        var result = text;
+        foreach (var (pattern, replacement) in replacements)
+        {
+            result = System.Text.RegularExpressions.Regex.Replace(
+                result, pattern, replacement, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+
+        // Clean up spaces before punctuation marks (e.g., "word . next" → "word. next")
+        result = System.Text.RegularExpressions.Regex.Replace(result, @"\s+([.,;!?])", "$1");
+
+        return result;
     }
 
     private void PerformStrokeDetection(string? accession, string? reportText)
