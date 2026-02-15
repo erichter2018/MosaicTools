@@ -325,6 +325,67 @@ public class Configuration
     [JsonPropertyName("pick_list_popup_y")]
     public int PickListPopupY { get; set; } = 300;
 
+    // [CustomSTT] Custom STT Mode settings
+    [JsonPropertyName("custom_stt_enabled")]
+    public bool CustomSttEnabled { get; set; } = false;
+
+    [JsonPropertyName("stt_api_key")]
+    public string SttApiKey { get; set; } = "";
+
+    [JsonPropertyName("stt_provider")]
+    public string SttProvider { get; set; } = "deepgram";
+
+    [JsonPropertyName("stt_model")]
+    public string SttModel { get; set; } = "nova-3-medical";
+
+    [JsonPropertyName("stt_audio_device_name")]
+    public string SttAudioDeviceName { get; set; } = "";
+
+    [JsonPropertyName("stt_auto_punctuate")]
+    public bool SttAutoPunctuate { get; set; } = false;
+
+    [JsonPropertyName("stt_show_confidence")]
+    public bool SttShowConfidence { get; set; } = true;
+
+    [JsonPropertyName("stt_low_confidence_threshold")]
+    public float SttLowConfidenceThreshold { get; set; } = 0.7f;
+
+    [JsonPropertyName("stt_auto_clear_on_process")]
+    public bool SttAutoClearOnProcess { get; set; } = false;
+
+    [JsonPropertyName("stt_start_beep_enabled")]
+    public bool SttStartBeepEnabled { get; set; } = true;
+
+    [JsonPropertyName("stt_stop_beep_enabled")]
+    public bool SttStopBeepEnabled { get; set; } = true;
+
+    [JsonPropertyName("stt_start_beep_volume")]
+    public double SttStartBeepVolume { get; set; } = 0.08;
+
+    [JsonPropertyName("stt_stop_beep_volume")]
+    public double SttStopBeepVolume { get; set; } = 0.08;
+
+    [JsonPropertyName("stt_grow_from_top")]
+    public bool SttGrowFromTop { get; set; } = true;
+
+    [JsonPropertyName("stt_show_indicator")]
+    public bool SttShowIndicator { get; set; } = true;
+
+    [JsonPropertyName("stt_total_cost")]
+    public decimal SttTotalCost { get; set; } = 0;
+
+    [JsonPropertyName("transcription_form_x")]
+    public int TranscriptionFormX { get; set; } = 400;
+
+    [JsonPropertyName("transcription_form_y")]
+    public int TranscriptionFormY { get; set; } = 400;
+
+    [JsonPropertyName("transcription_form_width")]
+    public int TranscriptionFormWidth { get; set; } = 500;
+
+    [JsonPropertyName("transcription_form_height")]
+    public int TranscriptionFormHeight { get; set; } = 300;
+
     [JsonPropertyName("radai_popup_x")]  // [RadAI]
     public int RadAiPopupX { get; set; } = -1;
 

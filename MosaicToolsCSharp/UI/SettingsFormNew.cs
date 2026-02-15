@@ -328,6 +328,9 @@ public class SettingsFormNew : Form, IMessageFilter
         // RVU & Metrics
         _sections.Add(new RvuMetricsSection(_toolTip));
 
+        // Speech-to-Text  [CustomSTT]
+        _sections.Add(new SttSection(_toolTip));
+
         // Experimental
         _sections.Add(new ExperimentalSection(_toolTip));
 
@@ -424,6 +427,7 @@ public class SettingsFormNew : Form, IMessageFilter
         _mainForm.RefreshFloatingToolbar(_config.FloatingButtons);
         _mainForm.RefreshRvuLayout();
         _mainForm.RefreshConnectivityService();
+        _mainForm.RefreshSttPanel();  // [CustomSTT]
 
         Close();
     }

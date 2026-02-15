@@ -1,3 +1,11 @@
+3.7.0
+- Custom STT Mode: cloud speech-to-text via Deepgram Nova-3 Medical (3.45% WER)
+- Direct-to-Mosaic dictation: transcription pastes directly into Mosaic's transcript box
+- Floating dictation indicator with live interim/final text display
+- Per-word confidence highlighting (amber/red for low confidence)
+- STT settings section: provider, API key, audio device, beeps, hotkeys
+- Toggleable dictation indicator in settings
+
 3.6.5
 - Get Prior: better parsing of InteleViewer descriptions (order codes, abbreviations, missing "contrast")
 - Fix named pipe access denied errors (explicit ACL)

@@ -35,6 +35,10 @@ public class ActionController : IDisposable
     private readonly AidocService _aidocService;
     private readonly RadAiService? _radAiService;  // [RadAI] — null if RadAI not installed
     private readonly RecoMdService _recoMdService;
+    private SttService? _sttService;  // [CustomSTT] — null if Custom STT not enabled
+    private bool _sttDirectPasteActive; // [CustomSTT] Track whether direct paste is active
+    private IntPtr _sttPasteTargetWindow; // [CustomSTT] Window that had focus when recording started
+    private readonly object _directPasteLock = new(); // [CustomSTT] Serialize direct paste operations
 
     public PipeService PipeService => _pipeService;
 
@@ -293,6 +297,12 @@ public class ActionController : IDisposable
             _templateDatabase.Cleanup();
         }
 
+        // [CustomSTT] Initialize custom STT service
+        if (_config.CustomSttEnabled)
+        {
+            InitializeSttService();
+        }
+
         Logger.Trace($"ActionController started (Headless={App.IsHeadless})");
     }
     
@@ -314,6 +324,81 @@ public class ActionController : IDisposable
 
         // Restart scraper to pick up any interval changes
         ToggleMosaicScraper(true);
+
+        // [CustomSTT] Re-initialize STT service on settings change
+        if (_config.CustomSttEnabled && _sttService == null)
+        {
+            InitializeSttService();
+        }
+        else if (!_config.CustomSttEnabled && _sttService != null)
+        {
+            _ = _sttService.DisconnectAsync();
+            _sttService.Dispose();
+            _sttService = null;
+            Logger.Trace("SttService: Disabled and disposed");
+        }
+    }
+
+    // [CustomSTT] Initialize the custom STT service
+    private void InitializeSttService()
+    {
+        _sttService = new SttService(_config);
+        var error = _sttService.Initialize();
+        if (error != null)
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast(error));
+            Logger.Trace($"SttService: Init error: {error}");
+            _sttService.Dispose();
+            _sttService = null;
+            return;
+        }
+
+        _sttService.TranscriptionReceived += result =>
+        {
+            // Always update TranscriptionForm
+            InvokeUI(() => _mainForm.OnSttTranscriptionReceived(result));
+
+            // [CustomSTT] Direct paste: final results go straight into Mosaic's transcript box.
+            // Must run on STA thread (clipboard requires it). Use a dedicated STA thread that
+            // stays alive through the entire activate → focus → paste sequence.
+            if (result.IsFinal && !string.IsNullOrEmpty(result.Transcript) && _sttDirectPasteActive)
+            {
+                var textToPaste = " " + result.Transcript + " ";
+                var svc = _automationService;
+                var t = new Thread(() =>
+                {
+                    lock (_directPasteLock)
+                    {
+                        ClipboardService.SetText(textToPaste);
+                        Thread.Sleep(50);
+
+                        NativeWindows.ActivateMosaicForcefully();
+                        Thread.Sleep(100);
+                        svc.FocusTranscriptBox();
+                        Thread.Sleep(100);
+
+                        NativeWindows.SendHotkey("Ctrl+v");
+                        Thread.Sleep(50);
+                        Logger.Trace($"CustomSTT: Direct paste ({textToPaste.Length} chars): \"{(textToPaste.Length > 40 ? textToPaste[..40] + "..." : textToPaste)}\"");
+
+                        // Clear the indicator immediately after successful paste
+                        InvokeUI(() => _mainForm.ClearTranscriptionForm());
+                    }
+                });
+                t.SetApartmentState(ApartmentState.STA);
+                t.Start();
+            }
+        };
+        _sttService.CostUpdated += cost =>
+            InvokeUI(() => _mainForm.UpdateSttCost(cost));
+        _sttService.RecordingStateChanged += recording =>
+            InvokeUI(() => _mainForm.UpdateSttRecordingState(recording));
+        _sttService.StatusChanged += status =>
+            InvokeUI(() => _mainForm.UpdateSttStatus(status));
+        _sttService.ErrorOccurred += error =>
+            InvokeUI(() => _mainForm.ShowStatusToast(error));
+
+        Logger.Trace("SttService: Initialized successfully");
     }
 
     public void RefreshFloatingToolbar() =>
@@ -357,10 +442,10 @@ public class ActionController : IDisposable
 
     private void OnMicButtonPressed(string button)
     {
-        // If PTT is on, the Record Button is handled by OnRecordButtonStateChanged
+        // If PTT is on or Custom STT is on, the Record Button is handled by OnRecordButtonStateChanged
         // and should not trigger its mapped action (usually System Beep or Toggle)
         // "Record Button" = PowerMic, "Record" = SpeechMike
-        if (_config.DeadManSwitch && (button == "Record Button" || button == "Record"))
+        if ((_config.DeadManSwitch || _config.CustomSttEnabled) && (button == "Record Button" || button == "Record"))  // [CustomSTT]
         {
             return;
         }
@@ -393,6 +478,16 @@ public class ActionController : IDisposable
     
     private void OnRecordButtonStateChanged(bool isDown)
     {
+        // [CustomSTT] When Custom STT is enabled without PTT, toggle recording on press
+        if (_config.CustomSttEnabled && _sttService != null && !_config.DeadManSwitch)
+        {
+            if (isDown)
+            {
+                ThreadPool.QueueUserWorkItem(_ => PerformToggleRecord(null, sendKey: true));
+            }
+            return;
+        }
+
         // 1. Dead Man's Switch (Push-to-Talk) Active Logic
         if (_config.DeadManSwitch)
         {
@@ -688,8 +783,15 @@ public class ActionController : IDisposable
     private void PerformToggleRecord(bool? desiredState = null, bool sendKey = true)
     {
         Logger.Trace($"PerformToggleRecord (desired={desiredState}, sendKey={sendKey})");
-        
+
         _lastManualToggleTime = DateTime.Now;
+
+        // [CustomSTT] Route to SttService when Custom STT is enabled
+        if (_config.CustomSttEnabled && _sttService != null)
+        {
+            PerformToggleRecordStt(desiredState);
+            return;
+        }
 
         // 1. Python-style early exit: If we specify a state and are already there, just beeps
         if (desiredState.HasValue)
@@ -772,7 +874,63 @@ public class ActionController : IDisposable
 
         Logger.Trace($"Dictation toggle initiated. State: {_dictationActive}");
     }
-    
+
+    // [CustomSTT] Toggle recording via SttService instead of Mosaic's built-in dictation
+    private void PerformToggleRecordStt(bool? desiredState)
+    {
+        bool isRecording = _sttService!.IsRecording;
+
+        // If we have a desired state and are already there, just beep
+        if (desiredState.HasValue && desiredState.Value == isRecording)
+        {
+            Logger.Trace($"CustomSTT: Already in desired state ({desiredState}). Playing beep.");
+            bool shouldBeep = desiredState.Value ? _config.SttStartBeepEnabled : _config.SttStopBeepEnabled;
+            if (shouldBeep)
+            {
+                int freq = desiredState.Value ? 1000 : 500;
+                double vol = desiredState.Value ? _config.SttStartBeepVolume : _config.SttStopBeepVolume;
+                AudioService.PlayBeepAsync(freq, 200, vol);
+            }
+            return;
+        }
+
+        bool newState = desiredState ?? !isRecording;
+
+        if (newState)
+        {
+            // Start recording
+            _sttPasteTargetWindow = NativeWindows.GetForegroundWindow(); // [CustomSTT] Save target window before showing TranscriptionForm
+            _sttDirectPasteActive = true; // [CustomSTT] Enable direct paste to foreground window
+            if (_config.SttShowIndicator) // [CustomSTT] Only show indicator if enabled in settings
+                InvokeUI(() => _mainForm.ShowTranscriptionForm());
+            Task.Run(async () => await _sttService!.StartRecordingAsync()).Wait(2000);
+            _dictationActive = true;
+
+            if (_config.SttStartBeepEnabled)
+            {
+                AudioService.PlayBeepAsync(1000, 200, _config.SttStartBeepVolume);
+            }
+        }
+        else
+        {
+            // Stop recording — keep direct paste active until Finalize response arrives
+            Task.Run(async () => await _sttService!.StopRecordingAsync()).Wait(2000);
+            _dictationActive = false;
+
+            if (_config.SttStopBeepEnabled)
+            {
+                AudioService.PlayBeepAsync(500, 200, _config.SttStopBeepVolume);
+            }
+
+            // [CustomSTT] Wait for Finalize response, then hide indicator
+            Thread.Sleep(1500);
+            _sttDirectPasteActive = false;
+            InvokeUI(() => _mainForm.HideTranscriptionForm());
+        }
+
+        Logger.Trace($"CustomSTT: Recording toggled to {newState}");
+    }
+
     private void PerformProcessReport(string source = "Manual")
     {
         Logger.Trace($"Process Report (Source: {source})");
@@ -784,49 +942,78 @@ public class ActionController : IDisposable
         NativeWindows.KeyUpModifiers();
         Thread.Sleep(50);
 
-        bool dictationWasActive = _dictationActive;
-
-        // 1. Auto-stop dictation if enabled
-        if (_config.AutoStopDictation && _dictationActive)
+        // [CustomSTT] Custom STT path: text is already in Mosaic via direct paste. Just stop + Alt+P.
+        if (_config.CustomSttEnabled && _sttService != null)
         {
-            Logger.Trace("Process Report: Auto-stopping dictation...");
-            PerformToggleRecord(false, sendKey: true); // Explicitly ensure we STOP
-            Thread.Sleep(200);
-        }
-        
-        // 2. Conditional Alt+P logic for hardcoded mic buttons
-        // PowerMic: Skip Back is hardcoded to Process Report
-        // SpeechMike: Ins/Ovr is hardcoded to Process Report
-        bool isHardcodedProcessButton = (source == "Skip Back") || (source == "Ins/Ovr");
-        var currentMappings = GetCurrentMicMappings();
-        bool isButtonMappedToProcess =
-            currentMappings.GetValueOrDefault(Actions.ProcessReport)?.MicButton == "Skip Back" ||
-            currentMappings.GetValueOrDefault(Actions.ProcessReport)?.MicButton == "Ins/Ovr";
-
-        if (isHardcodedProcessButton && isButtonMappedToProcess)
-        {
-            // If the hardware button is pressed, and it's mapped to Process Report
-            if (dictationWasActive)
+            // Stop recording if active, wait for final transcripts to be pasted
+            if (_sttService.IsRecording)
             {
-                // If dictation was ON, the hardware button might fail to process the report.
-                // We send it manually AFTER stopping dictation.
-                Logger.Trace($"Process Report: Dictation was ON + {source}. Sending Alt+P manually.");
+                Logger.Trace("Process Report (CustomSTT): Stopping recording...");
+                Task.Run(async () => await _sttService.StopRecordingAsync()).Wait(2000);
+                _dictationActive = false;
+                if (_config.SttStopBeepEnabled)
+                    AudioService.PlayBeepAsync(500, 200, _config.SttStopBeepVolume);
+            }
+
+            // Wait for any pending direct paste to complete
+            Thread.Sleep(1500);
+            _sttDirectPasteActive = false;
+
+            // Hide the transcription indicator
+            InvokeUI(() => _mainForm.HideTranscriptionForm());
+
+            // Send Alt+P — text is already in Mosaic via direct paste
+            NativeWindows.ActivateMosaicForcefully();
+            Thread.Sleep(100);
+            NativeWindows.SendAltKey('P');
+        }
+        else
+        {
+            // Standard (non-CustomSTT) path
+            bool dictationWasActive = _dictationActive;
+
+            // 1. Auto-stop dictation if enabled
+            if (_config.AutoStopDictation && _dictationActive)
+            {
+                Logger.Trace("Process Report: Auto-stopping dictation...");
+                PerformToggleRecord(false, sendKey: true); // Explicitly ensure we STOP
+                Thread.Sleep(200);
+            }
+
+            // 2. Conditional Alt+P logic for hardcoded mic buttons
+            // PowerMic: Skip Back is hardcoded to Process Report
+            // SpeechMike: Ins/Ovr is hardcoded to Process Report
+            bool isHardcodedProcessButton = (source == "Skip Back") || (source == "Ins/Ovr");
+            var currentMappings = GetCurrentMicMappings();
+            bool isButtonMappedToProcess =
+                currentMappings.GetValueOrDefault(Actions.ProcessReport)?.MicButton == "Skip Back" ||
+                currentMappings.GetValueOrDefault(Actions.ProcessReport)?.MicButton == "Ins/Ovr";
+
+            if (isHardcodedProcessButton && isButtonMappedToProcess)
+            {
+                // If the hardware button is pressed, and it's mapped to Process Report
+                if (dictationWasActive)
+                {
+                    // If dictation was ON, the hardware button might fail to process the report.
+                    // We send it manually AFTER stopping dictation.
+                    Logger.Trace($"Process Report: Dictation was ON + {source}. Sending Alt+P manually.");
+                    NativeWindows.ActivateMosaicForcefully();
+                    Thread.Sleep(100);
+                    NativeWindows.SendAltKey('P');
+                }
+                else
+                {
+                    // Hardware handles it when dictation is OFF.
+                    Logger.Trace($"Process Report: Dictation was OFF + {source}. Skipping redundant Alt+P.");
+                }
+            }
+            else
+            {
+                // Standard behavior for Hotkeys, Toolbar, or non-hardcoded buttons
                 NativeWindows.ActivateMosaicForcefully();
                 Thread.Sleep(100);
                 NativeWindows.SendAltKey('P');
             }
-            else
-            {
-                // Hardware handles it when dictation is OFF.
-                Logger.Trace($"Process Report: Dictation was OFF + {source}. Skipping redundant Alt+P.");
-            }
-        }
-        else
-        {
-            // Standard behavior for Hotkeys, Toolbar, or non-hardcoded buttons
-            NativeWindows.ActivateMosaicForcefully();
-            Thread.Sleep(100);
-            NativeWindows.SendAltKey('P');
         }
         
         // Scroll down if enabled (3 rapid Page Down presses)
@@ -1024,27 +1211,40 @@ public class ActionController : IDisposable
         _currentAccessionSigned = true;
         Logger.Trace($"RVUCounter: Marked accession '{_lastNonEmptyAccession}' as signed");
 
-        // Check if Checkmark (PowerMic) or EoL (SpeechMike) button triggered this and is mapped to Sign Report
-        // If so, Mosaic handles the actual signing - we only clean up impression state
-        bool isHardcodedSignButton = (source == "Checkmark") || (source == "EoL");
-        var signMappings = GetCurrentMicMappings();
-        bool isButtonMappedToSign =
-            signMappings.GetValueOrDefault(Actions.SignReport)?.MicButton == "Checkmark" ||
-            signMappings.GetValueOrDefault(Actions.SignReport)?.MicButton == "EoL";
-
-        if (isHardcodedSignButton && isButtonMappedToSign)
+        // [CustomSTT] When Custom STT is enabled, always send Alt+F (Mosaic doesn't have the PowerMic)
+        if (_config.CustomSttEnabled)
         {
-            Logger.Trace($"Sign Report: {source} button - Mosaic handles signing, only cleaning up impression.");
-        }
-        else
-        {
-            // Standard behavior - send Alt+F
+            Logger.Trace("Sign Report (CustomSTT): Always sending Alt+F");
             NativeWindows.KeyUpModifiers();
             Thread.Sleep(50);
-
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(100);
             NativeWindows.SendAltKey('F');
+        }
+        else
+        {
+            // Check if Checkmark (PowerMic) or EoL (SpeechMike) button triggered this and is mapped to Sign Report
+            // If so, Mosaic handles the actual signing - we only clean up impression state
+            bool isHardcodedSignButton = (source == "Checkmark") || (source == "EoL");
+            var signMappings = GetCurrentMicMappings();
+            bool isButtonMappedToSign =
+                signMappings.GetValueOrDefault(Actions.SignReport)?.MicButton == "Checkmark" ||
+                signMappings.GetValueOrDefault(Actions.SignReport)?.MicButton == "EoL";
+
+            if (isHardcodedSignButton && isButtonMappedToSign)
+            {
+                Logger.Trace($"Sign Report: {source} button - Mosaic handles signing, only cleaning up impression.");
+            }
+            else
+            {
+                // Standard behavior - send Alt+F
+                NativeWindows.KeyUpModifiers();
+                Thread.Sleep(50);
+
+                NativeWindows.ActivateMosaicForcefully();
+                Thread.Sleep(100);
+                NativeWindows.SendAltKey('F');
+            }
         }
 
         // Close impression window on sign
@@ -3846,6 +4046,7 @@ public class ActionController : IDisposable
         _keyboardService?.Dispose();
         _automationService.Dispose();
         _pipeService?.Dispose();
+        _sttService?.Dispose();  // [CustomSTT]
         _actionEvent.Dispose();
     }
 }
