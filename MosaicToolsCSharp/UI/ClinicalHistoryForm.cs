@@ -158,6 +158,19 @@ public class ClinicalHistoryForm : Form
         }
     }
 
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+
+        // After any activation change, re-assert topmost.
+        // WM_ACTIVATE with WA_INACTIVE means another window took focus.
+        if (m.Msg == 0x0006 && (int)m.WParam == 0) // WM_ACTIVATE, WA_INACTIVE
+        {
+            if (!IsDisposed && IsHandleCreated)
+                NativeWindows.ForceTopMost(Handle);
+        }
+    }
+
     public ClinicalHistoryForm(Configuration config)
     {
         _config = config;
@@ -208,7 +221,7 @@ public class ClinicalHistoryForm : Form
 
         // Context menus for transparent mode (shown programmatically)
         _transparentDragMenu = new ContextMenuStrip();
-        _transparentDragMenu.Items.Add("Close", null, (_, _) => Close());
+        _transparentDragMenu.Items.Add("Close", null, (_, _) => BeginInvoke(() => Close()));
 
         _transparentContentMenu = new ContextMenuStrip();
         _transparentContentMenu.Items.Add("Create Critical Note", null, (_, _) => _onCriticalNoteClick?.Invoke());
@@ -316,7 +329,7 @@ public class ClinicalHistoryForm : Form
 
         // Context menu for drag bar
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Close", null, (_, _) => Close());
+        menu.Items.Add("Close", null, (_, _) => BeginInvoke(() => Close()));
         dragBar.ContextMenuStrip = menu;
 
         // Context menu for content label
@@ -1847,6 +1860,11 @@ public class ClinicalHistoryForm : Form
     {
         if (disposing)
         {
+            // Detach ALL context menus before disposal to prevent ObjectDisposedException
+            // in WinForms ModalMenuFilter.ProcessActivationChange on next focus change
+            ContextMenuStrip = null;
+            DetachChildContextMenus(this);
+
             _contentFont?.Dispose();
             _blinkTimer?.Stop();
             _blinkTimer?.Dispose();
@@ -1855,6 +1873,15 @@ public class ClinicalHistoryForm : Form
             _borderTooltip?.Dispose();
         }
         base.Dispose(disposing);
+    }
+
+    private static void DetachChildContextMenus(Control parent)
+    {
+        foreach (Control c in parent.Controls)
+        {
+            c.ContextMenuStrip = null;
+            DetachChildContextMenus(c);
+        }
     }
 
     #endregion

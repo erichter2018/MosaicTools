@@ -93,7 +93,7 @@ public class ImpressionForm : Form
         Padding = Padding.Empty;
 
         _dragBarMenu = new ContextMenuStrip();
-        _dragBarMenu.Items.Add("Close", null, (_, _) => Close());
+        _dragBarMenu.Items.Add("Close", null, (_, _) => BeginInvoke(() => Close()));
 
         MouseDown += OnTransparentMouseDown;
 
@@ -152,7 +152,7 @@ public class ImpressionForm : Form
 
         // Context menu for drag bar only (Close option)
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Close", null, (_, _) => Close());
+        menu.Items.Add("Close", null, (_, _) => BeginInvoke(() => Close()));
         dragBar.ContextMenuStrip = menu;
 
         // Left click to dismiss, right click to copy debug
@@ -558,6 +558,12 @@ public class ImpressionForm : Form
     {
         if (disposing)
         {
+            // Detach ALL context menus before disposal to prevent ObjectDisposedException
+            // in WinForms ModalMenuFilter.ProcessActivationChange on next focus change
+            ContextMenuStrip = null;
+            foreach (Control c in Controls)
+                c.ContextMenuStrip = null;
+
             _contentFont?.Dispose();
             _dragBarMenu?.Dispose();
         }

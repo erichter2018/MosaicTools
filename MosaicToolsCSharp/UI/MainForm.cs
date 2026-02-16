@@ -42,6 +42,10 @@ public class MainForm : Form
     private RvuPopupForm? _rvuPopup;
     private RvuPopupForm? _rvuDrawer; // persistent drawer for vertical stack
 
+    // Pace car alternation
+    private System.Windows.Forms.Timer? _paceCarTimer;
+    private bool _showingPaceCar;
+
     // Connectivity Monitor
     private readonly ConnectivityService _connectivityService;
     private readonly Panel _connectivityPanel;
@@ -66,6 +70,9 @@ public class MainForm : Form
     // Drag state
     private Point _dragStart;
     private bool _dragging;
+
+    // Settings dialog state (suppress topmost reassertion while open)
+    private volatile bool _settingsOpen;
     
     // Toast management
     private readonly List<Form> _activeToasts = new();
@@ -155,7 +162,7 @@ public class MainForm : Form
             BackColor = Color.Black,
             Width = rvuWidth,
             Dock = DockStyle.Right,
-            Visible = _config.RvuMetrics != RvuMetric.None
+            Visible = _config.RvuMetrics != RvuMetric.None || _config.PaceCarEnabled
         };
         typeof(Panel).GetProperty("DoubleBuffered",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
@@ -248,7 +255,7 @@ public class MainForm : Form
         };
         _sttPanel.Click += (_, _) => ToggleTranscriptionWindow();
 
-        _sttBaseCost = config.SttTotalCost; // [CustomSTT] Load cumulative cost from previous sessions
+        _sttBaseCost = config.SttActiveProviderCost; // [CustomSTT] Load cumulative cost for active provider
         _sttCostLabel = new Label
         {
             Text = $"${_sttBaseCost:F4}",
@@ -267,7 +274,7 @@ public class MainForm : Form
         sttCostMenu.Items.Add("Reset Total Cost", null, (_, _) =>
         {
             _sttBaseCost = 0;
-            _config.SttTotalCost = 0;
+            _config.SttActiveProviderCost = 0;
             _config.Save();
             _sttCostLabel.Text = "$0.0000";
             _transcriptionWindow?.UpdateCost(0);
@@ -336,9 +343,9 @@ public class MainForm : Form
         var contextMenu = new ContextMenuStrip();
         contextMenu.Items.Add("Settings", null, (_, _) => OpenSettings());
         contextMenu.Items.Add("Show Log", null, (_, _) => ShowLogFile());
-        contextMenu.Items.Add("Reload", null, (_, _) => ReloadApp());
+        contextMenu.Items.Add("Reload", null, (_, _) => BeginInvoke(() => ReloadApp()));
         contextMenu.Items.Add(new ToolStripSeparator());
-        contextMenu.Items.Add("Exit", null, (_, _) => ExitApp());
+        contextMenu.Items.Add("Exit", null, (_, _) => BeginInvoke(() => ExitApp()));
         ContextMenuStrip = contextMenu;
 
         // Always create system tray icon
@@ -346,7 +353,7 @@ public class MainForm : Form
         trayMenu.Items.Add("Settings", null, (_, _) => OpenSettings());
         trayMenu.Items.Add("Show Log", null, (_, _) => ShowLogFile());
         trayMenu.Items.Add(new ToolStripSeparator());
-        trayMenu.Items.Add("Exit", null, (_, _) => ExitApp());
+        trayMenu.Items.Add("Exit", null, (_, _) => BeginInvoke(() => ExitApp()));
 
         _trayIcon = new NotifyIcon
         {
@@ -428,7 +435,8 @@ public class MainForm : Form
         }
 
         // Start RVU counter timer if enabled (skip in headless mode - no UI to display it)
-        if (_config.RvuMetrics != RvuMetric.None && !App.IsHeadless)
+        bool hasRvuContent = _config.RvuMetrics != RvuMetric.None || _config.PaceCarEnabled;
+        if (hasRvuContent && !App.IsHeadless)
         {
             UpdateRvuDisplay(); // Initial update
             _rvuTimer = new System.Windows.Forms.Timer { Interval = 5000 }; // Update every 5 seconds
@@ -443,6 +451,21 @@ public class MainForm : Form
                 else
                     UpdateRvuDisplay();
             };
+
+            // Start pace car alternation timer if enabled
+            if (_config.PaceCarEnabled)
+            {
+                _paceCarTimer = new System.Windows.Forms.Timer
+                {
+                    Interval = _config.PaceCarAlternateSeconds * 1000
+                };
+                _paceCarTimer.Tick += (_, _) =>
+                {
+                    _showingPaceCar = !_showingPaceCar;
+                    UpdateRvuDisplay();
+                };
+                _paceCarTimer.Start();
+            }
         }
 
         // Subscribe to distraction alerts from RVUCounter — play escalating beeps
@@ -502,30 +525,41 @@ public class MainForm : Form
     /// </summary>
     private int GetRvuPanelWidth()
     {
-        if (_config.RvuMetrics == RvuMetric.None)
+        if (_config.RvuMetrics == RvuMetric.None && !_config.PaceCarEnabled)
             return 0;
 
         var metrics = _config.RvuMetrics;
         int count = CountSetFlags(metrics);
 
-        if (count == 0)
+        if (count == 0 && !_config.PaceCarEnabled)
             return 75; // Fallback
 
-        if (count <= 2)
+        int baseWidth;
+        if (count == 0)
+            baseWidth = 0;
+        else if (count <= 2)
         {
             // Horizontal layout: ~80px per metric + right padding
-            return count * 80 + 8;
+            baseWidth = count * 80 + 8;
+        }
+        else
+        {
+            // 3+ metrics: depends on layout
+            baseWidth = _config.RvuOverflowLayout switch
+            {
+                RvuOverflowLayout.Horizontal => count * 80 + 8,
+                RvuOverflowLayout.VerticalStack => 0, // All metrics in drawer
+                RvuOverflowLayout.HoverPopup => 80,    // First metric inline, rest on hover
+                RvuOverflowLayout.Carousel => 85,      // Single metric slot
+                _ => count * 80
+            };
         }
 
-        // 3+ metrics: depends on layout
-        return _config.RvuOverflowLayout switch
-        {
-            RvuOverflowLayout.Horizontal => count * 80 + 8,
-            RvuOverflowLayout.VerticalStack => 0, // All metrics in drawer
-            RvuOverflowLayout.HoverPopup => 80,    // First metric inline, rest on hover
-            RvuOverflowLayout.Carousel => 85,      // Single metric slot
-            _ => count * 80
-        };
+        // Pace car: "Now: 85.3 | Best: 78.1 at 3:30 AM | +7.2 ahead" needs ~320px
+        if (_config.PaceCarEnabled)
+            baseWidth = Math.Max(baseWidth, 320);
+
+        return baseWidth;
     }
 
     private static int CountSetFlags(RvuMetric m)
@@ -536,6 +570,8 @@ public class MainForm : Form
         if (m.HasFlag(RvuMetric.CurrentHour)) count++;
         if (m.HasFlag(RvuMetric.PriorHour)) count++;
         if (m.HasFlag(RvuMetric.EstimatedTotal)) count++;
+        if (m.HasFlag(RvuMetric.RvuPerStudy)) count++;
+        if (m.HasFlag(RvuMetric.AvgPerHour)) count++;
         return count;
     }
 
@@ -550,7 +586,7 @@ public class MainForm : Form
 
     private void UpdateRvuDisplay()
     {
-        if (_config.RvuMetrics == RvuMetric.None)
+        if (_config.RvuMetrics == RvuMetric.None && !_config.PaceCarEnabled)
         {
             _rvuPanel.Visible = false;
             return;
@@ -584,6 +620,15 @@ public class MainForm : Form
             lbl.Dispose();
         _rvuMetricLabels.Clear();
 
+        // Check if pace car should be shown this cycle
+        bool hasPaceData = pipeShift?.PaceDiff != null;
+        if (_showingPaceCar && _config.PaceCarEnabled && hasPaceData)
+        {
+            LayoutPaceCar(pipeShift!);
+            _rvuPanel.Visible = true;
+            return;
+        }
+
         // Build metric entries
         var allMetrics = BuildMetricEntries(shiftInfo, pipeShift);
         var metrics = _config.RvuMetrics;
@@ -591,7 +636,12 @@ public class MainForm : Form
 
         if (count == 0 || allMetrics.Count == 0)
         {
-            // Show "--" fallback
+            // Show "--" fallback (or hide if only pace car with no data yet)
+            if (_config.PaceCarEnabled)
+            {
+                _rvuPanel.Visible = false;
+                return;
+            }
             var fallback = CreateMetricLabel("--", Color.FromArgb(100, 100, 100));
             _rvuPanel.Controls.Add(fallback);
             _rvuMetricLabels.Add(fallback);
@@ -690,6 +740,20 @@ public class MainForm : Form
             var raw = pipeShift?.EstimatedTotalRvu;
             var val = raw.HasValue ? $"~{raw.Value:F0}" : "--";
             result.Add(($"{val} total", "Total:", val, carolinaBlue));
+        }
+
+        if (metrics.HasFlag(RvuMetric.RvuPerStudy))
+        {
+            var raw = pipeShift?.RvuPerStudy;
+            var val = raw.HasValue ? $"{raw.Value:F2}/st" : "--";
+            result.Add((val, "RVU/st:", val, carolinaBlue));
+        }
+
+        if (metrics.HasFlag(RvuMetric.AvgPerHour))
+        {
+            var raw = pipeShift?.AvgPerHour;
+            var val = raw.HasValue ? $"{raw.Value:F1}/h avg" : "--";
+            result.Add((val, "Avg/h:", val, carolinaBlue));
         }
 
         return result;
@@ -838,6 +902,94 @@ public class MainForm : Form
             };
             _carouselTimer.Start();
         }
+    }
+
+    /// <summary>
+    /// Pace car inline layout: "85.3 now | 78.1 best | +7.2 ahead"
+    /// Three segments: current RVU, comparison RVU with short label, diff with ahead/behind.
+    /// </summary>
+    private void LayoutPaceCar(ShiftInfoMessage pipeShift)
+    {
+        var diff = pipeShift.PaceDiff ?? 0;
+        var diffSign = diff >= 0 ? "+" : "";
+        var aheadBehind = diff >= 0 ? "ahead" : "behind";
+        var diffColor = diff >= 0
+            ? Color.FromArgb(100, 200, 100) // Green ahead
+            : Color.FromArgb(255, 120, 120); // Red behind
+        var carolinaBlue = Color.FromArgb(75, 156, 211);
+        var sepColor = Color.FromArgb(80, 80, 80);
+
+        // Shorten paceComparisonMode to a short label: "best", "week", "prior", etc.
+        var modeLabel = ShortenPaceMode(pipeShift.PaceComparisonMode);
+
+        var nowVal = pipeShift.PaceCurrentRvu?.ToString("F1") ?? "--";
+        var targetVal = pipeShift.PaceTargetRvu?.ToString("F1") ?? "--";
+        var diffVal = $"{diffSign}{Math.Abs(diff):F1}";
+
+        // Build the prior/target segment with time: "Best: 78.1 at 3:30 AM"
+        var timeText = pipeShift.PaceTimeText;
+        var priorSegment = !string.IsNullOrEmpty(timeText)
+            ? $"{modeLabel}: {targetVal} at {timeText}"
+            : $"{modeLabel}: {targetVal}";
+
+        // Build segments: "Now: 85.3 | Best: 78.1 at 3:30 AM | +7.2 ahead"
+        var parts = new List<(string Text, Color Color, FontStyle Style)>
+        {
+            ($"Now: {nowVal}", carolinaBlue, FontStyle.Bold),
+            (" | ", sepColor, FontStyle.Regular),
+            (priorSegment, carolinaBlue, FontStyle.Regular),
+            (" | ", sepColor, FontStyle.Regular),
+            ($"{diffVal} {aheadBehind}", diffColor, FontStyle.Bold)
+        };
+
+        // Create labels and measure total width
+        int totalWidth = 0;
+        var labels = new List<Label>();
+        foreach (var (text, color, style) in parts)
+        {
+            var lbl = CreateMetricLabel(text, color, style);
+            _rvuPanel.Controls.Add(lbl);
+            _rvuMetricLabels.Add(lbl);
+            labels.Add(lbl);
+            totalWidth += lbl.PreferredWidth;
+        }
+
+        // Tooltip with full description
+        var ttText = $"Now: {nowVal} RVU\n" +
+                     $"{pipeShift.PaceDescription ?? modeLabel}: {targetVal} RVU" +
+                     (pipeShift.PaceTimeText != null ? $" at {pipeShift.PaceTimeText}" : "") +
+                     $"\n{diffVal} {aheadBehind}";
+
+        // Center horizontally
+        int startX = Math.Max(2, (_rvuPanel.Width - totalWidth) / 2);
+        int centerY = (_rvuPanel.Height - (labels.Count > 0 ? labels[0].PreferredHeight : 16)) / 2;
+        int x = startX;
+        foreach (var lbl in labels)
+        {
+            lbl.Location = new Point(x, centerY);
+            x += lbl.PreferredWidth;
+            // Apply tooltip to each label segment
+            var tt = new ToolTip { InitialDelay = 200 };
+            tt.SetToolTip(lbl, ttText);
+        }
+    }
+
+    /// <summary>
+    /// Shorten pace comparison mode to a compact label for inline display.
+    /// </summary>
+    private static string ShortenPaceMode(string? mode)
+    {
+        if (string.IsNullOrEmpty(mode)) return "Prior";
+        return mode.ToLowerInvariant() switch
+        {
+            "best_week" => "Best",
+            "best_this_week" => "Best",
+            "prior_week" => "Prior",
+            "last_week" => "Last",
+            "average" => "Avg",
+            "avg" => "Avg",
+            _ => mode.Length > 6 ? mode[..6] : mode
+        };
     }
 
     private void OnRvuPanelMouseEnter(object? sender, EventArgs e)
@@ -1030,6 +1182,28 @@ public class MainForm : Form
         if (_config.RvuOverflowLayout != RvuOverflowLayout.VerticalStack)
             HideRvuDrawer();
 
+        // Stop/restart pace car timer
+        if (_paceCarTimer != null)
+        {
+            _paceCarTimer.Stop();
+            _paceCarTimer.Dispose();
+            _paceCarTimer = null;
+            _showingPaceCar = false;
+        }
+        if (_config.PaceCarEnabled && !App.IsHeadless)
+        {
+            _paceCarTimer = new System.Windows.Forms.Timer
+            {
+                Interval = _config.PaceCarAlternateSeconds * 1000
+            };
+            _paceCarTimer.Tick += (_, _) =>
+            {
+                _showingPaceCar = !_showingPaceCar;
+                UpdateRvuDisplay();
+            };
+            _paceCarTimer.Start();
+        }
+
         int newWidth = GetRvuPanelWidth();
         int oldWidth = _rvuPanel.Width;
         if (newWidth != oldWidth)
@@ -1042,10 +1216,11 @@ public class MainForm : Form
         if (Height != 40)
             Height = 40;
 
-        _rvuPanel.Visible = _config.RvuMetrics != RvuMetric.None;
+        bool hasContent = _config.RvuMetrics != RvuMetric.None || _config.PaceCarEnabled;
+        _rvuPanel.Visible = hasContent;
 
         // Restart or stop timer
-        if (_config.RvuMetrics != RvuMetric.None && !App.IsHeadless)
+        if (hasContent && !App.IsHeadless)
         {
             if (_rvuTimer == null)
             {
@@ -1714,6 +1889,8 @@ public class MainForm : Form
 
     public void EnsureWindowsOnTop()
     {
+        if (_settingsOpen) return; // Don't fight with settings dialog for Z-order
+
         if (InvokeRequired)
         {
             BeginInvoke(EnsureWindowsOnTop);
@@ -1778,8 +1955,8 @@ public class MainForm : Form
         _sttCostLabel.Text = $"${totalCost:F4}";
         _transcriptionWindow?.UpdateCost(totalCost);
 
-        // Persist cumulative cost
-        _config.SttTotalCost = totalCost;
+        // Persist cumulative cost for active provider
+        _config.SttActiveProviderCost = totalCost;
         _config.Save();
     }
 
@@ -1871,6 +2048,7 @@ public class MainForm : Form
         try
         {
             Logger.Trace("OpenSettings: Creating SettingsFormNew");
+            _settingsOpen = true;
             using var settingsForm = new SettingsFormNew(_config, _controller, this);
             Logger.Trace("OpenSettings: Showing dialog");
             settingsForm.ShowDialog(this);
@@ -1881,6 +2059,10 @@ public class MainForm : Form
             Logger.Trace($"OpenSettings: EXCEPTION - {ex.GetType().Name}: {ex.Message}");
             Logger.Trace($"OpenSettings: StackTrace - {ex.StackTrace}");
             MessageBox.Show($"Error opening settings: {ex.Message}\n\n{ex.StackTrace}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            _settingsOpen = false;
         }
     }
     
@@ -1933,6 +2115,12 @@ public class MainForm : Form
     {
         Logger.Trace($"App shutting down normally (CloseReason: {e.CloseReason})");
 
+        // Detach context menus before disposal to prevent ObjectDisposedException
+        // in WinForms message pump (ModalMenuFilter.ProcessActivationChange)
+        ContextMenuStrip = null;
+        if (_trayIcon != null)
+            _trayIcon.ContextMenuStrip = null;
+
         _controller.Dispose();
         _toolbarWindow?.Close();
         _indicatorWindow?.Close();
@@ -1951,6 +2139,12 @@ public class MainForm : Form
             _carouselTimer.Stop();
             _carouselTimer.Dispose();
             _carouselTimer = null;
+        }
+        if (_paceCarTimer != null)
+        {
+            _paceCarTimer.Stop();
+            _paceCarTimer.Dispose();
+            _paceCarTimer = null;
         }
         if (_rvuPopup != null && !_rvuPopup.IsDisposed)
         {

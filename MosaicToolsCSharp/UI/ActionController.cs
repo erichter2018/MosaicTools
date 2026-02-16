@@ -326,14 +326,20 @@ public class ActionController : IDisposable
         ToggleMosaicScraper(true);
 
         // [CustomSTT] Re-initialize STT service on settings change
-        if (_config.CustomSttEnabled && _sttService == null)
+        // Always reinitialize when enabled — provider, model, or key may have changed
+        if (_config.CustomSttEnabled)
         {
+            if (_sttService != null)
+            {
+                try { _sttService.Dispose(); } catch { } // Dispose handles disconnect internally
+                _sttService = null;
+                Logger.Trace("SttService: Disposed old instance for reinit");
+            }
             InitializeSttService();
         }
-        else if (!_config.CustomSttEnabled && _sttService != null)
+        else if (_sttService != null)
         {
-            _ = _sttService.DisconnectAsync();
-            _sttService.Dispose();
+            try { _sttService.Dispose(); } catch { }
             _sttService = null;
             Logger.Trace("SttService: Disabled and disposed");
         }
@@ -377,8 +383,12 @@ public class ActionController : IDisposable
 
                         NativeWindows.ActivateMosaicForcefully();
                         Thread.Sleep(100);
-                        svc.FocusTranscriptBox();
-                        Thread.Sleep(100);
+                        // FocusTranscriptBox disabled: Mosaic has two text boxes (transcript
+                        // and final report). Skipping explicit focus lets the paste go to
+                        // whichever box the user last clicked, which is the desired behavior.
+                        // Re-enable if we ever need to force transcript-only pasting again.
+                        // svc.FocusTranscriptBox();
+                        // Thread.Sleep(100);
 
                         NativeWindows.SendHotkey("Ctrl+v");
                         Thread.Sleep(50);
@@ -392,7 +402,7 @@ public class ActionController : IDisposable
                         if (restoreHwnd != IntPtr.Zero && NativeWindows.IsWindow(restoreHwnd))
                         {
                             Thread.Sleep(50);
-                            NativeWindows.SetForegroundWindow(restoreHwnd);
+                            NativeWindows.ActivateWindow(restoreHwnd, 500);
                         }
                     }
                 });
@@ -3825,6 +3835,34 @@ public class ActionController : IDisposable
 
         var result = text;
         foreach (var (pattern, replacement) in replacements)
+        {
+            result = System.Text.RegularExpressions.Regex.Replace(
+                result, pattern, replacement, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+
+        // Expand contractions that Deepgram favors over spoken full forms
+        var contractions = new (string pattern, string replacement)[]
+        {
+            (@"\bthere's\b",   "there is"),
+            (@"\bit's\b",      "it is"),
+            (@"\bthat's\b",    "that is"),
+            (@"\bdoesn't\b",   "does not"),
+            (@"\bdon't\b",     "do not"),
+            (@"\bdidn't\b",    "did not"),
+            (@"\bwasn't\b",    "was not"),
+            (@"\bisn't\b",     "is not"),
+            (@"\baren't\b",    "are not"),
+            (@"\bweren't\b",   "were not"),
+            (@"\bwouldn't\b",  "would not"),
+            (@"\bcouldn't\b",  "could not"),
+            (@"\bshouldn't\b", "should not"),
+            (@"\bhasn't\b",    "has not"),
+            (@"\bhaven't\b",   "have not"),
+            (@"\bhadn't\b",    "had not"),
+            (@"\bcan't\b",     "cannot"),
+            (@"\bwon't\b",     "will not"),
+        };
+        foreach (var (pattern, replacement) in contractions)
         {
             result = System.Text.RegularExpressions.Regex.Replace(
                 result, pattern, replacement, System.Text.RegularExpressions.RegexOptions.IgnoreCase);

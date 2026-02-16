@@ -1,4 +1,4 @@
-// [CustomSTT] Deepgram Nova-3 Medical WebSocket provider
+// [CustomSTT] AssemblyAI Universal Streaming v3 WebSocket provider
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -6,33 +6,31 @@ using System.Text.Json;
 namespace MosaicTools.Services;
 
 /// <summary>
-/// Streams audio to Deepgram via WebSocket and receives real-time transcription.
-/// Supports Nova-3 and Nova-3 Medical models.
+/// Streams audio to AssemblyAI via WebSocket and receives real-time transcription.
+/// Uses the Universal Streaming v3 API with raw PCM input.
 /// </summary>
-public class DeepgramProvider : ISttProvider
+public class AssemblyAIProvider : ISttProvider
 {
     private readonly string _apiKey;
-    private readonly string _model;
     private readonly bool _autoPunctuate;
     private ClientWebSocket? _ws;
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveTask;
     private volatile bool _connected;
 
-    public string Name => _model == "nova-3-medical" ? "Deepgram Nova-3 Medical" : "Deepgram Nova-3";
+    public string Name => "AssemblyAI";
     public bool RequiresApiKey => true;
-    public string? SignupUrl => "https://console.deepgram.com/signup";
-    public decimal CostPerMinute => _model == "nova-3-medical" ? 0.0077m : 0.0059m;
+    public string? SignupUrl => "https://www.assemblyai.com/dashboard/signup";
+    public decimal CostPerMinute => 0.0025m; // $0.15/hr
     public bool IsConnected => _connected;
 
     public event Action<SttResult>? TranscriptionReceived;
     public event Action<string>? ErrorOccurred;
     public event Action<bool>? ConnectionStateChanged;
 
-    public DeepgramProvider(string apiKey, string model = "nova-3-medical", bool autoPunctuate = false)
+    public AssemblyAIProvider(string apiKey, bool autoPunctuate = false)
     {
         _apiKey = apiKey;
-        _model = model;
         _autoPunctuate = autoPunctuate;
     }
 
@@ -41,22 +39,13 @@ public class DeepgramProvider : ISttProvider
         try
         {
             _ws = new ClientWebSocket();
-            _ws.Options.SetRequestHeader("Authorization", $"Token {_apiKey}");
+            _ws.Options.SetRequestHeader("Authorization", _apiKey);
 
-            // Auto-punctuate: Deepgram adds punctuation based on speech patterns.
-            // Manual punctuation: no server-side punctuation — spoken punctuation
-            // words ("period", "comma", etc.) are converted client-side in ActionController,
-            // which lets us keep "colon" as a word (body part) instead of punctuation.
-            var punctParams = _autoPunctuate
-                ? "&punctuate=true&smart_format=true"
-                : "&punctuate=false";
-
+            // format_turns=true gives punctuated/capitalized output on end-of-turn
             var uri = new Uri(
-                $"wss://api.deepgram.com/v1/listen" +
-                $"?model={_model}" +
-                $"&encoding=linear16&sample_rate=16000&channels=1" +
-                punctParams +
-                $"&interim_results=true&endpointing=300");
+                "wss://streaming.assemblyai.com/v3/ws" +
+                "?sample_rate=16000&encoding=pcm_s16le" +
+                "&format_turns=true");
 
             await _ws.ConnectAsync(uri, ct);
             _connected = true;
@@ -65,18 +54,18 @@ public class DeepgramProvider : ISttProvider
             _receiveCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _receiveTask = Task.Run(() => ReceiveLoop(_receiveCts.Token));
 
-            Logger.Trace($"DeepgramProvider: Connected ({_model})");
+            Logger.Trace("AssemblyAIProvider: Connected");
             return true;
         }
-        catch (WebSocketException ex) when (ex.Message.Contains("401") || ex.Message.Contains("Unauthorized"))
+        catch (WebSocketException ex) when (ex.Message.Contains("401") || ex.Message.Contains("403") || ex.Message.Contains("Unauthorized"))
         {
-            Logger.Trace($"DeepgramProvider: Auth failed: {ex.Message}");
+            Logger.Trace($"AssemblyAIProvider: Auth failed: {ex.Message}");
             ErrorOccurred?.Invoke("Invalid API key. Check Settings.");
             return false;
         }
         catch (Exception ex)
         {
-            Logger.Trace($"DeepgramProvider: Connect failed: {ex.Message}");
+            Logger.Trace($"AssemblyAIProvider: Connect failed: {ex.Message}");
             ErrorOccurred?.Invoke($"Connection failed: {ex.Message}");
             return false;
         }
@@ -87,42 +76,30 @@ public class DeepgramProvider : ISttProvider
         if (_ws?.State != WebSocketState.Open) return;
         try
         {
-            // Fire-and-forget binary frame (audio is time-sensitive, don't await)
             _ = _ws.SendAsync(new ArraySegment<byte>(pcmData, offset, count),
                 WebSocketMessageType.Binary, true, CancellationToken.None);
         }
         catch (Exception ex)
         {
-            Logger.Trace($"DeepgramProvider: SendAudio error: {ex.Message}");
+            Logger.Trace($"AssemblyAIProvider: SendAudio error: {ex.Message}");
         }
     }
 
-    public async Task SendKeepAliveAsync()
-    {
-        if (_ws?.State != WebSocketState.Open) return;
-        try
-        {
-            var msg = Encoding.UTF8.GetBytes("{\"type\":\"KeepAlive\"}");
-            await _ws.SendAsync(new ArraySegment<byte>(msg), WebSocketMessageType.Text, true, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            Logger.Trace($"DeepgramProvider: KeepAlive error: {ex.Message}");
-        }
-    }
+    public Task SendKeepAliveAsync() => Task.CompletedTask; // AssemblyAI doesn't need keepalives
 
     public async Task FinalizeAsync()
     {
         if (_ws?.State != WebSocketState.Open) return;
         try
         {
-            var msg = Encoding.UTF8.GetBytes("{\"type\":\"Finalize\"}");
+            // ForceEndpoint immediately ends the current turn
+            var msg = Encoding.UTF8.GetBytes("{\"type\":\"ForceEndpoint\"}");
             await _ws.SendAsync(new ArraySegment<byte>(msg), WebSocketMessageType.Text, true, CancellationToken.None);
-            Logger.Trace("DeepgramProvider: Sent Finalize");
+            Logger.Trace("AssemblyAIProvider: Sent ForceEndpoint");
         }
         catch (Exception ex)
         {
-            Logger.Trace($"DeepgramProvider: Finalize error: {ex.Message}");
+            Logger.Trace($"AssemblyAIProvider: ForceEndpoint error: {ex.Message}");
         }
     }
 
@@ -140,8 +117,7 @@ public class DeepgramProvider : ISttProvider
         {
             if (ws?.State == WebSocketState.Open)
             {
-                // Send CloseStream message
-                var msg = Encoding.UTF8.GetBytes("{\"type\":\"CloseStream\"}");
+                var msg = Encoding.UTF8.GetBytes("{\"type\":\"Terminate\"}");
                 await ws.SendAsync(new ArraySegment<byte>(msg), WebSocketMessageType.Text, true, CancellationToken.None);
                 await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None);
             }
@@ -154,12 +130,12 @@ public class DeepgramProvider : ISttProvider
         ws?.Dispose();
         cts?.Dispose();
 
-        Logger.Trace("DeepgramProvider: Disconnected");
+        Logger.Trace("AssemblyAIProvider: Disconnected");
     }
 
     private async Task ReceiveLoop(CancellationToken ct)
     {
-        var buffer = new byte[8192];
+        var buffer = new byte[16384];
         var msgBuffer = new List<byte>();
 
         try
@@ -170,7 +146,7 @@ public class DeepgramProvider : ISttProvider
 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    Logger.Trace("DeepgramProvider: Server closed connection");
+                    Logger.Trace("AssemblyAIProvider: Server closed connection");
                     break;
                 }
 
@@ -187,12 +163,12 @@ public class DeepgramProvider : ISttProvider
         catch (OperationCanceledException) { }
         catch (WebSocketException ex)
         {
-            Logger.Trace($"DeepgramProvider: WebSocket error: {ex.Message}");
+            Logger.Trace($"AssemblyAIProvider: WebSocket error: {ex.Message}");
             ErrorOccurred?.Invoke($"Connection lost: {ex.Message}");
         }
         catch (Exception ex)
         {
-            Logger.Trace($"DeepgramProvider: Receive error: {ex.Message}");
+            Logger.Trace($"AssemblyAIProvider: Receive error: {ex.Message}");
         }
         finally
         {
@@ -208,56 +184,75 @@ public class DeepgramProvider : ISttProvider
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            // Check for error responses
-            if (root.TryGetProperty("type", out var typeEl) && typeEl.GetString() == "Error")
+            var type = root.GetProperty("type").GetString();
+
+            if (type == "Begin")
             {
-                var errMsg = root.TryGetProperty("description", out var desc) ? desc.GetString() : "Unknown error";
-                Logger.Trace($"DeepgramProvider: Error response: {errMsg}");
-                ErrorOccurred?.Invoke(errMsg ?? "Deepgram error");
+                Logger.Trace("AssemblyAIProvider: Session started");
                 return;
             }
 
-            // Only process Results type
-            if (!root.TryGetProperty("type", out var t) || t.GetString() != "Results")
+            if (type == "Termination")
+            {
+                if (root.TryGetProperty("audio_duration_seconds", out var dur))
+                    Logger.Trace($"AssemblyAIProvider: Session ended, audio={dur.GetDouble():F1}s");
                 return;
+            }
 
-            var channel = root.GetProperty("channel");
-            var alternatives = channel.GetProperty("alternatives");
-            if (alternatives.GetArrayLength() == 0) return;
+            if (type != "Turn") return;
 
-            var alt = alternatives[0];
-            var transcript = alt.GetProperty("transcript").GetString() ?? "";
-            if (string.IsNullOrEmpty(transcript)) return;
+            var endOfTurn = root.GetProperty("end_of_turn").GetBoolean();
+            var turnIsFormatted = root.GetProperty("turn_is_formatted").GetBoolean();
+            var transcript = root.GetProperty("transcript").GetString() ?? "";
 
-            var confidence = alt.TryGetProperty("confidence", out var conf) ? conf.GetSingle() : 0f;
-            var isFinal = root.GetProperty("is_final").GetBoolean();
-            var speechFinal = root.TryGetProperty("speech_final", out var sf) && sf.GetBoolean();
-            var duration = root.TryGetProperty("duration", out var dur) ? dur.GetDouble() : 0;
+            // Skip unformatted end-of-turn — wait for the formatted version
+            if (endOfTurn && !turnIsFormatted) return;
 
-            // Parse per-word data
+            // Parse word-level data
             var words = Array.Empty<SttWord>();
-            if (alt.TryGetProperty("words", out var wordsEl))
+            if (root.TryGetProperty("words", out var wordsEl))
             {
                 var wordList = new List<SttWord>();
                 foreach (var w in wordsEl.EnumerateArray())
                 {
+                    var text = w.GetProperty("text").GetString() ?? "";
                     wordList.Add(new SttWord(
-                        Text: w.GetProperty("word").GetString() ?? "",
-                        PunctuatedText: w.TryGetProperty("punctuated_word", out var pw) ? pw.GetString() ?? "" : w.GetProperty("word").GetString() ?? "",
+                        Text: text,
+                        PunctuatedText: text,
                         Confidence: w.TryGetProperty("confidence", out var wc) ? wc.GetSingle() : 1f,
-                        StartTime: w.TryGetProperty("start", out var ws) ? ws.GetDouble() : 0,
-                        EndTime: w.TryGetProperty("end", out var we) ? we.GetDouble() : 0
+                        // AssemblyAI times are in milliseconds
+                        StartTime: w.TryGetProperty("start", out var ws) ? ws.GetInt32() / 1000.0 : 0,
+                        EndTime: w.TryGetProperty("end", out var we) ? we.GetInt32() / 1000.0 : 0
                     ));
                 }
                 words = wordList.ToArray();
             }
 
-            var result = new SttResult(transcript, words, confidence, isFinal, speechFinal, duration);
+            // Build display text
+            string displayTranscript;
+            if (endOfTurn && turnIsFormatted)
+            {
+                // Final formatted result — use the properly punctuated/capitalized transcript
+                displayTranscript = transcript;
+            }
+            else
+            {
+                // Interim: join all words (including non-final) for live preview
+                displayTranscript = string.Join(" ", words.Select(w => w.Text));
+            }
+
+            if (string.IsNullOrEmpty(displayTranscript) && words.Length == 0) return;
+
+            var confidence = words.Length > 0 ? words.Average(w => w.Confidence) : 0f;
+            var duration = words.Length > 0 ? words.Max(w => w.EndTime) - words.Min(w => w.StartTime) : 0;
+            var isFinal = endOfTurn && turnIsFormatted;
+
+            var result = new SttResult(displayTranscript, words, confidence, isFinal, isFinal, duration);
             TranscriptionReceived?.Invoke(result);
         }
         catch (Exception ex)
         {
-            Logger.Trace($"DeepgramProvider: Parse error: {ex.Message}");
+            Logger.Trace($"AssemblyAIProvider: Parse error: {ex.Message}");
         }
     }
 

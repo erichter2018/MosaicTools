@@ -270,6 +270,12 @@ public class Configuration
     [JsonPropertyName("rvu_goal_per_hour")]
     public double RvuGoalPerHour { get; set; } = 10.0;
 
+    [JsonPropertyName("pace_car_enabled")]
+    public bool PaceCarEnabled { get; set; } = false;
+
+    [JsonPropertyName("pace_car_alternate_seconds")]
+    public int PaceCarAlternateSeconds { get; set; } = 8;
+
     // Distraction Alert (beep volume when RVUCounter sends alert)
     [JsonPropertyName("distraction_alert_volume")]
     public double DistractionAlertVolume { get; set; } = 0.15;
@@ -330,7 +336,19 @@ public class Configuration
     public bool CustomSttEnabled { get; set; } = false;
 
     [JsonPropertyName("stt_api_key")]
-    public string SttApiKey { get; set; } = "";
+    public string SttApiKey { get; set; } = ""; // Deepgram API key (kept for backward compat)
+
+    [JsonPropertyName("stt_assemblyai_api_key")]
+    public string SttAssemblyAIApiKey { get; set; } = "";
+
+    [JsonPropertyName("stt_corti_client_id")]
+    public string SttCortiClientId { get; set; } = "";
+
+    [JsonPropertyName("stt_corti_client_secret")]
+    public string SttCortiClientSecret { get; set; } = "";
+
+    [JsonPropertyName("stt_corti_environment")]
+    public string SttCortiEnvironment { get; set; } = "us"; // "us" or "eu"
 
     [JsonPropertyName("stt_provider")]
     public string SttProvider { get; set; } = "deepgram";
@@ -360,7 +378,36 @@ public class Configuration
     public bool SttShowIndicator { get; set; } = true;
 
     [JsonPropertyName("stt_total_cost")]
-    public decimal SttTotalCost { get; set; } = 0;
+    public decimal SttTotalCost { get; set; } = 0; // Deepgram (backward compat)
+
+    [JsonPropertyName("stt_total_cost_assemblyai")]
+    public decimal SttTotalCostAssemblyAI { get; set; } = 0;
+
+    [JsonPropertyName("stt_total_cost_corti")]
+    public decimal SttTotalCostCorti { get; set; } = 0;
+
+    /// <summary>
+    /// Get/set the total cost for the currently active provider.
+    /// </summary>
+    [JsonIgnore]
+    public decimal SttActiveProviderCost
+    {
+        get => SttProvider switch
+        {
+            "assemblyai" => SttTotalCostAssemblyAI,
+            "corti" => SttTotalCostCorti,
+            _ => SttTotalCost
+        };
+        set
+        {
+            switch (SttProvider)
+            {
+                case "assemblyai": SttTotalCostAssemblyAI = value; break;
+                case "corti": SttTotalCostCorti = value; break;
+                default: SttTotalCost = value; break;
+            }
+        }
+    }
 
     [JsonPropertyName("transcription_form_x")]
     public int TranscriptionFormX { get; set; } = 400;
@@ -898,7 +945,9 @@ public enum RvuMetric
     PerHour = 2,
     CurrentHour = 4,
     PriorHour = 8,
-    EstimatedTotal = 16
+    EstimatedTotal = 16,
+    RvuPerStudy = 32,
+    AvgPerHour = 64
 }
 
 /// <summary>

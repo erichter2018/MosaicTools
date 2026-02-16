@@ -77,7 +77,7 @@ public class FloatingToolbarForm : Form
 
         // Context menu
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Close", null, (_, _) => Close());
+        menu.Items.Add("Close", null, (_, _) => BeginInvoke(() => Close()));
         ContextMenuStrip = menu;
 
         // Render buttons

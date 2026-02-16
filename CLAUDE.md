@@ -35,19 +35,20 @@ c:\Users\erik.richter\Desktop\dotnet\dotnet.exe
 - **Output location**: `bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe`
 
 ### Full Build & Run Command (Use This!)
-```powershell
-taskkill /IM MosaicTools.exe /F 2>$null; Start-Sleep -Seconds 1; c:\Users\erik.richter\Desktop\dotnet\dotnet.exe publish -c Release -r win-x64 --self-contained; Start-Process "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe"
+```bash
+EXE="C:/Users/erik.richter/Desktop/MosaicTools/MosaicToolsCSharp/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/MosaicTools.exe" && taskkill //IM MosaicTools.exe //F 2>/dev/null; for i in $(seq 1 20); do [ ! -f "$EXE" ] && break; rm -f "$EXE" 2>/dev/null && break; sleep 0.5; done && cd /c/Users/erik.richter/Desktop/MosaicTools/MosaicToolsCSharp && /c/Users/erik.richter/Desktop/dotnet/dotnet.exe publish -c Release -r win-x64 --self-contained 2>&1 && start "" "$EXE"
 ```
 
+**IMPORTANT:** Use `//IM` and `//F` (double slash) — MSYS2/Git Bash converts single `/I` to a file path, silently breaking taskkill.
+
 ### Quick Debug Build (syntax checking only)
-```powershell
-c:\Users\erik.richter\Desktop\dotnet\dotnet.exe build MosaicTools.csproj
+```bash
+cd /c/Users/erik.richter/Desktop/MosaicTools/MosaicToolsCSharp && /c/Users/erik.richter/Desktop/dotnet/dotnet.exe build MosaicTools.csproj
 ```
 
 ### Common Issues
-1. **"File is being used by another process"** - Kill MosaicTools.exe first, wait a second
-2. **"Project file does not exist"** - Use `MosaicTools.csproj`, not `MosaicToolsCSharp.csproj`
-3. **"dotnet is not recognized"** - Use full path: `c:\Users\erik.richter\Desktop\dotnet\dotnet.exe`
+1. **"Project file does not exist"** - Use `MosaicTools.csproj`, not `MosaicToolsCSharp.csproj`
+2. **"dotnet is not recognized"** - Use full path as shown above
 
 ---
 

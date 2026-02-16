@@ -49,7 +49,15 @@ public record ShiftInfoMessage(
     [property: JsonPropertyName("isShiftActive")] bool IsShiftActive,
     [property: JsonPropertyName("currentHourRvu")] double? CurrentHourRvu = null,
     [property: JsonPropertyName("priorHourRvu")] double? PriorHourRvu = null,
-    [property: JsonPropertyName("estimatedTotalRvu")] double? EstimatedTotalRvu = null
+    [property: JsonPropertyName("estimatedTotalRvu")] double? EstimatedTotalRvu = null,
+    [property: JsonPropertyName("rvuPerStudy")] double? RvuPerStudy = null,
+    [property: JsonPropertyName("avgPerHour")] double? AvgPerHour = null,
+    [property: JsonPropertyName("paceComparisonMode")] string? PaceComparisonMode = null,
+    [property: JsonPropertyName("paceTimeText")] string? PaceTimeText = null,
+    [property: JsonPropertyName("paceDescription")] string? PaceDescription = null,
+    [property: JsonPropertyName("paceCurrentRvu")] double? PaceCurrentRvu = null,
+    [property: JsonPropertyName("paceTargetRvu")] double? PaceTargetRvu = null,
+    [property: JsonPropertyName("paceDiff")] double? PaceDiff = null
 );
 
 /// <summary>
@@ -209,7 +217,7 @@ public class PipeService : IDisposable
                     {
                         _latestShiftInfo = msg;
                     }
-                    Logger.Trace($"PipeService: Received shift_info: rvu={msg.TotalRvu:F1}, records={msg.RecordCount}, active={msg.IsShiftActive}, curHr={msg.CurrentHourRvu?.ToString("F1") ?? "null"}, prevHr={msg.PriorHourRvu?.ToString("F1") ?? "null"}, est={msg.EstimatedTotalRvu?.ToString("F1") ?? "null"}");
+                    Logger.Trace($"PipeService: Received shift_info: rvu={msg.TotalRvu:F1}, records={msg.RecordCount}, active={msg.IsShiftActive}, curHr={msg.CurrentHourRvu?.ToString("F1") ?? "null"}, prevHr={msg.PriorHourRvu?.ToString("F1") ?? "null"}, est={msg.EstimatedTotalRvu?.ToString("F1") ?? "null"}, rvu/st={msg.RvuPerStudy?.ToString("F2") ?? "null"}, avg/h={msg.AvgPerHour?.ToString("F1") ?? "null"}, pace={msg.PaceDiff?.ToString("F1") ?? "null"}");
                     ShiftInfoUpdated?.Invoke();
                 }
             }

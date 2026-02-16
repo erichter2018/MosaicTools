@@ -133,13 +133,28 @@ public class SttService : IDisposable
         _recording = false;
         RecordingStateChanged?.Invoke(false);
 
-        try
+        // Capture and null the reference to prevent races with OnRecordingStopped/OnConnectionStateChanged
+        var waveIn = _waveIn;
+        _waveIn = null;
+
+        if (waveIn != null)
         {
-            _waveIn?.StopRecording();
-        }
-        catch (Exception ex)
-        {
-            Logger.Trace($"SttService: StopRecording error: {ex.Message}");
+            try
+            {
+                // Unhook events BEFORE stopping to prevent re-entrant disposal
+                // (OnRecordingStopped fires during StopRecording on a callback thread)
+                waveIn.DataAvailable -= OnAudioDataAvailable;
+                waveIn.RecordingStopped -= OnRecordingStopped;
+                waveIn.StopRecording();
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"SttService: StopRecording error: {ex.Message}");
+            }
+            finally
+            {
+                try { waveIn.Dispose(); } catch { }
+            }
         }
 
         // Send Finalize to flush pending transcripts
@@ -199,9 +214,8 @@ public class SttService : IDisposable
             ErrorOccurred?.Invoke($"Audio device error: {e.Exception.Message}");
             StatusChanged?.Invoke("Audio error");
         }
-
-        _waveIn?.Dispose();
-        _waveIn = null;
+        // Don't dispose _waveIn here — disposal is handled by StopRecordingAsync/Dispose
+        // to avoid racing with the native StopRecording call that triggered this callback.
     }
 
     private void OnTranscriptionReceived(SttResult result)
@@ -231,7 +245,24 @@ public class SttService : IDisposable
             // Connection dropped while recording
             _recording = false;
             RecordingStateChanged?.Invoke(false);
-            try { _waveIn?.StopRecording(); } catch { }
+
+            var waveIn = _waveIn;
+            _waveIn = null;
+            if (waveIn != null)
+            {
+                try
+                {
+                    waveIn.DataAvailable -= OnAudioDataAvailable;
+                    waveIn.RecordingStopped -= OnRecordingStopped;
+                    waveIn.StopRecording();
+                }
+                catch { }
+                finally
+                {
+                    try { waveIn.Dispose(); } catch { }
+                }
+            }
+
             StatusChanged?.Invoke("Disconnected");
 
             // Attempt reconnection
@@ -319,6 +350,8 @@ public class SttService : IDisposable
         return _config.SttProvider switch
         {
             "deepgram" => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate),
+            "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, _config.SttAutoPunctuate),
+            "corti" => new CortiProvider(_config.SttCortiClientId, _config.SttCortiClientSecret, _config.SttCortiEnvironment, _config.SttAutoPunctuate),
             _ => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate)
         };
     }
@@ -340,8 +373,29 @@ public class SttService : IDisposable
     public void Dispose()
     {
         _keepAliveTimer?.Dispose();
-        try { _waveIn?.StopRecording(); } catch { }
-        _waveIn?.Dispose();
-        _provider?.Dispose();
+
+        var waveIn = _waveIn;
+        _waveIn = null;
+        if (waveIn != null)
+        {
+            try
+            {
+                waveIn.DataAvailable -= OnAudioDataAvailable;
+                waveIn.RecordingStopped -= OnRecordingStopped;
+                waveIn.StopRecording();
+            }
+            catch { }
+            finally
+            {
+                try { waveIn.Dispose(); } catch { }
+            }
+        }
+
+        // Dispose provider on a background thread to avoid blocking the UI thread
+        // (provider Dispose calls DisconnectAsync synchronously which can take seconds)
+        var provider = _provider;
+        _provider = null;
+        if (provider != null)
+            Task.Run(() => { try { provider.Dispose(); } catch { } });
     }
 }

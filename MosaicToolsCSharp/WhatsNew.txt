@@ -1,3 +1,8 @@
+3.7.3
+- RVU metrics: new RVU/Study and Avg/h display options
+- Pace car: alternating display comparing current RVU pace to best/prior/avg shifts
+- Expanded RVUCounter pipe integration with pace and per-study data
+
 3.7.2
 - STT: restore focus to previous app (InteleViewer) after pasting into Mosaic
 - STT: fix spoken "colon" being swallowed — client-side punctuation replaces Deepgram dictation mode
