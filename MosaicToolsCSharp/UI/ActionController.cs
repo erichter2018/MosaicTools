@@ -1167,18 +1167,17 @@ public class ActionController : IDisposable
         }
 
         // [RadAI] Auto-generate and insert RadAI impression on Process Report
+        // Instead of polling in a Task.Run (which races with Mosaic's editor rebuild),
+        // we set a flag and let the scrape timer trigger RadAI when the report stabilizes.
+        // After Alt+P, Mosaic rebuilds the ProseMirror editor for 15-25 seconds during which
+        // GetFinalReportFast can't update LastFinalReport (U+FFFC filtering). The scrape timer
+        // naturally detects when the editor is ready again.
         if (_config.RadAiAutoOnProcess && _radAiService != null)
         {
-            Logger.Trace("RadAI: Auto-generating and inserting impression after Process Report");
-            Task.Run(() =>
-            {
-                // Wait for Mosaic to finish processing so report text is up-to-date
-                Thread.Sleep(2000);
-                // Queue generate, then insert — action queue is sequential so insert
-                // runs after impression API call completes and overlay/popup is shown
-                _actionQueue.Enqueue(new ActionRequest { Action = Actions.RadAiImpression, Source = "AutoProcess" });
-                _actionQueue.Enqueue(new ActionRequest { Action = "__RadAiInsert__", Source = "AutoProcess" });
-            });
+            Logger.Trace("RadAI: Scheduling auto-insert after Process Report");
+            _radAiPreProcessReport = _automationService.LastFinalReport ?? "";
+            _radAiAutoInsertRequestTime = DateTime.Now;
+            _radAiAutoInsertPending = true;
         }
 
         // Popup will auto-update via scrape timer when report changes
@@ -1232,7 +1231,8 @@ public class ActionController : IDisposable
                 _lastPopupReportText = null;
             });
         }
-        // [RadAI] Close RadAI impression popup/overlay on sign
+        // [RadAI] Cancel pending auto-insert and close popup/overlay on sign
+        _radAiAutoInsertPending = false;
         if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
         {
             _pendingRadAiImpressionItems = null;
@@ -1971,6 +1971,9 @@ public class ActionController : IDisposable
     private volatile Form? _currentRadAiPopup;          // [RadAI]
     private volatile RadAiOverlayForm? _currentRadAiOverlay;  // [RadAI] overlay mode (ShowReportAfterProcess)
     private volatile string[]? _pendingRadAiImpressionItems;  // [RadAI]
+    private volatile bool _radAiAutoInsertPending;             // [RadAI] waiting for scrape to stabilize after Process Report
+    private string? _radAiPreProcessReport;                    // [RadAI] report text captured before Process Report
+    private DateTime _radAiAutoInsertRequestTime;              // [RadAI] timeout for pending auto-insert
 
     private void PerformShowReport()
     {
@@ -2260,6 +2263,8 @@ public class ActionController : IDisposable
             return;
         }
 
+        // Fresh scrape to ensure we have the latest report text (not stale cache)
+        _automationService.GetFinalReportFast();
         var reportText = _automationService.LastFinalReport;
         if (string.IsNullOrEmpty(reportText))
         {
@@ -2946,6 +2951,31 @@ public class ActionController : IDisposable
                     GC.WaitForPendingFinalizers();
                 }
 
+                // [RadAI] Auto-insert: trigger when scrape succeeds after Process Report.
+                // After Alt+P, Mosaic rebuilds the editor (15-25s). During rebuild, GetFinalReportFast
+                // returns stale cached text (U+FFFC filter). Once the editor stabilizes, the scrape
+                // returns fresh text that differs from the pre-process snapshot — that's our signal.
+                if (_radAiAutoInsertPending && !string.IsNullOrEmpty(reportText))
+                {
+                    if ((DateTime.Now - _radAiAutoInsertRequestTime).TotalSeconds > 60)
+                    {
+                        Logger.Trace("RadAI: Auto-insert timed out (60s), cancelling");
+                        _radAiAutoInsertPending = false;
+                    }
+                    else
+                    {
+                        var preProcess = _radAiPreProcessReport ?? "";
+                        if (reportText != preProcess
+                            && reportText.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase))
+                        {
+                            Logger.Trace($"RadAI: Report stabilized after Process Report ({reportText.Length} chars), triggering auto-insert");
+                            _radAiAutoInsertPending = false;
+                            _actionQueue.Enqueue(new ActionRequest { Action = Actions.RadAiImpression, Source = "AutoProcess" });
+                            _actionQueue.Enqueue(new ActionRequest { Action = "__RadAiInsert__", Source = "AutoProcess" });
+                        }
+                    }
+                }
+
                 // Check for new study (non-empty accession different from last non-empty)
                 var currentAccession = _automationService.LastAccession;
 
@@ -3124,7 +3154,8 @@ public class ActionController : IDisposable
                         _currentReportPopup = null;
                         BatchUI(() => { try { stalePopup.Close(); } catch { } });
                     }
-                    // [RadAI] Close stale RadAI impression popup/overlay from prior study
+                    // [RadAI] Cancel pending auto-insert and close stale popup/overlay from prior study
+                    _radAiAutoInsertPending = false;
                     if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
                     {
                         var staleRadAi = _currentRadAiPopup;

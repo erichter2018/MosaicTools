@@ -1,3 +1,7 @@
+3.7.5
+- Fix RadAI auto-insert timing: wait for Mosaic editor to stabilize before inserting
+- Prevent duplicate RadAI attempts when Process Report is pressed multiple times
+
 3.7.4
 - RadAI auto-insert on Process Report: generates and pastes impression automatically
 - RadAI insert retry logic for more reliable IMPRESSION section detection
