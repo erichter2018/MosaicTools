@@ -1,10 +1,10 @@
-// [CustomSTT] Orchestrator for audio capture + STT provider + cost tracking
+// [CustomSTT] Orchestrator for audio capture + STT provider
 using NAudio.Wave;
 
 namespace MosaicTools.Services;
 
 /// <summary>
-/// Manages PowerMic audio capture, STT provider lifecycle, and cost tracking.
+/// Manages PowerMic audio capture and STT provider lifecycle.
 /// </summary>
 public class SttService : IDisposable
 {
@@ -15,17 +15,11 @@ public class SttService : IDisposable
     private volatile bool _recording;
     private System.Threading.Timer? _keepAliveTimer;
 
-    // Cost tracking
-    private double _totalDurationSeconds;
-    private decimal _sessionCost;
-
     public bool IsRecording => _recording;
     public bool IsConnected => _provider?.IsConnected ?? false;
-    public decimal SessionCost => _sessionCost;
     public string ProviderName => _provider?.Name ?? "None";
 
     public event Action<SttResult>? TranscriptionReceived;
-    public event Action<decimal>? CostUpdated;
     public event Action<string>? StatusChanged;
     public event Action<bool>? RecordingStateChanged;
     public event Action<string>? ErrorOccurred;
@@ -190,16 +184,6 @@ public class SttService : IDisposable
         StatusChanged?.Invoke("Disconnected");
     }
 
-    /// <summary>
-    /// Reset session cost counter.
-    /// </summary>
-    public void ResetCost()
-    {
-        _totalDurationSeconds = 0;
-        _sessionCost = 0;
-        CostUpdated?.Invoke(0);
-    }
-
     private void OnAudioDataAvailable(object? sender, WaveInEventArgs e)
     {
         if (!_recording || _provider == null) return;
@@ -220,15 +204,6 @@ public class SttService : IDisposable
 
     private void OnTranscriptionReceived(SttResult result)
     {
-        // Track cost from final results
-        if (result.IsFinal && result.Duration > 0)
-        {
-            _totalDurationSeconds += result.Duration;
-            _sessionCost = (decimal)(_totalDurationSeconds / 60.0) * (_provider?.CostPerMinute ?? 0);
-            Logger.Trace($"SttService: Cost update - duration={result.Duration:F2}s, total={_totalDurationSeconds:F1}s, cost=${_sessionCost:F4}");
-            CostUpdated?.Invoke(_sessionCost);
-        }
-
         TranscriptionReceived?.Invoke(result);
     }
 

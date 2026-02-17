@@ -11,4 +11,6 @@ MosaicToolsSettings.json
 debug_ocr_capture.png
 debug_yellow_scan.png
 publish/
+publish_*/
+MosaicInsertTester/
 ClarioIgnore/

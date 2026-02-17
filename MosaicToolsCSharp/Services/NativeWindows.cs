@@ -73,6 +73,9 @@ public static class NativeWindows
     
     [DllImport("user32.dll")]
     public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint cInputs, INPUT[] pInputs, int cbSize);
     
     public const int VK_MENU = 0x12; // Alt
     public const int VK_CONTROL = 0x11;
@@ -84,6 +87,42 @@ public static class NativeWindows
     public const int VK_NEXT = 0x22; // Page Down
     public const int KEYEVENTF_EXTENDEDKEY = 0x0001;
     public const int KEYEVENTF_KEYUP = 0x0002;
+    public const int KEYEVENTF_UNICODE = 0x0004;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct INPUT
+    {
+        public uint type;
+        public InputUnion U;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)] public KEYBDINPUT ki;
+        [FieldOffset(0)] public MOUSEINPUT mi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KEYBDINPUT
+    {
+        public ushort wVk;
+        public ushort wScan;
+        public uint dwFlags;
+        public uint time;
+        public UIntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public UIntPtr dwExtraInfo;
+    }
 
     // Virtual key codes for common keys
     public static byte GetVirtualKeyCode(char c)
@@ -188,6 +227,105 @@ public static class NativeWindows
             keybd_event(modifiers[i], 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
             Thread.Sleep(5);
         }
+    }
+
+    /// <summary>
+    /// Send Unicode text directly using SendInput (no clipboard and no Ctrl+V).
+    /// Newlines are sent as Enter key events for better Chromium editor compatibility.
+    /// </summary>
+    public static bool SendUnicodeText(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return false;
+
+        var inputs = new List<INPUT>(text.Length * 2);
+        for (int i = 0; i < text.Length; i++)
+        {
+            var ch = text[i];
+
+            // Normalize CRLF/CR/LF to Enter key
+            if (ch == '\r')
+            {
+                if (i + 1 < text.Length && text[i + 1] == '\n') i++;
+                inputs.Add(new INPUT
+                {
+                    type = 1,
+                    U = new InputUnion
+                    {
+                        ki = new KEYBDINPUT { wVk = 0x0D, wScan = 0, dwFlags = 0, time = 0, dwExtraInfo = UIntPtr.Zero }
+                    }
+                });
+                inputs.Add(new INPUT
+                {
+                    type = 1,
+                    U = new InputUnion
+                    {
+                        ki = new KEYBDINPUT { wVk = 0x0D, wScan = 0, dwFlags = KEYEVENTF_KEYUP, time = 0, dwExtraInfo = UIntPtr.Zero }
+                    }
+                });
+                continue;
+            }
+            if (ch == '\n')
+            {
+                inputs.Add(new INPUT
+                {
+                    type = 1,
+                    U = new InputUnion
+                    {
+                        ki = new KEYBDINPUT { wVk = 0x0D, wScan = 0, dwFlags = 0, time = 0, dwExtraInfo = UIntPtr.Zero }
+                    }
+                });
+                inputs.Add(new INPUT
+                {
+                    type = 1,
+                    U = new InputUnion
+                    {
+                        ki = new KEYBDINPUT { wVk = 0x0D, wScan = 0, dwFlags = KEYEVENTF_KEYUP, time = 0, dwExtraInfo = UIntPtr.Zero }
+                    }
+                });
+                continue;
+            }
+
+            inputs.Add(new INPUT
+            {
+                type = 1,
+                U = new InputUnion
+                {
+                    ki = new KEYBDINPUT
+                    {
+                        wVk = 0,
+                        wScan = ch,
+                        dwFlags = KEYEVENTF_UNICODE,
+                        time = 0,
+                        dwExtraInfo = UIntPtr.Zero
+                    }
+                }
+            });
+            inputs.Add(new INPUT
+            {
+                type = 1,
+                U = new InputUnion
+                {
+                    ki = new KEYBDINPUT
+                    {
+                        wVk = 0,
+                        wScan = ch,
+                        dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                        time = 0,
+                        dwExtraInfo = UIntPtr.Zero
+                    }
+                }
+            });
+        }
+
+        uint sent = SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf<INPUT>());
+        if (sent != inputs.Count)
+        {
+            int err = Marshal.GetLastWin32Error();
+            Logger.Trace($"SendUnicodeText: partial send {sent}/{inputs.Count}, win32={err}");
+            return false;
+        }
+        return true;
     }
     
     #endregion

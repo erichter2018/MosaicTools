@@ -30,6 +30,7 @@ public class AlertsSection : SettingsSection
     private readonly CheckBox _aidocScrapeEnabledCheck;
     private readonly CheckBox _recoMdEnabledCheck;
     private readonly CheckBox _recoMdAutoOnProcessCheck;
+    private readonly CheckBox _radAiAutoOnProcessCheck;  // [RadAI]
 
     private readonly MainForm _mainForm;
     private readonly Configuration _config;
@@ -122,6 +123,13 @@ public class AlertsSection : SettingsSection
         _nextY += SubRowHeight;
 
         AddHintLabel("Requires 'Wait for Impression' to be OFF in RecoMD settings", LeftMargin + 25);
+        _nextY += SubRowHeight;
+
+        // RadAI Integration  [RadAI]
+        _radAiAutoOnProcessCheck = AddCheckBox("RadAI auto-insert on Process Report", LeftMargin, _nextY,
+            "Automatically generate and insert RadAI impression\nwhen pressing Process Report.");
+        _nextY += SubRowHeight;
+        AddHintLabel("Requires RadAI to be installed on this workstation", LeftMargin + 25);
         _nextY += SubRowHeight;
 
         // Stroke Detection
@@ -219,6 +227,7 @@ public class AlertsSection : SettingsSection
         _aidocScrapeEnabledCheck.Checked = config.AidocScrapeEnabled;
         _recoMdEnabledCheck.Checked = config.RecoMdEnabled;
         _recoMdAutoOnProcessCheck.Checked = config.RecoMdAutoOnProcess;
+        _radAiAutoOnProcessCheck.Checked = config.RadAiAutoOnProcess;  // [RadAI]
         _strokeDetectionEnabledCheck.Checked = config.StrokeDetectionEnabled;
         _strokeDetectionUseClinicalHistoryCheck.Checked = config.StrokeDetectionUseClinicalHistory;
         _strokeClickToCreateNoteCheck.Checked = config.StrokeClickToCreateNote;
@@ -242,6 +251,7 @@ public class AlertsSection : SettingsSection
         config.AidocScrapeEnabled = _aidocScrapeEnabledCheck.Checked;
         config.RecoMdEnabled = _recoMdEnabledCheck.Checked;
         config.RecoMdAutoOnProcess = _recoMdAutoOnProcessCheck.Checked;
+        config.RadAiAutoOnProcess = _radAiAutoOnProcessCheck.Checked;  // [RadAI]
         config.StrokeDetectionEnabled = _strokeDetectionEnabledCheck.Checked;
         config.StrokeDetectionUseClinicalHistory = _strokeDetectionUseClinicalHistoryCheck.Checked;
         config.StrokeClickToCreateNote = _strokeClickToCreateNoteCheck.Checked;

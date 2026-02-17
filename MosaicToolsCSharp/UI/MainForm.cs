@@ -52,11 +52,8 @@ public class MainForm : Form
     private readonly Label[] _connectivityDots = new Label[4];
     private readonly ToolTip _connectivityTooltip;
     
-    // [CustomSTT] STT cost panel and transcription window
-    private readonly Panel _sttPanel;
-    private readonly Label _sttCostLabel;
+    // [CustomSTT] Transcription window
     private TranscriptionForm? _transcriptionWindow;
-    private decimal _sttBaseCost;  // Cumulative cost from previous sessions
 
     // Child Windows
     private FloatingToolbarForm? _toolbarWindow;
@@ -96,15 +93,13 @@ public class MainForm : Form
         int baseWidth = 145; // Base for "Mosaic Tools" title + drag handle
         int rvuWidth = GetRvuPanelWidth();
         int connectivityWidth = GetConnectivityPanelWidth();
-        int sttWidth = config.CustomSttEnabled ? 55 : 0; // [CustomSTT]
-
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
         DoubleBuffered = true;
         Text = "MosaicToolsMainWindow";  // Hidden title for AHK targeting
         BackColor = Color.FromArgb(51, 51, 51); // #333333
-        Size = new Size(baseWidth + rvuWidth + connectivityWidth + sttWidth, 40);
+        Size = new Size(baseWidth + rvuWidth + connectivityWidth, 40);
         StartPosition = FormStartPosition.Manual;
         Location = new Point(_config.WindowX, _config.WindowY);
 
@@ -244,45 +239,6 @@ public class MainForm : Form
             _connectivityPanel.Controls.Add(_connectivityDots[i]);
         }
 
-        // [CustomSTT] STT cost panel (shown when custom STT is enabled)
-        _sttPanel = new Panel
-        {
-            BackColor = Color.Black,
-            Width = sttWidth,
-            Dock = DockStyle.Right,
-            Visible = config.CustomSttEnabled,
-            Cursor = Cursors.Hand
-        };
-        _sttPanel.Click += (_, _) => ToggleTranscriptionWindow();
-
-        _sttBaseCost = config.SttActiveProviderCost; // [CustomSTT] Load cumulative cost for active provider
-        _sttCostLabel = new Label
-        {
-            Text = $"${_sttBaseCost:F4}",
-            Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            ForeColor = Color.FromArgb(75, 156, 211), // Carolina blue
-            BackColor = Color.Black,
-            AutoSize = false,
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleCenter,
-            Cursor = Cursors.Hand
-        };
-        _sttCostLabel.Click += (_, _) => ToggleTranscriptionWindow();
-
-        // Right-click to reset cumulative cost
-        var sttCostMenu = new ContextMenuStrip();
-        sttCostMenu.Items.Add("Reset Total Cost", null, (_, _) =>
-        {
-            _sttBaseCost = 0;
-            _config.SttActiveProviderCost = 0;
-            _config.Save();
-            _sttCostLabel.Text = "$0.0000";
-            _transcriptionWindow?.UpdateCost(0);
-        });
-        _sttCostLabel.ContextMenuStrip = sttCostMenu;
-
-        _sttPanel.Controls.Add(_sttCostLabel);
-
         // Critical studies indicator panel (shown when critical notes placed)
         _criticalPanel = new Panel
         {
@@ -335,9 +291,8 @@ public class MainForm : Form
         _innerFrame.Controls.Add(_titleLabel);   // index 0, laid out last (fills remaining)
         _innerFrame.Controls.Add(_criticalPanel); // index 1, laid out fourth (takes left after drag handle)
         _innerFrame.Controls.Add(_dragHandle);   // index 2, laid out third (takes left)
-        _innerFrame.Controls.Add(_rvuPanel);     // index 3, laid out third from right
-        _innerFrame.Controls.Add(_sttPanel);     // [CustomSTT] index 4, laid out second from right
-        _innerFrame.Controls.Add(_connectivityPanel); // index 5, laid out first (takes rightmost)
+        _innerFrame.Controls.Add(_rvuPanel);     // index 3, laid out second from right
+        _innerFrame.Controls.Add(_connectivityPanel); // index 4, laid out first (takes rightmost)
 
         // Context menu (for normal mode right-click)
         var contextMenu = new ContextMenuStrip();
@@ -1272,29 +1227,11 @@ public class MainForm : Form
         }
     }
 
-    // [CustomSTT] Refresh STT panel visibility after settings change
+    // [CustomSTT] Clean up transcription window after settings change
     public void RefreshSttPanel()
     {
-        const int panelWidth = 55;
-
-        if (_config.CustomSttEnabled)
+        if (!_config.CustomSttEnabled)
         {
-            if (_sttPanel.Width == 0)
-            {
-                _sttPanel.Width = panelWidth;
-                Width += panelWidth;
-            }
-            _sttPanel.Visible = true;
-        }
-        else
-        {
-            if (_sttPanel.Width > 0 && _sttPanel.Visible)
-            {
-                Width -= _sttPanel.Width;
-                _sttPanel.Width = 0;
-            }
-            _sttPanel.Visible = false;
-
             // Close transcription window if open
             if (_transcriptionWindow != null && !_transcriptionWindow.IsDisposed)
             {
@@ -1946,27 +1883,9 @@ public class MainForm : Form
         _transcriptionWindow.AppendResult(result);
     }
 
-    public void UpdateSttCost(decimal sessionCost)
-    {
-        if (InvokeRequired) { BeginInvoke(() => UpdateSttCost(sessionCost)); return; }
-
-        // Cumulative cost = previous sessions + current session
-        var totalCost = _sttBaseCost + sessionCost;
-        _sttCostLabel.Text = $"${totalCost:F4}";
-        _transcriptionWindow?.UpdateCost(totalCost);
-
-        // Persist cumulative cost for active provider
-        _config.SttActiveProviderCost = totalCost;
-        _config.Save();
-    }
-
     public void UpdateSttRecordingState(bool recording)
     {
         if (InvokeRequired) { BeginInvoke(() => UpdateSttRecordingState(recording)); return; }
-
-        _sttCostLabel.ForeColor = recording
-            ? Color.FromArgb(255, 80, 80)  // Red while recording
-            : Color.FromArgb(75, 156, 211); // Carolina blue when stopped
         _transcriptionWindow?.SetRecordingState(recording);
     }
 

@@ -378,9 +378,6 @@ public class ActionController : IDisposable
                 {
                     lock (_directPasteLock)
                     {
-                        ClipboardService.SetText(textToPaste);
-                        Thread.Sleep(50);
-
                         NativeWindows.ActivateMosaicForcefully();
                         Thread.Sleep(100);
                         // FocusTranscriptBox disabled: Mosaic has two text boxes (transcript
@@ -390,7 +387,7 @@ public class ActionController : IDisposable
                         // svc.FocusTranscriptBox();
                         // Thread.Sleep(100);
 
-                        NativeWindows.SendHotkey("Ctrl+v");
+                        InsertTextToFocusedEditor(textToPaste);
                         Thread.Sleep(50);
                         Logger.Trace($"CustomSTT: Direct paste ({textToPaste.Length} chars): \"{(textToPaste.Length > 40 ? textToPaste[..40] + "..." : textToPaste)}\"");
 
@@ -410,8 +407,6 @@ public class ActionController : IDisposable
                 t.Start();
             }
         };
-        _sttService.CostUpdated += cost =>
-            InvokeUI(() => _mainForm.UpdateSttCost(cost));
         _sttService.RecordingStateChanged += recording =>
             InvokeUI(() => _mainForm.UpdateSttRecordingState(recording));
         _sttService.StatusChanged += status =>
@@ -653,6 +648,21 @@ public class ActionController : IDisposable
         if (_config.SeparatePastedItems && !text.StartsWith("\n"))
             return "\n" + text;
         return text;
+    }
+
+    private void InsertTextToFocusedEditor(string text)
+    {
+        if (_config.ExperimentalUseSendInputInsert)
+        {
+            var ok = NativeWindows.SendUnicodeText(text);
+            if (!ok)
+                Logger.Trace($"InsertTextToFocusedEditor: SendInput failed ({text.Length} chars)");
+            return;
+        }
+
+        ClipboardService.SetText(text);
+        Thread.Sleep(50);
+        NativeWindows.SendHotkey("ctrl+v");
     }
 
     public bool IsAddendumOpen()
@@ -1156,6 +1166,21 @@ public class ActionController : IDisposable
             BringRecoMdToFront();
         }
 
+        // [RadAI] Auto-generate and insert RadAI impression on Process Report
+        if (_config.RadAiAutoOnProcess && _radAiService != null)
+        {
+            Logger.Trace("RadAI: Auto-generating and inserting impression after Process Report");
+            Task.Run(() =>
+            {
+                // Wait for Mosaic to finish processing so report text is up-to-date
+                Thread.Sleep(2000);
+                // Queue generate, then insert — action queue is sequential so insert
+                // runs after impression API call completes and overlay/popup is shown
+                _actionQueue.Enqueue(new ActionRequest { Action = Actions.RadAiImpression, Source = "AutoProcess" });
+                _actionQueue.Enqueue(new ActionRequest { Action = "__RadAiInsert__", Source = "AutoProcess" });
+            });
+        }
+
         // Popup will auto-update via scrape timer when report changes
     }
 
@@ -1513,10 +1538,6 @@ public class ActionController : IDisposable
 
             try
             {
-                // Copy macro text to clipboard
-                ClipboardService.SetText(PrepareTextForPaste(text));
-                Thread.Sleep(50);
-
                 // Activate Mosaic and paste
                 NativeWindows.ActivateMosaicForcefully();
                 Thread.Sleep(50);
@@ -1525,8 +1546,7 @@ public class ActionController : IDisposable
                 _automationService.FocusTranscriptBox();
                 Thread.Sleep(50);
 
-                // Paste
-                NativeWindows.SendHotkey("ctrl+v");
+                InsertTextToFocusedEditor(PrepareTextForPaste(text));
                 Thread.Sleep(100); // Increased for reliability
 
                 // Mark this accession as having had macros inserted (session-wide tracking)
@@ -1662,10 +1682,6 @@ public class ActionController : IDisposable
 
             try
             {
-                // Copy text to clipboard
-                ClipboardService.SetText(PrepareTextForPaste(text));
-                Thread.Sleep(50);
-
                 // Activate Mosaic and paste
                 NativeWindows.ActivateMosaicForcefully();
                 Thread.Sleep(50);
@@ -1674,8 +1690,7 @@ public class ActionController : IDisposable
                 _automationService.FocusTranscriptBox();
                 Thread.Sleep(50);
 
-                // Paste
-                NativeWindows.SendHotkey("ctrl+v");
+                InsertTextToFocusedEditor(PrepareTextForPaste(text));
                 Thread.Sleep(100);
 
                 InvokeUI(() => _mainForm.ShowStatusToast("Pick list item inserted", 1500));
@@ -1784,7 +1799,6 @@ public class ActionController : IDisposable
             }
             
             // Paste into Mosaic (with leading and trailing newline for cleaner insertion)
-            ClipboardService.SetText(PrepareTextForPaste(formatted + "\n"));
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(100);
 
@@ -1792,7 +1806,7 @@ public class ActionController : IDisposable
             _automationService.FocusTranscriptBox();
             Thread.Sleep(100);
 
-            NativeWindows.SendHotkey("ctrl+v");
+            InsertTextToFocusedEditor(PrepareTextForPaste(formatted + "\n"));
 
             Logger.Trace($"Get Prior complete: {formatted}");
             InvokeUI(() => _mainForm.ShowStatusToast("Prior inserted"));
@@ -1848,14 +1862,13 @@ public class ActionController : IDisposable
             // Format
             var formatted = _noteFormatter.FormatNote(rawNote);
 
-            // Paste into Mosaic final report box (not transcript)
-            ClipboardService.SetText(formatted);
+            // Insert into Mosaic final report box (not transcript)
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(200);
             _automationService.FocusFinalReportBox();
             Thread.Sleep(100);
 
-            NativeWindows.SendHotkey("ctrl+v");
+            InsertTextToFocusedEditor(formatted);
 
             Logger.Trace($"Critical Findings complete: {formatted}");
 
@@ -2117,19 +2130,10 @@ public class ActionController : IDisposable
                 return;
             }
             
-            // Clear clipboard and set new text
-            ClipboardService.Clear();
-            Thread.Sleep(50);
-            
-            Logger.Trace($"Setting clipboard: {result}");
-            var clipSuccess = ClipboardService.SetText(result);
-            Logger.Trace($"Clipboard set success: {clipSuccess}");
-            
-            // Paste into Mosaic
+            // Insert into Mosaic
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(200);
-            
-            NativeWindows.SendHotkey("ctrl+v");
+            InsertTextToFocusedEditor(result);
             
             InvokeUI(() => _mainForm.ShowStatusToast($"Inserted: {result}"));
         }
@@ -2582,9 +2586,7 @@ public class ActionController : IDisposable
             }
             Thread.Sleep(50);
 
-            ClipboardService.SetText(combined);
-            Thread.Sleep(50);
-            NativeWindows.SendHotkey("ctrl+v");
+            InsertTextToFocusedEditor(combined);
             Thread.Sleep(100);
         }
 
@@ -2675,7 +2677,21 @@ public class ActionController : IDisposable
             Thread.Sleep(100);
 
             // Use UIA to find IMPRESSION content elements and select them
-            bool selected = _automationService.SelectImpressionContent();
+            // Retry several times — after Process Report, Mosaic may still be rebuilding the editor
+            bool selected = false;
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                selected = _automationService.SelectImpressionContent();
+                if (selected) break;
+                Logger.Trace($"RadAI Insert: IMPRESSION not found, retry {attempt + 1}/5...");
+                Thread.Sleep(1500);
+                NativeWindows.ActivateMosaicForcefully();
+                Thread.Sleep(100);
+                _automationService.FocusFinalReportBox();
+                Thread.Sleep(100);
+                NativeWindows.SendHotkey("ctrl+end");
+                Thread.Sleep(100);
+            }
             if (!selected)
             {
                 InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section in editor", 3000));
@@ -2684,10 +2700,8 @@ public class ActionController : IDisposable
 
             Thread.Sleep(50);
 
-            // Set clipboard and paste (replaces selection or inserts at cursor)
-            ClipboardService.SetText(newImpression);
-            Thread.Sleep(50);
-            NativeWindows.SendHotkey("ctrl+v");
+            // Replace selection or insert at cursor
+            InsertTextToFocusedEditor(newImpression);
             Thread.Sleep(100);
         }
 
@@ -2787,9 +2801,7 @@ public class ActionController : IDisposable
             }
             else
             {
-                ClipboardService.SetText(newText);
-                Thread.Sleep(50);
-                NativeWindows.SendHotkey("ctrl+v");
+                InsertTextToFocusedEditor(newText);
             }
             Thread.Sleep(100);
         }

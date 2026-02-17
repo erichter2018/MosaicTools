@@ -22,7 +22,6 @@ public class DeepgramProvider : ISttProvider
     public string Name => _model == "nova-3-medical" ? "Deepgram Nova-3 Medical" : "Deepgram Nova-3";
     public bool RequiresApiKey => true;
     public string? SignupUrl => "https://console.deepgram.com/signup";
-    public decimal CostPerMinute => _model == "nova-3-medical" ? 0.0077m : 0.0059m;
     public bool IsConnected => _connected;
 
     public event Action<SttResult>? TranscriptionReceived;

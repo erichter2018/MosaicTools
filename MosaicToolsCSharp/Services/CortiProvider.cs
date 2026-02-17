@@ -30,7 +30,6 @@ public class CortiProvider : ISttProvider
     public string Name => "Corti Solo";
     public bool RequiresApiKey => true;
     public string? SignupUrl => "https://console.corti.app/signup";
-    public decimal CostPerMinute => 0.01m;
     public bool IsConnected => _connected;
 
     public event Action<SttResult>? TranscriptionReceived;

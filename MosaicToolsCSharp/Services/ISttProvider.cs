@@ -20,7 +20,6 @@ public interface ISttProvider : IDisposable
     string Name { get; }
     bool RequiresApiKey { get; }
     string? SignupUrl { get; }
-    decimal CostPerMinute { get; }
     bool IsConnected { get; }
 
     Task<bool> ConnectAsync(CancellationToken ct = default);

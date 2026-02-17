@@ -15,6 +15,7 @@ public class ExperimentalSection : SettingsSection
     private readonly CheckBox _connectivityMonitorEnabledCheck;
     private readonly NumericUpDown _connectivityIntervalUpDown;
     private readonly NumericUpDown _connectivityTimeoutUpDown;
+    private readonly CheckBox _useSendInputInsertCheck;
 
     public ExperimentalSection(ToolTip toolTip) : base("Experimental", toolTip)
     {
@@ -22,6 +23,12 @@ public class ExperimentalSection : SettingsSection
         var warningLabel = AddLabel("⚠ These features may change or be removed", LeftMargin, _nextY);
         warningLabel.ForeColor = Color.FromArgb(255, 180, 50);
         warningLabel.Font = new Font("Segoe UI", 8, FontStyle.Italic);
+        _nextY += RowHeight;
+
+        AddSectionDivider("Insertion");
+
+        _useSendInputInsertCheck = AddCheckBox("Use SendInput instead of Ctrl+V", LeftMargin, _nextY,
+            "Experimental: insert text via SendInput (no Ctrl+V). Default remains clipboard + Ctrl+V.");
         _nextY += RowHeight;
 
         // Network Monitor
@@ -59,6 +66,7 @@ public class ExperimentalSection : SettingsSection
         _connectivityIntervalUpDown.Value = config.ConnectivityCheckIntervalSeconds;
         // Config stores ms, UI shows seconds
         _connectivityTimeoutUpDown.Value = Math.Max(1, (config.ConnectivityTimeoutMs + 500) / 1000);
+        _useSendInputInsertCheck.Checked = config.ExperimentalUseSendInputInsert;
 
         UpdateNetworkSettingsStates();
     }
@@ -69,5 +77,6 @@ public class ExperimentalSection : SettingsSection
         config.ConnectivityCheckIntervalSeconds = (int)_connectivityIntervalUpDown.Value;
         // UI shows seconds, config stores ms
         config.ConnectivityTimeoutMs = (int)_connectivityTimeoutUpDown.Value * 1000;
+        config.ExperimentalUseSendInputInsert = _useSendInputInsertCheck.Checked;
     }
 }

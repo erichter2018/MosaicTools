@@ -1196,9 +1196,6 @@ public class ClinicalHistoryForm : Form
 
                     Logger.Trace($"Clinical history paste: setting clipboard to '{formatted.Substring(0, Math.Min(50, formatted.Length))}...'");
                     var textToPaste = (_config.SeparatePastedItems && !formatted.StartsWith("\n")) ? "\n" + formatted : formatted;
-                    if (IsDisposed || !IsHandleCreated) return;
-                    Invoke(() => Clipboard.SetText(textToPaste));
-                    System.Threading.Thread.Sleep(50);
 
                     if (!NativeWindows.ActivateMosaicForcefully())
                     {
@@ -1208,7 +1205,17 @@ public class ClinicalHistoryForm : Form
                     }
 
                     System.Threading.Thread.Sleep(200);
-                    NativeWindows.SendHotkey("ctrl+v");
+                    if (_config.ExperimentalUseSendInputInsert)
+                    {
+                        NativeWindows.SendUnicodeText(textToPaste);
+                    }
+                    else
+                    {
+                        if (IsDisposed || !IsHandleCreated) return;
+                        Invoke(() => Clipboard.SetText(textToPaste));
+                        System.Threading.Thread.Sleep(50);
+                        NativeWindows.SendHotkey("ctrl+v");
+                    }
                     System.Threading.Thread.Sleep(100);
 
                     ActionController.LastPasteTime = DateTime.Now;

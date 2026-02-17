@@ -377,38 +377,6 @@ public class Configuration
     [JsonPropertyName("stt_show_indicator")]
     public bool SttShowIndicator { get; set; } = true;
 
-    [JsonPropertyName("stt_total_cost")]
-    public decimal SttTotalCost { get; set; } = 0; // Deepgram (backward compat)
-
-    [JsonPropertyName("stt_total_cost_assemblyai")]
-    public decimal SttTotalCostAssemblyAI { get; set; } = 0;
-
-    [JsonPropertyName("stt_total_cost_corti")]
-    public decimal SttTotalCostCorti { get; set; } = 0;
-
-    /// <summary>
-    /// Get/set the total cost for the currently active provider.
-    /// </summary>
-    [JsonIgnore]
-    public decimal SttActiveProviderCost
-    {
-        get => SttProvider switch
-        {
-            "assemblyai" => SttTotalCostAssemblyAI,
-            "corti" => SttTotalCostCorti,
-            _ => SttTotalCost
-        };
-        set
-        {
-            switch (SttProvider)
-            {
-                case "assemblyai": SttTotalCostAssemblyAI = value; break;
-                case "corti": SttTotalCostCorti = value; break;
-                default: SttTotalCost = value; break;
-            }
-        }
-    }
-
     [JsonPropertyName("transcription_form_x")]
     public int TranscriptionFormX { get; set; } = 400;
 
@@ -420,6 +388,9 @@ public class Configuration
 
     [JsonPropertyName("transcription_form_height")]
     public int TranscriptionFormHeight { get; set; } = 300;
+
+    [JsonPropertyName("radai_auto_on_process")]  // [RadAI]
+    public bool RadAiAutoOnProcess { get; set; } = false;
 
     [JsonPropertyName("radai_popup_x")]  // [RadAI]
     public int RadAiPopupX { get; set; } = -1;
@@ -445,6 +416,12 @@ public class Configuration
 
     [JsonPropertyName("connectivity_servers")]
     public List<ServerConfig> ConnectivityServers { get; set; } = new();
+
+    // Experimental insertion mode toggle:
+    // false = clipboard + Ctrl+V (default)
+    // true = direct SendInput text insertion (no Ctrl+V)
+    [JsonPropertyName("experimental_use_sendinput_insert")]
+    public bool ExperimentalUseSendInputInsert { get; set; } = false;
 
     // UI Options
     [JsonPropertyName("show_tooltips")]

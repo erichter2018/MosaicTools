@@ -201,8 +201,7 @@ public class TranscriptionForm : Form
         // No-op — recording state is handled by ActionController showing/hiding the form
     }
 
-    // Keep these as no-ops for compatibility with MainForm calls
-    public void UpdateCost(decimal cost) { }
+    // Keep as no-op for compatibility with MainForm calls
     public void UpdateStatus(string status) { }
     public string GetTranscriptText() => "";
     public void OnRecordingStarted() { }

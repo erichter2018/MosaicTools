@@ -21,7 +21,6 @@ public class AssemblyAIProvider : ISttProvider
     public string Name => "AssemblyAI";
     public bool RequiresApiKey => true;
     public string? SignupUrl => "https://www.assemblyai.com/dashboard/signup";
-    public decimal CostPerMinute => 0.0025m; // $0.15/hr
     public bool IsConnected => _connected;
 
     public event Action<SttResult>? TranscriptionReceived;
