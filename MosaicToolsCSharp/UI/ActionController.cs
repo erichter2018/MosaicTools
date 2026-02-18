@@ -91,7 +91,8 @@ public class ActionController : IDisposable
     private int NormalScrapeIntervalMs => _config.ScrapeIntervalSeconds * 1000;
     private int _fastScrapeIntervalMs = 1000;
     private int _studyLoadScrapeIntervalMs = 500;
-    private const int IdleScrapeIntervalMs = 5000; // Slow polling when no study is open
+    private const int IdleScrapeIntervalMs = 10_000; // Slow polling when no study is open
+    private const int DeepIdleScrapeIntervalMs = 30_000; // Very slow polling after extended idle (reduces UIA load)
     private int _consecutiveIdleScrapes = 0; // Counts scrapes with no report content
     private int _scrapesSinceLastGc = 0; // Counter for periodic GC to release FlaUI COM wrappers
     private int _scrapeHeartbeatCount = 0; // Heartbeat counter for diagnostic logging
@@ -551,6 +552,15 @@ public class ActionController : IDisposable
     public void TriggerAction(string action, string source = "Manual")
     {
         Logger.Trace($"TriggerAction Queued: {action} (Source: {source})");
+
+        // Wake up scrape timer if it's in deep idle — user activity means a study may be open soon
+        if (_consecutiveIdleScrapes >= 10)
+        {
+            _consecutiveIdleScrapes = 0;
+            RestartScrapeTimer(NormalScrapeIntervalMs);
+            Logger.Trace("Scrape wake-up: user action, resuming normal interval");
+        }
+
         _actionQueue.Enqueue(new ActionRequest { Action = action, Source = source });
         _actionEvent.Set();
     }
@@ -2914,14 +2924,26 @@ public class ActionController : IDisposable
 
                 // Idle backoff: slow down scraping when no report content is found
                 // (either no study open, or study visible but ProseMirror not accessible)
+                // Two tiers: 10s after 3 idle scrapes, 30s after 10 idle scrapes.
+                // Heavy FlaUI/UIA calls every few seconds cause system-wide input lag
+                // (mouse jumpiness, keyboard hook death) even when finding nothing.
                 if (string.IsNullOrEmpty(reportText))
                 {
                     _consecutiveIdleScrapes++;
-                    if (_consecutiveIdleScrapes >= 3 && !_searchingForImpression && !_needsBaselineCapture)
+                    if (!_searchingForImpression && !_needsBaselineCapture)
                     {
-                        RestartScrapeTimer(IdleScrapeIntervalMs);
-                        if (_consecutiveIdleScrapes == 3)
-                            Logger.Trace("Scrape idle backoff: slowing to 5s (no report content)");
+                        if (_consecutiveIdleScrapes >= 10)
+                        {
+                            RestartScrapeTimer(DeepIdleScrapeIntervalMs);
+                            if (_consecutiveIdleScrapes == 10)
+                                Logger.Trace("Scrape deep idle: slowing to 30s (extended no report content)");
+                        }
+                        else if (_consecutiveIdleScrapes >= 3)
+                        {
+                            RestartScrapeTimer(IdleScrapeIntervalMs);
+                            if (_consecutiveIdleScrapes == 3)
+                                Logger.Trace("Scrape idle backoff: slowing to 10s (no report content)");
+                        }
                     }
                 }
                 else if (_consecutiveIdleScrapes > 0)
@@ -2942,12 +2964,14 @@ public class ActionController : IDisposable
                 }
 
                 // Periodic GC: release accumulated FlaUI COM wrappers (IUIAutomationElement RCWs)
-                // to prevent progressive system slowdown from stale UIA references
+                // to prevent progressive system slowdown from stale UIA references.
+                // Must use Forced mode — Optimized lets the runtime skip collection, leaving
+                // COM RCWs pinned. Every FindAllDescendants call creates dozens of COM objects.
                 _scrapesSinceLastGc++;
-                if (_scrapesSinceLastGc >= 60)
+                if (_scrapesSinceLastGc >= 30)
                 {
                     _scrapesSinceLastGc = 0;
-                    GC.Collect(2, GCCollectionMode.Optimized, false);
+                    GC.Collect(2, GCCollectionMode.Forced);
                     GC.WaitForPendingFinalizers();
                 }
 

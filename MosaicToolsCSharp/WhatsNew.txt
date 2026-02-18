@@ -1,3 +1,8 @@
+3.7.6
+- Fix progressive system slowdown from FlaUI COM wrapper accumulation
+- Cap patient info extraction retries to prevent unfiltered UI tree walks every scrape
+- More aggressive GC for UIA COM object cleanup
+
 3.7.5
 - Fix RadAI auto-insert timing: wait for Mosaic editor to stabilize before inserting
 - Prevent duplicate RadAI attempts when Process Report is pressed multiple times

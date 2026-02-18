@@ -79,6 +79,12 @@ public class AutomationService : IDisposable
     // Used to skip expensive FindAllDescendants when the same study is still open
     private string? _lastPatientInfoAccession;
 
+    // Retry counter for patient info extraction. Unfiltered FindAllDescendants() is very
+    // expensive — if gender/MRN aren't found after a few attempts (UI layout mismatch),
+    // stop retrying to prevent thousands of leaked COM wrappers per minute.
+    private int _patientInfoRetryCount;
+    private const int MaxPatientInfoRetries = 5;
+
     public AutomationService()
     {
         _automation = new UIA3Automation();
@@ -1446,11 +1452,19 @@ public class AutomationService : IDisposable
 
             // Extract patient info from all descendants in a single traversal.
             // Skip if accession hasn't changed — patient info (gender, MRN, etc.) is stable per study.
-            // Also retry if previous attempt found nothing (e.g. UI was still loading).
-            bool needsPatientInfoExtraction = LastAccession != _lastPatientInfoAccession
-                || (!string.IsNullOrEmpty(LastAccession) && LastPatientGender == null && LastMrn == null);
+            // Also retry if previous attempt found nothing (e.g. UI was still loading),
+            // but cap retries to prevent unfiltered FindAllDescendants() from running every scrape
+            // indefinitely (major source of COM wrapper leaks and system slowdown).
+            bool accessionChanged = LastAccession != _lastPatientInfoAccession;
+            if (accessionChanged)
+                _patientInfoRetryCount = 0; // Reset counter on new study
+
+            bool needsPatientInfoExtraction = accessionChanged
+                || (!string.IsNullOrEmpty(LastAccession) && LastPatientGender == null && LastMrn == null
+                    && _patientInfoRetryCount < MaxPatientInfoRetries);
             if (needsPatientInfoExtraction)
             {
+                _patientInfoRetryCount++;
                 LastPatientGender = null;
                 LastPatientAge = null;
                 LastPatientName = null;
@@ -1638,11 +1652,20 @@ public class AutomationService : IDisposable
             }
 
             // Only mark extraction complete if we actually found patient info.
-            // If the UI was still loading (only chrome elements visible), we'll retry next scrape.
-            if (needsPatientInfoExtraction && !string.IsNullOrEmpty(LastAccession)
-                && (LastPatientGender != null || LastMrn != null))
+            // If the UI was still loading (only chrome elements visible), we'll retry next scrape
+            // (up to MaxPatientInfoRetries to prevent infinite unfiltered FindAllDescendants).
+            if (needsPatientInfoExtraction && !string.IsNullOrEmpty(LastAccession))
             {
-                _lastPatientInfoAccession = LastAccession;
+                if (LastPatientGender != null || LastMrn != null)
+                {
+                    _lastPatientInfoAccession = LastAccession;
+                }
+                else if (_patientInfoRetryCount >= MaxPatientInfoRetries)
+                {
+                    // Give up — mark as done to stop the expensive unfiltered walk
+                    _lastPatientInfoAccession = LastAccession;
+                    Logger.Trace($"Patient info extraction: gave up after {MaxPatientInfoRetries} attempts (acc={LastAccession})");
+                }
             }
 
             // END Mosaic 2.0.2 compat
