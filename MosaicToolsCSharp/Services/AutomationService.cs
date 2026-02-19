@@ -97,11 +97,13 @@ public class AutomationService : IDisposable
     /// </summary>
     public AutomationElement? FindClarioWindow()
     {
+        AutomationElement[]? windows = null;
+        AutomationElement? found = null;
         try
         {
             var desktop = _automation.GetDesktop();
-            var windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
-            
+            windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
+
             foreach (var window in windows)
             {
                 try
@@ -110,7 +112,8 @@ public class AutomationService : IDisposable
                     if (title.Contains("clario") && title.Contains("worklist"))
                     {
                         Logger.Trace($"Found Clario Window: '{window.Name}'");
-                        return window;
+                        found = window;
+                        break;
                     }
                 }
                 catch { continue; }
@@ -120,8 +123,14 @@ public class AutomationService : IDisposable
         {
             Logger.Trace($"Error finding Clario window: {ex.Message}");
         }
-        
-        return null;
+        finally
+        {
+            if (windows != null)
+                foreach (var w in windows)
+                    if (w != found) ReleaseElement(w);
+        }
+
+        return found;
     }
     
     /// <summary>
@@ -130,17 +139,18 @@ public class AutomationService : IDisposable
     /// </summary>
     public string? GetNoteDialogText(AutomationElement window)
     {
+        AutomationElement[]? noteFields = null;
         try
         {
-            var dialog = window.FindFirstDescendant(cf => 
+            var dialog = window.FindFirstDescendant(cf =>
                 cf.ByAutomationId("content_patient_note_dialog_Main"));
-            
+
             if (dialog == null) return null;
-            
+
             // Found the dialog - look for note text field
-            var noteFields = dialog.FindAllDescendants(cf => 
+            noteFields = dialog.FindAllDescendants(cf =>
                 cf.ByAutomationId("noteFieldMessage"));
-            
+
             foreach (var field in noteFields)
             {
                 var text = field.Name ?? "";
@@ -154,7 +164,11 @@ public class AutomationService : IDisposable
         {
             Logger.Trace($"Error checking for note dialog: {ex.Message}");
         }
-        
+        finally
+        {
+            ReleaseElements(noteFields);
+        }
+
         return null;
     }
     
@@ -181,12 +195,13 @@ public class AutomationService : IDisposable
                     lastToastTime = DateTime.Now;
                 }
 
+                AutomationElement[]? dataItems = null;
                 try
                 {
                     // Lead with the broad DataItem scan which was proven to work in logs
-                    var dataItems = window.FindAllDescendants(cf => 
+                    dataItems = window.FindAllDescendants(cf =>
                         cf.ByControlType(FlaUI.Core.Definitions.ControlType.DataItem));
-                    
+
                     if (dataItems.Length > 0)
                     {
                         foreach (var item in dataItems)
@@ -211,6 +226,10 @@ public class AutomationService : IDisposable
                     // Handle UIA_E_ELEMENTNOTAVAILABLE (0x80040201) and others
                     Logger.Trace($"Scrape loop error (retrying): {ex.Message}");
                     Thread.Sleep(200);
+                }
+                finally
+                {
+                    ReleaseElements(dataItems);
                 }
                 
                 Thread.Sleep(1000); // Wait 1s between full tree scans to let UI stabilize
@@ -758,6 +777,8 @@ public class AutomationService : IDisposable
     /// </summary>
     public AutomationElement? FindMosaicWindow()
     {
+        AutomationElement[]? windows = null;
+        AutomationElement? found = null;
         try
         {
             // Fast Win32 pre-check before expensive UIA desktop enumeration
@@ -765,19 +786,20 @@ public class AutomationService : IDisposable
             if (hwnd == IntPtr.Zero) return null;
 
             var desktop = _automation.GetDesktop();
-            var windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
-            
+            windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
+
             foreach (var window in windows)
             {
                 try
                 {
                     var title = window.Name?.ToLowerInvariant() ?? "";
                     if (title.Contains("rvu counter") || title.Contains("test")) continue;
-                    
+
                     if ((title.Contains("mosaic") && title.Contains("info hub")) ||
                         (title.Contains("mosaic") && title.Contains("reporting")))
                     {
-                        return window;
+                        found = window;
+                        break;
                     }
                 }
                 catch { continue; }
@@ -787,8 +809,14 @@ public class AutomationService : IDisposable
         {
             Logger.Trace($"Error finding Mosaic window: {ex.Message}");
         }
-        
-        return null;
+        finally
+        {
+            if (windows != null)
+                foreach (var w in windows)
+                    if (w != found) ReleaseElement(w);
+        }
+
+        return found;
     }
 
     /// <summary>
@@ -872,6 +900,7 @@ public class AutomationService : IDisposable
     /// </summary>
     public bool FocusTranscriptBox()
     {
+        AutomationElement[]? proseMirrors = null;
         try
         {
             var window = _cachedSlimHubWindow ?? FindMosaicWindow();
@@ -882,7 +911,7 @@ public class AutomationService : IDisposable
             }
 
             // Find ProseMirror elements - the Transcript one doesn't contain U+FFFC
-            var proseMirrors = window.FindAllDescendants(cf =>
+            proseMirrors = window.FindAllDescendants(cf =>
                 cf.ByClassName("ProseMirror", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
 
             foreach (var pm in proseMirrors)
@@ -930,6 +959,10 @@ public class AutomationService : IDisposable
             Logger.Trace($"FocusTranscriptBox error: {ex.Message}");
             return false;
         }
+        finally
+        {
+            ReleaseElements(proseMirrors);
+        }
     }
 
     /// <summary>
@@ -938,6 +971,7 @@ public class AutomationService : IDisposable
     /// </summary>
     public bool FocusFinalReportBox()
     {
+        AutomationElement[]? proseMirrors = null;
         try
         {
             var window = _cachedSlimHubWindow ?? FindMosaicWindow();
@@ -947,7 +981,7 @@ public class AutomationService : IDisposable
                 return false;
             }
 
-            var proseMirrors = window.FindAllDescendants(cf =>
+            proseMirrors = window.FindAllDescendants(cf =>
                 cf.ByClassName("ProseMirror", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
 
             // First pass: check ProseMirror Name for EXAM: or U+FFFC
@@ -971,9 +1005,10 @@ public class AutomationService : IDisposable
             {
                 foreach (var pm in proseMirrors)
                 {
+                    AutomationElement[]? children = null;
                     try
                     {
-                        var children = pm.FindAllDescendants(cf =>
+                        children = pm.FindAllDescendants(cf =>
                             cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
                         if (children.Any(c => (c.Name ?? "").Contains("EXAM:")))
                         {
@@ -982,6 +1017,10 @@ public class AutomationService : IDisposable
                         }
                     }
                     catch { continue; }
+                    finally
+                    {
+                        ReleaseElements(children);
+                    }
                 }
             }
 
@@ -1022,6 +1061,10 @@ public class AutomationService : IDisposable
             Logger.Trace($"FocusFinalReportBox error: {ex.Message}");
             return false;
         }
+        finally
+        {
+            ReleaseElements(proseMirrors);
+        }
     }
 
     /// <summary>
@@ -1033,6 +1076,8 @@ public class AutomationService : IDisposable
     /// </summary>
     public bool SelectImpressionContent()
     {
+        AutomationElement[]? proseMirrors = null;
+        AutomationElement[]? childTexts = null;
         try
         {
             var window = _cachedSlimHubWindow ?? FindMosaicWindow();
@@ -1042,7 +1087,7 @@ public class AutomationService : IDisposable
                 return false;
             }
 
-            var proseMirrors = window.FindAllDescendants(cf =>
+            proseMirrors = window.FindAllDescendants(cf =>
                 cf.ByClassName("ProseMirror", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
 
             FlaUI.Core.AutomationElements.AutomationElement? reportBox = null;
@@ -1065,9 +1110,10 @@ public class AutomationService : IDisposable
             {
                 foreach (var pm in proseMirrors)
                 {
+                    AutomationElement[]? children = null;
                     try
                     {
-                        var children = pm.FindAllDescendants(cf =>
+                        children = pm.FindAllDescendants(cf =>
                             cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
                         if (children.Any(c => (c.Name ?? "").Contains("EXAM:")))
                         {
@@ -1076,6 +1122,10 @@ public class AutomationService : IDisposable
                         }
                     }
                     catch { continue; }
+                    finally
+                    {
+                        ReleaseElements(children);
+                    }
                 }
             }
 
@@ -1094,7 +1144,7 @@ public class AutomationService : IDisposable
             Thread.Sleep(200);
 
             // Re-fetch child elements after scroll (positions have changed)
-            var childTexts = reportBox.FindAllDescendants(cf =>
+            childTexts = reportBox.FindAllDescendants(cf =>
                 cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
 
             if (childTexts.Length == 0)
@@ -1197,6 +1247,11 @@ public class AutomationService : IDisposable
             Logger.Trace($"SelectImpressionContent error: {ex.Message}");
             return false;
         }
+        finally
+        {
+            ReleaseElements(proseMirrors);
+            ReleaseElements(childTexts);
+        }
     }
 
     /// <summary>
@@ -1232,39 +1287,43 @@ public class AutomationService : IDisposable
     {
         var window = FindMosaicWindow();
         if (window == null) return null;
-        
+
+        AutomationElement[]? descendants = null;
+        AutomationElement? found = null;
         try
         {
             // Look for WebView2 container
             AutomationElement? searchRoot = null;
-            
+
             try
             {
                 searchRoot = window.FindFirstDescendant(cf => cf.ByAutomationId("webView"));
             }
             catch { }
-            
+
             searchRoot ??= window;
-            
+
             // Search for specific editor elements
-            var descendants = searchRoot.FindAllDescendants();
+            descendants = searchRoot.FindAllDescendants();
             foreach (var elem in descendants)
             {
                 try
                 {
                     var className = elem.ClassName?.ToLowerInvariant() ?? "";
                     var name = elem.Name?.ToUpperInvariant() ?? "";
-                    
+
                     // Match by tiptap/prosemirror class
                     if (className.Contains("tiptap") || className.Contains("prosemirror"))
                     {
-                        return elem;
+                        found = elem;
+                        break;
                     }
-                    
+
                     // Match by ADDENDUM text
                     if (name.Contains("ADDENDUM:") && elem.ControlType != FlaUI.Core.Definitions.ControlType.Text)
                     {
-                        return elem;
+                        found = elem;
+                        break;
                     }
                 }
                 catch { continue; }
@@ -1274,8 +1333,14 @@ public class AutomationService : IDisposable
         {
             Logger.Trace($"Error in FindMosaicEditor: {ex.Message}");
         }
-        
-        return null;
+        finally
+        {
+            if (descendants != null)
+                foreach (var d in descendants)
+                    if (d != found) ReleaseElement(d);
+        }
+
+        return found;
     }
     
     /// <summary>
@@ -1285,13 +1350,14 @@ public class AutomationService : IDisposable
     {
         var window = FindMosaicWindow();
         if (window == null) return null;
-        
+
+        AutomationElement[]? descendants = null;
         try
         {
             var candidates = new List<(string text, int score)>();
             string[] keywords = { "TECHNIQUE", "CLINICAL HISTORY", "FINDINGS", "IMPRESSION" };
-            
-            var descendants = window.FindAllDescendants();
+
+            descendants = window.FindAllDescendants();
             foreach (var elem in descendants)
             {
                 try
@@ -1301,14 +1367,14 @@ public class AutomationService : IDisposable
                     {
                         var text = elem.Name ?? "";
                         if (string.IsNullOrEmpty(text)) continue;
-                        
+
                         int score = keywords.Count(kw => text.Contains(kw, StringComparison.OrdinalIgnoreCase));
                         candidates.Add((text, score));
                     }
                 }
                 catch { continue; }
             }
-            
+
             if (candidates.Count > 0)
             {
                 return candidates.OrderByDescending(c => c.score).First().text;
@@ -1318,7 +1384,11 @@ public class AutomationService : IDisposable
         {
             Logger.Trace($"Report scan error: {ex.Message}");
         }
-        
+        finally
+        {
+            ReleaseElements(descendants);
+        }
+
         return null;
     }
     
@@ -1369,23 +1439,31 @@ public class AutomationService : IDisposable
 
                 var desktop = _automation.GetDesktop();
                 var windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
-                
-                foreach (var window in windows)
+
+                try
                 {
-                    try
+                    foreach (var window in windows)
                     {
-                        var title = window.Name?.ToLowerInvariant() ?? "";
-                        if (title.Contains("rvu counter") || title.Contains("test")) continue;
-                        
-                        if ((title.Contains("mosaic") && title.Contains("info hub")) ||
-                            (title.Contains("mosaic") && title.Contains("reporting")))
+                        try
                         {
-                            _cachedSlimHubWindow = window;
-                            Logger.Trace($"Cached Mosaic window: {window.Name}");
-                            break;
+                            var title = window.Name?.ToLowerInvariant() ?? "";
+                            if (title.Contains("rvu counter") || title.Contains("test")) continue;
+
+                            if ((title.Contains("mosaic") && title.Contains("info hub")) ||
+                                (title.Contains("mosaic") && title.Contains("reporting")))
+                            {
+                                _cachedSlimHubWindow = window;
+                                Logger.Trace($"Cached Mosaic window: {window.Name}");
+                                break;
+                            }
                         }
+                        catch { continue; }
                     }
-                    catch { continue; }
+                }
+                finally
+                {
+                    foreach (var w in windows)
+                        if (w != _cachedSlimHubWindow) ReleaseElement(w);
                 }
             }
             
@@ -1415,31 +1493,37 @@ public class AutomationService : IDisposable
                     if (parent != null)
                     {
                         var allChildren = parent.FindAllChildren();
-
-                        bool foundCurrentStudy = false;
-                        foreach (var child in allChildren)
+                        try
                         {
-                            try
+                            bool foundCurrentStudy = false;
+                            foreach (var child in allChildren)
                             {
-                                if (foundCurrentStudy)
+                                try
                                 {
-                                    var accession = child.Name?.Trim();
-                                    // Skip status words and empty elements
-                                    if (string.IsNullOrWhiteSpace(accession) || accession == "Current Study" ||
-                                        accession == "DRAFTED" || accession == "UNDRAFTED" || accession == "SIGNED")
+                                    if (foundCurrentStudy)
                                     {
-                                        continue; // Keep looking for accession
+                                        var accession = child.Name?.Trim();
+                                        // Skip status words and empty elements
+                                        if (string.IsNullOrWhiteSpace(accession) || accession == "Current Study" ||
+                                            accession == "DRAFTED" || accession == "UNDRAFTED" || accession == "SIGNED")
+                                        {
+                                            continue; // Keep looking for accession
+                                        }
+                                        LastAccession = accession;
+                                        Logger.Trace($"Found Accession: {LastAccession}");
+                                        break;
                                     }
-                                    LastAccession = accession;
-                                    Logger.Trace($"Found Accession: {LastAccession}");
-                                    break;
+                                    if (child.Name == "Current Study")
+                                    {
+                                        foundCurrentStudy = true;
+                                    }
                                 }
-                                if (child.Name == "Current Study")
-                                {
-                                    foundCurrentStudy = true;
-                                }
+                                catch { continue; }
                             }
-                            catch { continue; }
+                        }
+                        finally
+                        {
+                            ReleaseElements(allChildren);
                         }
                     }
                 }
@@ -1476,10 +1560,11 @@ public class AutomationService : IDisposable
             // 2.0.3 (separate Text "Description:" + Button "XR CHEST") in one pass.
             // BEGIN Mosaic 2.0.2 compat: When 2.0.2 is retired, the pendingInfoField/Button
             // logic becomes the only path and the Text-based regex extraction can be removed.
+            AutomationElement[]? allInfoElements = null;
             if (needsPatientInfoExtraction)
             try
             {
-                var allInfoElements = _cachedSlimHubWindow.FindAllDescendants();
+                allInfoElements = _cachedSlimHubWindow.FindAllDescendants();
                 string? pendingInfoField = null; // Tracks label→button pairs for 2.0.3
 
                 foreach (var el in allInfoElements)
@@ -1650,6 +1735,10 @@ public class AutomationService : IDisposable
             {
                 Logger.Trace($"Patient info extraction error: {ex.Message}");
             }
+            finally
+            {
+                ReleaseElements(allInfoElements);
+            }
 
             // Only mark extraction complete if we actually found patient info.
             // If the UI was still loading (only chrome elements visible), we'll retry next scrape
@@ -1719,6 +1808,10 @@ public class AutomationService : IDisposable
                         }
                     }
                 }
+
+                // Release all elements except reportDoc (still needed below)
+                foreach (var el in elements)
+                    if (el != reportDoc) ReleaseElement(el);
             }
             else
             {
@@ -1761,6 +1854,10 @@ public class AutomationService : IDisposable
                         }
                         catch { continue; }
                     }
+
+                    // Release all document elements except the one we're keeping
+                    foreach (var doc in documents)
+                        if (doc != reportDoc) ReleaseElement(doc);
                 }
                 catch (Exception ex)
                 {
@@ -1823,9 +1920,10 @@ public class AutomationService : IDisposable
                     // Mosaic 2.0.3: ProseMirror Name is empty; content is in child Text elements
                     if (string.IsNullOrWhiteSpace(text))
                     {
+                        AutomationElement[]? childTexts = null;
                         try
                         {
-                            var childTexts = candidate.FindAllDescendants(cf =>
+                            childTexts = candidate.FindAllDescendants(cf =>
                                 cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
                             if (childTexts.Length > 0)
                             {
@@ -1840,6 +1938,10 @@ public class AutomationService : IDisposable
                             }
                         }
                         catch { }
+                        finally
+                        {
+                            ReleaseElements(childTexts);
+                        }
                     }
 
                     if (string.IsNullOrWhiteSpace(text)) continue;
@@ -1881,6 +1983,7 @@ public class AutomationService : IDisposable
                     if (candidates.Length > 1 && maxScore < 100 && LastFinalReport != null)
                     {
                         Logger.Trace("GetFinalReportFast: Primary candidate lacks U+FFFC, keeping previous report");
+                        ReleaseElements(candidates);
                         return LastFinalReport;
                     }
 
@@ -1889,6 +1992,7 @@ public class AutomationService : IDisposable
                     Logger.Trace($"GetFinalReportFast: ProseMirror SUCCESS in {sw.ElapsedMilliseconds}ms, {lineCount} lines, Score={maxScore}");
                     LastFinalReport = bestText;
                     LastTemplateName = ExtractTemplateName(bestText);
+                    ReleaseElements(candidates);
                     return bestText;
                 }
 
@@ -1904,9 +2008,10 @@ public class AutomationService : IDisposable
                         bool hasReplChar2 = text.Contains('\uFFFC');
                         if (string.IsNullOrWhiteSpace(text))
                         {
+                            AutomationElement[]? childTexts = null;
                             try
                             {
-                                var childTexts = candidate.FindAllDescendants(cf =>
+                                childTexts = candidate.FindAllDescendants(cf =>
                                     cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
                                 if (childTexts.Length > 0)
                                 {
@@ -1921,6 +2026,10 @@ public class AutomationService : IDisposable
                                 }
                             }
                             catch { continue; }
+                            finally
+                            {
+                                ReleaseElements(childTexts);
+                            }
                         }
                         if (string.IsNullOrWhiteSpace(text) || text.Length < 50) continue;
 
@@ -1952,6 +2061,7 @@ public class AutomationService : IDisposable
                         if (candidates.Length > 1 && bestFallbackScore < 100 && LastFinalReport != null)
                         {
                             Logger.Trace("GetFinalReportFast: Fallback candidate lacks U+FFFC, keeping previous report");
+                            ReleaseElements(candidates);
                             return LastFinalReport;
                         }
 
@@ -1960,6 +2070,7 @@ public class AutomationService : IDisposable
                         Logger.Trace($"GetFinalReportFast: ProseMirror v2.0.3 fallback SUCCESS in {sw.ElapsedMilliseconds}ms, {lineCount} lines, Score={bestFallbackScore}");
                         LastFinalReport = bestFallback;
                         LastTemplateName = ExtractTemplateName(bestFallback);
+                        ReleaseElements(candidates);
                         return bestFallback;
                     }
                 }
@@ -1976,6 +2087,7 @@ public class AutomationService : IDisposable
                 catch { }
             }
             Logger.Trace($"GetFinalReportFast: ProseMirror search failed (Candidates={candidates.Length}). Proceeding to fallback...");
+            ReleaseElements(candidates);
 
             // FALLBACK: Sibling/Fragment search
             // This runs if ProseMirror elements weren't found OR didn't contain the report
@@ -1990,16 +2102,23 @@ public class AutomationService : IDisposable
                 {
                     var sb = new System.Text.StringBuilder();
                     var allDescendants = container.FindAllDescendants();
-                    
-                    foreach (var desc in allDescendants)
+
+                    try
                     {
-                        var t = desc.Name;
-                        if (!string.IsNullOrWhiteSpace(t)) sb.AppendLine(t);
+                        foreach (var desc in allDescendants)
+                        {
+                            var t = desc.Name;
+                            if (!string.IsNullOrWhiteSpace(t)) sb.AppendLine(t);
+                        }
                     }
-                    
+                    finally
+                    {
+                        ReleaseElements(allDescendants);
+                    }
+
                     var fullText = sb.ToString();
                     Logger.Trace($"GetFinalReportFast: Fallback Reconstruction found {fullText.Length} chars");
-                    
+
                     if (fullText.Length > 50)
                     {
                         sw.Stop();
@@ -2030,33 +2149,42 @@ public class AutomationService : IDisposable
     /// </summary>
     public bool IsDictationActiveUIA()
     {
+        AutomationElement[]? windows = null;
         try
         {
             var desktop = _automation.GetDesktop();
-            var windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
-            
+            windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
+
             foreach (var window in windows)
             {
                 try
                 {
                     var name = window.Name ?? "";
-                    
+
                     // Direct window name match
                     if (name.Contains("Microphone recording"))
                         return true;
-                    
+
                     // Check children if it's a Mosaic/SlimHub window
                     if (name.Contains("Mosaic") || name.Contains("SlimHub"))
                     {
-                        var descendants = window.FindAllDescendants();
-                        foreach (var child in descendants)
+                        AutomationElement[]? descendants = null;
+                        try
                         {
-                            var childName = child.Name ?? "";
-                            if (childName.Contains("Microphone recording") ||
-                                childName.Contains("accessing your microphone"))
+                            descendants = window.FindAllDescendants();
+                            foreach (var child in descendants)
                             {
-                                return true;
+                                var childName = child.Name ?? "";
+                                if (childName.Contains("Microphone recording") ||
+                                    childName.Contains("accessing your microphone"))
+                                {
+                                    return true;
+                                }
                             }
+                        }
+                        finally
+                        {
+                            ReleaseElements(descendants);
                         }
                     }
                 }
@@ -2067,7 +2195,11 @@ public class AutomationService : IDisposable
         {
             Logger.Trace($"Error checking dictation state (UIA): {ex.Message}");
         }
-        
+        finally
+        {
+            ReleaseElements(windows);
+        }
+
         return false;
     }
     
@@ -2539,10 +2671,12 @@ public class AutomationService : IDisposable
     /// </summary>
     public AutomationElement? FindInteleViewerWindow()
     {
+        AutomationElement[]? windows = null;
+        AutomationElement? found = null;
         try
         {
             var desktop = _automation.GetDesktop();
-            var windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
+            windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
 
             foreach (var window in windows)
             {
@@ -2551,7 +2685,8 @@ public class AutomationService : IDisposable
                     var title = window.Name ?? "";
                     if (title.Contains("InteleViewer", StringComparison.OrdinalIgnoreCase))
                     {
-                        return window;
+                        found = window;
+                        break;
                     }
                 }
                 catch { continue; }
@@ -2561,8 +2696,14 @@ public class AutomationService : IDisposable
         {
             Logger.Trace($"Error finding InteleViewer window: {ex.Message}");
         }
+        finally
+        {
+            if (windows != null)
+                foreach (var w in windows)
+                    if (w != found) ReleaseElement(w);
+        }
 
-        return null;
+        return found;
     }
 
     /// <summary>
@@ -2703,6 +2844,37 @@ public class AutomationService : IDisposable
         if (string.IsNullOrEmpty(value)) return "";
         if (value.Length <= maxLength) return value;
         return value.Substring(0, maxLength) + "...";
+    }
+
+    #endregion
+
+    #region COM Cleanup Helpers
+
+    /// <summary>
+    /// Release COM wrappers for an array of FlaUI AutomationElements.
+    /// Prevents COM RCW (Runtime Callable Wrapper) buildup from FindAllDescendants/FindAllChildren.
+    /// Best-effort — silently ignores double-release or already-released objects.
+    /// </summary>
+    internal static void ReleaseElements(AutomationElement[]? elements)
+    {
+        if (elements == null) return;
+        foreach (var el in elements)
+            ReleaseElement(el);
+    }
+
+    /// <summary>
+    /// Release the COM wrapper for a single FlaUI AutomationElement.
+    /// </summary>
+    internal static void ReleaseElement(AutomationElement? el)
+    {
+        if (el == null) return;
+        try
+        {
+            if (el.FrameworkAutomationElement is UIA3FrameworkAutomationElement uia3)
+                Marshal.ReleaseComObject(uia3.NativeElement);
+        }
+        catch (InvalidComObjectException) { }
+        catch (Exception) { }
     }
 
     #endregion

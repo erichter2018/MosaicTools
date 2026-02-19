@@ -2963,12 +2963,12 @@ public class ActionController : IDisposable
                     Logger.Trace($"Scrape heartbeat: acc={acc}, idle={_consecutiveIdleScrapes}, clinHist={_clinicalHistoryVisible}");
                 }
 
-                // Periodic GC: release accumulated FlaUI COM wrappers (IUIAutomationElement RCWs)
-                // to prevent progressive system slowdown from stale UIA references.
-                // Must use Forced mode — Optimized lets the runtime skip collection, leaving
-                // COM RCWs pinned. Every FindAllDescendants call creates dozens of COM objects.
+                // Periodic GC: safety net for any COM wrappers that escape deterministic release
+                // (e.g., _cachedSlimHubWindow, elements accessed via indexed properties).
+                // Most COM objects are now released immediately via ReleaseElement/ReleaseElements,
+                // so this runs much less frequently as a backstop.
                 _scrapesSinceLastGc++;
-                if (_scrapesSinceLastGc >= 30)
+                if (_scrapesSinceLastGc >= 120)
                 {
                     _scrapesSinceLastGc = 0;
                     GC.Collect(2, GCCollectionMode.Forced);

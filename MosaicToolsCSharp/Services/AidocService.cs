@@ -134,32 +134,39 @@ public class AidocService
             var parsed = new List<(string Type, string Text, System.Drawing.Rectangle Rect)>();
             var logEntries = new List<string>();
 
-            foreach (var child in children)
+            try
             {
-                if (child.ControlType == FlaUI.Core.Definitions.ControlType.Text)
+                foreach (var child in children)
                 {
-                    var name = child.Name ?? "";
-                    parsed.Add(("Text", name, System.Drawing.Rectangle.Empty));
-                    logEntries.Add($"Text:'{name}'");
-                }
-                else if (child.ControlType == FlaUI.Core.Definitions.ControlType.Image)
-                {
-                    try
+                    if (child.ControlType == FlaUI.Core.Definitions.ControlType.Text)
                     {
-                        var rect = child.BoundingRectangle;
-                        parsed.Add(("Image", "", rect));
-                        logEntries.Add($"Image:{rect.Width}x{rect.Height}");
+                        var name = child.Name ?? "";
+                        parsed.Add(("Text", name, System.Drawing.Rectangle.Empty));
+                        logEntries.Add($"Text:'{name}'");
                     }
-                    catch
+                    else if (child.ControlType == FlaUI.Core.Definitions.ControlType.Image)
                     {
-                        parsed.Add(("Image", "", System.Drawing.Rectangle.Empty));
-                        logEntries.Add("Image:(error)");
+                        try
+                        {
+                            var rect = child.BoundingRectangle;
+                            parsed.Add(("Image", "", rect));
+                            logEntries.Add($"Image:{rect.Width}x{rect.Height}");
+                        }
+                        catch
+                        {
+                            parsed.Add(("Image", "", System.Drawing.Rectangle.Empty));
+                            logEntries.Add("Image:(error)");
+                        }
+                    }
+                    else
+                    {
+                        logEntries.Add($"{child.ControlType}:'{child.Name}'");
                     }
                 }
-                else
-                {
-                    logEntries.Add($"{child.ControlType}:'{child.Name}'");
-                }
+            }
+            finally
+            {
+                AutomationService.ReleaseElements(children);
             }
 
             // Log full element dump on changes
