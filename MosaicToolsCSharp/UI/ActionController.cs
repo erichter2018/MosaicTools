@@ -2320,7 +2320,7 @@ public class ActionController : IDisposable
                     else
                     {
                         // Standalone: position at saved report popup location
-                        overlay.Location = new Point(_config.ReportPopupX, _config.ReportPopupY + 200);
+                        overlay.Location = ScreenHelper.EnsureOnScreen(_config.ReportPopupX, _config.ReportPopupY + 200);
                     }
 
                     overlay.FormClosed += (s, e) => _currentRadAiOverlay = null;

@@ -161,7 +161,7 @@ public class SettingsFormNew : Form, IMessageFilter
         Text = $"Mosaic Tools Settings{versionStr}";
         Size = new Size(700, 650);
         StartPosition = FormStartPosition.Manual;
-        Location = new Point(_config.SettingsX, _config.SettingsY);
+        Location = ScreenHelper.EnsureOnScreen(_config.SettingsX, _config.SettingsY, Size.Width, Size.Height);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;

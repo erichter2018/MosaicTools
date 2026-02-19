@@ -219,7 +219,7 @@ public class ReportPopupForm : Form
         }
 
         // Common setup
-        this.Location = new Point(config.ReportPopupX, config.ReportPopupY);
+        this.Location = ScreenHelper.EnsureOnScreen(config.ReportPopupX, config.ReportPopupY, Size.Width, Size.Height);
 
         LocationChanged += (_, _) =>
         {

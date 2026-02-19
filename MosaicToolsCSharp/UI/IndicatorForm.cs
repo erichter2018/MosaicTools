@@ -32,7 +32,7 @@ public class IndicatorForm : Form
         TopMost = true;
         Size = new Size(50, 50);
         StartPosition = FormStartPosition.Manual;
-        Location = new Point(_config.IndicatorX, _config.IndicatorY);
+        Location = ScreenHelper.EnsureOnScreen(_config.IndicatorX, _config.IndicatorY);
         
         // Frame
         _frame = new Panel

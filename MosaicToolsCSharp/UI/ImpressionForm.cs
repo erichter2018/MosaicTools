@@ -169,20 +169,16 @@ public class ImpressionForm : Form
 
     private void PositionFromCenter()
     {
-        Location = new Point(
-            _config.ImpressionX - Width / 2,
-            _config.ImpressionY - Height / 2
-        );
+        Location = ScreenHelper.EnsureOnScreenFromCenter(
+            _config.ImpressionX, _config.ImpressionY, Width, Height);
         _initialPositionSet = true;
     }
 
     private void RepositionToCenter()
     {
         if (_dragging) return;
-        Location = new Point(
-            _config.ImpressionX - Width / 2,
-            _config.ImpressionY - Height / 2
-        );
+        Location = ScreenHelper.EnsureOnScreenFromCenter(
+            _config.ImpressionX, _config.ImpressionY, Width, Height);
     }
 
     #endregion

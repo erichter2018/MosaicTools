@@ -53,7 +53,7 @@ public class TranscriptionForm : Form
         Cursor = Cursors.SizeAll;
         Padding = new Padding(6);
 
-        Location = new Point(config.TranscriptionFormX, config.TranscriptionFormY);
+        Location = ScreenHelper.EnsureOnScreen(config.TranscriptionFormX, config.TranscriptionFormY);
 
         // Text display — read-only, no scrollbars, minimal
         _textBox = new RichTextBox

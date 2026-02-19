@@ -101,7 +101,7 @@ public class MainForm : Form
         BackColor = Color.FromArgb(51, 51, 51); // #333333
         Size = new Size(baseWidth + rvuWidth + connectivityWidth, 40);
         StartPosition = FormStartPosition.Manual;
-        Location = new Point(_config.WindowX, _config.WindowY);
+        Location = ScreenHelper.EnsureOnScreen(_config.WindowX, _config.WindowY, Size.Width, Size.Height);
 
         // Set application icon (embedded in exe)
         try

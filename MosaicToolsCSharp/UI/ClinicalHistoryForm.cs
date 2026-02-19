@@ -352,20 +352,16 @@ public class ClinicalHistoryForm : Form
 
     private void PositionFromCenter()
     {
-        Location = new Point(
-            _config.ClinicalHistoryX - Width / 2,
-            _config.ClinicalHistoryY - Height / 2
-        );
+        Location = ScreenHelper.EnsureOnScreenFromCenter(
+            _config.ClinicalHistoryX, _config.ClinicalHistoryY, Width, Height);
         _initialPositionSet = true;
     }
 
     private void RepositionToCenter()
     {
         if (_dragging) return;
-        Location = new Point(
-            _config.ClinicalHistoryX - Width / 2,
-            _config.ClinicalHistoryY - Height / 2
-        );
+        Location = ScreenHelper.EnsureOnScreenFromCenter(
+            _config.ClinicalHistoryX, _config.ClinicalHistoryY, Width, Height);
     }
 
     #endregion

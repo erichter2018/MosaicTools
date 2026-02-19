@@ -31,7 +31,7 @@ public class FloatingToolbarForm : Form
         TopMost = true;
         BackColor = Color.Black;
         StartPosition = FormStartPosition.Manual;
-        Location = new Point(_config.FloatingToolbarX, _config.FloatingToolbarY);
+        Location = ScreenHelper.EnsureOnScreen(_config.FloatingToolbarX, _config.FloatingToolbarY);
 
         // Calculate size based on config
         var formSize = CalculateFormSize();

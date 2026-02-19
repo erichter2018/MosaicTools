@@ -105,7 +105,7 @@ public class PickListPopupForm : Form
     {
         Text = "Pick Lists";
         StartPosition = FormStartPosition.Manual;
-        Location = new Point(_config.PickListPopupX, _config.PickListPopupY);
+        Location = ScreenHelper.EnsureOnScreen(_config.PickListPopupX, _config.PickListPopupY);
         FormBorderStyle = FormBorderStyle.None;
         BackColor = Color.FromArgb(35, 35, 35);
         ShowInTaskbar = false;
