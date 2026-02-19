@@ -27,6 +27,8 @@ public class ActionController : IDisposable
     private readonly HidService _hidService;
     private readonly KeyboardService _keyboardService;
     private readonly AutomationService _automationService;
+    private readonly IMosaicReader _mosaicReader;
+    private readonly IMosaicCommander _mosaicCommander;
     private NoteFormatter _noteFormatter;
     private GetPriorService _getPriorService;
     private readonly OcrService _ocrService;
@@ -214,6 +216,8 @@ public class ActionController : IDisposable
         _keyboardService = new KeyboardService();
         _keyboardService.UiSyncTarget = mainForm;
         _automationService = new AutomationService();
+        _mosaicReader = _automationService;
+        _mosaicCommander = _automationService;
         _noteFormatter = new NoteFormatter(config.DoctorName, config.CriticalFindingsTemplate, config.TargetTimezone);
         _getPriorService = new GetPriorService(_config.ComparisonTemplate);
         _ocrService = new OcrService();
@@ -679,11 +683,11 @@ public class ActionController : IDisposable
     {
         // Primary: check the flag set during ProseMirror scanning (works even when
         // LastFinalReport is stale due to the U+FFFC fallback logic)
-        if (_automationService.IsAddendumDetected)
+        if (_mosaicReader.IsAddendumDetected)
             return true;
 
         // Fallback: check LastFinalReport text directly
-        var report = _automationService.LastFinalReport;
+        var report = _mosaicReader.LastFinalReport;
         return !string.IsNullOrEmpty(report) && report.TrimStart().StartsWith("Addendum", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1064,7 +1068,7 @@ public class ActionController : IDisposable
             int pageDowns = 0;
             
             {
-                string? report = _automationService.LastFinalReport;
+                string? report = _mosaicReader.LastFinalReport;
                 if (!string.IsNullOrEmpty(report))
                 {
                     int lines = report.Split('\n').Length;
@@ -1141,7 +1145,7 @@ public class ActionController : IDisposable
         // Auto-create critical note for stroke cases if enabled
         if (_config.StrokeAutoCreateNote && _strokeDetectedActive)
         {
-            var accession = _automationService.LastAccession;
+            var accession = _mosaicReader.LastAccession;
             if (!HasCriticalNoteForAccession(accession))
             {
                 Logger.Trace($"Process Report: Auto-creating critical note for stroke case {accession}");
@@ -1152,16 +1156,16 @@ public class ActionController : IDisposable
         // Auto-send to RecoMD if enabled — kick-start immediately, then scrape timer continues
         if (_config.RecoMdEnabled && _config.RecoMdAutoOnProcess)
         {
-            var immediateText = _automationService.LastFinalReport;
+            var immediateText = _mosaicReader.LastFinalReport;
             if (!string.IsNullOrEmpty(immediateText))
             {
                 var recoText = RecoMdService.CleanReportText(immediateText);
-                var recoAcc = _automationService.LastAccession;
-                var recoDesc = _automationService.LastDescription;
-                var recoName = _automationService.LastPatientName;
-                var recoGender = _automationService.LastPatientGender;
-                var recoMrn = _automationService.LastMrn;
-                var recoAge = _automationService.LastPatientAge ?? 0;
+                var recoAcc = _mosaicReader.LastAccession;
+                var recoDesc = _mosaicReader.LastDescription;
+                var recoName = _mosaicReader.LastPatientName;
+                var recoGender = _mosaicReader.LastPatientGender;
+                var recoMrn = _mosaicReader.LastMrn;
+                var recoAge = _mosaicReader.LastPatientAge ?? 0;
                 Logger.Trace("RecoMD: Immediate send after Process Report");
                 _recoMdOpenedForAccession = recoAcc;
                 _lastRecoMdSentText = recoText;
@@ -1185,7 +1189,7 @@ public class ActionController : IDisposable
         if (_config.RadAiAutoOnProcess && _radAiService != null)
         {
             Logger.Trace("RadAI: Scheduling auto-insert after Process Report");
-            _radAiPreProcessReport = _automationService.LastFinalReport ?? "";
+            _radAiPreProcessReport = _mosaicReader.LastFinalReport ?? "";
             _radAiAutoInsertRequestTime = DateTime.Now;
             _radAiAutoInsertPending = true;
         }
@@ -1369,7 +1373,7 @@ public class ActionController : IDisposable
         _discardDialogShownForCurrentAccession = true;
 
         // Perform the UI automation to discard
-        bool success = _automationService.ClickDiscardStudy();
+        bool success = _mosaicCommander.ClickDiscardStudy();
 
         if (success)
         {
@@ -1429,7 +1433,7 @@ public class ActionController : IDisposable
     {
         Logger.Trace("Create Impression (via UI Automation)");
 
-        var success = _automationService.ClickCreateImpression();
+        var success = _mosaicCommander.ClickCreateImpression();
         if (success)
         {
             InvokeUI(() => _mainForm.ShowStatusToast("Create Impression", 1500));
@@ -1451,7 +1455,7 @@ public class ActionController : IDisposable
         }
 
         // Session-wide check: don't re-insert macros for a study that was already processed
-        var accession = _automationService.LastAccession;
+        var accession = _mosaicReader.LastAccession;
         if (!string.IsNullOrEmpty(accession) && _macrosInsertedForAccessions.ContainsKey(accession))
         {
             Logger.Trace($"Macros: Already inserted for accession {accession} this session, skipping");
@@ -1553,7 +1557,7 @@ public class ActionController : IDisposable
                 Thread.Sleep(50);
 
                 // Focus Transcript box to ensure paste goes to correct location
-                _automationService.FocusTranscriptBox();
+                _mosaicCommander.FocusTranscriptBox();
                 Thread.Sleep(50);
 
                 InsertTextToFocusedEditor(PrepareTextForPaste(text));
@@ -1613,7 +1617,7 @@ public class ActionController : IDisposable
         }
 
         // Get current study description
-        var studyDescription = _automationService.LastDescription;
+        var studyDescription = _mosaicReader.LastDescription;
 
         // Filter pick lists by study criteria
         var matchingLists = _config.PickLists
@@ -1697,7 +1701,7 @@ public class ActionController : IDisposable
                 Thread.Sleep(50);
 
                 // Focus Transcript box to ensure paste goes to correct location
-                _automationService.FocusTranscriptBox();
+                _mosaicCommander.FocusTranscriptBox();
                 Thread.Sleep(50);
 
                 InsertTextToFocusedEditor(PrepareTextForPaste(text));
@@ -1813,7 +1817,7 @@ public class ActionController : IDisposable
             Thread.Sleep(100);
 
             // Focus Transcript box to ensure paste goes to correct location
-            _automationService.FocusTranscriptBox();
+            _mosaicCommander.FocusTranscriptBox();
             Thread.Sleep(100);
 
             InsertTextToFocusedEditor(PrepareTextForPaste(formatted + "\n"));
@@ -1875,7 +1879,7 @@ public class ActionController : IDisposable
             // Insert into Mosaic final report box (not transcript)
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(200);
-            _automationService.FocusFinalReportBox();
+            _mosaicCommander.FocusFinalReportBox();
             Thread.Sleep(100);
 
             InsertTextToFocusedEditor(formatted);
@@ -1898,7 +1902,7 @@ public class ActionController : IDisposable
         if (!_config.TrackCriticalStudies)
             return;
 
-        var accession = _automationService.LastAccession;
+        var accession = _mosaicReader.LastAccession;
         if (string.IsNullOrEmpty(accession))
         {
             Logger.Trace("TrackCriticalStudy: No accession to track");
@@ -1917,10 +1921,10 @@ public class ActionController : IDisposable
             var entry = new CriticalStudyEntry
             {
                 Accession = accession,
-                PatientName = _automationService.LastPatientName ?? "Unknown",
-                SiteCode = _automationService.LastSiteCode ?? "???",
-                Description = _automationService.LastDescription ?? "Unknown",
-                Mrn = _automationService.LastMrn ?? "",
+                PatientName = _mosaicReader.LastPatientName ?? "Unknown",
+                SiteCode = _mosaicReader.LastSiteCode ?? "???",
+                Description = _mosaicReader.LastDescription ?? "Unknown",
+                Mrn = _mosaicReader.LastMrn ?? "",
                 CriticalNoteTime = DateTime.Now
             };
 
@@ -1940,7 +1944,7 @@ public class ActionController : IDisposable
         if (!_config.TrackCriticalStudies)
             return;
 
-        var accession = _automationService.LastAccession;
+        var accession = _mosaicReader.LastAccession;
         if (string.IsNullOrEmpty(accession))
         {
             Logger.Trace("UntrackCriticalStudy: No accession to untrack");
@@ -2015,12 +2019,12 @@ public class ActionController : IDisposable
         try
         {
             // Use the scraped report text (much faster than Alt+C)
-            string? reportText = _automationService.LastFinalReport;
+            string? reportText = _mosaicReader.LastFinalReport;
 
             if (string.IsNullOrEmpty(reportText))
             {
                 // Distinguish between "no study open" and "study loading"
-                var currentAccession = _automationService.LastAccession;
+                var currentAccession = _mosaicReader.LastAccession;
                 if (!string.IsNullOrEmpty(currentAccession))
                 {
                     // We have an accession but no report yet - show popup with "loading" message
@@ -2068,7 +2072,7 @@ public class ActionController : IDisposable
                     changesEnabled: _config.ShowReportChanges,
                     correlationEnabled: _config.CorrelationEnabled,
                     baselineIsSectionOnly: baselineForDiff != null && _baselineIsFromTemplateDb,
-                    accession: _automationService.LastAccession);
+                    accession: _mosaicReader.LastAccession);
                 _lastPopupReportText = reportText;
 
                 _currentReportPopup.ImpressionDeleteRequested += OnImpressionDeleteRequested;
@@ -2219,7 +2223,7 @@ public class ActionController : IDisposable
     {
         Logger.Trace("Create Critical Note action triggered");
 
-        var accession = _automationService.LastAccession;
+        var accession = _mosaicReader.LastAccession;
         if (string.IsNullOrEmpty(accession))
         {
             InvokeUI(() => _mainForm.ShowStatusToast("No study loaded", 2000));
@@ -2274,8 +2278,8 @@ public class ActionController : IDisposable
         }
 
         // Fresh scrape to ensure we have the latest report text (not stale cache)
-        _automationService.GetFinalReportFast();
-        var reportText = _automationService.LastFinalReport;
+        _mosaicReader.GetFinalReportFast();
+        var reportText = _mosaicReader.LastFinalReport;
         if (string.IsNullOrEmpty(reportText))
         {
             InvokeUI(() => _mainForm.ShowStatusToast("No report text available", 2000));
@@ -2286,8 +2290,8 @@ public class ActionController : IDisposable
 
         var result = Task.Run(async () => await _radAiService.GetImpressionAsync(
             reportText,
-            _automationService.LastDescription,
-            _automationService.LastPatientGender
+            _mosaicReader.LastDescription,
+            _mosaicReader.LastPatientGender
         )).GetAwaiter().GetResult();
 
         if (result.Success && !string.IsNullOrEmpty(result.Impression))
@@ -2370,12 +2374,12 @@ public class ActionController : IDisposable
         }
 
         // Capture metadata BEFORE GetFinalReportFast (which resets patient fields)
-        var accession = _automationService.LastAccession;
-        var description = _automationService.LastDescription;
-        var patientName = _automationService.LastPatientName;
-        var gender = _automationService.LastPatientGender;
-        var mrn = _automationService.LastMrn;
-        var age = _automationService.LastPatientAge ?? 0;
+        var accession = _mosaicReader.LastAccession;
+        var description = _mosaicReader.LastDescription;
+        var patientName = _mosaicReader.LastPatientName;
+        var gender = _mosaicReader.LastPatientGender;
+        var mrn = _mosaicReader.LastMrn;
+        var age = _mosaicReader.LastPatientAge ?? 0;
 
         if (string.IsNullOrEmpty(accession))
         {
@@ -2384,8 +2388,8 @@ public class ActionController : IDisposable
         }
 
         // Get current report text (this resets and re-scrapes patient fields)
-        _automationService.GetFinalReportFast();
-        var reportText = _automationService.LastFinalReport;
+        _mosaicReader.GetFinalReportFast();
+        var reportText = _mosaicReader.LastFinalReport;
         if (string.IsNullOrEmpty(reportText))
         {
             InvokeUI(() => _mainForm.ShowStatusToast("No report text available", 2000));
@@ -2542,11 +2546,11 @@ public class ActionController : IDisposable
         Logger.Trace($"RecoMD: Got {recoText.Length} chars from clipboard via Win32");
 
         // Step 3: Get existing impression from the already-scraped report.
-        var reportText = _automationService.LastFinalReport;
+        var reportText = _mosaicReader.LastFinalReport;
         if (string.IsNullOrEmpty(reportText))
         {
             Logger.Trace("RecoMD: No scraped report available, attempting fresh scrape");
-            reportText = _automationService.GetFinalReportFast();
+            reportText = _mosaicReader.GetFinalReportFast();
         }
 
         string existingImpression = "";
@@ -2588,12 +2592,12 @@ public class ActionController : IDisposable
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(100);
 
-            _automationService.FocusFinalReportBox();
+            _mosaicCommander.FocusFinalReportBox();
             Thread.Sleep(100);
             NativeWindows.SendHotkey("ctrl+end");
             Thread.Sleep(100);
 
-            bool selected = _automationService.SelectImpressionContent();
+            bool selected = _mosaicCommander.SelectImpressionContent();
             if (!selected)
             {
                 InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section", 3000));
@@ -2686,7 +2690,7 @@ public class ActionController : IDisposable
             Thread.Sleep(100);
 
             // Focus report editor and scroll to bottom
-            _automationService.FocusFinalReportBox();
+            _mosaicCommander.FocusFinalReportBox();
             Thread.Sleep(100);
             NativeWindows.SendHotkey("ctrl+end");
             Thread.Sleep(100);
@@ -2696,13 +2700,13 @@ public class ActionController : IDisposable
             bool selected = false;
             for (int attempt = 0; attempt < 5; attempt++)
             {
-                selected = _automationService.SelectImpressionContent();
+                selected = _mosaicCommander.SelectImpressionContent();
                 if (selected) break;
                 Logger.Trace($"RadAI Insert: IMPRESSION not found, retry {attempt + 1}/5...");
                 Thread.Sleep(1500);
                 NativeWindows.ActivateMosaicForcefully();
                 Thread.Sleep(100);
-                _automationService.FocusFinalReportBox();
+                _mosaicCommander.FocusFinalReportBox();
                 Thread.Sleep(100);
                 NativeWindows.SendHotkey("ctrl+end");
                 Thread.Sleep(100);
@@ -2724,8 +2728,8 @@ public class ActionController : IDisposable
         if (_currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed)
         {
             Thread.Sleep(500); // Give Mosaic time to process the paste
-            _automationService.GetFinalReportFast();
-            var updatedReport = _automationService.LastFinalReport ?? "";
+            _mosaicReader.GetFinalReportFast();
+            var updatedReport = _mosaicReader.LastFinalReport ?? "";
 
             // Verify: check if the first impression item appears in the report
             bool verified = false;
@@ -2793,7 +2797,7 @@ public class ActionController : IDisposable
             Thread.Sleep(100);
 
             // Select impression content
-            bool selected = _automationService.SelectImpressionContent();
+            bool selected = _mosaicCommander.SelectImpressionContent();
             if (!selected)
             {
                 Logger.Trace("PerformReplaceImpression: Could not find IMPRESSION section");
@@ -2823,8 +2827,8 @@ public class ActionController : IDisposable
 
         // Verify: re-scrape and update report popup display
         Thread.Sleep(500);
-        _automationService.GetFinalReportFast();
-        var updatedReport = _automationService.LastFinalReport ?? "";
+        _mosaicReader.GetFinalReportFast();
+        var updatedReport = _mosaicReader.LastFinalReport ?? "";
 
         _pendingImpressionReplaceText = null;
         _impressionDeletePending = false;
@@ -2917,7 +2921,7 @@ public class ActionController : IDisposable
                                         (_config.MacrosEnabled && _config.Macros.Count > 0);
 
                 // Scrape Mosaic for report data
-                var reportText = _automationService.GetFinalReportFast(needDraftedCheck);
+                var reportText = _mosaicReader.GetFinalReportFast(needDraftedCheck);
 
                 // Bail out if user action started during the scrape
                 if (_isUserActive) return;
@@ -2959,7 +2963,7 @@ public class ActionController : IDisposable
                 if (_scrapeHeartbeatCount >= 120)
                 {
                     _scrapeHeartbeatCount = 0;
-                    var acc = _automationService.LastAccession ?? "(none)";
+                    var acc = _mosaicReader.LastAccession ?? "(none)";
                     Logger.Trace($"Scrape heartbeat: acc={acc}, idle={_consecutiveIdleScrapes}, clinHist={_clinicalHistoryVisible}");
                 }
 
@@ -3001,7 +3005,7 @@ public class ActionController : IDisposable
                 }
 
                 // Check for new study (non-empty accession different from last non-empty)
-                var currentAccession = _automationService.LastAccession;
+                var currentAccession = _mosaicReader.LastAccession;
 
                 // Clear stale Clario data when accession changes, before pipe send
                 if (!string.IsNullOrEmpty(currentAccession) && currentAccession != _lastNonEmptyAccession)
@@ -3013,15 +3017,15 @@ public class ActionController : IDisposable
                 _pipeService.SendStudyData(new StudyDataMessage(
                     Type: "study_data",
                     Accession: currentAccession,
-                    Description: _automationService.LastDescription,
-                    TemplateName: _automationService.LastTemplateName,
-                    PatientName: _automationService.LastPatientName,
-                    PatientGender: _automationService.LastPatientGender,
-                    Mrn: _automationService.LastMrn,
-                    SiteCode: _automationService.LastSiteCode,
+                    Description: _mosaicReader.LastDescription,
+                    TemplateName: _mosaicReader.LastTemplateName,
+                    PatientName: _mosaicReader.LastPatientName,
+                    PatientGender: _mosaicReader.LastPatientGender,
+                    Mrn: _mosaicReader.LastMrn,
+                    SiteCode: _mosaicReader.LastSiteCode,
                     ClarioPriority: _automationService.LastClarioPriority,
                     ClarioClass: _automationService.LastClarioClass,
-                    Drafted: _automationService.LastDraftedState,
+                    Drafted: _mosaicReader.LastDraftedState,
                     HasCritical: !string.IsNullOrEmpty(currentAccession) && HasCriticalNoteForAccession(currentAccession),
                     Timestamp: DateTime.UtcNow.ToString("o")
                 ));
@@ -3029,779 +3033,31 @@ public class ActionController : IDisposable
                 // Check for discard dialog (RVUCounter integration)
                 // Must check BEFORE accession change detection - dialog disappears when user clicks YES
                 // Only check when a study is open (avoids unnecessary FlaUI tree search)
-                if (!string.IsNullOrEmpty(currentAccession) && _automationService.IsDiscardDialogVisible())
+                if (!string.IsNullOrEmpty(currentAccession) && _mosaicReader.IsDiscardDialogVisible())
                 {
                     _discardDialogShownForCurrentAccession = true;
                     Logger.Trace("RVUCounter: Discard dialog detected for current accession");
                 }
 
-                // Detect study change with flap debounce
-                // Mosaic briefly sets accession to empty during study transitions.
-                // Without debounce, each flap triggers a full study close + reopen cycle,
-                // causing duplicate macro inserts and false RVU counter events.
-                bool accessionChanged = false;
-                bool studyClosed = false;
-
-                if (!string.IsNullOrEmpty(currentAccession))
-                {
-                    // Non-empty accession — cancel any pending close since accession came back
-                    if (_pendingCloseAccession != null)
-                    {
-                        if (currentAccession == _pendingCloseAccession)
-                        {
-                            // Same accession returned after brief empty — this was a flap, ignore it
-                            Logger.Trace($"Accession flap cancelled: '{currentAccession}' returned after {_pendingCloseTickCount} tick(s)");
-                            _pendingCloseAccession = null;
-                            _pendingCloseTickCount = 0;
-                            // Don't process as a study change — nothing actually changed
-                        }
-                        else
-                        {
-                            // Different accession appeared — process the pending close first, then the new study
-                            // The pending close's RVU event and state reset will happen as part of the new study change
-                            _pendingCloseAccession = null;
-                            _pendingCloseTickCount = 0;
-                            accessionChanged = true;
-                        }
-                    }
-                    else if (currentAccession != _lastNonEmptyAccession)
-                    {
-                        // New non-empty accession (direct transition, no empty gap)
-                        accessionChanged = true;
-                    }
-                }
-                else if (!string.IsNullOrEmpty(_lastNonEmptyAccession))
-                {
-                    // Accession just went empty — start debounce, don't process yet
-                    if (_pendingCloseAccession == null)
-                    {
-                        _pendingCloseAccession = _lastNonEmptyAccession;
-                        _pendingCloseTickCount = 1;
-                        Logger.Trace($"Accession went empty, deferring close for '{_pendingCloseAccession}' (tick 1)");
-                    }
-                    else
-                    {
-                        _pendingCloseTickCount++;
-                        if (_pendingCloseTickCount >= 3)
-                        {
-                            // Empty for 3+ ticks — this is a real close, not a flap
-                            Logger.Trace($"Accession confirmed closed after {_pendingCloseTickCount} ticks: '{_pendingCloseAccession}'");
-                            accessionChanged = true;
-                            studyClosed = true;
-                            _pendingCloseAccession = null;
-                            _pendingCloseTickCount = 0;
-                        }
-                    }
-                }
-                else if (_pendingCloseAccession != null)
-                {
-                    // Still empty and we have a pending close — increment tick count
-                    _pendingCloseTickCount++;
-                    if (_pendingCloseTickCount >= 3)
-                    {
-                        Logger.Trace($"Accession confirmed closed after {_pendingCloseTickCount} ticks: '{_pendingCloseAccession}'");
-                        accessionChanged = true;
-                        studyClosed = true;
-                        _pendingCloseAccession = null;
-                        _pendingCloseTickCount = 0;
-                    }
-                }
+                // Detect accession change with flap debounce
+                var (accessionChanged, studyClosed) = DetectAccessionChange(currentAccession);
 
                 if (accessionChanged)
-                {
-                    Logger.Trace($"Study change detected: '{_lastNonEmptyAccession}' -> '{currentAccession ?? "(empty)"}'");
+                    OnStudyChanged(currentAccession, reportText, studyClosed);
 
-                    // RVUCounter integration: Notify about previous study
-                    // Logic:
-                    //   1. If _currentAccessionSigned → SIGNED (MosaicTools triggered sign)
-                    //   2. Else if discard dialog was shown for this accession → CLOSED_UNSIGNED
-                    //   3. Else → SIGNED (no dialog = manual sign via Alt+F or button click)
-                    //   Each type has a _CRITICAL variant if a critical note was created
-                    if (!string.IsNullOrEmpty(_lastNonEmptyAccession))
-                    {
-                        var hasCritical = HasCriticalNoteForAccession(_lastNonEmptyAccession);
-                        var criticalSuffix = hasCritical ? "_CRITICAL" : "";
+                UpdateRecoMd(currentAccession, reportText);
 
-                        if (_currentAccessionSigned)
-                        {
-                            // Explicitly signed via MosaicTools
-                            var msgType = hasCritical ? NativeWindows.MSG_STUDY_SIGNED_CRITICAL : NativeWindows.MSG_STUDY_SIGNED;
-                            Logger.Trace($"RVUCounter: Sending SIGNED{criticalSuffix} (MosaicTools) for '{_lastNonEmptyAccession}'");
-                            NativeWindows.SendToRvuCounter(msgType, _lastNonEmptyAccession);
-                            _pipeService.SendStudyEvent(new StudyEventMessage("study_event", "signed", _lastNonEmptyAccession, hasCritical));
-                        }
-                        else if (_discardDialogShownForCurrentAccession)
-                        {
-                            // Discard dialog was shown for this accession → study was discarded
-                            var msgType = hasCritical ? NativeWindows.MSG_STUDY_CLOSED_UNSIGNED_CRITICAL : NativeWindows.MSG_STUDY_CLOSED_UNSIGNED;
-                            Logger.Trace($"RVUCounter: Sending CLOSED_UNSIGNED{criticalSuffix} (dialog was shown) for '{_lastNonEmptyAccession}'");
-                            NativeWindows.SendToRvuCounter(msgType, _lastNonEmptyAccession);
-                            _pipeService.SendStudyEvent(new StudyEventMessage("study_event", "unsigned", _lastNonEmptyAccession, hasCritical));
-                        }
-                        else
-                        {
-                            // No dialog → user signed manually (Alt+F or clicked Sign button)
-                            var msgType = hasCritical ? NativeWindows.MSG_STUDY_SIGNED_CRITICAL : NativeWindows.MSG_STUDY_SIGNED;
-                            Logger.Trace($"RVUCounter: Sending SIGNED{criticalSuffix} (manual) for '{_lastNonEmptyAccession}'");
-                            NativeWindows.SendToRvuCounter(msgType, _lastNonEmptyAccession);
-                            _pipeService.SendStudyEvent(new StudyEventMessage("study_event", "signed", _lastNonEmptyAccession, hasCritical));
-                        }
-                    }
+                RecordTemplateIfNeeded(reportText);
 
-                    // RecoMD: close previous study on accession change
-                    if (_config.RecoMdEnabled)
-                    {
-                        _recoMdOpenedForAccession = null;
-                        _lastRecoMdSentText = null;
-                        SendRecoMdToBack();
-                        Task.Run(async () => await _recoMdService.CloseReportAsync());
-                    }
+                CaptureBaselineReport(reportText);
 
-                    // Reset state for new study
-                    _currentAccessionSigned = false;
-                    _discardDialogShownForCurrentAccession = false;
-                    _processReportPressedForCurrentAccession = false;
-                    _draftedAutoProcessDetected = false;
-                    _autoShowReportDoneForAccession = false;
-                    // Note: _criticalNoteCreatedForAccessions is session-scoped, NOT reset on study change
-                    // This prevents duplicate notes caused by transient accession-null scrape glitches
-                    _baselineReport = null;
-                    _baselineIsFromTemplateDb = false;
-                    _baselineCaptureAttempts = 0;
-                    _templateRecordedForStudy = false;
-                    _lastPopupReportText = null;
-                    _automationService.ClearLastReport();
-                    // Close stale report popup from prior study
-                    if (_currentReportPopup != null && !_currentReportPopup.IsDisposed)
-                    {
-                        var stalePopup = _currentReportPopup;
-                        _currentReportPopup = null;
-                        BatchUI(() => { try { stalePopup.Close(); } catch { } });
-                    }
-                    // [RadAI] Cancel pending auto-insert and close stale popup/overlay from prior study
-                    _radAiAutoInsertPending = false;
-                    if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
-                    {
-                        var staleRadAi = _currentRadAiPopup;
-                        _currentRadAiPopup = null;
-                        _pendingRadAiImpressionItems = null;
-                        BatchUI(() => { try { staleRadAi.Close(); } catch { } });
-                    }
-                    if (_currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed)
-                    {
-                        var staleOverlay = _currentRadAiOverlay;
-                        _currentRadAiOverlay = null;
-                        _pendingRadAiImpressionItems = null;
-                        BatchUI(() => { try { staleOverlay.Close(); } catch { } });
-                    }
-                    // Reset alert state tracking
-                    _templateMismatchActive = false;
-                    _genderMismatchActive = false;
-                    _strokeDetectedActive = false;
-                    _pendingClarioPriorityRetry = false;
-                    _lastAidocFindings = null;
-                    _lastAidocRelevant = false;
-                    _aidocConfirmedNegative.Clear();
+                UpdateReportPopup(reportText);
 
-                    // Reset Ignore Inpatient Drafted state
-                    _macrosCompleteForCurrentAccession = false;
-                    _autoFixCompleteForCurrentAccession = false;
-                    _ctrlASentForCurrentAccession = false;
+                InsertPendingMacros(currentAccession, reportText);
 
-                    // Update tracking - only update to new non-empty accession
-                    if (!studyClosed)
-                    {
-                        _lastNonEmptyAccession = currentAccession;
+                UpdateClinicalHistoryAndAlerts(currentAccession, reportText);
 
-                        _needsBaselineCapture = _config.ShowReportChanges || _config.CorrelationEnabled;
-                        // Speed up scraping to catch template flash before auto-processing
-                        if (_needsBaselineCapture && !_searchingForImpression)
-                            RestartScrapeTimer(_studyLoadScrapeIntervalMs);
-
-                        // Baseline capture deferred to scrape timer to catch template flash
-                        // (removing immediate capture fixes issue where dictated content like "appendix is normal"
-                        // gets captured as baseline if already present in template/macros)
-                        Logger.Trace($"New study - ShowReportChanges={_config.ShowReportChanges}, CorrelationEnabled={_config.CorrelationEnabled}, reportText null={string.IsNullOrEmpty(reportText)}");
-
-                        // Show toast (disabled - too noisy)
-                        // Logger.Trace($"Showing New Study toast for {currentAccession}");
-                        // InvokeUI(() => _mainForm.ShowStatusToast($"New Study: {currentAccession}", 3000));
-
-                        // Re-show clinical history window if it was hidden due to no study
-                        // (only in always-show mode; alerts-only mode will show when alert triggers)
-                        if (_config.HideClinicalHistoryWhenNoStudy && _config.ShowClinicalHistory && _config.AlwaysShowClinicalHistory)
-                        {
-                            BatchUI(() => _mainForm.ToggleClinicalHistory(true));
-                            _clinicalHistoryVisible = true;
-                        }
-
-                        // Re-show indicator window if it was hidden due to no study
-                        if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
-                        {
-                            BatchUI(() => _mainForm.ToggleIndicator(true));
-                        }
-
-                        // Queue macros for insertion - they'll be inserted when clinical history is visible
-                        // This handles the case where Mosaic auto-processes the report on open
-                        if (_config.MacrosEnabled && _config.Macros.Count > 0)
-                        {
-                            var studyDescription = _automationService.LastDescription;
-                            Logger.Trace($"Macros: Queuing for study '{studyDescription}' ({_config.Macros.Count} macros configured)");
-                            _pendingMacroAccession = currentAccession;
-                            _pendingMacroDescription = studyDescription;
-                        }
-
-                        // Reset clinical history state on study change
-                        BatchUI(() => _mainForm.OnClinicalHistoryStudyChanged());
-                        // Hide impression window on new study
-                        BatchUI(() => _mainForm.HideImpressionWindow());
-                        _searchingForImpression = false;
-                        _impressionFromProcessReport = false;
-
-                        // Always extract Clario Priority/Class for pipe broadcasts
-                        // Stroke detection UI logic only runs if that feature is enabled
-                        ExtractClarioPriorityAndClass(currentAccession);
-
-                        // If Clario hasn't caught up yet (accession mismatch / null priority),
-                        // flag for retry on subsequent scrape ticks
-                        _pendingClarioPriorityRetry = string.IsNullOrEmpty(_automationService.LastClarioPriority);
-
-                        if (_config.StrokeDetectionEnabled)
-                        {
-                            PerformStrokeDetection(currentAccession, reportText);
-                        }
-                        else
-                        {
-                            InvokeUI(() => _mainForm.SetStrokeState(false));
-                        }
-                    }
-                    else
-                    {
-                        // Study closed without new one opening - clear the tracked accession
-                        _lastNonEmptyAccession = null;
-                        _needsBaselineCapture = false;
-                        Logger.Trace("Study closed, no new study opened");
-
-                        // Revert to idle scrape interval — no study open, no reason to scrape fast
-                        if (!_searchingForImpression)
-                            RestartScrapeTimer(IdleScrapeIntervalMs);
-
-                        // Hide clinical history window if configured to hide when no study
-                        // (or always hide in alerts-only mode when no alerts)
-                        if (_config.ShowClinicalHistory && (_config.HideClinicalHistoryWhenNoStudy || !_config.AlwaysShowClinicalHistory))
-                        {
-                            BatchUI(() => _mainForm.ToggleClinicalHistory(false));
-                            _clinicalHistoryVisible = false;
-                        }
-
-                        // Hide indicator window if configured to hide when no study
-                        if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
-                        {
-                            BatchUI(() => _mainForm.ToggleIndicator(false));
-                        }
-                    }
-                }
-
-                // RecoMD: continuous send on every scrape tick (mimics Powerscribe sync)
-                if (_config.RecoMdEnabled && !string.IsNullOrEmpty(currentAccession) && !string.IsNullOrEmpty(reportText))
-                {
-                    var recoText = RecoMdService.CleanReportText(reportText);
-                    var recoAcc = currentAccession;
-                    var needsOpen = _recoMdOpenedForAccession != recoAcc;
-                    var textChanged = recoText != _lastRecoMdSentText;
-                    _lastRecoMdSentText = recoText;
-
-                    if (needsOpen)
-                    {
-                        // First send for this accession — open report then send text
-                        _recoMdOpenedForAccession = recoAcc;
-                        _recoMdSendTickCounter = 0;
-                        var recoDesc = _automationService.LastDescription;
-                        var recoName = _automationService.LastPatientName;
-                        var recoGender = _automationService.LastPatientGender;
-                        var recoMrn = _automationService.LastMrn;
-                        var recoAge = _automationService.LastPatientAge ?? 0;
-                        Logger.Trace($"RecoMD: Opening + sending for {recoAcc}");
-                        Task.Run(async () =>
-                        {
-                            await _recoMdService.OpenReportAsync(recoAcc, recoDesc, recoName, recoGender, recoMrn, recoAge);
-                            await _recoMdService.SendReportTextAsync(recoAcc, recoText);
-                        });
-                    }
-                    else
-                    {
-                        // Send immediately on text change, otherwise throttle to every 3rd tick
-                        _recoMdSendTickCounter++;
-                        if (textChanged)
-                        {
-                            _recoMdSendTickCounter = 0;
-                            Logger.Trace("RecoMD: Text changed, sending update");
-                            Task.Run(async () => await _recoMdService.SendReportTextAsync(recoAcc, recoText));
-                        }
-                        else if (_recoMdSendTickCounter >= 3)
-                        {
-                            _recoMdSendTickCounter = 0;
-                            Task.Run(async () => await _recoMdService.SendReportTextAsync(recoAcc, recoText));
-                        }
-                    }
-                }
-
-                // Record clean template to DB on the first scrape tick BEFORE Process Report
-                // (after Process Report, report contains user dictation and is no longer a clean template)
-                if (!_templateRecordedForStudy && !_processReportPressedForCurrentAccession
-                    && _config.TemplateDatabaseEnabled && !string.IsNullOrEmpty(reportText)
-                    && !string.IsNullOrEmpty(_automationService.LastDescription))
-                {
-                    _templateRecordedForStudy = true;
-                    _templateDatabase.RecordTemplate(_automationService.LastDescription, reportText,
-                        isDrafted: _automationService.LastDraftedState);
-                }
-
-                // Capture baseline if needed (deferred from study change detection)
-                if (_needsBaselineCapture && !_processReportPressedForCurrentAccession)
-                {
-                    if (_automationService.LastDraftedState)
-                    {
-                        _baselineCaptureAttempts++;
-
-                        if (!string.IsNullOrEmpty(reportText) && _baselineCaptureAttempts <= 1)
-                        {
-                            // First tick: try real-time capture (template flash)
-                            // Only capture if report seems like a clean template (no long dictated content)
-                            // Templates are typically < 2500 chars; anything significantly longer likely has dictation
-                            bool seemsLikeCleanTemplate = reportText.Length < 2500;
-
-                            if (seemsLikeCleanTemplate)
-                            {
-                                _needsBaselineCapture = false;
-                                _baselineReport = reportText;
-                                Logger.Trace($"Captured baseline from scrape (DRAFTED, immediate): {reportText.Length} chars, drafted={_automationService.LastDraftedState}");
-                                Logger.Trace($"Baseline content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
-
-                                // Revert to normal scrape interval now that baseline is captured
-                                if (!_searchingForImpression)
-                                    RestartScrapeTimer(NormalScrapeIntervalMs);
-                            }
-                            else
-                            {
-                                Logger.Trace($"Skipping baseline capture - report too long ({reportText.Length} chars), likely has dictation. Will try DB fallback.");
-                                // Skip ahead to DB fallback
-                                _baselineCaptureAttempts = 4;
-                            }
-                        }
-                        else if (_baselineCaptureAttempts >= 4)
-                        {
-                            // ~2 seconds elapsed, give up on real-time capture, try DB fallback
-                            _needsBaselineCapture = false;
-                            if (!_searchingForImpression)
-                                RestartScrapeTimer(NormalScrapeIntervalMs);
-
-                            if (_config.TemplateDatabaseEnabled)
-                            {
-                                var desc = _automationService.LastDescription;
-                                if (!string.IsNullOrEmpty(desc))
-                                {
-                                    var fallback = _templateDatabase.GetFallbackTemplate(desc);
-                                    if (fallback != null)
-                                    {
-                                        _baselineReport = fallback;
-                                        _baselineIsFromTemplateDb = true;
-                                        Logger.Trace($"Using template DB fallback for '{desc}' ({fallback.Length} chars)");
-                                    }
-                                    else
-                                    {
-                                        Logger.Trace($"TemplateDB: No confident fallback for '{desc}'");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        _baselineCaptureAttempts++;
-
-                        if (!string.IsNullOrEmpty(reportText))
-                        {
-                            // Non-drafted: wait for impression to appear - report is generated top-to-bottom after Process Report
-                            var impression = ImpressionForm.ExtractImpression(reportText);
-                            if (!string.IsNullOrEmpty(impression))
-                            {
-                                _needsBaselineCapture = false;
-                                _baselineReport = reportText;
-                                Logger.Trace($"Captured baseline from scrape ({reportText.Length} chars)");
-
-                                // Revert to normal scrape interval now that baseline is captured
-                                if (!_searchingForImpression)
-                                    RestartScrapeTimer(NormalScrapeIntervalMs);
-                            }
-                        }
-
-                        // Timeout: give up after ~4 seconds (8 attempts at 500ms) to prevent stuck fast timer
-                        if (_needsBaselineCapture && _baselineCaptureAttempts >= 8)
-                        {
-                            _needsBaselineCapture = false;
-                            Logger.Trace($"Baseline capture timed out (non-drafted, {_baselineCaptureAttempts} attempts). Restoring normal scrape interval.");
-                            if (!_searchingForImpression)
-                                RestartScrapeTimer(NormalScrapeIntervalMs);
-                        }
-                    }
-                }
-
-                // Detect auto-processing on drafted studies: if baseline was captured and report changed, enable diff
-                if (!_draftedAutoProcessDetected && !_processReportPressedForCurrentAccession
-                    && _config.ShowReportChanges && _baselineReport != null
-                    && _automationService.LastDraftedState
-                    && !string.IsNullOrEmpty(reportText) && reportText != _baselineReport)
-                {
-                    _draftedAutoProcessDetected = true;
-                    Logger.Trace($"Drafted study auto-process detected: report changed from baseline ({_baselineReport.Length} → {reportText.Length} chars)");
-                    Logger.Trace($"Post-process content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
-
-                }
-
-                // Auto-update popup when report text changes (continuous updates with diff highlighting)
-                var popup = _currentReportPopup;
-                if (popup != null && !popup.IsDisposed && popup.Visible)
-                {
-                    if (!string.IsNullOrEmpty(reportText) && reportText != _lastPopupReportText)
-                    {
-                        Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
-                        _lastPopupReportText = reportText;
-                        BatchUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
-                    }
-                    else if (string.IsNullOrEmpty(reportText) && !string.IsNullOrEmpty(_lastPopupReportText))
-                    {
-                        // Report text is gone (being updated in Mosaic) but popup is visible with cached content
-                        Logger.Trace("Popup showing stale content - report being updated");
-                        _staleSetTime = DateTime.UtcNow;
-                        BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
-                    }
-                    else if (!string.IsNullOrEmpty(reportText) &&
-                        (!_processReportPressedForCurrentAccession || (DateTime.UtcNow - _staleSetTime).TotalSeconds > 10))
-                    {
-                        // Report text is available and matches last text - clear stale indicator if showing.
-                        // Don't clear if Process Report was just pressed (still waiting for report to regenerate),
-                        // but force-clear after 10s to prevent stuck stale indicator.
-                        BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
-                    }
-                }
-
-                // Check for pending macros - insert when clinical history becomes visible
-                // This handles the case where Mosaic auto-processes the report on study open
-                if (!string.IsNullOrEmpty(_pendingMacroAccession) &&
-                    _pendingMacroAccession == currentAccession &&
-                    !string.IsNullOrWhiteSpace(reportText) &&
-                    reportText.Contains("CLINICAL HISTORY", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Don't insert macros into addendums
-                    if (reportText.TrimStart().StartsWith("Addendum", StringComparison.OrdinalIgnoreCase))
-                    {
-                        Logger.Trace($"Macros: Blocked pending insert - addendum detected for {_pendingMacroAccession}");
-                        MarkMacrosCompleteForCurrentAccession();
-                        _pendingMacroAccession = null;
-                        _pendingMacroDescription = null;
-                    }
-                    else
-                    {
-                        Logger.Trace($"Macros: Clinical history now visible, inserting for {_pendingMacroAccession}");
-                        InsertMacrosForStudy(_pendingMacroDescription);
-                        _pendingMacroAccession = null;
-                        _pendingMacroDescription = null;
-                    }
-                }
-
-                // Update clinical history / notification box from Mosaic report
-                if (_config.ShowClinicalHistory)
-                {
-                    // First, evaluate all alert conditions
-                    bool newTemplateMismatch = false;
-                    bool newGenderMismatch = false;
-                    string? templateDescription = null;
-                    string? templateName = null;
-                    string? patientGender = null;
-                    List<string>? genderMismatches = null;
-
-                    // Check template matching (red border when mismatch) if enabled
-                    if (_config.ShowTemplateMismatch)
-                    {
-                        templateDescription = _automationService.LastDescription;
-                        templateName = _automationService.LastTemplateName;
-                        bool bodyPartsMatch = AutomationService.DoBodyPartsMatch(templateDescription, templateName);
-                        newTemplateMismatch = !bodyPartsMatch;
-                    }
-
-                    // Check for gender mismatch
-                    if (_config.GenderCheckEnabled && !string.IsNullOrWhiteSpace(reportText))
-                    {
-                        patientGender = _automationService.LastPatientGender;
-                        genderMismatches = ClinicalHistoryForm.CheckGenderMismatch(reportText, patientGender);
-                        newGenderMismatch = genderMismatches.Count > 0;
-                    }
-
-                    // Retry Clario priority extraction if it failed on accession change
-                    // (Clario may not have updated to the new study yet)
-                    if (_pendingClarioPriorityRetry && !string.IsNullOrEmpty(currentAccession))
-                    {
-                        ExtractClarioPriorityAndClass(currentAccession);
-                        if (!string.IsNullOrEmpty(_automationService.LastClarioPriority))
-                        {
-                            _pendingClarioPriorityRetry = false;
-                            Logger.Trace($"Clario priority retry succeeded: '{_automationService.LastClarioPriority}'");
-                            if (_config.StrokeDetectionEnabled)
-                            {
-                                PerformStrokeDetection(currentAccession, reportText);
-                            }
-                        }
-                    }
-
-                    // Aidoc scraping - check for AI-detected findings
-                    bool aidocAlertActive = false;
-                    string? aidocFindingText = null;
-                    List<string>? relevantFindings = null;
-                    bool prevAidocRelevant = _lastAidocRelevant;
-                    if (_config.AidocScrapeEnabled && !string.IsNullOrEmpty(currentAccession))
-                    {
-                        try
-                        {
-                            var aidocResult = _aidocService.ScrapeShortcutWidget();
-                            if (aidocResult != null && aidocResult.Findings.Count > 0)
-                            {
-                                var studyDescription = _automationService.LastDescription;
-
-                                // "Once negative, stay negative" — latch findings that sample as negative.
-                                // The Aidoc widget has a red/orange flashing animation when ANY positive
-                                // finding exists, which can cause false positives on individual icon pixels.
-                                // Real positive icons consistently show orange; false positives flicker.
-                                foreach (var f in aidocResult.Findings)
-                                {
-                                    if (!f.IsPositive)
-                                        _aidocConfirmedNegative.Add(f.FindingType);
-                                }
-
-                                // Only show findings that are relevant, sampled positive, AND not latched negative
-                                relevantFindings = aidocResult.Findings
-                                    .Where(f => f.IsPositive && !_aidocConfirmedNegative.Contains(f.FindingType)
-                                        && AidocService.IsRelevantFinding(f.FindingType, studyDescription))
-                                    .Select(f => f.FindingType)
-                                    .ToList();
-
-                                if (relevantFindings.Count > 0)
-                                {
-                                    aidocAlertActive = true;
-                                    aidocFindingText = string.Join(", ", relevantFindings);
-
-                                    // Toast on first detection or change
-                                    if (!_lastAidocRelevant || _lastAidocFindings != aidocFindingText)
-                                    {
-                                        Logger.Trace($"Aidoc: Relevant findings '{aidocFindingText}' for study '{studyDescription}'");
-                                        BatchUI(() => _mainForm.ShowStatusToast($"Aidoc: {aidocFindingText} detected", 5000));
-                                    }
-                                }
-
-                                _lastAidocFindings = aidocAlertActive ? aidocFindingText : null;
-                                _lastAidocRelevant = aidocAlertActive;
-                            }
-                            else
-                            {
-                                _lastAidocFindings = null;
-                                _lastAidocRelevant = false;
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger.Trace($"Aidoc scrape error: {ex.Message}");
-                        }
-                    }
-
-                    // Verify Aidoc findings against report text
-                    // Only verify against text with U+FFFC (real report editor), not the transcript
-                    List<FindingVerification>? aidocVerifications = null;
-                    if (aidocAlertActive && relevantFindings != null && !string.IsNullOrEmpty(reportText)
-                        && reportText.Contains('\uFFFC'))
-                    {
-                        aidocVerifications = AidocFindingVerifier.VerifyFindings(relevantFindings, reportText);
-                    }
-
-                    // Determine if any alerts are active
-                    bool anyAlertActive = newTemplateMismatch || newGenderMismatch || _strokeDetectedActive || aidocAlertActive;
-
-                    // Handle visibility based on always-show vs alerts-only mode
-                    if (_config.AlwaysShowClinicalHistory)
-                    {
-                        // ALWAYS-SHOW MODE: Current behavior - window always visible, show clinical history + border colors
-                        // Uses BatchUI to consolidate into single BeginInvoke (reduces WM_USER spam that kills keyboard hook)
-
-                        // Only update if we have content - don't clear during brief processing gaps
-                        if (!string.IsNullOrWhiteSpace(reportText))
-                        {
-                            BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
-                            BatchUI(() => _mainForm.UpdateClinicalHistoryTextColor(reportText));
-                        }
-
-                        // Update template mismatch state
-                        BatchUI(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
-
-                        // Update drafted state (green border when drafted) if enabled
-                        if (_config.ShowDraftedIndicator)
-                        {
-                            bool isDrafted = _automationService.LastDraftedState;
-                            BatchUI(() => _mainForm.UpdateClinicalHistoryDraftedState(isDrafted));
-                        }
-
-                        // Update gender check
-                        if (_config.GenderCheckEnabled)
-                        {
-                            BatchUI(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
-                        }
-                        else
-                        {
-                            BatchUI(() => _mainForm.UpdateGenderCheck(null, null));
-                        }
-
-                        // Show Aidoc finding appended to clinical history in orange (not replacing it)
-                        if (aidocAlertActive && aidocFindingText != null)
-                        {
-                            var captured = aidocVerifications;
-                            BatchUI(() => _mainForm.SetAidocAppend(captured));
-                        }
-                        else if (!aidocAlertActive && prevAidocRelevant)
-                        {
-                            // Aidoc finding cleared - remove orange append
-                            BatchUI(() => _mainForm.SetAidocAppend(null));
-                        }
-                    }
-                    else
-                    {
-                        // ALERTS-ONLY MODE: Window only appears when an alert triggers
-
-                        // Always update clinical history text even in alerts-only mode
-                        // (needed for auto-fix recheck to detect Mosaic self-corrections)
-                        if (!string.IsNullOrWhiteSpace(reportText))
-                        {
-                            BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
-                        }
-
-                        // Determine highest priority alert to show
-                        AlertType? alertToShow = null;
-                        string alertDetails = "";
-
-                        if (newGenderMismatch && genderMismatches != null)
-                        {
-                            alertToShow = AlertType.GenderMismatch;
-                            alertDetails = string.Join(", ", genderMismatches);
-                        }
-                        else if (newTemplateMismatch)
-                        {
-                            alertToShow = AlertType.TemplateMismatch;
-                            if (templateDescription != null && templateName != null)
-                                alertDetails = $"Study: {templateDescription}\nTemplate: {templateName}";
-                        }
-                        else if (_strokeDetectedActive)
-                        {
-                            alertToShow = AlertType.StrokeDetected;
-                            alertDetails = "Study flagged as stroke protocol";
-                        }
-                        else if (aidocAlertActive && aidocFindingText != null)
-                        {
-                            alertToShow = AlertType.AidocFinding;
-                            alertDetails = aidocFindingText;
-                        }
-
-                        if (anyAlertActive)
-                        {
-                            // Show notification box with alert
-                            if (!_clinicalHistoryVisible)
-                            {
-                                BatchUI(() => _mainForm.ToggleClinicalHistory(true));
-                                _clinicalHistoryVisible = true;
-                            }
-
-                            // Display alert content
-                            if (alertToShow == AlertType.GenderMismatch)
-                            {
-                                // Gender mismatch uses the blinking display
-                                BatchUI(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
-                            }
-                            else if (alertToShow.HasValue)
-                            {
-                                // Clear gender warning if not active
-                                BatchUI(() => _mainForm.UpdateGenderCheck(null, null));
-                                // Show the alert
-                                BatchUI(() => _mainForm.ShowAlertOnly(alertToShow.Value, alertDetails));
-                            }
-
-                            // Also update template mismatch border (for non-gender alerts)
-                            if (alertToShow != AlertType.GenderMismatch)
-                            {
-                                BatchUI(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
-                            }
-                        }
-                        else if (_clinicalHistoryVisible)
-                        {
-                            // No alerts active - hide the notification box
-                            BatchUI(() => _mainForm.UpdateGenderCheck(null, null));
-                            BatchUI(() => _mainForm.ClearAlert());
-                            BatchUI(() => _mainForm.ToggleClinicalHistory(false));
-                            _clinicalHistoryVisible = false;
-                        }
-                    }
-
-                    // Update tracking for next iteration
-                    _templateMismatchActive = newTemplateMismatch;
-                    _genderMismatchActive = newGenderMismatch;
-                }
-
-                // Handle impression display
-                if (_config.ShowImpression)
-                {
-                    // Skip impression updates while user is deleting points
-                    if (_impressionDeletePending)
-                        goto SkipImpression;
-
-                    var impression = ImpressionForm.ExtractImpression(reportText);
-                    bool isDrafted = _automationService.LastDraftedState;
-
-                    if (_searchingForImpression)
-                    {
-                        // Fast search mode after Process Report - looking for impression
-                        // Wait 2 seconds before showing to let RadPair finish initial processing
-                        if (!string.IsNullOrEmpty(impression))
-                        {
-                            var elapsed = (DateTime.Now - _impressionSearchStartTime).TotalSeconds;
-                            if (elapsed >= 2.0)
-                            {
-                                OnImpressionFound(impression);
-                            }
-                        }
-                    }
-                    else if (_impressionFromProcessReport)
-                    {
-                        // Process Report triggered - keep updating impression until Sign Report
-                        // Don't auto-hide, just update if we have new content
-                        if (!string.IsNullOrEmpty(impression))
-                        {
-                            BatchUI(() => _mainForm.UpdateImpression(impression));
-                        }
-                    }
-                    else if (isDrafted && !string.IsNullOrEmpty(impression))
-                    {
-                        // Auto-show impression when study is drafted (passive mode)
-                        // Only show window if not already visible to avoid flashing
-                        BatchUI(() =>
-                        {
-                            _mainForm.ShowImpressionWindowIfNotVisible();
-                            _mainForm.UpdateImpression(impression);
-                        });
-                    }
-                    else if (!isDrafted)
-                    {
-                        // Hide impression window when study is not drafted (only for auto-shown)
-                        // Don't hide if it was manually triggered by Process Report
-                        BatchUI(() => _mainForm.HideImpressionWindow());
-                    }
-
-                    SkipImpression:;
-                }
+                UpdateImpressionDisplay(reportText);
 
                 // Re-assert topmost on all tool windows periodically.
                 // Other apps (Chrome, InteleViewer) can steal topmost status;
@@ -3847,7 +3103,827 @@ public class ActionController : IDisposable
             StopMosaicScrapeTimer();
         }
     }
-    
+
+    /// <summary>
+    /// Flap-debounce logic for accession transitions.
+    /// Mosaic briefly sets accession to empty during study transitions — this detects
+    /// real changes vs transient flaps by waiting for the empty state to persist.
+    /// </summary>
+    private (bool changed, bool closed) DetectAccessionChange(string? currentAccession)
+    {
+        bool accessionChanged = false;
+        bool studyClosed = false;
+
+        if (!string.IsNullOrEmpty(currentAccession))
+        {
+            // Non-empty accession — cancel any pending close since accession came back
+            if (_pendingCloseAccession != null)
+            {
+                if (currentAccession == _pendingCloseAccession)
+                {
+                    // Same accession returned after brief empty — this was a flap, ignore it
+                    Logger.Trace($"Accession flap cancelled: '{currentAccession}' returned after {_pendingCloseTickCount} tick(s)");
+                    _pendingCloseAccession = null;
+                    _pendingCloseTickCount = 0;
+                    // Don't process as a study change — nothing actually changed
+                }
+                else
+                {
+                    // Different accession appeared — process the pending close first, then the new study
+                    // The pending close's RVU event and state reset will happen as part of the new study change
+                    _pendingCloseAccession = null;
+                    _pendingCloseTickCount = 0;
+                    accessionChanged = true;
+                }
+            }
+            else if (currentAccession != _lastNonEmptyAccession)
+            {
+                // New non-empty accession (direct transition, no empty gap)
+                accessionChanged = true;
+            }
+        }
+        else if (!string.IsNullOrEmpty(_lastNonEmptyAccession))
+        {
+            // Accession just went empty — start debounce, don't process yet
+            if (_pendingCloseAccession == null)
+            {
+                _pendingCloseAccession = _lastNonEmptyAccession;
+                _pendingCloseTickCount = 1;
+                Logger.Trace($"Accession went empty, deferring close for '{_pendingCloseAccession}' (tick 1)");
+            }
+            else
+            {
+                _pendingCloseTickCount++;
+                if (_pendingCloseTickCount >= 3)
+                {
+                    // Empty for 3+ ticks — this is a real close, not a flap
+                    Logger.Trace($"Accession confirmed closed after {_pendingCloseTickCount} ticks: '{_pendingCloseAccession}'");
+                    accessionChanged = true;
+                    studyClosed = true;
+                    _pendingCloseAccession = null;
+                    _pendingCloseTickCount = 0;
+                }
+            }
+        }
+        else if (_pendingCloseAccession != null)
+        {
+            // Still empty and we have a pending close — increment tick count
+            _pendingCloseTickCount++;
+            if (_pendingCloseTickCount >= 3)
+            {
+                Logger.Trace($"Accession confirmed closed after {_pendingCloseTickCount} ticks: '{_pendingCloseAccession}'");
+                accessionChanged = true;
+                studyClosed = true;
+                _pendingCloseAccession = null;
+                _pendingCloseTickCount = 0;
+            }
+        }
+
+        return (accessionChanged, studyClosed);
+    }
+
+    /// <summary>
+    /// Full state reset on study change: RVU counter notification, RecoMD close, UI reset, new study setup.
+    /// Called when accession changes (new study opened or study closed).
+    /// Future API: replaced by study.opened / study.closed event handlers.
+    /// </summary>
+    private void OnStudyChanged(string? currentAccession, string? reportText, bool studyClosed)
+    {
+        Logger.Trace($"Study change detected: '{_lastNonEmptyAccession}' -> '{currentAccession ?? "(empty)"}'");
+
+        // RVUCounter integration: Notify about previous study
+        // Logic:
+        //   1. If _currentAccessionSigned → SIGNED (MosaicTools triggered sign)
+        //   2. Else if discard dialog was shown for this accession → CLOSED_UNSIGNED
+        //   3. Else → SIGNED (no dialog = manual sign via Alt+F or button click)
+        //   Each type has a _CRITICAL variant if a critical note was created
+        if (!string.IsNullOrEmpty(_lastNonEmptyAccession))
+        {
+            var hasCritical = HasCriticalNoteForAccession(_lastNonEmptyAccession);
+            var criticalSuffix = hasCritical ? "_CRITICAL" : "";
+
+            if (_currentAccessionSigned)
+            {
+                // Explicitly signed via MosaicTools
+                var msgType = hasCritical ? NativeWindows.MSG_STUDY_SIGNED_CRITICAL : NativeWindows.MSG_STUDY_SIGNED;
+                Logger.Trace($"RVUCounter: Sending SIGNED{criticalSuffix} (MosaicTools) for '{_lastNonEmptyAccession}'");
+                NativeWindows.SendToRvuCounter(msgType, _lastNonEmptyAccession);
+                _pipeService.SendStudyEvent(new StudyEventMessage("study_event", "signed", _lastNonEmptyAccession, hasCritical));
+            }
+            else if (_discardDialogShownForCurrentAccession)
+            {
+                // Discard dialog was shown for this accession → study was discarded
+                var msgType = hasCritical ? NativeWindows.MSG_STUDY_CLOSED_UNSIGNED_CRITICAL : NativeWindows.MSG_STUDY_CLOSED_UNSIGNED;
+                Logger.Trace($"RVUCounter: Sending CLOSED_UNSIGNED{criticalSuffix} (dialog was shown) for '{_lastNonEmptyAccession}'");
+                NativeWindows.SendToRvuCounter(msgType, _lastNonEmptyAccession);
+                _pipeService.SendStudyEvent(new StudyEventMessage("study_event", "unsigned", _lastNonEmptyAccession, hasCritical));
+            }
+            else
+            {
+                // No dialog → user signed manually (Alt+F or clicked Sign button)
+                var msgType = hasCritical ? NativeWindows.MSG_STUDY_SIGNED_CRITICAL : NativeWindows.MSG_STUDY_SIGNED;
+                Logger.Trace($"RVUCounter: Sending SIGNED{criticalSuffix} (manual) for '{_lastNonEmptyAccession}'");
+                NativeWindows.SendToRvuCounter(msgType, _lastNonEmptyAccession);
+                _pipeService.SendStudyEvent(new StudyEventMessage("study_event", "signed", _lastNonEmptyAccession, hasCritical));
+            }
+        }
+
+        // RecoMD: close previous study on accession change
+        if (_config.RecoMdEnabled)
+        {
+            _recoMdOpenedForAccession = null;
+            _lastRecoMdSentText = null;
+            SendRecoMdToBack();
+            Task.Run(async () => await _recoMdService.CloseReportAsync());
+        }
+
+        // Reset state for new study
+        _currentAccessionSigned = false;
+        _discardDialogShownForCurrentAccession = false;
+        _processReportPressedForCurrentAccession = false;
+        _draftedAutoProcessDetected = false;
+        _autoShowReportDoneForAccession = false;
+        // Note: _criticalNoteCreatedForAccessions is session-scoped, NOT reset on study change
+        // This prevents duplicate notes caused by transient accession-null scrape glitches
+        _baselineReport = null;
+        _baselineIsFromTemplateDb = false;
+        _baselineCaptureAttempts = 0;
+        _templateRecordedForStudy = false;
+        _lastPopupReportText = null;
+        _mosaicReader.ClearLastReport();
+        // Close stale report popup from prior study
+        if (_currentReportPopup != null && !_currentReportPopup.IsDisposed)
+        {
+            var stalePopup = _currentReportPopup;
+            _currentReportPopup = null;
+            BatchUI(() => { try { stalePopup.Close(); } catch { } });
+        }
+        // [RadAI] Cancel pending auto-insert and close stale popup/overlay from prior study
+        _radAiAutoInsertPending = false;
+        if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
+        {
+            var staleRadAi = _currentRadAiPopup;
+            _currentRadAiPopup = null;
+            _pendingRadAiImpressionItems = null;
+            BatchUI(() => { try { staleRadAi.Close(); } catch { } });
+        }
+        if (_currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed)
+        {
+            var staleOverlay = _currentRadAiOverlay;
+            _currentRadAiOverlay = null;
+            _pendingRadAiImpressionItems = null;
+            BatchUI(() => { try { staleOverlay.Close(); } catch { } });
+        }
+        // Reset alert state tracking
+        _templateMismatchActive = false;
+        _genderMismatchActive = false;
+        _strokeDetectedActive = false;
+        _pendingClarioPriorityRetry = false;
+        _lastAidocFindings = null;
+        _lastAidocRelevant = false;
+        _aidocConfirmedNegative.Clear();
+
+        // Reset Ignore Inpatient Drafted state
+        _macrosCompleteForCurrentAccession = false;
+        _autoFixCompleteForCurrentAccession = false;
+        _ctrlASentForCurrentAccession = false;
+
+        // Update tracking - only update to new non-empty accession
+        if (!studyClosed)
+        {
+            _lastNonEmptyAccession = currentAccession;
+
+            _needsBaselineCapture = _config.ShowReportChanges || _config.CorrelationEnabled;
+            // Speed up scraping to catch template flash before auto-processing
+            if (_needsBaselineCapture && !_searchingForImpression)
+                RestartScrapeTimer(_studyLoadScrapeIntervalMs);
+
+            // Baseline capture deferred to scrape timer to catch template flash
+            // (removing immediate capture fixes issue where dictated content like "appendix is normal"
+            // gets captured as baseline if already present in template/macros)
+            Logger.Trace($"New study - ShowReportChanges={_config.ShowReportChanges}, CorrelationEnabled={_config.CorrelationEnabled}, reportText null={string.IsNullOrEmpty(reportText)}");
+
+            // Show toast (disabled - too noisy)
+            // Logger.Trace($"Showing New Study toast for {currentAccession}");
+            // InvokeUI(() => _mainForm.ShowStatusToast($"New Study: {currentAccession}", 3000));
+
+            // Re-show clinical history window if it was hidden due to no study
+            // (only in always-show mode; alerts-only mode will show when alert triggers)
+            if (_config.HideClinicalHistoryWhenNoStudy && _config.ShowClinicalHistory && _config.AlwaysShowClinicalHistory)
+            {
+                BatchUI(() => _mainForm.ToggleClinicalHistory(true));
+                _clinicalHistoryVisible = true;
+            }
+
+            // Re-show indicator window if it was hidden due to no study
+            if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
+            {
+                BatchUI(() => _mainForm.ToggleIndicator(true));
+            }
+
+            // Queue macros for insertion - they'll be inserted when clinical history is visible
+            // This handles the case where Mosaic auto-processes the report on open
+            if (_config.MacrosEnabled && _config.Macros.Count > 0)
+            {
+                var studyDescription = _mosaicReader.LastDescription;
+                Logger.Trace($"Macros: Queuing for study '{studyDescription}' ({_config.Macros.Count} macros configured)");
+                _pendingMacroAccession = currentAccession;
+                _pendingMacroDescription = studyDescription;
+            }
+
+            // Reset clinical history state on study change
+            BatchUI(() => _mainForm.OnClinicalHistoryStudyChanged());
+            // Hide impression window on new study
+            BatchUI(() => _mainForm.HideImpressionWindow());
+            _searchingForImpression = false;
+            _impressionFromProcessReport = false;
+
+            // Always extract Clario Priority/Class for pipe broadcasts
+            // Stroke detection UI logic only runs if that feature is enabled
+            ExtractClarioPriorityAndClass(currentAccession);
+
+            // If Clario hasn't caught up yet (accession mismatch / null priority),
+            // flag for retry on subsequent scrape ticks
+            _pendingClarioPriorityRetry = string.IsNullOrEmpty(_automationService.LastClarioPriority);
+
+            if (_config.StrokeDetectionEnabled)
+            {
+                PerformStrokeDetection(currentAccession, reportText);
+            }
+            else
+            {
+                InvokeUI(() => _mainForm.SetStrokeState(false));
+            }
+        }
+        else
+        {
+            // Study closed without new one opening - clear the tracked accession
+            _lastNonEmptyAccession = null;
+            _needsBaselineCapture = false;
+            Logger.Trace("Study closed, no new study opened");
+
+            // Revert to idle scrape interval — no study open, no reason to scrape fast
+            if (!_searchingForImpression)
+                RestartScrapeTimer(IdleScrapeIntervalMs);
+
+            // Hide clinical history window if configured to hide when no study
+            // (or always hide in alerts-only mode when no alerts)
+            if (_config.ShowClinicalHistory && (_config.HideClinicalHistoryWhenNoStudy || !_config.AlwaysShowClinicalHistory))
+            {
+                BatchUI(() => _mainForm.ToggleClinicalHistory(false));
+                _clinicalHistoryVisible = false;
+            }
+
+            // Hide indicator window if configured to hide when no study
+            if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
+            {
+                BatchUI(() => _mainForm.ToggleIndicator(false));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Deferred baseline capture for diff highlighting.
+    /// Captures the clean template text before user dictation, with DB fallback.
+    /// Future API: replaced by report.changed event handler.
+    /// </summary>
+    private void CaptureBaselineReport(string? reportText)
+    {
+        if (!_needsBaselineCapture || _processReportPressedForCurrentAccession)
+            return;
+
+        if (_mosaicReader.LastDraftedState)
+        {
+            _baselineCaptureAttempts++;
+
+            if (!string.IsNullOrEmpty(reportText) && _baselineCaptureAttempts <= 1)
+            {
+                // First tick: try real-time capture (template flash)
+                // Only capture if report seems like a clean template (no long dictated content)
+                // Templates are typically < 2500 chars; anything significantly longer likely has dictation
+                bool seemsLikeCleanTemplate = reportText.Length < 2500;
+
+                if (seemsLikeCleanTemplate)
+                {
+                    _needsBaselineCapture = false;
+                    _baselineReport = reportText;
+                    Logger.Trace($"Captured baseline from scrape (DRAFTED, immediate): {reportText.Length} chars, drafted={_mosaicReader.LastDraftedState}");
+                    Logger.Trace($"Baseline content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
+
+                    // Revert to normal scrape interval now that baseline is captured
+                    if (!_searchingForImpression)
+                        RestartScrapeTimer(NormalScrapeIntervalMs);
+                }
+                else
+                {
+                    Logger.Trace($"Skipping baseline capture - report too long ({reportText.Length} chars), likely has dictation. Will try DB fallback.");
+                    // Skip ahead to DB fallback
+                    _baselineCaptureAttempts = 4;
+                }
+            }
+            else if (_baselineCaptureAttempts >= 4)
+            {
+                // ~2 seconds elapsed, give up on real-time capture, try DB fallback
+                _needsBaselineCapture = false;
+                if (!_searchingForImpression)
+                    RestartScrapeTimer(NormalScrapeIntervalMs);
+
+                if (_config.TemplateDatabaseEnabled)
+                {
+                    var desc = _mosaicReader.LastDescription;
+                    if (!string.IsNullOrEmpty(desc))
+                    {
+                        var fallback = _templateDatabase.GetFallbackTemplate(desc);
+                        if (fallback != null)
+                        {
+                            _baselineReport = fallback;
+                            _baselineIsFromTemplateDb = true;
+                            Logger.Trace($"Using template DB fallback for '{desc}' ({fallback.Length} chars)");
+                        }
+                        else
+                        {
+                            Logger.Trace($"TemplateDB: No confident fallback for '{desc}'");
+                        }
+                    }
+                }
+            }
+        }
+        else
+        {
+            _baselineCaptureAttempts++;
+
+            if (!string.IsNullOrEmpty(reportText))
+            {
+                // Non-drafted: wait for impression to appear - report is generated top-to-bottom after Process Report
+                var impression = ImpressionForm.ExtractImpression(reportText);
+                if (!string.IsNullOrEmpty(impression))
+                {
+                    _needsBaselineCapture = false;
+                    _baselineReport = reportText;
+                    Logger.Trace($"Captured baseline from scrape ({reportText.Length} chars)");
+
+                    // Revert to normal scrape interval now that baseline is captured
+                    if (!_searchingForImpression)
+                        RestartScrapeTimer(NormalScrapeIntervalMs);
+                }
+            }
+
+            // Timeout: give up after ~4 seconds (8 attempts at 500ms) to prevent stuck fast timer
+            if (_needsBaselineCapture && _baselineCaptureAttempts >= 8)
+            {
+                _needsBaselineCapture = false;
+                Logger.Trace($"Baseline capture timed out (non-drafted, {_baselineCaptureAttempts} attempts). Restoring normal scrape interval.");
+                if (!_searchingForImpression)
+                    RestartScrapeTimer(NormalScrapeIntervalMs);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Save clean template to DB on first scrape tick before Process Report.
+    /// Future API: replaced by study.opened event handler.
+    /// </summary>
+    private void RecordTemplateIfNeeded(string? reportText)
+    {
+        if (!_templateRecordedForStudy && !_processReportPressedForCurrentAccession
+            && _config.TemplateDatabaseEnabled && !string.IsNullOrEmpty(reportText)
+            && !string.IsNullOrEmpty(_mosaicReader.LastDescription))
+        {
+            _templateRecordedForStudy = true;
+            _templateDatabase.RecordTemplate(_mosaicReader.LastDescription, reportText,
+                isDrafted: _mosaicReader.LastDraftedState);
+        }
+    }
+
+    /// <summary>
+    /// Check and insert queued macros when clinical history becomes visible.
+    /// Future API: replaced by clinical_history.available event handler.
+    /// </summary>
+    private void InsertPendingMacros(string? currentAccession, string? reportText)
+    {
+        if (string.IsNullOrEmpty(_pendingMacroAccession) ||
+            _pendingMacroAccession != currentAccession ||
+            string.IsNullOrWhiteSpace(reportText) ||
+            !reportText.Contains("CLINICAL HISTORY", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        // Don't insert macros into addendums
+        if (reportText.TrimStart().StartsWith("Addendum", StringComparison.OrdinalIgnoreCase))
+        {
+            Logger.Trace($"Macros: Blocked pending insert - addendum detected for {_pendingMacroAccession}");
+            MarkMacrosCompleteForCurrentAccession();
+            _pendingMacroAccession = null;
+            _pendingMacroDescription = null;
+        }
+        else
+        {
+            Logger.Trace($"Macros: Clinical history now visible, inserting for {_pendingMacroAccession}");
+            InsertMacrosForStudy(_pendingMacroDescription);
+            _pendingMacroAccession = null;
+            _pendingMacroDescription = null;
+        }
+    }
+
+    /// <summary>
+    /// Continuous RecoMD sync — send report text on every scrape tick.
+    /// Future API: replaced by report.changed event handler.
+    /// </summary>
+    private void UpdateRecoMd(string? currentAccession, string? reportText)
+    {
+        if (!_config.RecoMdEnabled || string.IsNullOrEmpty(currentAccession) || string.IsNullOrEmpty(reportText))
+            return;
+
+        var recoText = RecoMdService.CleanReportText(reportText);
+        var recoAcc = currentAccession;
+        var needsOpen = _recoMdOpenedForAccession != recoAcc;
+        var textChanged = recoText != _lastRecoMdSentText;
+        _lastRecoMdSentText = recoText;
+
+        if (needsOpen)
+        {
+            // First send for this accession — open report then send text
+            _recoMdOpenedForAccession = recoAcc;
+            _recoMdSendTickCounter = 0;
+            var recoDesc = _mosaicReader.LastDescription;
+            var recoName = _mosaicReader.LastPatientName;
+            var recoGender = _mosaicReader.LastPatientGender;
+            var recoMrn = _mosaicReader.LastMrn;
+            var recoAge = _mosaicReader.LastPatientAge ?? 0;
+            Logger.Trace($"RecoMD: Opening + sending for {recoAcc}");
+            Task.Run(async () =>
+            {
+                await _recoMdService.OpenReportAsync(recoAcc, recoDesc, recoName, recoGender, recoMrn, recoAge);
+                await _recoMdService.SendReportTextAsync(recoAcc, recoText);
+            });
+        }
+        else
+        {
+            // Send immediately on text change, otherwise throttle to every 3rd tick
+            _recoMdSendTickCounter++;
+            if (textChanged)
+            {
+                _recoMdSendTickCounter = 0;
+                Logger.Trace("RecoMD: Text changed, sending update");
+                Task.Run(async () => await _recoMdService.SendReportTextAsync(recoAcc, recoText));
+            }
+            else if (_recoMdSendTickCounter >= 3)
+            {
+                _recoMdSendTickCounter = 0;
+                Task.Run(async () => await _recoMdService.SendReportTextAsync(recoAcc, recoText));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Auto-updating report popup with diff highlighting.
+    /// Also detects auto-processing on drafted studies.
+    /// Future API: replaced by report.changed event handler.
+    /// </summary>
+    private void UpdateReportPopup(string? reportText)
+    {
+        // Detect auto-processing on drafted studies: if baseline was captured and report changed, enable diff
+        if (!_draftedAutoProcessDetected && !_processReportPressedForCurrentAccession
+            && _config.ShowReportChanges && _baselineReport != null
+            && _mosaicReader.LastDraftedState
+            && !string.IsNullOrEmpty(reportText) && reportText != _baselineReport)
+        {
+            _draftedAutoProcessDetected = true;
+            Logger.Trace($"Drafted study auto-process detected: report changed from baseline ({_baselineReport.Length} → {reportText.Length} chars)");
+            Logger.Trace($"Post-process content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
+
+        }
+
+        // Auto-update popup when report text changes (continuous updates with diff highlighting)
+        var popup = _currentReportPopup;
+        if (popup != null && !popup.IsDisposed && popup.Visible)
+        {
+            if (!string.IsNullOrEmpty(reportText) && reportText != _lastPopupReportText)
+            {
+                Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
+                _lastPopupReportText = reportText;
+                BatchUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
+            }
+            else if (string.IsNullOrEmpty(reportText) && !string.IsNullOrEmpty(_lastPopupReportText))
+            {
+                // Report text is gone (being updated in Mosaic) but popup is visible with cached content
+                Logger.Trace("Popup showing stale content - report being updated");
+                _staleSetTime = DateTime.UtcNow;
+                BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
+            }
+            else if (!string.IsNullOrEmpty(reportText) &&
+                (!_processReportPressedForCurrentAccession || (DateTime.UtcNow - _staleSetTime).TotalSeconds > 10))
+            {
+                // Report text is available and matches last text - clear stale indicator if showing.
+                // Don't clear if Process Report was just pressed (still waiting for report to regenerate),
+                // but force-clear after 10s to prevent stuck stale indicator.
+                BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
+            }
+        }
+    }
+
+    /// <summary>
+    /// Update clinical history display, template/gender/stroke/Aidoc alerts.
+    /// Future API: replaced by study.opened + report.changed event handlers.
+    /// </summary>
+    private void UpdateClinicalHistoryAndAlerts(string? currentAccession, string? reportText)
+    {
+        if (!_config.ShowClinicalHistory)
+            return;
+
+        // First, evaluate all alert conditions
+        bool newTemplateMismatch = false;
+        bool newGenderMismatch = false;
+        string? templateDescription = null;
+        string? templateName = null;
+        string? patientGender = null;
+        List<string>? genderMismatches = null;
+
+        // Check template matching (red border when mismatch) if enabled
+        if (_config.ShowTemplateMismatch)
+        {
+            templateDescription = _mosaicReader.LastDescription;
+            templateName = _mosaicReader.LastTemplateName;
+            bool bodyPartsMatch = AutomationService.DoBodyPartsMatch(templateDescription, templateName);
+            newTemplateMismatch = !bodyPartsMatch;
+        }
+
+        // Check for gender mismatch
+        if (_config.GenderCheckEnabled && !string.IsNullOrWhiteSpace(reportText))
+        {
+            patientGender = _mosaicReader.LastPatientGender;
+            genderMismatches = ClinicalHistoryForm.CheckGenderMismatch(reportText, patientGender);
+            newGenderMismatch = genderMismatches.Count > 0;
+        }
+
+        // Retry Clario priority extraction if it failed on accession change
+        // (Clario may not have updated to the new study yet)
+        if (_pendingClarioPriorityRetry && !string.IsNullOrEmpty(currentAccession))
+        {
+            ExtractClarioPriorityAndClass(currentAccession);
+            if (!string.IsNullOrEmpty(_automationService.LastClarioPriority))
+            {
+                _pendingClarioPriorityRetry = false;
+                Logger.Trace($"Clario priority retry succeeded: '{_automationService.LastClarioPriority}'");
+                if (_config.StrokeDetectionEnabled)
+                {
+                    PerformStrokeDetection(currentAccession, reportText);
+                }
+            }
+        }
+
+        // Aidoc scraping - check for AI-detected findings
+        bool aidocAlertActive = false;
+        string? aidocFindingText = null;
+        List<string>? relevantFindings = null;
+        bool prevAidocRelevant = _lastAidocRelevant;
+        if (_config.AidocScrapeEnabled && !string.IsNullOrEmpty(currentAccession))
+        {
+            try
+            {
+                var aidocResult = _aidocService.ScrapeShortcutWidget();
+                if (aidocResult != null && aidocResult.Findings.Count > 0)
+                {
+                    var studyDescription = _mosaicReader.LastDescription;
+
+                    // "Once negative, stay negative" — latch findings that sample as negative.
+                    // The Aidoc widget has a red/orange flashing animation when ANY positive
+                    // finding exists, which can cause false positives on individual icon pixels.
+                    // Real positive icons consistently show orange; false positives flicker.
+                    foreach (var f in aidocResult.Findings)
+                    {
+                        if (!f.IsPositive)
+                            _aidocConfirmedNegative.Add(f.FindingType);
+                    }
+
+                    // Only show findings that are relevant, sampled positive, AND not latched negative
+                    relevantFindings = aidocResult.Findings
+                        .Where(f => f.IsPositive && !_aidocConfirmedNegative.Contains(f.FindingType)
+                            && AidocService.IsRelevantFinding(f.FindingType, studyDescription))
+                        .Select(f => f.FindingType)
+                        .ToList();
+
+                    if (relevantFindings.Count > 0)
+                    {
+                        aidocAlertActive = true;
+                        aidocFindingText = string.Join(", ", relevantFindings);
+
+                        // Toast on first detection or change
+                        if (!_lastAidocRelevant || _lastAidocFindings != aidocFindingText)
+                        {
+                            Logger.Trace($"Aidoc: Relevant findings '{aidocFindingText}' for study '{studyDescription}'");
+                            BatchUI(() => _mainForm.ShowStatusToast($"Aidoc: {aidocFindingText} detected", 5000));
+                        }
+                    }
+
+                    _lastAidocFindings = aidocAlertActive ? aidocFindingText : null;
+                    _lastAidocRelevant = aidocAlertActive;
+                }
+                else
+                {
+                    _lastAidocFindings = null;
+                    _lastAidocRelevant = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"Aidoc scrape error: {ex.Message}");
+            }
+        }
+
+        // Verify Aidoc findings against report text
+        // Only verify against text with U+FFFC (real report editor), not the transcript
+        List<FindingVerification>? aidocVerifications = null;
+        if (aidocAlertActive && relevantFindings != null && !string.IsNullOrEmpty(reportText)
+            && reportText.Contains('\uFFFC'))
+        {
+            aidocVerifications = AidocFindingVerifier.VerifyFindings(relevantFindings, reportText);
+        }
+
+        // Determine if any alerts are active
+        bool anyAlertActive = newTemplateMismatch || newGenderMismatch || _strokeDetectedActive || aidocAlertActive;
+
+        // Handle visibility based on always-show vs alerts-only mode
+        if (_config.AlwaysShowClinicalHistory)
+        {
+            // ALWAYS-SHOW MODE: Current behavior - window always visible, show clinical history + border colors
+            // Uses BatchUI to consolidate into single BeginInvoke (reduces WM_USER spam that kills keyboard hook)
+
+            // Only update if we have content - don't clear during brief processing gaps
+            if (!string.IsNullOrWhiteSpace(reportText))
+            {
+                BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
+                BatchUI(() => _mainForm.UpdateClinicalHistoryTextColor(reportText));
+            }
+
+            // Update template mismatch state
+            BatchUI(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
+
+            // Update drafted state (green border when drafted) if enabled
+            if (_config.ShowDraftedIndicator)
+            {
+                bool isDrafted = _mosaicReader.LastDraftedState;
+                BatchUI(() => _mainForm.UpdateClinicalHistoryDraftedState(isDrafted));
+            }
+
+            // Update gender check
+            if (_config.GenderCheckEnabled)
+            {
+                BatchUI(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
+            }
+            else
+            {
+                BatchUI(() => _mainForm.UpdateGenderCheck(null, null));
+            }
+
+            // Show Aidoc finding appended to clinical history in orange (not replacing it)
+            if (aidocAlertActive && aidocFindingText != null)
+            {
+                var captured = aidocVerifications;
+                BatchUI(() => _mainForm.SetAidocAppend(captured));
+            }
+            else if (!aidocAlertActive && prevAidocRelevant)
+            {
+                // Aidoc finding cleared - remove orange append
+                BatchUI(() => _mainForm.SetAidocAppend(null));
+            }
+        }
+        else
+        {
+            // ALERTS-ONLY MODE: Window only appears when an alert triggers
+
+            // Always update clinical history text even in alerts-only mode
+            // (needed for auto-fix recheck to detect Mosaic self-corrections)
+            if (!string.IsNullOrWhiteSpace(reportText))
+            {
+                BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
+            }
+
+            // Determine highest priority alert to show
+            AlertType? alertToShow = null;
+            string alertDetails = "";
+
+            if (newGenderMismatch && genderMismatches != null)
+            {
+                alertToShow = AlertType.GenderMismatch;
+                alertDetails = string.Join(", ", genderMismatches);
+            }
+            else if (newTemplateMismatch)
+            {
+                alertToShow = AlertType.TemplateMismatch;
+                if (templateDescription != null && templateName != null)
+                    alertDetails = $"Study: {templateDescription}\nTemplate: {templateName}";
+            }
+            else if (_strokeDetectedActive)
+            {
+                alertToShow = AlertType.StrokeDetected;
+                alertDetails = "Study flagged as stroke protocol";
+            }
+            else if (aidocAlertActive && aidocFindingText != null)
+            {
+                alertToShow = AlertType.AidocFinding;
+                alertDetails = aidocFindingText;
+            }
+
+            if (anyAlertActive)
+            {
+                // Show notification box with alert
+                if (!_clinicalHistoryVisible)
+                {
+                    BatchUI(() => _mainForm.ToggleClinicalHistory(true));
+                    _clinicalHistoryVisible = true;
+                }
+
+                // Display alert content
+                if (alertToShow == AlertType.GenderMismatch)
+                {
+                    // Gender mismatch uses the blinking display
+                    BatchUI(() => _mainForm.UpdateGenderCheck(reportText, patientGender));
+                }
+                else if (alertToShow.HasValue)
+                {
+                    // Clear gender warning if not active
+                    BatchUI(() => _mainForm.UpdateGenderCheck(null, null));
+                    // Show the alert
+                    BatchUI(() => _mainForm.ShowAlertOnly(alertToShow.Value, alertDetails));
+                }
+
+                // Also update template mismatch border (for non-gender alerts)
+                if (alertToShow != AlertType.GenderMismatch)
+                {
+                    BatchUI(() => _mainForm.UpdateClinicalHistoryTemplateMismatch(newTemplateMismatch, templateDescription, templateName));
+                }
+            }
+            else if (_clinicalHistoryVisible)
+            {
+                // No alerts active - hide the notification box
+                BatchUI(() => _mainForm.UpdateGenderCheck(null, null));
+                BatchUI(() => _mainForm.ClearAlert());
+                BatchUI(() => _mainForm.ToggleClinicalHistory(false));
+                _clinicalHistoryVisible = false;
+            }
+        }
+
+        // Update tracking for next iteration
+        _templateMismatchActive = newTemplateMismatch;
+        _genderMismatchActive = newGenderMismatch;
+    }
+
+    /// <summary>
+    /// Impression search/show/hide after Process Report.
+    /// Future API: replaced by report.changed event handler.
+    /// </summary>
+    private void UpdateImpressionDisplay(string? reportText)
+    {
+        if (!_config.ShowImpression)
+            return;
+
+        // Skip impression updates while user is deleting points
+        if (_impressionDeletePending)
+            return;
+
+        var impression = ImpressionForm.ExtractImpression(reportText);
+        bool isDrafted = _mosaicReader.LastDraftedState;
+
+        if (_searchingForImpression)
+        {
+            // Fast search mode after Process Report - looking for impression
+            // Wait 2 seconds before showing to let RadPair finish initial processing
+            if (!string.IsNullOrEmpty(impression))
+            {
+                var elapsed = (DateTime.Now - _impressionSearchStartTime).TotalSeconds;
+                if (elapsed >= 2.0)
+                {
+                    OnImpressionFound(impression);
+                }
+            }
+        }
+        else if (_impressionFromProcessReport)
+        {
+            // Process Report triggered - keep updating impression until Sign Report
+            // Don't auto-hide, just update if we have new content
+            if (!string.IsNullOrEmpty(impression))
+            {
+                BatchUI(() => _mainForm.UpdateImpression(impression));
+            }
+        }
+        else if (isDrafted && !string.IsNullOrEmpty(impression))
+        {
+            // Auto-show impression when study is drafted (passive mode)
+            // Only show window if not already visible to avoid flashing
+            BatchUI(() =>
+            {
+                _mainForm.ShowImpressionWindowIfNotVisible();
+                _mainForm.UpdateImpression(impression);
+            });
+        }
+        else if (!isDrafted)
+        {
+            // Hide impression window when study is not drafted (only for auto-shown)
+            // Don't hide if it was manually triggered by Process Report
+            BatchUI(() => _mainForm.HideImpressionWindow());
+        }
+    }
+
     #endregion
 
     #region Stroke Detection
@@ -3949,7 +4025,7 @@ public class ActionController : IDisposable
         // Stroke priority only applies to CT and MRI, not XR/CR/US etc.
         if (isStroke)
         {
-            var desc = _automationService.LastDescription;
+            var desc = _mosaicReader.LastDescription;
             if (!string.IsNullOrEmpty(desc))
             {
                 bool isCrossSection = desc.StartsWith("CT ", StringComparison.OrdinalIgnoreCase) ||
@@ -4030,7 +4106,7 @@ public class ActionController : IDisposable
     /// </summary>
     public string? GetCurrentAccession()
     {
-        return _automationService.LastAccession;
+        return _mosaicReader.LastAccession;
     }
 
     /// <summary>
@@ -4144,11 +4220,11 @@ public class ActionController : IDisposable
         // Check if study matches criteria
         if (!_config.ShouldIgnoreInpatientDrafted(
                 _automationService.LastClarioClass,
-                _automationService.LastDescription))
+                _mosaicReader.LastDescription))
             return;
 
         // Only trigger for drafted studies
-        if (!_automationService.LastDraftedState) return;
+        if (!_mosaicReader.LastDraftedState) return;
 
         _ctrlASentForCurrentAccession = true;
         Logger.Trace("Ignore Inpatient Drafted: Sending Ctrl+A");

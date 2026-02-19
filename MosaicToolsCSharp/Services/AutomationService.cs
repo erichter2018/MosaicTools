@@ -13,7 +13,7 @@ namespace MosaicTools.Services;
 /// Uses FlaUI which is a modern wrapper over Windows UI Automation.
 /// Matches Python's pywinauto UIA backend logic.
 /// </summary>
-public class AutomationService : IDisposable
+public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 {
     private readonly UIA3Automation _automation;
 
