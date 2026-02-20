@@ -108,23 +108,29 @@ When user says "create a release" or "publish release vX.X":
    git add -A && git commit -m "v2.5.1: Release notes here" && git push
    ```
 
-4. **Build** the release exe:
-   ```powershell
-   cd C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp
-   c:\Users\erik.richter\Desktop\dotnet\dotnet.exe publish -c Release -r win-x64 --self-contained
+4. **Kill, build, zip, and publish** — run these 3 commands in sequence:
+
+   **Step A: Kill running app + build:**
+   ```bash
+   EXE="C:/Users/erik.richter/Desktop/MosaicTools/MosaicToolsCSharp/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/MosaicTools.exe" && taskkill //IM MosaicTools.exe //F 2>/dev/null; for i in $(seq 1 20); do [ ! -f "$EXE" ] && break; rm -f "$EXE" 2>/dev/null && break; sleep 0.5; done && cd /c/Users/erik.richter/Desktop/MosaicTools/MosaicToolsCSharp && /c/Users/erik.richter/Desktop/dotnet/dotnet.exe publish -c Release -r win-x64 --self-contained 2>&1
    ```
 
-5. **Create the ZIP file** containing MosaicTools.exe:
-   ```powershell
-   Compress-Archive -Path "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe" -DestinationPath "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.zip" -Force
+   **Step B: Create ZIP** (MUST use `-ExecutionPolicy Bypass` — default policy blocks module loading):
+   ```bash
+   powershell -ExecutionPolicy Bypass -Command "Compress-Archive -Path 'C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe' -DestinationPath 'C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.zip' -Force"
    ```
 
-6. **Create the GitHub release** with BOTH zip and exe (for backwards compatibility):
+   **Step C: Create GitHub release** with both zip and exe:
    ```bash
    "C:\Users\erik.richter\Desktop\GH CLI\gh.exe" release create v2.5.1 "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.zip" "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe" --title "v2.5.1" --notes "Release notes here"
    ```
 
 **Why both files?** Old versions (pre-2.5.1) only look for .exe, new versions prefer .zip but fall back to .exe.
+
+### Known pitfalls
+- **PowerShell `Compress-Archive` fails without `-ExecutionPolicy Bypass`** — this machine's policy blocks module auto-loading. Plain `powershell -Command "Compress-Archive ..."` silently fails.
+- **`taskkill` needs `//IM` and `//F`** (double slashes) — MSYS2/Git Bash converts single `/I` to a file path.
+- **Don't start the app** after building for release — it would lock the exe and prevent zipping.
 
 ### Direct Download Links
 ```
