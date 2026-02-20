@@ -2,155 +2,93 @@
 
 ## For New Claude Sessions
 
-This file is automatically loaded at the start of every Claude Code session. It contains everything needed to understand this codebase without re-exploring. If you're a new Claude session:
+This file is loaded at the start of every Claude Code session. If you're a new session:
 
-1. **Don't re-analyze** - The architecture section below has the full codebase structure
-2. **Check recent commits** - Run `git log --oneline -10` to see what changed recently
-3. **Read the relevant service** - Jump straight to the file you need (paths are in Architecture section)
-4. **Build command is below** - Just use it, don't ask for confirmation
+1. **Don't re-analyze** — the architecture section below has the full codebase structure
+2. **Check recent commits** — `git log --oneline -10`
+3. **Read the relevant file** — paths are in the Architecture section
+4. **Build command is below** — just run it, don't ask for confirmation
 
-If making significant changes to the codebase structure, update the Architecture section at the bottom of this file so future sessions stay current.
+If making significant structural changes, update the Architecture section so future sessions stay current.
 
 ---
 
 ## ClarioIgnore - Separate Project
 
-**IMPORTANT:** ClarioIgnore is a separate tool in the `ClarioIgnore/` folder. It is NOT part of MosaicTools releases. When publishing MosaicTools releases, do NOT include ClarioIgnore. ClarioIgnore code can be committed to the repo but should never be published as a GitHub release.
+**IMPORTANT:** `ClarioIgnore/` is a separate tool. NOT part of MosaicTools releases — never include it in GitHub releases.
 
 ---
 
 ## Build Instructions
 
-**IMPORTANT: When user says "build" or "rebuild", OR when you finish making code changes, just run the full build command immediately without asking for confirmation. This includes taskkill, compile, and starting the app - do it all automatically.**
+**When user says "build" or "rebuild", OR when you finish making code changes, run the full build command immediately without asking.**
 
-### CRITICAL: dotnet SDK Location
-The .NET SDK is **NOT in system PATH**. It's located on the Desktop:
-```
-c:\Users\erik.richter\Desktop\dotnet\dotnet.exe
-```
-
-### Project Details
+### Key Paths
+- **dotnet SDK** (NOT in PATH): `c:\Users\erik.richter\Desktop\dotnet\dotnet.exe`
 - **Project file**: `MosaicTools.csproj` (NOT MosaicToolsCSharp.csproj!)
 - **Working directory**: `c:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp`
-- **Output location**: `bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe`
+- **Output**: `bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe`
 
-### Full Build & Run Command (Use This!)
+### Full Build & Run Command
 ```bash
 EXE="C:/Users/erik.richter/Desktop/MosaicTools/MosaicToolsCSharp/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/MosaicTools.exe" && taskkill //IM MosaicTools.exe //F 2>/dev/null; for i in $(seq 1 20); do [ ! -f "$EXE" ] && break; rm -f "$EXE" 2>/dev/null && break; sleep 0.5; done && cd /c/Users/erik.richter/Desktop/MosaicTools/MosaicToolsCSharp && /c/Users/erik.richter/Desktop/dotnet/dotnet.exe publish -c Release -r win-x64 --self-contained 2>&1 && start "" "$EXE"
 ```
 
-**IMPORTANT:** Use `//IM` and `//F` (double slash) — MSYS2/Git Bash converts single `/I` to a file path, silently breaking taskkill.
-
-### Quick Debug Build (syntax checking only)
+### Quick Debug Build (syntax check only)
 ```bash
 cd /c/Users/erik.richter/Desktop/MosaicTools/MosaicToolsCSharp && /c/Users/erik.richter/Desktop/dotnet/dotnet.exe build MosaicTools.csproj
 ```
 
-### Common Issues
-1. **"Project file does not exist"** - Use `MosaicTools.csproj`, not `MosaicToolsCSharp.csproj`
-2. **"dotnet is not recognized"** - Use full path as shown above
+### Shell Gotchas
+- Use `//IM` and `//F` (double slash) for taskkill — MSYS2/Git Bash converts single `/I` to a file path
+- PowerShell commands need `-ExecutionPolicy Bypass` — default policy blocks module loading
 
 ---
 
-## GitHub Repository
+## GitHub & Releases
 
-- **URL:** https://github.com/erichter2018/MosaicTools
-- **Account:** erichter@gmail.com
-- **Visibility:** Public (required for auto-update to work)
+- **Repo:** https://github.com/erichter2018/MosaicTools (public, required for auto-update)
+- **gh CLI:** `"C:\Users\erik.richter\Desktop\GH CLI\gh.exe"`
 
-### gh CLI Location
-```
-"C:\Users\erik.richter\Desktop\GH CLI\gh.exe"
-```
+### Auto-Update System
 
----
+Updates via GitHub Releases using a rename trick (no installer, no admin). Uses ZIP files to avoid corporate antivirus blocking exe downloads. Both .zip and .exe are published for backwards compatibility (pre-2.5.1 clients only look for .exe).
 
-## Auto-Update System
+### Publishing a Release
 
-The app auto-updates via GitHub Releases using a rename trick (no batch files, no installer, no admin required).
+When user says "create a release" or "publish release":
 
-**IMPORTANT: Releases use ZIP files** to avoid corporate security/antivirus blocking direct exe downloads.
-
-### How it works
-1. On startup, checks `https://api.github.com/repos/erichter2018/MosaicTools/releases/latest`
-2. If newer version found, downloads `MosaicTools.zip` to temp location
-3. Extracts `MosaicTools.exe` from the zip to `MosaicTools_new.exe`
-4. Renames running exe to `MosaicTools_old.exe` (Windows allows renaming running files)
-5. Renames new exe to `MosaicTools.exe`
-6. Shows toast with "Restart Now" button
-7. On next startup, deletes `_old.exe` and any leftover zip files
-
-### Publishing a new release
-
-When user says "create a release" or "publish release vX.X":
-
-1. **Update version** in `MosaicToolsCSharp/MosaicTools.csproj` (ALL THREE fields!):
+1. **Update version** in `MosaicToolsCSharp/MosaicTools.csproj` — ALL THREE fields must match:
    ```xml
-   <Version>2.5.1</Version>
-   <AssemblyVersion>2.5.1.0</AssemblyVersion>
-   <FileVersion>2.5.1.0</FileVersion>
+   <Version>X.Y.Z</Version>
+   <AssemblyVersion>X.Y.Z.0</AssemblyVersion>
+   <FileVersion>X.Y.Z.0</FileVersion>
    ```
+   `AssemblyVersion` is used for update comparison — mismatch causes update loops!
 
-2. **Update WhatsNew.txt** - Prepend new version section:
-   - Run: `git log v{previous}..HEAD --oneline` to see changes since last release
-   - Summarize commits into brief bullet points (1 line per feature)
-   - Group minor fixes as "Bug fixes"
-   - Add version header and bullets to top of `MosaicToolsCSharp/WhatsNew.txt`
-   - Example format:
-     ```
-     2.5.5
-     - What's New popup shows new features after updates
-     - Bug fixes
-     ```
+2. **Update WhatsNew.txt** — prepend new version section at top of `MosaicToolsCSharp/WhatsNew.txt`:
+   - Run `git log v{previous}..HEAD --oneline` to see changes
+   - Keep ALL entries back to the last x.0.0 release (users who skip updates see all missed changes)
 
-3. **Commit and push** the version change:
+3. **Commit and push:**
    ```bash
-   git add -A && git commit -m "v2.5.1: Release notes here" && git push
+   git add -A && git commit -m "vX.Y.Z: Release notes here" && git push
    ```
 
-4. **Kill, build, zip, and publish** — run these 3 commands in sequence:
-
-   **Step A: Kill running app + build:**
+4. **Kill + build** (do NOT start the app — locked exe prevents zipping):
    ```bash
    EXE="C:/Users/erik.richter/Desktop/MosaicTools/MosaicToolsCSharp/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/MosaicTools.exe" && taskkill //IM MosaicTools.exe //F 2>/dev/null; for i in $(seq 1 20); do [ ! -f "$EXE" ] && break; rm -f "$EXE" 2>/dev/null && break; sleep 0.5; done && cd /c/Users/erik.richter/Desktop/MosaicTools/MosaicToolsCSharp && /c/Users/erik.richter/Desktop/dotnet/dotnet.exe publish -c Release -r win-x64 --self-contained 2>&1
    ```
 
-   **Step B: Create ZIP** (MUST use `-ExecutionPolicy Bypass` — default policy blocks module loading):
+5. **Create ZIP** (MUST use `-ExecutionPolicy Bypass`):
    ```bash
    powershell -ExecutionPolicy Bypass -Command "Compress-Archive -Path 'C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe' -DestinationPath 'C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.zip' -Force"
    ```
 
-   **Step C: Create GitHub release** with both zip and exe:
+6. **Create GitHub release** with both zip and exe:
    ```bash
-   "C:\Users\erik.richter\Desktop\GH CLI\gh.exe" release create v2.5.1 "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.zip" "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe" --title "v2.5.1" --notes "Release notes here"
+   "C:\Users\erik.richter\Desktop\GH CLI\gh.exe" release create vX.Y.Z "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.zip" "C:\Users\erik.richter\Desktop\MosaicTools\MosaicToolsCSharp\bin\Release\net8.0-windows10.0.19041.0\win-x64\publish\MosaicTools.exe" --title "vX.Y.Z" --notes "Release notes here"
    ```
-
-**Why both files?** Old versions (pre-2.5.1) only look for .exe, new versions prefer .zip but fall back to .exe.
-
-### Known pitfalls
-- **PowerShell `Compress-Archive` fails without `-ExecutionPolicy Bypass`** — this machine's policy blocks module auto-loading. Plain `powershell -Command "Compress-Archive ..."` silently fails.
-- **`taskkill` needs `//IM` and `//F`** (double slashes) — MSYS2/Git Bash converts single `/I` to a file path.
-- **Don't start the app** after building for release — it would lock the exe and prevent zipping.
-
-### Direct Download Links
-```
-https://github.com/erichter2018/MosaicTools/releases/latest/download/MosaicTools.zip
-https://github.com/erichter2018/MosaicTools/releases/latest/download/MosaicTools.exe
-```
-
-### Settings
-- **Auto-update** checkbox in General tab (ON by default)
-- **Check for Updates** button for manual checks
-- Update check has 15 second timeout to prevent hanging on blocked networks
-
-### IMPORTANT: Version Numbers
-When releasing, you MUST update ALL THREE version fields in the csproj:
-```xml
-<Version>2.5.1</Version>
-<AssemblyVersion>2.5.1.0</AssemblyVersion>
-<FileVersion>2.5.1.0</FileVersion>
-```
-The auto-update uses `AssemblyVersion` for comparison - if it doesn't match the release tag, users get stuck in an update loop!
 
 ---
 
@@ -159,154 +97,135 @@ The auto-update uses `AssemblyVersion` for comparison - if it doesn't match the 
 ### Project Structure
 ```
 MosaicToolsCSharp/
-├── Program.cs              # Entry point, mutex, exe normalization
-├── App.cs                  # Global state (IsHeadless flag)
-├── MosaicTools.csproj      # Project file with version info
-├── Services/               # Business logic layer
-│   ├── Configuration.cs    # Settings (JSON persistence to AppData)
-│   ├── ActionController.cs # Central coordinator for all actions
-│   ├── AutomationService.cs# UI Automation (FlaUI) for Mosaic/Clario
-│   ├── HidService.cs       # PowerMic USB HID communication
-│   ├── KeyboardService.cs  # Global hotkey registration
-│   ├── NativeWindows.cs    # Win32 API (window mgmt, keyboard sim)
-│   ├── UpdateService.cs    # GitHub release auto-update
-│   ├── NoteFormatter.cs    # Clario note parsing → critical findings
-│   ├── GetPriorService.cs  # Prior study text formatting
-│   ├── OcrService.cs       # Windows.Media.Ocr for series/image capture
-│   ├── ClipboardService.cs # Clipboard operations (STA-safe)
-│   ├── AudioService.cs     # Beep sounds for dictation feedback
-│   ├── Logger.cs           # File logging to mosaic_tools_log.txt
-│   └── InputBox.cs         # Simple text input dialog
-├── WhatsNew.txt            # Embedded changelog for What's New popup
-└── UI/                     # WinForms presentation layer
-    ├── MainForm.cs         # Main widget bar + toast system
-    ├── SettingsForm.cs     # Configuration dialog (tabbed)
-    ├── FloatingToolbarForm.cs  # Configurable button grid
-    ├── IndicatorForm.cs    # Recording state indicator light
-    ├── ClinicalHistoryForm.cs  # Clinical history display window
-    ├── ImpressionForm.cs   # Auto-show impression during drafting
-    ├── ReportPopupForm.cs  # Full report viewer popup
-    └── WhatsNewForm.cs     # Post-update changelog popup
+├── Program.cs                  # Entry point, mutex, exe normalization
+├── App.cs                      # Global state (IsHeadless flag)
+├── MosaicTools.csproj          # Project file with version info
+├── WhatsNew.txt                # Embedded changelog for What's New popup
+├── Services/
+│   ├── Configuration.cs        # Settings (JSON persistence to %LOCALAPPDATA%\MosaicTools\)
+│   ├── AutomationService.cs    # FlaUI-based UI Automation for Mosaic/Clario
+│   ├── IMosaicReader.cs        # Interface: read-only Mosaic state
+│   ├── IMosaicCommander.cs     # Interface: Mosaic UI commands
+│   ├── HidService.cs           # PowerMic/SpeechMike USB HID communication
+│   ├── KeyboardService.cs      # Global hotkey registration
+│   ├── NativeWindows.cs        # Win32 API (window mgmt, keyboard sim, focus)
+│   ├── UpdateService.cs        # GitHub release auto-update
+│   ├── NoteFormatter.cs        # Clario note parsing → critical findings text
+│   ├── GetPriorService.cs      # Prior study text formatting
+│   ├── OcrService.cs           # Windows.Media.Ocr for series/image capture
+│   ├── ClipboardService.cs     # Clipboard operations (STA-safe)
+│   ├── AudioService.cs         # Beep sounds for dictation feedback
+│   ├── Logger.cs               # File logging to mosaic_tools_log.txt
+│   ├── InputBox.cs             # Simple text input dialog
+│   ├── AidocService.cs         # Aidoc widget scraping (positive finding detection)
+│   ├── AidocFindingVerifier.cs # Study-type relevance filtering for Aidoc findings
+│   ├── SttService.cs           # Custom STT orchestrator (audio capture → provider → paste)
+│   ├── ISttProvider.cs         # STT provider interface
+│   ├── DeepgramProvider.cs     # Deepgram Nova-3 / Nova-3 Medical WebSocket STT
+│   ├── AssemblyAIProvider.cs   # AssemblyAI streaming STT
+│   ├── CortiProvider.cs        # Corti Solo medical STT (Opus/OAuth)
+│   ├── StreamingOggOpusWriter.cs # Opus audio encoding for Corti
+│   ├── WebmOpusMuxer.cs        # WebM muxer for Corti audio stream
+│   ├── RadAiService.cs         # [RadAI] REST API for AI impressions (tagged for removal)
+│   ├── RecoMdService.cs        # RecoMD best-practice recommendations
+│   ├── CorrelationService.cs   # Rainbow mode: findings↔impression correlation
+│   ├── TemplateDatabase.cs     # SQLite template DB for report change detection
+│   ├── RvuCounterService.cs    # RVUCounter named-pipe integration
+│   ├── PipeService.cs          # Named pipe server for external tool communication
+│   ├── ConnectivityService.cs  # Network connectivity monitoring
+│   └── CriticalStudyEntry.cs   # Data model for critical study tracker
+└── UI/
+    ├── ActionController.cs     # Central coordinator for all actions (3500+ lines)
+    ├── MainForm.cs             # Main widget bar + toast system + RVU display
+    ├── SettingsFormNew.cs      # Settings dialog (sidebar nav, search, 11 sections)
+    ├── Settings/               # Settings sections (one per tab)
+    │   ├── SettingsSection.cs  # Base class for all sections
+    │   ├── ProfileSection.cs
+    │   ├── DesktopSection.cs
+    │   ├── KeysButtonsSection.cs
+    │   ├── TextTemplatesSection.cs
+    │   ├── AlertsSection.cs
+    │   ├── ReportDisplaySection.cs
+    │   ├── BehaviorSection.cs
+    │   ├── RvuMetricsSection.cs
+    │   ├── SttSection.cs
+    │   ├── ExperimentalSection.cs
+    │   └── ReferenceSection.cs
+    ├── FloatingToolbarForm.cs  # Configurable IV button grid
+    ├── IndicatorForm.cs        # Recording state indicator dot
+    ├── ClinicalHistoryForm.cs  # Notification box (clinical history + alerts)
+    ├── ImpressionForm.cs       # Auto-show impression after Process Report
+    ├── ReportPopupForm.cs      # Report viewer (changes/rainbow/orphan modes)
+    ├── TranscriptionForm.cs    # Live STT transcription overlay
+    ├── WhatsNewForm.cs         # Post-update changelog popup
+    ├── CriticalStudiesPopup.cs # Critical studies tracker list
+    ├── RvuPopupForm.cs         # RVU metrics hover popup
+    ├── RadAiOverlayForm.cs     # [RadAI] Impression display popup
+    ├── PickListPopupForm.cs    # Pick list selection popup
+    ├── KeyMappingsDialog.cs    # Hotkey/mic button mapping editor
+    ├── ButtonStudioDialog.cs   # FloatingToolbar button editor
+    ├── MacroEditorForm.cs      # Macro definition editor
+    ├── PickListEditorForm.cs   # Pick list definition editor
+    ├── AudioSetupForm.cs       # Mic gain calibrator
+    ├── ConnectivityDetailsForm.cs # Network status details
+    ├── ScreenHelper.cs         # Multi-monitor bounds/offscreen detection
+    └── LayeredWindowHelper.cs  # Win32 layered window for transparent overlays
 ```
 
 ### Key Data Flow
 
-**Startup Flow:**
-```
-Program.Main()
-  → Mutex check (single instance)
-  → NormalizeExecutableName() (ensures MosaicTools.exe name)
-  → Configuration.Load() (from %LOCALAPPDATA%\MosaicTools\)
-  → MainForm created
-    → ActionController created (coordinates everything)
-    → OnFormShown: starts services, checks updates
-```
+**Startup:** `Program.Main()` → mutex check → `Configuration.Load()` → `MainForm` → `ActionController` → starts services, checks updates
 
-**Action Triggering (3 input sources):**
-```
-1. PowerMic buttons → HidService.ButtonPressed → ActionController.TriggerAction()
-2. Keyboard hotkeys → KeyboardService → ActionController.TriggerAction()
-3. Windows messages → MainForm.WndProc() → ActionController.TriggerAction()
-```
+**Action Triggering (3 sources):**
+1. PowerMic/SpeechMike buttons → `HidService.ButtonPressed` → `ActionController.TriggerAction()`
+2. Keyboard hotkeys → `KeyboardService` → `ActionController.TriggerAction()`
+3. Windows messages → `MainForm.WndProc()` → `ActionController.TriggerAction()`
 
-**Action Execution:**
-- All actions queued to dedicated STA thread (required for clipboard/SendKeys)
-- `ActionController.ExecuteAction()` dispatches to specific `Perform*()` methods
-- Focus saved/restored around Mosaic interactions
+**Action Execution:** All actions queued to dedicated STA thread → `ActionController.ExecuteAction()` → `Perform*()` methods. Focus saved/restored around Mosaic interactions.
 
-### Available Actions (defined in Configuration.cs)
+### Available Actions (defined in Configuration.Actions)
 | Action | Description |
 |--------|-------------|
 | `Get Prior` | Extract prior study from InteleViewer, format, paste to Mosaic |
-| `Critical Findings` | Scrape Clario for exam note, format, paste to Mosaic |
-| `Capture Series` | OCR screen for series/image numbers, paste to Mosaic |
+| `Critical Findings` | Scrape Clario exam note, format, paste to Mosaic |
+| `Capture Series/Image` | OCR screen for series/image numbers, paste to Mosaic |
 | `Process Report` | Alt+P in Mosaic, optional auto-stop dictation, smart scroll |
 | `Sign Report` | Alt+F in Mosaic |
-| `Toggle Record` | Alt+R in Mosaic, with beep feedback |
+| `Start/Stop Recording` | Alt+R in Mosaic, with beep feedback |
 | `System Beep` | Toggle dictation state tracking with audio feedback |
 | `Show Report` | Alt+C to copy report, show in popup |
-
-### Key Services Detail
-
-**AutomationService (FlaUI-based):**
-- `FindClarioWindow()` - Locates Chrome with "Clario - Worklist"
-- `GetExamNoteElements()` - Searches DataItem elements for "EXAM NOTE"
-- `GetFinalReportFast()` - Fast scrape of Mosaic's ProseMirror editor
-- Tracks: `LastFinalReport`, `LastAccession`, `LastDraftedState`, `LastDescription`, `LastPatientGender`
-
-**HidService (HidSharp library):**
-- Connects to Nuance PowerMic (Vendor IDs: 0x0554, 0x0558)
-- Button events: `ButtonPressed`, `RecordButtonStateChanged` (for PTT mode)
-- Runs on background thread with non-blocking reads
-
-**NativeWindows (Win32 interop):**
-- Window activation: `ActivateMosaicForcefully()` - aggressive multi-attempt activation
-- Keyboard simulation: `SendAltKey()`, `SendHotkey()`, `KeyUpModifiers()`
-- Dictation state: `IsMicrophoneActiveFromRegistry()` - reads Windows mic consent store
-- Focus management: `SavePreviousFocus()`, `RestorePreviousFocus()`
-
-**NoteFormatter:**
-- Parses Clario exam notes (e.g., "Transferred Smith to Jones at 3:45 PM...")
-- Extracts: contact name, timestamp, timezone
-- Outputs: "Critical findings were discussed with and acknowledged by {name} at {time} on {date}."
-- Filters out the user's own name via `Configuration.DoctorName`
+| `Create Impression` | Generate impression section |
+| `Discard Study` | Discard current study |
+| `Show Pick Lists` | Show pick list selection popup |
+| `Cycle Window/Level` | Send window/level keys to InteleViewer |
+| `Create Critical Note` | Create Clario communication note for stroke cases |
+| `RadAI Impression` | [RadAI] Generate and show AI impression |
+| `Trigger RecoMD` | Send report to RecoMD for recommendations |
+| `Paste RecoMD` | Paste RecoMD recommendations into report |
 
 ### Configuration System
 - **Path:** `%LOCALAPPDATA%\MosaicTools\MosaicToolsSettings.json`
-- **Migration:** Auto-migrates from old exe-relative location
-- **First run:** Shows onboarding dialog for doctor name
-- **Key settings:**
-  - `DoctorName` - Used to filter names in note parsing
-  - `ActionMappings` - Maps actions to hotkeys and mic buttons
-  - `FloatingButtons` - Configurable button grid definition
-  - `ScrapeMosaicEnabled` - Background polling of Mosaic state
-  - Feature flags: `ShowClinicalHistory`, `ShowImpression`, `GenderCheckEnabled`, etc.
+- **Serialization:** `System.Text.Json` with `[JsonPropertyName]` — all properties auto-serialize
+- **Settings UI:** `SettingsFormNew` with 11 section classes, each with `LoadSettings()`/`SaveSettings()`
 
 ### Background Timers
-1. **Sync Timer (250ms)** - Registry-based dictation state polling for indicator
-2. **Scrape Timer (configurable, default 3s)** - Mosaic UI scraping when enabled
-   - Tracks accession changes, drafted state, clinical history
+1. **Sync Timer (250ms)** — registry-based dictation state polling for indicator
+2. **Scrape Timer (configurable, default 3s)** — Mosaic UI scraping via FlaUI
+   - Tracks accession changes, drafted state, clinical history, patient info
    - Speeds up to 1s when searching for impression after Process Report
 
-### UI Windows
-All forms are borderless, topmost, draggable:
-- **MainForm** - 160x40px "Mosaic Tools" bar, click for settings
-- **FloatingToolbarForm** - Dynamic button grid from `FloatingButtons` config
-- **IndicatorForm** - Small red/gray dot showing recording state
-- **ClinicalHistoryForm** - Shows extracted clinical history, color-coded warnings
-- **ImpressionForm** - Auto-shows impression section when report drafted
+### External Dependencies
+- **FlaUI** (FlaUI.UIA3) — UI Automation wrapper
+- **HidSharp** — USB HID for PowerMic/SpeechMike
+- **NAudio** — Audio capture for custom STT
+- **Concentus** — Opus audio encoding for Corti STT provider
+- **Windows.Media.Ocr** — Built-in Windows OCR API
 
 ### Headless Mode
-Launch with `-headless` flag:
-- No widget bar (invisible)
-- No hotkeys registered
-- System tray icon for settings access
-- PowerMic, floating toolbar, and toasts still work
-
-### External Dependencies
-- **FlaUI** - UI Automation wrapper (NuGet: FlaUI.UIA3)
-- **HidSharp** - USB HID communication (NuGet: HidSharp)
-- **Windows.Media.Ocr** - Built-in Windows OCR API
+Launch with `-headless`: no widget bar, no hotkeys, system tray icon for settings. PowerMic, floating toolbar, and toasts still work.
 
 ### Open in Clario (XML File Drop)
-The "Open in Clario" feature (double-click in Critical Studies popup) works by writing an XML file to a Fluency watch folder. Clario monitors this folder and opens the study.
-
-- **Folder:** `C:\MModal\FluencyForImaging\Reporting\XML\IN`
-- **Method:** `AutomationService.OpenStudyInClario(accession, mrn)` (line ~554)
-- **File format:** `openreport{unixTimestamp}.{pid}.xml`
-- **XML content:**
-  ```xml
-  <Message>
-    <Type>OpenReport</Type>
-    <AccessionNumbers>
-      <AccessionNumber>{accession}</AccessionNumber>
-    </AccessionNumbers>
-    <MedicalRecordNumber>{mrn}</MedicalRecordNumber>
-  </Message>
-  ```
-- **Requires:** Both accession and MRN (scraped from Mosaic UI by `AutomationService`)
-- **Availability check:** `IsXmlFolderAvailable()` checks if the IN folder exists
-- **Called from:** `CriticalStudiesPopup.ListBox_DoubleClick`
+Double-click in Critical Studies popup writes XML to `C:\MModal\FluencyForImaging\Reporting\XML\IN` — Clario watches this folder and opens the study.
 
 ### Common Debugging
 - **Log file:** `mosaic_tools_log.txt` in exe directory
