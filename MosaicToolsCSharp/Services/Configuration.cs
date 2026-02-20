@@ -259,7 +259,10 @@ public class Configuration
     public RvuDisplayMode RvuDisplayMode { get; set; } = RvuDisplayMode.Total;
 
     [JsonPropertyName("rvu_metrics")]
-    public RvuMetric RvuMetrics { get; set; } = RvuMetric.None; // None = not yet migrated
+    public RvuMetric RvuMetrics { get; set; } = RvuMetric.None;
+
+    [JsonPropertyName("rvu_metrics_migrated")]
+    public bool RvuMetricsMigrated { get; set; } = false;
 
     [JsonPropertyName("rvu_overflow_layout")]
     public RvuOverflowLayout RvuOverflowLayout { get; set; } = RvuOverflowLayout.Horizontal;
@@ -577,15 +580,22 @@ public class Configuration
         }
 
         // Migrate legacy RvuDisplayMode to RvuMetrics flags (one-time)
-        if (RvuMetrics == RvuMetric.None)
+        // RvuMetricsMigrated prevents re-triggering when user unchecks all metrics (None == 0)
+        if (!RvuMetricsMigrated)
         {
-            RvuMetrics = RvuDisplayMode switch
+            // Only overwrite if RvuMetrics is still at default (None) — don't clobber
+            // existing selections from users who already used the new multi-select UI
+            if (RvuMetrics == RvuMetric.None)
             {
-                RvuDisplayMode.Total => RvuMetric.Total,
-                RvuDisplayMode.PerHour => RvuMetric.PerHour,
-                RvuDisplayMode.Both => RvuMetric.Total | RvuMetric.PerHour,
-                _ => RvuMetric.Total
-            };
+                RvuMetrics = RvuDisplayMode switch
+                {
+                    RvuDisplayMode.Total => RvuMetric.Total,
+                    RvuDisplayMode.PerHour => RvuMetric.PerHour,
+                    RvuDisplayMode.Both => RvuMetric.Total | RvuMetric.PerHour,
+                    _ => RvuMetric.Total
+                };
+            }
+            RvuMetricsMigrated = true;
         }
 
         // Force mandatory settings (not user-configurable)
