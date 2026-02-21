@@ -135,11 +135,13 @@ public class SttService : IDisposable
         {
             try
             {
-                // Unhook events BEFORE stopping to prevent re-entrant disposal
-                // (OnRecordingStopped fires during StopRecording on a callback thread)
-                waveIn.DataAvailable -= OnAudioDataAvailable;
+                // Stop audio capture but keep DataAvailable hooked so any remaining
+                // buffered audio gets flushed to the provider before we finalize.
                 waveIn.RecordingStopped -= OnRecordingStopped;
                 waveIn.StopRecording();
+                // Small delay to let final NAudio buffers drain through DataAvailable
+                await Task.Delay(150);
+                waveIn.DataAvailable -= OnAudioDataAvailable;
             }
             catch (Exception ex)
             {
@@ -151,14 +153,20 @@ public class SttService : IDisposable
             }
         }
 
-        // Send Finalize to flush pending transcripts
+        // Send Finalize to flush pending transcripts (provider waits for final response)
         if (_provider?.IsConnected == true)
         {
             await _provider.FinalizeAsync();
+
+            // Disconnect after finalize to prevent turn state bleeding between PTT presses.
+            // Providers like AssemblyAI accumulate turn context across a persistent WebSocket,
+            // causing text from the previous session to appear when recording restarts.
+            // StartRecordingAsync will reconnect automatically on next PTT press.
+            await _provider.DisconnectAsync();
         }
 
-        // Start keepalive timer to keep WebSocket open between PTT presses
-        _keepAliveTimer?.Change(8000, 8000);
+        // No keepalive needed — we disconnect between PTT presses now
+        _keepAliveTimer?.Change(Timeout.Infinite, Timeout.Infinite);
 
         StatusChanged?.Invoke("Stopped");
         Logger.Trace("SttService: Recording stopped");
@@ -316,7 +324,16 @@ public class SttService : IDisposable
 
     private ISttProvider? CreateProvider()
     {
-        if (string.IsNullOrEmpty(_config.SttApiKey))
+        // Check that the active provider has credentials configured
+        var hasKey = _config.SttProvider switch
+        {
+            "deepgram" => !string.IsNullOrEmpty(_config.SttApiKey),
+            "speechmatics" => !string.IsNullOrEmpty(_config.SttSpeechmaticsApiKey),
+            "assemblyai" => !string.IsNullOrEmpty(_config.SttAssemblyAIApiKey),
+            "corti" => !string.IsNullOrEmpty(_config.SttCortiClientId),
+            _ => !string.IsNullOrEmpty(_config.SttApiKey)
+        };
+        if (!hasKey)
         {
             Logger.Trace("SttService: No API key configured");
             return null;
@@ -327,6 +344,7 @@ public class SttService : IDisposable
             "deepgram" => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate),
             "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, _config.SttAutoPunctuate),
             "corti" => new CortiProvider(_config.SttCortiClientId, _config.SttCortiClientSecret, _config.SttCortiEnvironment, _config.SttAutoPunctuate),
+            "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, _config.SttAutoPunctuate),
             _ => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate)
         };
     }

@@ -661,7 +661,7 @@ public class ClinicalHistoryForm : Form
             return;
         }
 
-        Logger.Trace($"Auto-fix check: wasFixed={wasFixed}, accession='{accession}', preCleaned='{preCleaned?.Substring(0, Math.Min(50, preCleaned?.Length ?? 0))}...'");
+        // Auto-fix check (not logged — fires every scrape cycle)
 
         if (!wasFixed)
         {

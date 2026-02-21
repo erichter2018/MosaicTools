@@ -17,6 +17,8 @@ public class AssemblyAIProvider : ISttProvider
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveTask;
     private volatile bool _connected;
+    private TaskCompletionSource<bool>? _finalizeComplete; // Signals when ForceEndpoint response arrives
+    private DateTime _lastDisconnect = DateTime.MinValue; // Rate-limit protection
 
     public string Name => "AssemblyAI";
     public bool RequiresApiKey => true;
@@ -37,14 +39,22 @@ public class AssemblyAIProvider : ISttProvider
     {
         try
         {
+            // Rate-limit protection: AssemblyAI rejects rapid reconnections
+            var sinceLast = DateTime.UtcNow - _lastDisconnect;
+            if (sinceLast.TotalMilliseconds < 1500)
+            {
+                var waitMs = 1500 - (int)sinceLast.TotalMilliseconds;
+                Logger.Trace($"AssemblyAIProvider: Waiting {waitMs}ms before reconnect (rate-limit protection)");
+                await Task.Delay(waitMs, ct);
+            }
+
             _ws = new ClientWebSocket();
             _ws.Options.SetRequestHeader("Authorization", _apiKey);
 
-            // format_turns=true gives punctuated/capitalized output on end-of-turn
+            // No format_turns — we handle punctuation client-side via spoken punctuation
             var uri = new Uri(
                 "wss://streaming.assemblyai.com/v3/ws" +
-                "?sample_rate=16000&encoding=pcm_s16le" +
-                "&format_turns=true");
+                "?sample_rate=16000&encoding=pcm_s16le");
 
             await _ws.ConnectAsync(uri, ct);
             _connected = true;
@@ -91,13 +101,26 @@ public class AssemblyAIProvider : ISttProvider
         if (_ws?.State != WebSocketState.Open) return;
         try
         {
+            // Set up a waiter so we can block until AssemblyAI responds with the final formatted turn
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _finalizeComplete = tcs;
+
             // ForceEndpoint immediately ends the current turn
             var msg = Encoding.UTF8.GetBytes("{\"type\":\"ForceEndpoint\"}");
             await _ws.SendAsync(new ArraySegment<byte>(msg), WebSocketMessageType.Text, true, CancellationToken.None);
-            Logger.Trace("AssemblyAIProvider: Sent ForceEndpoint");
+            Logger.Trace("AssemblyAIProvider: Sent ForceEndpoint, waiting for final turn...");
+
+            // Wait briefly for end-of-turn response. Without format_turns, the text
+            // is usually already delivered as interim results before ForceEndpoint responds,
+            // so this is mostly a courtesy flush. Keep timeout short.
+            var completed = await Task.WhenAny(tcs.Task, Task.Delay(500)) == tcs.Task;
+            _finalizeComplete = null;
+
+            Logger.Trace($"AssemblyAIProvider: ForceEndpoint {(completed ? "got final turn" : "timed out")}");
         }
         catch (Exception ex)
         {
+            _finalizeComplete = null;
             Logger.Trace($"AssemblyAIProvider: ForceEndpoint error: {ex.Message}");
         }
     }
@@ -105,6 +128,7 @@ public class AssemblyAIProvider : ISttProvider
     public async Task DisconnectAsync()
     {
         _connected = false;
+        _lastDisconnect = DateTime.UtcNow;
         ConnectionStateChanged?.Invoke(false);
 
         // Grab references and null them to prevent concurrent disconnect races
@@ -201,11 +225,7 @@ public class AssemblyAIProvider : ISttProvider
             if (type != "Turn") return;
 
             var endOfTurn = root.GetProperty("end_of_turn").GetBoolean();
-            var turnIsFormatted = root.GetProperty("turn_is_formatted").GetBoolean();
             var transcript = root.GetProperty("transcript").GetString() ?? "";
-
-            // Skip unformatted end-of-turn — wait for the formatted version
-            if (endOfTurn && !turnIsFormatted) return;
 
             // Parse word-level data
             var words = Array.Empty<SttWord>();
@@ -227,27 +247,23 @@ public class AssemblyAIProvider : ISttProvider
                 words = wordList.ToArray();
             }
 
-            // Build display text
-            string displayTranscript;
-            if (endOfTurn && turnIsFormatted)
-            {
-                // Final formatted result — use the properly punctuated/capitalized transcript
-                displayTranscript = transcript;
-            }
-            else
-            {
-                // Interim: join all words (including non-final) for live preview
-                displayTranscript = string.Join(" ", words.Select(w => w.Text));
-            }
+            // Build display text — use transcript for final, word join for interim
+            var displayTranscript = endOfTurn
+                ? transcript
+                : string.Join(" ", words.Select(w => w.Text));
 
             if (string.IsNullOrEmpty(displayTranscript) && words.Length == 0) return;
 
             var confidence = words.Length > 0 ? words.Average(w => w.Confidence) : 0f;
             var duration = words.Length > 0 ? words.Max(w => w.EndTime) - words.Min(w => w.StartTime) : 0;
-            var isFinal = endOfTurn && turnIsFormatted;
+            var isFinal = endOfTurn;
 
             var result = new SttResult(displayTranscript, words, confidence, isFinal, isFinal, duration);
             TranscriptionReceived?.Invoke(result);
+
+            // Signal FinalizeAsync that the final turn has been delivered
+            if (isFinal)
+                _finalizeComplete?.TrySetResult(true);
         }
         catch (Exception ex)
         {

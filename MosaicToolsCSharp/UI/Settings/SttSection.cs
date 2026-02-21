@@ -9,7 +9,7 @@ namespace MosaicTools.UI.Settings;
 
 /// <summary>
 /// Settings section for Custom STT Mode configuration.
-/// Supports Deepgram, AssemblyAI, and Corti providers.
+/// Supports Deepgram, Speechmatics, and AssemblyAI providers.
 /// </summary>
 public class SttSection : SettingsSection
 {
@@ -23,9 +23,7 @@ public class SttSection : SettingsSection
     private readonly Button _helpButton;
     private readonly Label _pricingHint;
 
-    // Corti-specific fields
-    private readonly Label _clientSecretLabel;
-    private readonly TextBox _clientSecretBox;
+    // Speechmatics region selector
     private readonly Label _regionLabel;
     private readonly ComboBox _regionCombo;
 
@@ -41,21 +39,20 @@ public class SttSection : SettingsSection
 
     // Provider dropdown indices
     private const int ProviderDeepgramMedical = 0;
-    private const int ProviderDeepgramNova3 = 1;
+    private const int ProviderSpeechmatics = 1;
     private const int ProviderAssemblyAI = 2;
-    private const int ProviderCorti = 3;
 
     // Per-provider credential storage (swapped on provider change)
     private string _deepgramKey = "";
+    private string _speechmaticsKey = "";
     private string _assemblyAIKey = "";
-    private string _cortiClientId = "";
-    private string _cortiSecret = "";
+    private string _speechmaticsRegion = "us";
     private int _previousProviderIndex;
     private bool _loading; // Suppress OnProviderChanged during LoadSettings
 
     public SttSection(ToolTip toolTip) : base("Speech-to-Text", toolTip)
     {
-        _searchTerms.AddRange(new[] { "stt", "speech", "transcription", "deepgram", "assemblyai", "corti", "dictation", "custom stt", "beep", "punctuation" });
+        _searchTerms.AddRange(new[] { "stt", "speech", "transcription", "deepgram", "speechmatics", "assemblyai", "dictation", "custom stt", "beep", "punctuation" });
 
         _enabledCheck = AddCheckBox("Enable Custom STT Mode", LeftMargin, _nextY,
             "Use cloud STT instead of Mosaic's built-in speech recognition. Cancel Mosaic's WebHID prompt when enabled.");
@@ -69,11 +66,11 @@ public class SttSection : SettingsSection
 
         AddLabel("Provider:", LeftMargin + 25, _nextY + 3);
         _providerCombo = AddComboBox(LeftMargin + 110, _nextY, 200,
-            new[] { "Deepgram Nova-3 Medical", "Deepgram Nova-3", "AssemblyAI", "Corti Solo" });
+            new[] { "Deepgram Nova-3 Medical", "Speechmatics Medical", "AssemblyAI" });
         _providerCombo.SelectedIndexChanged += (_, _) => OnProviderChanged();
         _nextY += RowHeight;
 
-        // API Key (label text changes for Corti → "Client ID:")
+        // API Key
         _apiKeyLabel = AddLabel("API Key:", LeftMargin + 25, _nextY + 3);
         _apiKeyBox = AddTextBox(LeftMargin + 110, _nextY, 200);
         _apiKeyBox.UseSystemPasswordChar = true;
@@ -98,13 +95,7 @@ public class SttSection : SettingsSection
         Controls.Add(_pricingHint);
         _nextY += SubRowHeight;
 
-        // Corti-specific: Client Secret
-        _clientSecretLabel = AddLabel("Client Secret:", LeftMargin + 25, _nextY + 3);
-        _clientSecretBox = AddTextBox(LeftMargin + 120, _nextY, 190);
-        _clientSecretBox.UseSystemPasswordChar = true;
-        _nextY += RowHeight;
-
-        // Corti-specific: Region
+        // Region selector (Speechmatics only)
         _regionLabel = AddLabel("Region:", LeftMargin + 25, _nextY + 3);
         _regionCombo = AddComboBox(LeftMargin + 120, _nextY, 100,
             new[] { "US", "EU" });
@@ -182,23 +173,17 @@ public class SttSection : SettingsSection
 
         _previousProviderIndex = newIdx;
 
-        // Update Corti-specific field visibility
-        bool isCorti = newIdx == ProviderCorti;
-        _clientSecretLabel.Visible = isCorti;
-        _clientSecretBox.Visible = isCorti;
-        _regionLabel.Visible = isCorti;
-        _regionCombo.Visible = isCorti;
-
-        // Update API key label
-        _apiKeyLabel.Text = isCorti ? "Client ID:" : "API Key:";
+        // Update region selector visibility (Speechmatics only)
+        bool isSpeechmatics = newIdx == ProviderSpeechmatics;
+        _regionLabel.Visible = isSpeechmatics;
+        _regionCombo.Visible = isSpeechmatics;
 
         // Update pricing hint
         _pricingHint.Text = newIdx switch
         {
             ProviderDeepgramMedical => "Free tier: $200 credit. Nova-3 Medical: $0.0077/min streaming",
-            ProviderDeepgramNova3 => "Free tier: $200 credit. Nova-3: $0.0059/min streaming",
+            ProviderSpeechmatics => "Free tier: 480 min/month. Medical model: $0.004/min streaming",
             ProviderAssemblyAI => "Free tier: 330 hours. $0.0025/min streaming",
-            ProviderCorti => "Free tier: $50 credit. Medical-optimized, credit-based pricing",
             _ => ""
         };
     }
@@ -208,15 +193,14 @@ public class SttSection : SettingsSection
         switch (providerIndex)
         {
             case ProviderDeepgramMedical:
-            case ProviderDeepgramNova3:
                 _deepgramKey = _apiKeyBox.Text;
+                break;
+            case ProviderSpeechmatics:
+                _speechmaticsKey = _apiKeyBox.Text;
+                _speechmaticsRegion = _regionCombo.SelectedIndex == 1 ? "eu" : "us";
                 break;
             case ProviderAssemblyAI:
                 _assemblyAIKey = _apiKeyBox.Text;
-                break;
-            case ProviderCorti:
-                _cortiClientId = _apiKeyBox.Text;
-                _cortiSecret = _clientSecretBox.Text;
                 break;
         }
     }
@@ -226,17 +210,14 @@ public class SttSection : SettingsSection
         switch (providerIndex)
         {
             case ProviderDeepgramMedical:
-            case ProviderDeepgramNova3:
                 _apiKeyBox.Text = _deepgramKey;
-                _clientSecretBox.Text = "";
+                break;
+            case ProviderSpeechmatics:
+                _apiKeyBox.Text = _speechmaticsKey;
+                _regionCombo.SelectedIndex = _speechmaticsRegion == "eu" ? 1 : 0;
                 break;
             case ProviderAssemblyAI:
                 _apiKeyBox.Text = _assemblyAIKey;
-                _clientSecretBox.Text = "";
-                break;
-            case ProviderCorti:
-                _apiKeyBox.Text = _cortiClientId;
-                _clientSecretBox.Text = _cortiSecret;
                 break;
         }
     }
@@ -248,7 +229,6 @@ public class SttSection : SettingsSection
         _apiKeyBox.Enabled = enabled;
         _getKeyButton.Enabled = enabled;
         _helpButton.Enabled = enabled;
-        _clientSecretBox.Enabled = enabled;
         _regionCombo.Enabled = enabled;
         _audioDeviceCombo.Enabled = enabled;
         _autoPunctuateCheck.Enabled = enabled;
@@ -263,8 +243,8 @@ public class SttSection : SettingsSection
     {
         var url = _providerCombo.SelectedIndex switch
         {
+            ProviderSpeechmatics => "https://portal.speechmatics.com/signup",
             ProviderAssemblyAI => "https://www.assemblyai.com/dashboard/signup",
-            ProviderCorti => "https://console.corti.app/signup",
             _ => "https://console.deepgram.com/signup"
         };
 
@@ -279,6 +259,20 @@ public class SttSection : SettingsSection
     {
         var (text, title) = _providerCombo.SelectedIndex switch
         {
+            ProviderSpeechmatics => (
+                "How to get a Speechmatics API key:\n\n" +
+                "1. Click \"Get API Key\" to open the Speechmatics Portal\n" +
+                "2. Create a free account\n" +
+                "3. After signing in, go to Manage > API Keys\n" +
+                "4. Click \"Create API Key\"\n" +
+                "5. Copy the generated key\n" +
+                "6. Paste the key into the API Key field above\n" +
+                "7. Select your preferred region (US or EU)\n\n" +
+                "Free tier includes 480 minutes/month.\n" +
+                "Medical model streaming: $0.004/min ($0.24/hour).\n" +
+                "Dedicated medical model trained on 16 billion words of clinical data.\n\n" +
+                "Keep your API key private \u2014 do not share it.",
+                "Speechmatics Setup"),
             ProviderAssemblyAI => (
                 "How to get an AssemblyAI API key:\n\n" +
                 "1. Click \"Get API Key\" to open the AssemblyAI signup page\n" +
@@ -289,23 +283,8 @@ public class SttSection : SettingsSection
                 "6. Paste the key into the API Key field above\n\n" +
                 "Free tier includes 330 hours of streaming transcription.\n" +
                 "Streaming costs $0.15/hour ($0.0025/min).\n\n" +
-                "Keep your API key private — do not share it.",
+                "Keep your API key private \u2014 do not share it.",
                 "AssemblyAI Setup"),
-            ProviderCorti => (
-                "How to set up Corti Solo:\n\n" +
-                "1. Click \"Get API Key\" to open the Corti Console signup\n" +
-                "2. Create an account and sign in\n" +
-                "3. Create a new Project in the console\n" +
-                "4. Within the project, create a Client (e.g. name it \"MosaicTools\")\n" +
-                "5. Select your data residency: US or EU\n" +
-                "6. You'll receive a Client ID and Client Secret\n" +
-                "7. Paste the Client ID into the \"Client ID\" field above\n" +
-                "8. Paste the Client Secret into the \"Client Secret\" field\n" +
-                "9. Set the Region dropdown to match your data residency\n\n" +
-                "Free tier includes $50 in credits (valid 1 year).\n" +
-                "Medical-optimized with 150,000+ clinical terms.\n\n" +
-                "Keep your credentials private — do not share them.",
-                "Corti Solo Setup"),
             _ => (
                 "How to get a Deepgram API key:\n\n" +
                 "1. Click \"Get API Key\" to open the Deepgram signup page\n" +
@@ -316,10 +295,10 @@ public class SttSection : SettingsSection
                 "6. Give it a name (e.g. \"MosaicTools\"), leave permissions as default\n" +
                 "7. Click \"Create Key\" and copy the key that appears\n" +
                 "8. Paste the key into the API Key field above\n\n" +
-                "Free tier includes $200 in credit — enough for ~430 hours of\n" +
+                "Free tier includes $200 in credit \u2014 enough for ~430 hours of\n" +
                 "Nova-3 Medical dictation at $0.0077/min.\n\n" +
                 "The key starts with \"dg_\" or a similar prefix.\n" +
-                "Keep it private — do not share it.",
+                "Keep it private \u2014 do not share it.",
                 "Deepgram API Key Setup")
         };
 
@@ -332,18 +311,16 @@ public class SttSection : SettingsSection
 
         // Load per-provider credentials into local storage
         _deepgramKey = config.SttApiKey;
+        _speechmaticsKey = config.SttSpeechmaticsApiKey;
+        _speechmaticsRegion = config.SttSpeechmaticsRegion;
         _assemblyAIKey = config.SttAssemblyAIApiKey;
-        _cortiClientId = config.SttCortiClientId;
-        _cortiSecret = config.SttCortiClientSecret;
 
-        // Map provider+model to dropdown index
-        var idx = (config.SttProvider, config.SttModel) switch
+        // Map provider to dropdown index (corti falls back to deepgram)
+        var idx = config.SttProvider switch
         {
-            ("deepgram", "nova-3-medical") => ProviderDeepgramMedical,
-            ("deepgram", "nova-3") => ProviderDeepgramNova3,
-            ("deepgram", _) => ProviderDeepgramMedical,
-            ("assemblyai", _) => ProviderAssemblyAI,
-            ("corti", _) => ProviderCorti,
+            "deepgram" => ProviderDeepgramMedical,
+            "speechmatics" => ProviderSpeechmatics,
+            "assemblyai" => ProviderAssemblyAI,
             _ => ProviderDeepgramMedical
         };
 
@@ -354,22 +331,19 @@ public class SttSection : SettingsSection
 
         // Manually load keys and update visibility (OnProviderChanged was suppressed)
         LoadKeysToUI(idx);
-        bool isCorti = idx == ProviderCorti;
-        _clientSecretLabel.Visible = isCorti;
-        _clientSecretBox.Visible = isCorti;
-        _regionLabel.Visible = isCorti;
-        _regionCombo.Visible = isCorti;
-        _apiKeyLabel.Text = isCorti ? "Client ID:" : "API Key:";
+        bool isSpeechmatics = idx == ProviderSpeechmatics;
+        _regionLabel.Visible = isSpeechmatics;
+        _regionCombo.Visible = isSpeechmatics;
         _pricingHint.Text = idx switch
         {
             ProviderDeepgramMedical => "Free tier: $200 credit. Nova-3 Medical: $0.0077/min streaming",
-            ProviderDeepgramNova3 => "Free tier: $200 credit. Nova-3: $0.0059/min streaming",
+            ProviderSpeechmatics => "Free tier: 480 min/month. Medical model: $0.004/min streaming",
             ProviderAssemblyAI => "Free tier: 330 hours. $0.0025/min streaming",
-            ProviderCorti => "Free tier: $50 credit. Medical-optimized, credit-based pricing",
             _ => ""
         };
 
-        _regionCombo.SelectedIndex = config.SttCortiEnvironment == "eu" ? 1 : 0;
+        // Set region combo for Speechmatics
+        _regionCombo.SelectedIndex = _speechmaticsRegion == "eu" ? 1 : 0;
 
         // Select audio device
         if (string.IsNullOrEmpty(config.SttAudioDeviceName))
@@ -401,18 +375,16 @@ public class SttSection : SettingsSection
 
         // Write all per-provider credentials to config
         config.SttApiKey = _deepgramKey.Trim();
+        config.SttSpeechmaticsApiKey = _speechmaticsKey.Trim();
+        config.SttSpeechmaticsRegion = _speechmaticsRegion;
         config.SttAssemblyAIApiKey = _assemblyAIKey.Trim();
-        config.SttCortiClientId = _cortiClientId.Trim();
-        config.SttCortiClientSecret = _cortiSecret.Trim();
-        config.SttCortiEnvironment = _regionCombo.SelectedIndex == 1 ? "eu" : "us";
 
         // Map dropdown index to provider+model
         (config.SttProvider, config.SttModel) = _providerCombo.SelectedIndex switch
         {
             ProviderDeepgramMedical => ("deepgram", "nova-3-medical"),
-            ProviderDeepgramNova3 => ("deepgram", "nova-3"),
+            ProviderSpeechmatics => ("speechmatics", ""),
             ProviderAssemblyAI => ("assemblyai", ""),
-            ProviderCorti => ("corti", ""),
             _ => ("deepgram", "nova-3-medical")
         };
 

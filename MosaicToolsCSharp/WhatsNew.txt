@@ -1,3 +1,10 @@
+3.7.9
+- STT: Add AssemblyAI streaming provider
+- STT: Fix audio buffer loss on stop — final words no longer cut off
+- STT: Fix transcription bleed between PTT sessions
+- STT: Add reconnect rate-limit protection for AssemblyAI
+- Security: Remove PHI (patient names, MRNs, report text) from log output
+
 3.7.8
 - Fix RVU metrics resetting to defaults on restart when all metrics unchecked
 

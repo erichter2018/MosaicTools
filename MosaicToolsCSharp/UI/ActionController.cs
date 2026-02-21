@@ -376,8 +376,11 @@ public class ActionController : IDisposable
             {
                 // Client-side spoken punctuation → symbols (replaces Deepgram dictation mode
                 // so we can keep "colon" as a word for medical context).
-                var transcript = ApplySpokenPunctuation(result.Transcript);
-                var textToPaste = " " + transcript + " ";
+                var transcript = ApplySpokenPunctuation(result.Transcript).Trim();
+                transcript = ApplyRadiologyCleanup(transcript);
+                if (transcript.Length > 0 && !(transcript.Length > 1 && char.IsDigit(transcript[1])))
+                    transcript = char.ToLower(transcript[0]) + transcript[1..];
+                var textToPaste = " " + transcript;
                 var svc = _automationService;
                 var t = new Thread(() =>
                 {
@@ -958,8 +961,8 @@ public class ActionController : IDisposable
         }
         else
         {
-            // Stop recording — keep direct paste active until Finalize response arrives
-            Task.Run(async () => await _sttService!.StopRecordingAsync()).Wait(2000);
+            // Stop recording — StopRecordingAsync now waits for finalize + disconnects
+            Task.Run(async () => await _sttService!.StopRecordingAsync()).Wait(4000);
             _dictationActive = false;
 
             if (_config.SttStopBeepEnabled)
@@ -967,8 +970,8 @@ public class ActionController : IDisposable
                 AudioService.PlayBeepAsync(500, 200, _config.SttStopBeepVolume);
             }
 
-            // [CustomSTT] Wait for Finalize response, then hide indicator
-            Thread.Sleep(1500);
+            // Small delay for any final paste to complete, then clean up UI
+            Thread.Sleep(500);
             _sttDirectPasteActive = false;
             InvokeUI(() => _mainForm.HideTranscriptionForm());
         }
@@ -994,14 +997,14 @@ public class ActionController : IDisposable
             if (_sttService.IsRecording)
             {
                 Logger.Trace("Process Report (CustomSTT): Stopping recording...");
-                Task.Run(async () => await _sttService.StopRecordingAsync()).Wait(2000);
+                Task.Run(async () => await _sttService.StopRecordingAsync()).Wait(4000);
                 _dictationActive = false;
                 if (_config.SttStopBeepEnabled)
                     AudioService.PlayBeepAsync(500, 200, _config.SttStopBeepVolume);
             }
 
-            // Wait for any pending direct paste to complete
-            Thread.Sleep(1500);
+            // Small delay for any final paste to complete
+            Thread.Sleep(500);
             _sttDirectPasteActive = false;
 
             // Hide the transcription indicator
@@ -1929,7 +1932,7 @@ public class ActionController : IDisposable
             };
 
             _criticalStudies.Add(entry);
-            Logger.Trace($"TrackCriticalStudy: Added entry for {accession} ({entry.PatientName} @ {entry.SiteCode}, MRN={entry.Mrn})");
+            Logger.Trace($"TrackCriticalStudy: Added entry for {accession} @ {entry.SiteCode}");
         }
 
         // Notify UI
@@ -3408,7 +3411,7 @@ public class ActionController : IDisposable
                     _needsBaselineCapture = false;
                     _baselineReport = reportText;
                     Logger.Trace($"Captured baseline from scrape (DRAFTED, immediate): {reportText.Length} chars, drafted={_mosaicReader.LastDraftedState}");
-                    Logger.Trace($"Baseline content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
+
 
                     // Revert to normal scrape interval now that baseline is captured
                     if (!_searchingForImpression)
@@ -3589,7 +3592,7 @@ public class ActionController : IDisposable
         {
             _draftedAutoProcessDetected = true;
             Logger.Trace($"Drafted study auto-process detected: report changed from baseline ({_baselineReport.Length} → {reportText.Length} chars)");
-            Logger.Trace($"Post-process content: {reportText.Replace("\r", "").Replace("\n", " | ")}");
+
 
         }
 
@@ -4013,6 +4016,329 @@ public class ActionController : IDisposable
 
         // Clean up spaces before punctuation marks (e.g., "word . next" → "word. next")
         result = System.Text.RegularExpressions.Regex.Replace(result, @"\s+([.,;!?])", "$1");
+
+        return result;
+    }
+
+    // ── Radiology transcript cleanup ──────────────────────────────────────
+    // Converts spoken radiology shorthand into standard written forms.
+    // Runs on every STT fragment before paste — shared across all providers.
+
+    private static readonly Dictionary<string, string> NumberWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["zero"] = "0", ["one"] = "1", ["two"] = "2", ["three"] = "3",
+        ["four"] = "4", ["five"] = "5", ["six"] = "6", ["seven"] = "7",
+        ["eight"] = "8", ["nine"] = "9", ["ten"] = "10", ["eleven"] = "11",
+        ["twelve"] = "12", ["thirteen"] = "13", ["fourteen"] = "14",
+        ["fifteen"] = "15", ["sixteen"] = "16", ["seventeen"] = "17",
+        ["eighteen"] = "18", ["nineteen"] = "19", ["twenty"] = "20",
+        ["thirty"] = "30", ["forty"] = "40", ["fifty"] = "50",
+        ["sixty"] = "60", ["seventy"] = "70", ["eighty"] = "80", ["ninety"] = "90",
+    };
+
+    // Matches a number word or bare digit(s)
+    private const string NumPat = @"(?<n>\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)";
+
+    private static string NumReplace(System.Text.RegularExpressions.Match m, string groupName = "n")
+    {
+        var val = m.Groups[groupName].Value;
+        return NumberWords.TryGetValue(val, out var d) ? d : val;
+    }
+
+    private static readonly Dictionary<string, int> OrdinalWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["first"] = 1, ["second"] = 2, ["third"] = 3, ["fourth"] = 4, ["fifth"] = 5,
+        ["sixth"] = 6, ["seventh"] = 7, ["eighth"] = 8, ["ninth"] = 9, ["tenth"] = 10,
+        ["eleventh"] = 11, ["twelfth"] = 12, ["thirteenth"] = 13, ["fourteenth"] = 14,
+        ["fifteenth"] = 15, ["sixteenth"] = 16, ["seventeenth"] = 17, ["eighteenth"] = 18,
+        ["nineteenth"] = 19, ["twentieth"] = 20, ["thirtieth"] = 30,
+    };
+
+    /// <summary>
+    /// Parse spoken number (0-99) from words or digits. Returns -1 if not parseable.
+    /// Handles: "five", "fifteen", "twenty three", "twenty first", "oh three", "5th", "23".
+    /// </summary>
+    private static int TryParseSpokenInt(string text)
+    {
+        text = text.Trim();
+        if (string.IsNullOrEmpty(text)) return -1;
+
+        // Bare digits (strip ordinal suffix: "5th" → "5")
+        var stripped = System.Text.RegularExpressions.Regex.Replace(text, @"(?:st|nd|rd|th)$", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (int.TryParse(stripped, out var n)) return n;
+
+        // Simple cardinal
+        if (NumberWords.TryGetValue(text, out var nw) && int.TryParse(nw, out var nwi)) return nwi;
+
+        // Simple ordinal
+        if (OrdinalWords.TryGetValue(text, out var ow)) return ow;
+
+        // Compound (two words)
+        var parts = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 2)
+        {
+            // "oh three" → 3
+            if (string.Equals(parts[0], "oh", StringComparison.OrdinalIgnoreCase))
+            {
+                var r = TryParseSpokenInt(parts[1]);
+                if (r >= 0 && r <= 9) return r;
+            }
+
+            // "twenty three" or "twenty first"
+            int tens = parts[0].ToLower() switch
+            {
+                "twenty" => 20, "thirty" => 30, "forty" => 40, "fifty" => 50,
+                "sixty" => 60, "seventy" => 70, "eighty" => 80, "ninety" => 90, _ => -1
+            };
+            if (tens > 0)
+            {
+                if (OrdinalWords.TryGetValue(parts[1], out var o) && o >= 1 && o <= 9) return tens + o;
+                if (NumberWords.TryGetValue(parts[1], out var c) && int.TryParse(c, out var ci) && ci >= 1 && ci <= 9) return tens + ci;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Parse spoken year (1900-2099) from words or digits. Returns -1 if not parseable.
+    /// Handles: "twenty twenty five" (2025), "nineteen ninety nine" (1999),
+    /// "two thousand and five" (2005), "2025", and bare two-digit numbers
+    /// like "twenty five" (→ 2025, assumes 20xx prefix).
+    /// </summary>
+    private static int TryParseSpokenYear(string text)
+    {
+        text = text.Trim();
+        if (string.IsNullOrEmpty(text)) return -1;
+        if (int.TryParse(text, out var n) && n >= 1900 && n <= 2099) return n;
+
+        var words = text.ToLower().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length < 1) return -1;
+
+        // "two thousand [and] [XX]"
+        if (words.Length >= 2 && words[0] == "two" && words[1] == "thousand")
+        {
+            if (words.Length == 2) return 2000;
+            int start = 2;
+            if (start < words.Length && words[start] == "and") start++;
+            if (start >= words.Length) return 2000;
+            var offset = TryParseSpokenInt(string.Join(" ", words[start..]));
+            if (offset >= 1 && offset <= 99) return 2000 + offset;
+            return -1;
+        }
+
+        // "twenty twenty [one-nine]" → 2020-2029
+        if (words.Length >= 2 && words[0] == "twenty" && words[1] == "twenty")
+        {
+            if (words.Length == 2) return 2020;
+            if (words.Length == 3)
+            {
+                var ones = TryParseSpokenInt(words[2]);
+                if (ones >= 1 && ones <= 9) return 2020 + ones;
+            }
+            return -1;
+        }
+
+        // "twenty ten-nineteen" → 2010-2019
+        if (words.Length == 2 && words[0] == "twenty")
+        {
+            var second = TryParseSpokenInt(words[1]);
+            if (second >= 10 && second <= 19) return 2000 + second;
+        }
+
+        // "nineteen XX" → 19XX
+        if (words.Length >= 2 && words[0] == "nineteen")
+        {
+            var offset = TryParseSpokenInt(string.Join(" ", words[1..]));
+            if (offset >= 0 && offset <= 99) return 1900 + offset;
+            return -1;
+        }
+
+        // Bare two-digit number assumed 20xx: "twenty five" → 2025
+        // (used when year is the 3rd number in a numeric date — context implies year)
+        var bare = TryParseSpokenInt(text);
+        if (bare >= 0 && bare <= 99) return 2000 + bare;
+
+        return -1;
+    }
+
+    private static string ApplyRadiologyCleanup(string text)
+    {
+        const System.Text.RegularExpressions.RegexOptions IC = System.Text.RegularExpressions.RegexOptions.IgnoreCase;
+
+        var result = text;
+
+        // ── Spine levels ──
+        // "C one two" → "C1-2", "L five S one" → "L5-S1", "T twelve L one" → "T12-L1"
+        // Pattern: [CTLS] + number + optional(dash/through + [CTLS]? + number)
+        result = System.Text.RegularExpressions.Regex.Replace(result,
+            @"\b(?<seg>[CTLS])\s*" + NumPat.Replace("<n>", "<n1>") +
+            @"(?:\s*(?:-|through)?\s*(?<seg2>[CTLS])?\s*" + NumPat.Replace("<n>", "<n2>") + @")?\b",
+            m =>
+            {
+                var seg = m.Groups["seg"].Value.ToUpper();
+                var n1 = m.Groups["n1"].Value;
+                if (NumberWords.TryGetValue(n1, out var d1)) n1 = d1;
+
+                if (!m.Groups["n2"].Success)
+                    return seg + n1;
+
+                var n2 = m.Groups["n2"].Value;
+                if (NumberWords.TryGetValue(n2, out var d2)) n2 = d2;
+
+                var seg2 = m.Groups["seg2"].Success ? m.Groups["seg2"].Value.ToUpper() : "";
+                return seg + n1 + "-" + seg2 + n2;
+            }, IC);
+
+        // Fix concatenated digit spine levels: C34 → C3-4, T12 stays T12
+        // Only splits when the 2-digit value exceeds the segment's max vertebra count
+        result = System.Text.RegularExpressions.Regex.Replace(result,
+            @"\b([CTLS])(\d)(\d)\b",
+            m =>
+            {
+                var seg = m.Groups[1].Value.ToUpper();
+                var d1 = m.Groups[2].Value;
+                var d2 = m.Groups[3].Value;
+                var combined = int.Parse(d1 + d2);
+                var max = seg[0] switch { 'C' => 7, 'T' => 12, 'L' => 5, 'S' => 5, _ => 0 };
+                if (combined <= max) return seg + d1 + d2; // valid single vertebra (e.g., T12)
+                return seg + d1 + "-" + d2;
+            }, IC);
+
+        // ── "point" between numbers → decimal ──
+        // "three point two" → "3.2", "0 point five" → "0.5"
+        result = System.Text.RegularExpressions.Regex.Replace(result,
+            NumPat.Replace("<n>", "<n1>") + @"\s+point\s+" + NumPat.Replace("<n>", "<n2>"),
+            m =>
+            {
+                var n1 = m.Groups["n1"].Value;
+                if (NumberWords.TryGetValue(n1, out var d1)) n1 = d1;
+                var n2 = m.Groups["n2"].Value;
+                if (NumberWords.TryGetValue(n2, out var d2)) n2 = d2;
+                return n1 + "." + n2;
+            }, IC);
+
+        // ── Unit words → abbreviations (only after a number) ──
+        // "12 centimeters" → "12 cm", "three millimeters" → "3 mm"
+        var unitMap = new (string pattern, string abbrev)[]
+        {
+            ("centimeters?", "cm"), ("millimeters?", "mm"), ("meters?", "m"),
+        };
+        foreach (var (unitPat, abbrev) in unitMap)
+        {
+            result = System.Text.RegularExpressions.Regex.Replace(result,
+                NumPat + @"\s+" + unitPat + @"\b",
+                m => NumReplace(m) + " " + abbrev, IC);
+        }
+
+        // ── Dimensions: "by" between numbers → "x" ──
+        // "3.2 by 2.1 by 1.0" → "3.2 x 2.1 x 1.0"
+        // Only when both sides are digits/decimals (post-conversion)
+        result = System.Text.RegularExpressions.Regex.Replace(result,
+            @"(\d+(?:\.\d+)?)\s+by\s+(\d+(?:\.\d+)?)", "$1 x $2", IC);
+
+        // Handle cross-fragment dimensions:
+        // Trailing "by" after a number at end of fragment: "3.2 by" → "3.2 x"
+        result = System.Text.RegularExpressions.Regex.Replace(result,
+            @"(\d+(?:\.\d+)?)\s+by\s*$", "$1 x", IC);
+        // Leading "by" before a number at start of fragment: "by 2.0" → "x 2.0"
+        result = System.Text.RegularExpressions.Regex.Replace(result,
+            @"^\s*by\s+(\d+(?:\.\d+)?)", "x $1", IC);
+
+        // ── Dates ──
+        // Regex building blocks for day/year matching
+        var onesW = @"one|two|three|four|five|six|seven|eight|nine";
+        var teensW = @"ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen";
+        var tensW = @"twenty|thirty";
+        var ordOnesW = @"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth";
+        var ordTeensW = @"tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth";
+
+        // Day: ordinal or cardinal for 1-31 (compound forms listed first for greedy match)
+        var dayPat =
+            $@"(?:(?:{tensW})\s+(?:{ordOnesW})" +   // "twenty first"
+            $@"|(?:{ordOnesW}|{ordTeensW}|twentieth|thirtieth)" + // "fifth", "twentieth"
+            $@"|(?:{tensW})\s+(?:{onesW})" +         // "twenty three"
+            $@"|(?:{onesW}|{teensW}|twenty|thirty)" + // "five", "fifteen"
+            @"|\d{1,2}(?:st|nd|rd|th)?)";            // "5th", "21"
+
+        // Year: spoken year patterns (most specific first)
+        var year2020 = $@"twenty\s+twenty(?:\s+(?:{onesW}))?";
+        var year2010 = $@"twenty\s+(?:{teensW})";
+        var year19xx = $@"nineteen\s+(?:(?:ninety|eighty|seventy|sixty|fifty|forty|thirty|twenty|ten)(?:\s+(?:{onesW}))?|(?:{teensW})|(?:{onesW}))";
+        var year2000 = $@"two\s+thousand(?:\s+(?:and\s+)?(?:twenty(?:\s+(?:{onesW}))?|(?:{teensW})|(?:{onesW})))?";
+        var yearDigit = @"20[0-9]\d|19\d\d";
+        var yearPat = $@"(?:{year2020}|{year2010}|{year19xx}|{year2000}|{yearDigit})";
+
+        // Also match bare two-digit spoken number as year (assumes 20xx): "twenty five" → 2025
+        var yearOrBare = $@"(?:{yearPat}|(?:{tensW})\s+(?:{onesW})|(?:{teensW})|(?:{onesW})|\d{{1,2}})";
+
+        var monthNamePat = @"(?:january|february|march|april|may|june|july|august|september|october|november|december)";
+        var numMonthPat = $@"(?:oh\s+(?:{onesW})|{onesW}|ten|eleven|twelve|\d{{1,2}})";
+
+        // 1. Month-name + day + year: "january fifth twenty twenty five" → "January 5, 2025"
+        result = System.Text.RegularExpressions.Regex.Replace(result,
+            $@"\b({monthNamePat})\s+({dayPat})\s*,?\s+({yearPat})\b",
+            m =>
+            {
+                var month = char.ToUpper(m.Groups[1].Value[0]) + m.Groups[1].Value[1..].ToLower();
+                var day = TryParseSpokenInt(m.Groups[2].Value);
+                var year = TryParseSpokenYear(m.Groups[3].Value);
+                if (day >= 1 && day <= 31 && year >= 1900)
+                    return $"{month} {day}, {year}";
+                return m.Value;
+            }, IC);
+
+        // 2. Month-name + year (no day): "january twenty twenty five" → "January 2025"
+        result = System.Text.RegularExpressions.Regex.Replace(result,
+            $@"\b({monthNamePat})\s+({yearPat})\b",
+            m =>
+            {
+                var month = char.ToUpper(m.Groups[1].Value[0]) + m.Groups[1].Value[1..].ToLower();
+                var year = TryParseSpokenYear(m.Groups[2].Value);
+                if (year >= 1900)
+                    return $"{month} {year}";
+                return m.Value;
+            }, IC);
+
+        // 3. Month-name + day (no year): "january fifth" → "January 5"
+        result = System.Text.RegularExpressions.Regex.Replace(result,
+            $@"\b({monthNamePat})\s+({dayPat})\b",
+            m =>
+            {
+                var month = char.ToUpper(m.Groups[1].Value[0]) + m.Groups[1].Value[1..].ToLower();
+                var day = TryParseSpokenInt(m.Groups[2].Value);
+                if (day >= 1 && day <= 31)
+                    return $"{month} {day}";
+                return m.Value;
+            }, IC);
+
+        // 4. Numeric date with 4-number year anchor: "one fifteen twenty twenty five" → "1/15/2025"
+        result = System.Text.RegularExpressions.Regex.Replace(result,
+            $@"\b({numMonthPat})\s+({dayPat})\s+({yearPat})\b",
+            m =>
+            {
+                var month = TryParseSpokenInt(m.Groups[1].Value);
+                var day = TryParseSpokenInt(m.Groups[2].Value);
+                var year = TryParseSpokenYear(m.Groups[3].Value);
+                if (month >= 1 && month <= 12 && day >= 1 && day <= 31 && year >= 1900)
+                    return $"{month}/{day}/{year}";
+                return m.Value;
+            }, IC);
+
+        // 5. Numeric date with 3-number year (assumes 20xx): "one fifteen twenty five" → "1/15/2025"
+        //    Only matches when the third number could be a year (>= the day value or >= 20)
+        result = System.Text.RegularExpressions.Regex.Replace(result,
+            $@"\b({numMonthPat})\s+({dayPat})\s+({yearOrBare})\b",
+            m =>
+            {
+                var month = TryParseSpokenInt(m.Groups[1].Value);
+                var day = TryParseSpokenInt(m.Groups[2].Value);
+                var year = TryParseSpokenYear(m.Groups[3].Value);
+                // Only convert if this looks like a valid date
+                if (month >= 1 && month <= 12 && day >= 1 && day <= 31 && year >= 2000 && year <= 2099)
+                    return $"{month}/{day}/{year}";
+                return m.Value;
+            }, IC);
 
         return result;
     }

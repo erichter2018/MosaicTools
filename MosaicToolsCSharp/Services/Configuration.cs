@@ -353,6 +353,12 @@ public class Configuration
     [JsonPropertyName("stt_corti_environment")]
     public string SttCortiEnvironment { get; set; } = "us"; // "us" or "eu"
 
+    [JsonPropertyName("stt_speechmatics_api_key")]
+    public string SttSpeechmaticsApiKey { get; set; } = "";
+
+    [JsonPropertyName("stt_speechmatics_region")]
+    public string SttSpeechmaticsRegion { get; set; } = "us"; // "us" or "eu"
+
     [JsonPropertyName("stt_provider")]
     public string SttProvider { get; set; } = "deepgram";
 

@@ -98,7 +98,7 @@ public class RecoMdService : IDisposable
             };
 
             var json = JsonSerializer.Serialize(payload);
-            Logger.Trace($"RecoMD: Open payload: {json}");
+            Logger.Trace($"RecoMD: Open report for {accession}");
             var content = new StringContent(json, Encoding.UTF8, "application/json");
             var resp = await _http.PostAsync($"{BaseUrl}/dictation/report/open", content);
 

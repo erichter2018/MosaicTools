@@ -1510,7 +1510,6 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                                             continue; // Keep looking for accession
                                         }
                                         LastAccession = accession;
-                                        Logger.Trace($"Found Accession: {LastAccession}");
                                         break;
                                     }
                                     if (child.Name == "Current Study")
@@ -1622,7 +1621,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                                 if (mrnMatch.Success)
                                 {
                                     LastMrn = mrnMatch.Groups[1].Value.ToUpperInvariant();
-                                    Logger.Trace($"Found MRN: {LastMrn}");
+                                    Logger.Trace("Found MRN");
                                 }
                             }
 
@@ -1630,7 +1629,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                             if (LastPatientName == null && IsPatientNameCandidate(textUpper))
                             {
                                 LastPatientName = ToTitleCase(textUpper);
-                                Logger.Trace($"Found Patient Name: {LastPatientName}");
+                                Logger.Trace("Found Patient Name");
                             }
 
                             // Description extraction (2.0.2: "Description: CT ABDOMEN PELVIS...")
@@ -1640,7 +1639,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                                 if (!string.IsNullOrEmpty(desc))
                                 {
                                     LastDescription = desc;
-                                    Logger.Trace($"Found Description: {LastDescription}");
+                                    // Description found (not logged — fires every scrape cycle)
                                 }
                             }
 
@@ -1670,14 +1669,14 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                                             if (string.IsNullOrEmpty(LastDescription))
                                             {
                                                 LastDescription = value;
-                                                Logger.Trace($"Found Description (v2.0.3): {value}");
+                                                // Description v2.0.3 found (not logged — fires every scrape cycle)
                                             }
                                             break;
                                         case "MRN":
                                             if (LastMrn == null)
                                             {
                                                 LastMrn = value.ToUpperInvariant();
-                                                Logger.Trace($"Found MRN (v2.0.3): {LastMrn}");
+                                                Logger.Trace("Found MRN (v2.0.3)");
                                             }
                                             break;
                                         case "SiteCode":
@@ -1700,7 +1699,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                                     if (!string.IsNullOrEmpty(desc))
                                     {
                                         LastDescription = desc;
-                                        Logger.Trace($"Found Description (v2.0.4): {desc}");
+                                        // Description v2.0.4 found (not logged — fires every scrape cycle)
                                     }
                                 }
                                 if (LastMrn == null && name.StartsWith("MRN:", StringComparison.OrdinalIgnoreCase))
@@ -1709,7 +1708,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                                     if (!string.IsNullOrWhiteSpace(mrnVal))
                                     {
                                         LastMrn = mrnVal.ToUpperInvariant();
-                                        Logger.Trace($"Found MRN (v2.0.4): {LastMrn}");
+                                        Logger.Trace("Found MRN (v2.0.4)");
                                     }
                                 }
                                 if (LastSiteCode == null && name.StartsWith("Site Code:", StringComparison.OrdinalIgnoreCase))
@@ -1882,7 +1881,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
             if (candidates.Length > 0)
             {
-                Logger.Trace($"GetFinalReportFast: Found {candidates.Length} ProseMirror candidates");
+                // ProseMirror candidates found (not logged — fires every scrape cycle)
 
                 IsAddendumDetected = false;
 
@@ -1989,7 +1988,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
                     sw.Stop();
                     int lineCount = bestText.Split('\n').Length;
-                    Logger.Trace($"GetFinalReportFast: ProseMirror SUCCESS in {sw.ElapsedMilliseconds}ms, {lineCount} lines, Score={maxScore}");
+                    // ProseMirror success (not logged — fires every scrape cycle)
                     LastFinalReport = bestText;
                     LastTemplateName = ExtractTemplateName(bestText);
                     ReleaseElements(candidates);
@@ -2508,7 +2507,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
         if (match)
         {
-            Logger.Trace($"Template MATCH: [{string.Join(", ", descParts)}]");
+            // Template match (not logged — fires every scrape cycle)
         }
         else
         {
