@@ -124,8 +124,12 @@ public class SttService : IDisposable
     {
         if (!_recording) return;
 
-        _recording = false;
+        // Keep _recording true briefly so OnAudioDataAvailable continues sending
+        // audio to the provider — captures the tail end of the last spoken word.
         RecordingStateChanged?.Invoke(false);
+        await Task.Delay(300); // Speech tail buffer
+
+        _recording = false;
 
         // Capture and null the reference to prevent races with OnRecordingStopped/OnConnectionStateChanged
         var waveIn = _waveIn;
@@ -135,12 +139,10 @@ public class SttService : IDisposable
         {
             try
             {
-                // Stop audio capture but keep DataAvailable hooked so any remaining
-                // buffered audio gets flushed to the provider before we finalize.
                 waveIn.RecordingStopped -= OnRecordingStopped;
                 waveIn.StopRecording();
-                // Small delay to let final NAudio buffers drain through DataAvailable
-                await Task.Delay(150);
+                // Let final NAudio buffers drain through DataAvailable
+                await Task.Delay(100);
                 waveIn.DataAvailable -= OnAudioDataAvailable;
             }
             catch (Exception ex)

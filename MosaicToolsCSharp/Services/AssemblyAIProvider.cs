@@ -20,6 +20,57 @@ public class AssemblyAIProvider : ISttProvider
     private TaskCompletionSource<bool>? _finalizeComplete; // Signals when ForceEndpoint response arrives
     private DateTime _lastDisconnect = DateTime.MinValue; // Rate-limit protection
 
+    // Radiology keyterms to boost recognition accuracy (max 100 terms, 50 chars each)
+    private static readonly string[] MedicalKeyterms =
+    [
+        // Chest
+        "atelectasis", "pneumothorax", "pneumomediastinum",       // 3
+        "cardiomegaly", "hepatomegaly", "splenomegaly",           // 6
+        "lymphadenopathy", "bronchiectasis",                       // 8
+        "hemothorax", "hemopneumothorax",                          // 10
+        "retrocardiac", "costophrenic", "cardiophrenic",           // 13
+        "hilar", "perihilar", "basilar", "bibasilar",              // 17
+        "peribronchial", "parenchymal", "mediastinal",             // 20
+        // Tubes/procedures
+        "nasogastric", "endotracheal", "tracheostomy",             // 23
+        "thoracentesis", "paracentesis",                           // 25
+        // Hepatobiliary
+        "cholecystectomy", "cholecystitis",                        // 27
+        "cholelithiasis", "choledocholithiasis",                   // 29
+        // Renal
+        "hydronephrosis", "nephrolithiasis", "ureterolithiasis",   // 32
+        "pyelonephritis",                                          // 33
+        // GI
+        "diverticulitis", "diverticulosis", "pancreatitis",        // 36
+        "pneumoperitoneum", "pneumobilia",                         // 38
+        "intussusception", "volvulus", "ileus",                    // 41
+        "mesenteric", "omentum", "retroperitoneal",                // 44
+        // MSK
+        "opacification", "radiolucency", "lucency",                // 47
+        "osseous", "periosteal", "osteophyte", "osteophytic",      // 51
+        "spondylosis", "spondylolisthesis",                        // 53
+        "atherosclerotic",                                         // 54
+        "patulous", "tortuous", "ectatic",                         // 57
+        "lobulated", "spiculated", "infundibulum",                 // 60
+        // Gyn
+        "adnexal", "endometrial", "myometrial",                   // 63
+        // Spine
+        "paraspinal", "foraminal", "neuroforaminal",               // 66
+        "laminectomy", "discectomy",                               // 68
+        "vertebroplasty", "kyphoplasty", "arthroplasty",           // 71
+        // Trauma
+        "subluxation", "diastasis", "comminuted", "nondisplaced",  // 75
+        "avulsion",                                                // 76
+        // Neuro
+        "intraparenchymal", "subarachnoid",                        // 78
+        "falcine", "tentorial", "uncal",                           // 81
+        "vasogenic", "cytotoxic",                                  // 83
+        "encephalomalacia", "gliosis", "demyelination",            // 86
+        "periventricular", "pneumocephalus",                       // 88
+        // Misc descriptors
+        "Hounsfield", "radiopacity",                               // 90
+    ];  // 90 terms
+
     public string Name => "AssemblyAI";
     public bool RequiresApiKey => true;
     public string? SignupUrl => "https://www.assemblyai.com/dashboard/signup";
@@ -63,7 +114,12 @@ public class AssemblyAIProvider : ISttProvider
             _receiveCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _receiveTask = Task.Run(() => ReceiveLoop(_receiveCts.Token));
 
-            Logger.Trace("AssemblyAIProvider: Connected");
+            // Send medical keyterms to boost recognition accuracy
+            var config = new { type = "UpdateConfiguration", keyterms_prompt = MedicalKeyterms };
+            var configJson = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(config));
+            await _ws.SendAsync(new ArraySegment<byte>(configJson), WebSocketMessageType.Text, true, ct);
+
+            Logger.Trace($"AssemblyAIProvider: Connected, sent {MedicalKeyterms.Length} keyterms");
             return true;
         }
         catch (WebSocketException ex) when (ex.Message.Contains("401") || ex.Message.Contains("403") || ex.Message.Contains("Unauthorized"))

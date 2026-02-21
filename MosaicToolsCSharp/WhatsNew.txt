@@ -1,3 +1,7 @@
+3.7.10
+- STT: AssemblyAI medical keyterms boosting (90 radiology terms)
+- STT: Speech tail buffer — last word no longer cut off on quick button release
+
 3.7.9
 - STT: Add AssemblyAI streaming provider
 - STT: Fix audio buffer loss on stop — final words no longer cut off
