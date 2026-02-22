@@ -752,6 +752,13 @@ public class MacroConfig
     [JsonPropertyName("criteria_exclude")]
     public string CriteriaExclude { get; set; } = "";
 
+    /// <summary>
+    /// Voice-triggered macro — activated by speaking "insert/input/macro {name}" during STT dictation.
+    /// Voice macros ignore study criteria (always available when STT is active).
+    /// </summary>
+    [JsonPropertyName("voice")]
+    public bool Voice { get; set; } = false;
+
     [JsonPropertyName("text")]
     public string Text { get; set; } = "";
 
@@ -822,6 +829,9 @@ public class MacroConfig
     /// </summary>
     public string GetCriteriaDisplayString()
     {
+        if (Voice)
+            return "Voice triggered";
+
         if (string.IsNullOrWhiteSpace(CriteriaRequired) &&
             string.IsNullOrWhiteSpace(CriteriaAnyOf) &&
             string.IsNullOrWhiteSpace(CriteriaExclude))

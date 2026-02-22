@@ -5,6 +5,7 @@ namespace MosaicTools.Services;
 
 /// <summary>
 /// Manages PowerMic audio capture and STT provider lifecycle.
+/// Thin orchestrator — all timing, flush, and disconnect logic lives in providers.
 /// </summary>
 public class SttService : IDisposable
 {
@@ -13,7 +14,7 @@ public class SttService : IDisposable
     private WaveInEvent? _waveIn;
     private int _selectedDeviceIndex = -1;
     private volatile bool _recording;
-    private System.Threading.Timer? _keepAliveTimer;
+    private volatile bool _stopping; // Suppress reconnect during intentional stop
 
     public bool IsRecording => _recording;
     public bool IsConnected => _provider?.IsConnected ?? false;
@@ -55,13 +56,6 @@ public class SttService : IDisposable
         _provider.ErrorOccurred += OnProviderError;
         _provider.ConnectionStateChanged += OnConnectionStateChanged;
 
-        // KeepAlive timer (disabled until first recording starts/stops)
-        _keepAliveTimer = new System.Threading.Timer(async _ =>
-        {
-            if (_provider?.IsConnected == true && !_recording)
-                await _provider.SendKeepAliveAsync();
-        }, null, Timeout.Infinite, Timeout.Infinite);
-
         Logger.Trace($"SttService: Initialized (device={_selectedDeviceIndex}, provider={_provider.Name})");
         return null;
     }
@@ -75,11 +69,11 @@ public class SttService : IDisposable
         if (_recording) return;
         if (_provider == null || _selectedDeviceIndex < 0) return;
 
-        // Connect if needed
+        // Start session (provider connects if needed)
         if (!_provider.IsConnected)
         {
             StatusChanged?.Invoke("Connecting...");
-            var connected = await _provider.ConnectAsync();
+            var connected = await _provider.StartSessionAsync();
             if (!connected)
             {
                 StatusChanged?.Invoke("Connection failed");
@@ -87,17 +81,15 @@ public class SttService : IDisposable
             }
         }
 
-        // Stop keepalive timer (we're actively sending audio now)
-        _keepAliveTimer?.Change(Timeout.Infinite, Timeout.Infinite);
-
-        // Start audio capture
+        // Start audio capture using provider's declared format
         try
         {
+            var fmt = _provider.AudioFormat;
             _waveIn = new WaveInEvent
             {
                 DeviceNumber = _selectedDeviceIndex,
-                WaveFormat = new WaveFormat(16000, 16, 1),
-                BufferMilliseconds = 100
+                WaveFormat = new WaveFormat(fmt.SampleRate, fmt.BitsPerSample, fmt.Channels),
+                BufferMilliseconds = fmt.BufferMs
             };
             _waveIn.DataAvailable += OnAudioDataAvailable;
             _waveIn.RecordingStopped += OnRecordingStopped;
@@ -117,19 +109,34 @@ public class SttService : IDisposable
     }
 
     /// <summary>
-    /// Stop recording and finalize pending transcripts.
-    /// Keeps WebSocket connection alive for next PTT press.
+    /// Stop recording. Provider owns the full stop pipeline —
+    /// tail buffer, flush, and disconnect decisions.
+    /// Audio keeps flowing during EndSessionAsync so the provider
+    /// captures trailing speech.
     /// </summary>
     public async Task StopRecordingAsync()
     {
         if (!_recording) return;
+        _stopping = true; // Suppress OnConnectionStateChanged reconnect
 
-        // Keep _recording true briefly so OnAudioDataAvailable continues sending
-        // audio to the provider — captures the tail end of the last spoken word.
+        // Update UI immediately
         RecordingStateChanged?.Invoke(false);
-        await Task.Delay(300); // Speech tail buffer
 
+        // Provider runs its full stop pipeline (tail buffer, flush, optional disconnect).
+        // _recording stays true so OnAudioDataAvailable keeps sending audio during this.
+        try
+        {
+            if (_provider is { IsConnected: true })
+                await _provider.EndSessionAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"SttService: EndSession error: {ex.Message}");
+        }
+
+        // Now stop audio capture
         _recording = false;
+        _stopping = false;
 
         // Capture and null the reference to prevent races with OnRecordingStopped/OnConnectionStateChanged
         var waveIn = _waveIn;
@@ -139,11 +146,9 @@ public class SttService : IDisposable
         {
             try
             {
+                waveIn.DataAvailable -= OnAudioDataAvailable;
                 waveIn.RecordingStopped -= OnRecordingStopped;
                 waveIn.StopRecording();
-                // Let final NAudio buffers drain through DataAvailable
-                await Task.Delay(100);
-                waveIn.DataAvailable -= OnAudioDataAvailable;
             }
             catch (Exception ex)
             {
@@ -155,27 +160,25 @@ public class SttService : IDisposable
             }
         }
 
-        // Send Finalize to flush pending transcripts (provider waits for final response)
-        if (_provider?.IsConnected == true)
-        {
-            await _provider.FinalizeAsync();
-
-            // Disconnect after finalize to prevent turn state bleeding between PTT presses.
-            // Providers like AssemblyAI accumulate turn context across a persistent WebSocket,
-            // causing text from the previous session to appear when recording restarts.
-            // StartRecordingAsync will reconnect automatically on next PTT press.
-            await _provider.DisconnectAsync();
-        }
-
-        // No keepalive needed — we disconnect between PTT presses now
-        _keepAliveTimer?.Change(Timeout.Infinite, Timeout.Infinite);
-
         StatusChanged?.Invoke("Stopped");
         Logger.Trace("SttService: Recording stopped");
+
+        // Pre-connect for next PTT press so the user doesn't wait on reconnection.
+        // Providers that disconnect each session (AssemblyAI, Deepgram) benefit most.
+        // Providers still connected (Corti) will no-op in StartSessionAsync.
+        var provider = _provider;
+        if (provider is { IsConnected: false })
+        {
+            _ = Task.Run(async () =>
+            {
+                try { await provider.StartSessionAsync(); }
+                catch (Exception ex) { Logger.Trace($"SttService: Pre-connect failed: {ex.Message}"); }
+            });
+        }
     }
 
     /// <summary>
-    /// Fully disconnect from provider (e.g., on settings change or shutdown).
+    /// Fully shut down provider (e.g., on settings change or app exit).
     /// </summary>
     public async Task DisconnectAsync()
     {
@@ -184,11 +187,9 @@ public class SttService : IDisposable
             await StopRecordingAsync();
         }
 
-        _keepAliveTimer?.Change(Timeout.Infinite, Timeout.Infinite);
-
         if (_provider != null)
         {
-            await _provider.DisconnectAsync();
+            await _provider.ShutdownAsync();
         }
 
         StatusChanged?.Invoke("Disconnected");
@@ -225,9 +226,9 @@ public class SttService : IDisposable
 
     private void OnConnectionStateChanged(bool connected)
     {
-        if (!connected && _recording)
+        if (!connected && _recording && !_stopping)
         {
-            // Connection dropped while recording
+            // Connection dropped unexpectedly while recording
             _recording = false;
             RecordingStateChanged?.Invoke(false);
 
@@ -265,7 +266,7 @@ public class SttService : IDisposable
             await Task.Delay(1000 * attempt); // Exponential backoff
 
             if (_provider == null) break;
-            var success = await _provider.ConnectAsync();
+            var success = await _provider.StartSessionAsync();
             if (success)
             {
                 StatusChanged?.Invoke("Reconnected");
@@ -367,8 +368,6 @@ public class SttService : IDisposable
 
     public void Dispose()
     {
-        _keepAliveTimer?.Dispose();
-
         var waveIn = _waveIn;
         _waveIn = null;
         if (waveIn != null)
@@ -387,7 +386,7 @@ public class SttService : IDisposable
         }
 
         // Dispose provider on a background thread to avoid blocking the UI thread
-        // (provider Dispose calls DisconnectAsync synchronously which can take seconds)
+        // (provider Dispose calls ShutdownAsync synchronously which can take seconds)
         var provider = _provider;
         _provider = null;
         if (provider != null)

@@ -18,7 +18,9 @@ public class AssemblyAIProvider : ISttProvider
     private Task? _receiveTask;
     private volatile bool _connected;
     private TaskCompletionSource<bool>? _finalizeComplete; // Signals when ForceEndpoint response arrives
+    private TaskCompletionSource<bool>? _sessionBegin; // Signals when server sends Begin
     private DateTime _lastDisconnect = DateTime.MinValue; // Rate-limit protection
+    private readonly SemaphoreSlim _connectLock = new(1, 1); // Serialize StartSessionAsync calls
 
     // Radiology keyterms to boost recognition accuracy (max 100 terms, 50 chars each)
     private static readonly string[] MedicalKeyterms =
@@ -75,6 +77,7 @@ public class AssemblyAIProvider : ISttProvider
     public bool RequiresApiKey => true;
     public string? SignupUrl => "https://www.assemblyai.com/dashboard/signup";
     public bool IsConnected => _connected;
+    public SttAudioFormat AudioFormat { get; } = new();
 
     public event Action<SttResult>? TranscriptionReceived;
     public event Action<string>? ErrorOccurred;
@@ -86,10 +89,16 @@ public class AssemblyAIProvider : ISttProvider
         _autoPunctuate = autoPunctuate;
     }
 
-    public async Task<bool> ConnectAsync(CancellationToken ct = default)
+    public async Task<bool> StartSessionAsync(CancellationToken ct = default)
     {
+        if (_connected) return true; // Already connected (e.g., pre-connect succeeded)
+
+        // Serialize concurrent calls (pre-connect racing with PTT press)
+        await _connectLock.WaitAsync(ct);
         try
         {
+            if (_connected) return true; // Re-check after acquiring lock
+
             // Rate-limit protection: AssemblyAI rejects rapid reconnections
             var sinceLast = DateTime.UtcNow - _lastDisconnect;
             if (sinceLast.TotalMilliseconds < 1500)
@@ -105,14 +114,29 @@ public class AssemblyAIProvider : ISttProvider
             // No format_turns — we handle punctuation client-side via spoken punctuation
             var uri = new Uri(
                 "wss://streaming.assemblyai.com/v3/ws" +
-                "?sample_rate=16000&encoding=pcm_s16le");
+                $"?sample_rate={AudioFormat.SampleRate}&encoding=pcm_s16le");
 
             await _ws.ConnectAsync(uri, ct);
             _connected = true;
             ConnectionStateChanged?.Invoke(true);
 
+            // Wait for server's Begin message before sending audio — audio sent
+            // before Begin is silently dropped, causing recognition to not start.
+            var beginTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _sessionBegin = beginTcs;
+
             _receiveCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _receiveTask = Task.Run(() => ReceiveLoop(_receiveCts.Token));
+
+            var began = await Task.WhenAny(beginTcs.Task, Task.Delay(3000, ct)) == beginTcs.Task;
+            _sessionBegin = null;
+            if (!began)
+            {
+                Logger.Trace("AssemblyAIProvider: Timed out waiting for Begin");
+                await ShutdownAsync();
+                ErrorOccurred?.Invoke("AssemblyAI session failed to start.");
+                return false;
+            }
 
             // Send medical keyterms to boost recognition accuracy
             var config = new { type = "UpdateConfiguration", keyterms_prompt = MedicalKeyterms };
@@ -134,11 +158,15 @@ public class AssemblyAIProvider : ISttProvider
             ErrorOccurred?.Invoke($"Connection failed: {ex.Message}");
             return false;
         }
+        finally
+        {
+            _connectLock.Release();
+        }
     }
 
     public void SendAudio(byte[] pcmData, int offset, int count)
     {
-        if (_ws?.State != WebSocketState.Open) return;
+        if (!_connected || _ws?.State != WebSocketState.Open) return;
         try
         {
             _ = _ws.SendAsync(new ArraySegment<byte>(pcmData, offset, count),
@@ -150,10 +178,17 @@ public class AssemblyAIProvider : ISttProvider
         }
     }
 
-    public Task SendKeepAliveAsync() => Task.CompletedTask; // AssemblyAI doesn't need keepalives
-
-    public async Task FinalizeAsync()
+    public async Task EndSessionAsync()
     {
+        // Tail buffer: audio keeps flowing from SttService while we wait,
+        // capturing the last spoken word that may still be in the mic buffer.
+        await Task.Delay(300);
+
+        // Stop accepting new audio and let any in-flight fire-and-forget send drain.
+        // ClientWebSocket only allows one outstanding SendAsync at a time.
+        _connected = false;
+        await Task.Delay(50);
+
         if (_ws?.State != WebSocketState.Open) return;
         try
         {
@@ -173,15 +208,20 @@ public class AssemblyAIProvider : ISttProvider
             _finalizeComplete = null;
 
             Logger.Trace($"AssemblyAIProvider: ForceEndpoint {(completed ? "got final turn" : "timed out")}");
+
+            // Disconnect to prevent turn-state bleeding — AssemblyAI accumulates
+            // turn context across a persistent WebSocket, causing text from the
+            // previous session to reappear when recording restarts.
+            await ShutdownAsync();
         }
         catch (Exception ex)
         {
             _finalizeComplete = null;
-            Logger.Trace($"AssemblyAIProvider: ForceEndpoint error: {ex.Message}");
+            Logger.Trace($"AssemblyAIProvider: EndSession error: {ex.Message}");
         }
     }
 
-    public async Task DisconnectAsync()
+    public async Task ShutdownAsync()
     {
         _connected = false;
         _lastDisconnect = DateTime.UtcNow;
@@ -209,7 +249,7 @@ public class AssemblyAIProvider : ISttProvider
         ws?.Dispose();
         cts?.Dispose();
 
-        Logger.Trace("AssemblyAIProvider: Disconnected");
+        Logger.Trace("AssemblyAIProvider: Shutdown");
     }
 
     private async Task ReceiveLoop(CancellationToken ct)
@@ -268,6 +308,7 @@ public class AssemblyAIProvider : ISttProvider
             if (type == "Begin")
             {
                 Logger.Trace("AssemblyAIProvider: Session started");
+                _sessionBegin?.TrySetResult(true);
                 return;
             }
 
@@ -317,7 +358,7 @@ public class AssemblyAIProvider : ISttProvider
             var result = new SttResult(displayTranscript, words, confidence, isFinal, isFinal, duration);
             TranscriptionReceived?.Invoke(result);
 
-            // Signal FinalizeAsync that the final turn has been delivered
+            // Signal EndSessionAsync that the final turn has been delivered
             if (isFinal)
                 _finalizeComplete?.TrySetResult(true);
         }
@@ -329,6 +370,6 @@ public class AssemblyAIProvider : ISttProvider
 
     public void Dispose()
     {
-        try { DisconnectAsync().GetAwaiter().GetResult(); } catch { }
+        try { ShutdownAsync().GetAwaiter().GetResult(); } catch { }
     }
 }

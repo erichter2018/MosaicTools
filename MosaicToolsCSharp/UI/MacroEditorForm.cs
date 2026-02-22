@@ -45,8 +45,14 @@ public class MacroEditorForm : Form
     private ListBox _listBox = null!;
     private TextBox _nameBox = null!;
     private CheckBox _enabledCheck = null!;
+    private CheckBox _voiceCheck = null!;
 
-    // Right panel - criteria
+    // Right panel - criteria (stored as fields for voice visibility toggle)
+    private Label _criteriaHeader = null!;
+    private Label _criteriaRequiredLabel = null!;
+    private Label _criteriaAnyOfLabel = null!;
+    private Label _criteriaExcludeLabel = null!;
+    private Label _criteriaHintLabel = null!;
     private TextBox _criteriaRequiredBox = null!;
     private TextBox _criteriaAnyOfBox = null!;
     private TextBox _criteriaExcludeBox = null!;
@@ -66,6 +72,7 @@ public class MacroEditorForm : Form
         {
             Enabled = m.Enabled,
             Name = m.Name,
+            Voice = m.Voice,
             CriteriaRequired = m.CriteriaRequired,
             CriteriaAnyOf = m.CriteriaAnyOf,
             CriteriaExclude = m.CriteriaExclude,
@@ -245,12 +252,32 @@ public class MacroEditorForm : Form
         Controls.Add(_nameBox);
         y += 30;
 
+        // Voice trigger checkbox
+        _voiceCheck = new CheckBox
+        {
+            Text = "Voice triggered  (say \"insert/macro {name}\" during dictation)",
+            Location = new Point(x, y),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(180, 140, 255)
+        };
+        _voiceCheck.CheckedChanged += (s, e) =>
+        {
+            if (_suppressEvents || _selectedMacro == null) return;
+            _selectedMacro.Voice = _voiceCheck.Checked;
+            UpdateCriteriaVisibility();
+            RefreshListBox();
+        };
+        Controls.Add(_voiceCheck);
+        y += 28;
+
         // Study Criteria section
-        Controls.Add(CreateLabel("STUDY CRITERIA (match study description)", x, y, true, 8));
+        _criteriaHeader = CreateLabel("STUDY CRITERIA (match study description)", x, y, true, 8);
+        Controls.Add(_criteriaHeader);
         y += 22;
 
         // Required
-        Controls.Add(CreateLabel("Required (all must match):", x, y + 2));
+        _criteriaRequiredLabel = CreateLabel("Required (all must match):", x, y + 2);
+        Controls.Add(_criteriaRequiredLabel);
         y += 18;
         _criteriaRequiredBox = CreateTextBox(x, y, rightWidth);
         _criteriaRequiredBox.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
@@ -264,7 +291,8 @@ public class MacroEditorForm : Form
         y += 28;
 
         // Any of
-        Controls.Add(CreateLabel("Any of (at least one must match):", x, y + 2));
+        _criteriaAnyOfLabel = CreateLabel("Any of (at least one must match):", x, y + 2);
+        Controls.Add(_criteriaAnyOfLabel);
         y += 18;
         _criteriaAnyOfBox = CreateTextBox(x, y, rightWidth);
         _criteriaAnyOfBox.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
@@ -278,7 +306,8 @@ public class MacroEditorForm : Form
         y += 28;
 
         // Exclude
-        Controls.Add(CreateLabel("Exclude (none must match):", x, y + 2));
+        _criteriaExcludeLabel = CreateLabel("Exclude (none must match):", x, y + 2);
+        Controls.Add(_criteriaExcludeLabel);
         y += 18;
         _criteriaExcludeBox = CreateTextBox(x, y, rightWidth);
         _criteriaExcludeBox.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
@@ -291,10 +320,10 @@ public class MacroEditorForm : Form
         y += 30;
 
         // Hint
-        var hintLabel = CreateLabel("Separate multiple keywords with commas. Leave all empty for global macro.", x, y);
-        hintLabel.ForeColor = Color.FromArgb(100, 100, 100);
-        hintLabel.Font = new Font("Segoe UI", 8, FontStyle.Italic);
-        Controls.Add(hintLabel);
+        _criteriaHintLabel = CreateLabel("Separate multiple keywords with commas. Leave all empty for global macro.", x, y);
+        _criteriaHintLabel.ForeColor = Color.FromArgb(100, 100, 100);
+        _criteriaHintLabel.Font = new Font("Segoe UI", 8, FontStyle.Italic);
+        Controls.Add(_criteriaHintLabel);
         y += 22;
 
         // Text section
@@ -384,9 +413,14 @@ public class MacroEditorForm : Form
             e.Graphics.DrawLine(pen, checkRect.X + 6, checkRect.Y + 10, checkRect.X + 11, checkRect.Y + 4);
         }
 
-        // Global or criteria-based indicator
-        bool isGlobal = string.IsNullOrWhiteSpace(macro.CriteriaRequired) && string.IsNullOrWhiteSpace(macro.CriteriaAnyOf);
-        var indicatorColor = isGlobal ? Color.FromArgb(140, 200, 140) : Color.FromArgb(100, 180, 255);
+        // Voice / Global / criteria-based indicator color
+        Color indicatorColor;
+        if (macro.Voice)
+            indicatorColor = Color.FromArgb(180, 140, 255); // purple for voice macros
+        else if (string.IsNullOrWhiteSpace(macro.CriteriaRequired) && string.IsNullOrWhiteSpace(macro.CriteriaAnyOf))
+            indicatorColor = Color.FromArgb(140, 200, 140); // green for global
+        else
+            indicatorColor = Color.FromArgb(100, 180, 255); // blue for criteria-based
 
         // Name
         var name = string.IsNullOrEmpty(macro.Name) ? "(unnamed)" : macro.Name;
@@ -435,11 +469,13 @@ public class MacroEditorForm : Form
         _suppressEvents = true;
         _enabledCheck.Checked = _selectedMacro.Enabled;
         _nameBox.Text = _selectedMacro.Name;
+        _voiceCheck.Checked = _selectedMacro.Voice;
         _criteriaRequiredBox.Text = _selectedMacro.CriteriaRequired;
         _criteriaAnyOfBox.Text = _selectedMacro.CriteriaAnyOf;
         _criteriaExcludeBox.Text = _selectedMacro.CriteriaExclude;
         _textBox.Text = _selectedMacro.Text;
         _suppressEvents = false;
+        UpdateCriteriaVisibility();
     }
 
     private void ClearMacroProperties()
@@ -447,11 +483,13 @@ public class MacroEditorForm : Form
         _suppressEvents = true;
         _enabledCheck.Checked = false;
         _nameBox.Text = "";
+        _voiceCheck.Checked = false;
         _criteriaRequiredBox.Text = "";
         _criteriaAnyOfBox.Text = "";
         _criteriaExcludeBox.Text = "";
         _textBox.Text = "";
         _suppressEvents = false;
+        UpdateCriteriaVisibility();
     }
 
     private void UpdateButtonStates()
@@ -459,10 +497,24 @@ public class MacroEditorForm : Form
         var hasMacro = _selectedMacro != null;
         _enabledCheck.Enabled = hasMacro;
         _nameBox.Enabled = hasMacro;
+        _voiceCheck.Enabled = hasMacro;
         _criteriaRequiredBox.Enabled = hasMacro;
         _criteriaAnyOfBox.Enabled = hasMacro;
         _criteriaExcludeBox.Enabled = hasMacro;
         _textBox.Enabled = hasMacro;
+    }
+
+    private void UpdateCriteriaVisibility()
+    {
+        var isVoice = _voiceCheck.Checked;
+        _criteriaHeader.Visible = !isVoice;
+        _criteriaRequiredLabel.Visible = !isVoice;
+        _criteriaRequiredBox.Visible = !isVoice;
+        _criteriaAnyOfLabel.Visible = !isVoice;
+        _criteriaAnyOfBox.Visible = !isVoice;
+        _criteriaExcludeLabel.Visible = !isVoice;
+        _criteriaExcludeBox.Visible = !isVoice;
+        _criteriaHintLabel.Visible = !isVoice;
     }
 
     private void AddMacro()

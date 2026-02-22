@@ -18,11 +18,13 @@ public class DeepgramProvider : ISttProvider
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveTask;
     private volatile bool _connected;
+    private readonly SemaphoreSlim _connectLock = new(1, 1); // Serialize StartSessionAsync calls
 
     public string Name => _model == "nova-3-medical" ? "Deepgram Nova-3 Medical" : "Deepgram Nova-3";
     public bool RequiresApiKey => true;
     public string? SignupUrl => "https://console.deepgram.com/signup";
     public bool IsConnected => _connected;
+    public SttAudioFormat AudioFormat { get; } = new();
 
     public event Action<SttResult>? TranscriptionReceived;
     public event Action<string>? ErrorOccurred;
@@ -35,10 +37,16 @@ public class DeepgramProvider : ISttProvider
         _autoPunctuate = autoPunctuate;
     }
 
-    public async Task<bool> ConnectAsync(CancellationToken ct = default)
+    public async Task<bool> StartSessionAsync(CancellationToken ct = default)
     {
+        if (_connected) return true; // Already connected (e.g., pre-connect succeeded)
+
+        // Serialize concurrent calls (pre-connect racing with PTT press)
+        await _connectLock.WaitAsync(ct);
         try
         {
+            if (_connected) return true; // Re-check after acquiring lock
+
             _ws = new ClientWebSocket();
             _ws.Options.SetRequestHeader("Authorization", $"Token {_apiKey}");
 
@@ -53,7 +61,7 @@ public class DeepgramProvider : ISttProvider
             var uri = new Uri(
                 $"wss://api.deepgram.com/v1/listen" +
                 $"?model={_model}" +
-                $"&encoding=linear16&sample_rate=16000&channels=1" +
+                $"&encoding=linear16&sample_rate={AudioFormat.SampleRate}&channels={AudioFormat.Channels}" +
                 punctParams +
                 $"&interim_results=true&endpointing=300");
 
@@ -79,11 +87,15 @@ public class DeepgramProvider : ISttProvider
             ErrorOccurred?.Invoke($"Connection failed: {ex.Message}");
             return false;
         }
+        finally
+        {
+            _connectLock.Release();
+        }
     }
 
     public void SendAudio(byte[] pcmData, int offset, int count)
     {
-        if (_ws?.State != WebSocketState.Open) return;
+        if (!_connected || _ws?.State != WebSocketState.Open) return;
         try
         {
             // Fire-and-forget binary frame (audio is time-sensitive, don't await)
@@ -96,36 +108,38 @@ public class DeepgramProvider : ISttProvider
         }
     }
 
-    public async Task SendKeepAliveAsync()
+    public async Task EndSessionAsync()
     {
-        if (_ws?.State != WebSocketState.Open) return;
-        try
-        {
-            var msg = Encoding.UTF8.GetBytes("{\"type\":\"KeepAlive\"}");
-            await _ws.SendAsync(new ArraySegment<byte>(msg), WebSocketMessageType.Text, true, CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            Logger.Trace($"DeepgramProvider: KeepAlive error: {ex.Message}");
-        }
-    }
+        // Tail buffer: audio keeps flowing from SttService while we wait,
+        // capturing the last spoken word that may still be in the mic buffer.
+        await Task.Delay(300);
 
-    public async Task FinalizeAsync()
-    {
+        // Stop accepting new audio and let any in-flight fire-and-forget send drain.
+        // ClientWebSocket only allows one outstanding SendAsync at a time.
+        _connected = false;
+        await Task.Delay(50);
+
         if (_ws?.State != WebSocketState.Open) return;
         try
         {
+            // Finalize flushes pending audio
             var msg = Encoding.UTF8.GetBytes("{\"type\":\"Finalize\"}");
             await _ws.SendAsync(new ArraySegment<byte>(msg), WebSocketMessageType.Text, true, CancellationToken.None);
             Logger.Trace("DeepgramProvider: Sent Finalize");
+
+            // Brief wait for Deepgram to flush finals (~50-100ms typical)
+            await Task.Delay(300);
+
+            // Disconnect — Deepgram sessions are cheap to reconnect
+            await ShutdownAsync();
         }
         catch (Exception ex)
         {
-            Logger.Trace($"DeepgramProvider: Finalize error: {ex.Message}");
+            Logger.Trace($"DeepgramProvider: EndSession error: {ex.Message}");
         }
     }
 
-    public async Task DisconnectAsync()
+    public async Task ShutdownAsync()
     {
         _connected = false;
         ConnectionStateChanged?.Invoke(false);
@@ -153,7 +167,7 @@ public class DeepgramProvider : ISttProvider
         ws?.Dispose();
         cts?.Dispose();
 
-        Logger.Trace("DeepgramProvider: Disconnected");
+        Logger.Trace("DeepgramProvider: Shutdown");
     }
 
     private async Task ReceiveLoop(CancellationToken ct)
@@ -262,6 +276,6 @@ public class DeepgramProvider : ISttProvider
 
     public void Dispose()
     {
-        try { DisconnectAsync().GetAwaiter().GetResult(); } catch { }
+        try { ShutdownAsync().GetAwaiter().GetResult(); } catch { }
     }
 }

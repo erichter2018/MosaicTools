@@ -374,13 +374,30 @@ public class ActionController : IDisposable
             // stays alive through the entire activate → focus → paste sequence.
             if (result.IsFinal && !string.IsNullOrEmpty(result.Transcript) && _sttDirectPasteActive)
             {
+                // [CustomSTT] Check for voice commands/macros on raw transcript BEFORE
+                // spoken punctuation (so "process report" isn't mangled by punctuation rules).
+                var voiceTrigger = CheckVoiceTrigger(result.Transcript);
+
+                // Use the prefix text (everything before the trigger) for normal processing
+                var rawText = voiceTrigger.Kind != VoiceTriggerKind.None
+                    ? voiceTrigger.PrefixText
+                    : result.Transcript;
+
                 // Client-side spoken punctuation → symbols (replaces Deepgram dictation mode
                 // so we can keep "colon" as a word for medical context).
-                var transcript = ApplySpokenPunctuation(result.Transcript).Trim();
+                var transcript = ApplySpokenPunctuation(rawText).Trim();
                 transcript = ApplyRadiologyCleanup(transcript);
                 if (transcript.Length > 0 && !(transcript.Length > 1 && char.IsDigit(transcript[1])))
                     transcript = char.ToLower(transcript[0]) + transcript[1..];
+
+                var hasTextToPaste = transcript.Length > 0;
                 var textToPaste = " " + transcript;
+
+                // Capture trigger info for use on STA thread
+                var triggerKind = voiceTrigger.Kind;
+                var triggerAction = voiceTrigger.ActionName;
+                var triggerMacro = voiceTrigger.Macro;
+
                 var svc = _automationService;
                 var t = new Thread(() =>
                 {
@@ -388,16 +405,29 @@ public class ActionController : IDisposable
                     {
                         NativeWindows.ActivateMosaicForcefully();
                         Thread.Sleep(100);
-                        // FocusTranscriptBox disabled: Mosaic has two text boxes (transcript
-                        // and final report). Skipping explicit focus lets the paste go to
-                        // whichever box the user last clicked, which is the desired behavior.
-                        // Re-enable if we ever need to force transcript-only pasting again.
-                        // svc.FocusTranscriptBox();
-                        // Thread.Sleep(100);
 
-                        InsertTextToFocusedEditor(textToPaste);
-                        Thread.Sleep(50);
-                        Logger.Trace($"CustomSTT: Direct paste ({textToPaste.Length} chars): \"{(textToPaste.Length > 40 ? textToPaste[..40] + "..." : textToPaste)}\"");
+                        // Paste prefix text (if any)
+                        if (hasTextToPaste)
+                        {
+                            InsertTextToFocusedEditor(textToPaste);
+                            Thread.Sleep(50);
+                            Logger.Trace($"CustomSTT: Direct paste ({textToPaste.Length} chars): \"{(textToPaste.Length > 40 ? textToPaste[..40] + "..." : textToPaste)}\"");
+                        }
+
+                        // Execute voice trigger after pasting prefix
+                        if (triggerKind == VoiceTriggerKind.Command)
+                        {
+                            Logger.Trace($"CustomSTT: Voice command detected: \"{triggerAction}\"");
+                            InvokeUI(() => _mainForm.ClearTranscriptionForm());
+                            TriggerAction(triggerAction!, "Voice");
+                            return; // Command takes over — don't restore focus
+                        }
+                        else if (triggerKind == VoiceTriggerKind.Macro && triggerMacro != null)
+                        {
+                            Logger.Trace($"CustomSTT: Voice macro triggered: \"{triggerMacro.Name}\"");
+                            InsertTextToFocusedEditor(PrepareTextForPaste(triggerMacro.Text));
+                            Thread.Sleep(50);
+                        }
 
                         // Clear the indicator immediately after successful paste
                         InvokeUI(() => _mainForm.ClearTranscriptionForm());
@@ -4018,6 +4048,81 @@ public class ActionController : IDisposable
         result = System.Text.RegularExpressions.Regex.Replace(result, @"\s+([.,;!?])", "$1");
 
         return result;
+    }
+
+    // ── Voice command/macro detection ──────────────────────────────────────
+    // Scans raw transcript for voice commands ("process report", "sign report")
+    // and voice macros ("insert/input/macro {name}"). Returns the rightmost match.
+
+    private enum VoiceTriggerKind { None, Command, Macro }
+
+    private readonly record struct VoiceTriggerResult(
+        VoiceTriggerKind Kind,
+        string PrefixText,     // everything before the trigger phrase
+        string? ActionName,    // for Command triggers: the action constant
+        MacroConfig? Macro     // for Macro triggers: the matched macro
+    );
+
+    private VoiceTriggerResult CheckVoiceTrigger(string rawTranscript)
+    {
+        var lower = rawTranscript.ToLowerInvariant();
+
+        // Track the rightmost match
+        int bestIndex = -1;
+        VoiceTriggerKind bestKind = VoiceTriggerKind.None;
+        string? bestAction = null;
+        MacroConfig? bestMacro = null;
+        int bestMatchLen = 0;
+
+        // Check voice commands
+        var commands = new (string phrase, string action)[]
+        {
+            ("process report", Actions.ProcessReport),
+            ("sign report", Actions.SignReport),
+        };
+
+        foreach (var (phrase, action) in commands)
+        {
+            int idx = lower.LastIndexOf(phrase);
+            if (idx >= 0 && idx > bestIndex)
+            {
+                bestIndex = idx;
+                bestKind = VoiceTriggerKind.Command;
+                bestAction = action;
+                bestMacro = null;
+                bestMatchLen = phrase.Length;
+            }
+        }
+
+        // Check voice macros: "insert/input/macro " + exact macro name
+        var triggerWords = new[] { "insert ", "input ", "macro " };
+        foreach (var macro in _config.Macros)
+        {
+            if (!macro.Enabled || !macro.Voice || string.IsNullOrWhiteSpace(macro.Name))
+                continue;
+
+            var macroNameLower = macro.Name.ToLowerInvariant();
+            foreach (var trigger in triggerWords)
+            {
+                var fullPhrase = trigger + macroNameLower;
+                int idx = lower.LastIndexOf(fullPhrase);
+                if (idx >= 0 && idx > bestIndex)
+                {
+                    bestIndex = idx;
+                    bestKind = VoiceTriggerKind.Macro;
+                    bestAction = null;
+                    bestMacro = macro;
+                    bestMatchLen = fullPhrase.Length;
+                }
+            }
+        }
+
+        if (bestKind == VoiceTriggerKind.None)
+            return new VoiceTriggerResult(VoiceTriggerKind.None, rawTranscript, null, null);
+
+        // Everything before the match is prefix; match + everything after is consumed
+        var prefix = rawTranscript[..bestIndex].TrimEnd();
+        return new VoiceTriggerResult(bestKind, prefix, bestAction, bestMacro);
     }
 
     // ── Radiology transcript cleanup ──────────────────────────────────────

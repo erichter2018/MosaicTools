@@ -12,8 +12,14 @@ public record SttWord(string Text, string PunctuatedText, float Confidence, doub
 public record SttResult(string Transcript, SttWord[] Words, float Confidence, bool IsFinal, bool SpeechFinal, double Duration);
 
 /// <summary>
+/// Audio format declared by a provider. SttService uses this to configure WaveIn.
+/// </summary>
+public record SttAudioFormat(int SampleRate = 16000, int BitsPerSample = 16, int Channels = 1, int BufferMs = 100);
+
+/// <summary>
 /// Provider-agnostic interface for streaming speech-to-text.
-/// Implementations: DeepgramProvider (Deepgram Nova-3 Medical via WebSocket).
+/// Each provider owns its full pipeline lifecycle — tail buffer timing,
+/// flush sequencing, and disconnect decisions live in EndSessionAsync.
 /// </summary>
 public interface ISttProvider : IDisposable
 {
@@ -21,12 +27,12 @@ public interface ISttProvider : IDisposable
     bool RequiresApiKey { get; }
     string? SignupUrl { get; }
     bool IsConnected { get; }
+    SttAudioFormat AudioFormat { get; }
 
-    Task<bool> ConnectAsync(CancellationToken ct = default);
+    Task<bool> StartSessionAsync(CancellationToken ct = default);
     void SendAudio(byte[] pcmData, int offset, int count);
-    Task SendKeepAliveAsync();
-    Task FinalizeAsync();
-    Task DisconnectAsync();
+    Task EndSessionAsync();
+    Task ShutdownAsync();
 
     event Action<SttResult>? TranscriptionReceived;
     event Action<string>? ErrorOccurred;

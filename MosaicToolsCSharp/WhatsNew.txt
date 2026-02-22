@@ -1,3 +1,13 @@
+3.8.0
+- Voice commands: say "process report" or "sign report" during dictation to trigger actions
+- Voice macros: say "insert/macro {name}" during dictation to insert macro text
+- Macro editor: new Voice Triggered option (purple indicator) — criteria fields hidden for voice macros
+- STT pipeline refactor: each provider owns its full lifecycle (connect, flush, disconnect)
+- STT: pre-connect after stop — next dictation starts instantly (no reconnection delay)
+- STT: fix race condition when rapid PTT press overlaps background reconnection
+- STT: Speechmatics now waits for server to deliver all finals before stopping
+- STT: AssemblyAI waits for session Begin before sending audio (fixes silent sessions)
+
 3.7.10
 - STT: AssemblyAI medical keyterms boosting (90 radiology terms)
 - STT: Speech tail buffer — last word no longer cut off on quick button release

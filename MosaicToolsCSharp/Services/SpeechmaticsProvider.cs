@@ -19,11 +19,13 @@ public class SpeechmaticsProvider : ISttProvider
     private Task? _receiveTask;
     private volatile bool _connected;
     private int _seqNo; // Audio sequence number for EndOfStream
+    private TaskCompletionSource<bool>? _endOfTranscript; // Signals when server finishes delivering finals
 
     public string Name => "Speechmatics Medical";
     public bool RequiresApiKey => true;
     public string? SignupUrl => "https://portal.speechmatics.com/signup";
     public bool IsConnected => _connected;
+    public SttAudioFormat AudioFormat { get; } = new();
 
     public event Action<SttResult>? TranscriptionReceived;
     public event Action<string>? ErrorOccurred;
@@ -36,7 +38,7 @@ public class SpeechmaticsProvider : ISttProvider
         _autoPunctuate = autoPunctuate;
     }
 
-    public async Task<bool> ConnectAsync(CancellationToken ct = default)
+    public async Task<bool> StartSessionAsync(CancellationToken ct = default)
     {
         try
         {
@@ -80,7 +82,7 @@ public class SpeechmaticsProvider : ISttProvider
                 {
                     type = "raw",
                     encoding = "pcm_s16le",
-                    sample_rate = 16000
+                    sample_rate = AudioFormat.SampleRate
                 },
                 transcription_config = txConfig
             });
@@ -113,7 +115,7 @@ public class SpeechmaticsProvider : ISttProvider
 
     public void SendAudio(byte[] pcmData, int offset, int count)
     {
-        if (_ws?.State != WebSocketState.Open) return;
+        if (!_connected || _ws?.State != WebSocketState.Open) return;
         try
         {
             // Send raw PCM as binary frame (AddAudio)
@@ -127,42 +129,49 @@ public class SpeechmaticsProvider : ISttProvider
         }
     }
 
-    public Task SendKeepAliveAsync()
+    public async Task EndSessionAsync()
     {
-        // Speechmatics keeps session alive for up to 1 hour of idle — no keepalive needed
-        return Task.CompletedTask;
-    }
+        // Tail buffer: audio keeps flowing from SttService while we wait,
+        // capturing the last spoken word that may still be in the mic buffer.
+        await Task.Delay(300);
 
-    public async Task FinalizeAsync()
-    {
-        // Speechmatics has no "flush without closing" like Deepgram's Finalize.
+        // Stop accepting new audio and let any in-flight fire-and-forget send drain.
+        // ClientWebSocket only allows one outstanding SendAsync at a time.
+        _connected = false;
+        await Task.Delay(50);
+
         // EndOfStream flushes all pending audio but terminates the session.
         // After this, the server sends remaining AddTranscript + EndOfTranscript
-        // then closes the WebSocket. SttService.StartRecordingAsync will reconnect
-        // on the next PTT press (IsConnected check triggers ConnectAsync).
+        // then closes the WebSocket.
         if (_ws?.State != WebSocketState.Open) return;
         try
         {
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _endOfTranscript = tcs;
+
             var msg = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
             {
                 message = "EndOfStream",
                 last_seq_no = _seqNo
             }));
             await _ws.SendAsync(new ArraySegment<byte>(msg), WebSocketMessageType.Text, true, CancellationToken.None);
-            // Mark disconnected immediately — session is dead after EndOfStream.
-            // The receive loop will continue draining final transcripts until the
-            // server closes the socket, but we must not send new audio on this session.
-            // Next PTT press will call ConnectAsync which cleans up and reconnects.
-            _connected = false;
-            Logger.Trace("SpeechmaticsProvider: Sent EndOfStream (flush)");
+            Logger.Trace("SpeechmaticsProvider: Sent EndOfStream, waiting for finals...");
+
+            // Wait for the server to deliver all finals (EndOfTranscript).
+            // Speechmatics can take 100ms–2s depending on buffered audio.
+            var completed = await Task.WhenAny(tcs.Task, Task.Delay(2000)) == tcs.Task;
+            _endOfTranscript = null;
+
+            Logger.Trace($"SpeechmaticsProvider: EndOfStream {(completed ? "got EndOfTranscript" : "timed out")}");
         }
         catch (Exception ex)
         {
+            _endOfTranscript = null;
             Logger.Trace($"SpeechmaticsProvider: EndOfStream error: {ex.Message}");
         }
     }
 
-    public async Task DisconnectAsync()
+    public async Task ShutdownAsync()
     {
         _connected = false;
         ConnectionStateChanged?.Invoke(false);
@@ -193,7 +202,7 @@ public class SpeechmaticsProvider : ISttProvider
         ws?.Dispose();
         cts?.Dispose();
 
-        Logger.Trace("SpeechmaticsProvider: Disconnected");
+        Logger.Trace("SpeechmaticsProvider: Shutdown");
     }
 
     private async Task ReceiveLoop(CancellationToken ct)
@@ -257,7 +266,10 @@ public class SpeechmaticsProvider : ISttProvider
                 return;
 
             if (msgType == "EndOfTranscript")
+            {
+                _endOfTranscript?.TrySetResult(true);
                 return;
+            }
 
             if (msgType == "Error")
             {
@@ -339,6 +351,6 @@ public class SpeechmaticsProvider : ISttProvider
 
     public void Dispose()
     {
-        try { DisconnectAsync().GetAwaiter().GetResult(); } catch { }
+        try { ShutdownAsync().GetAwaiter().GetResult(); } catch { }
     }
 }

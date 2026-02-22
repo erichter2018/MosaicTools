@@ -31,6 +31,7 @@ public class CortiProvider : ISttProvider
     public bool RequiresApiKey => true;
     public string? SignupUrl => "https://console.corti.app/signup";
     public bool IsConnected => _connected;
+    public SttAudioFormat AudioFormat { get; } = new();
 
     public event Action<SttResult>? TranscriptionReceived;
     public event Action<string>? ErrorOccurred;
@@ -44,7 +45,7 @@ public class CortiProvider : ISttProvider
         _autoPunctuate = autoPunctuate;
     }
 
-    public async Task<bool> ConnectAsync(CancellationToken ct = default)
+    public async Task<bool> StartSessionAsync(CancellationToken ct = default)
     {
         try
         {
@@ -93,7 +94,7 @@ public class CortiProvider : ISttProvider
 
             // Step 5: Create WebM/Opus muxer — buffer header to send with first audio cluster.
             // Corti docs: "initial audio chunk must be sufficiently large to contain audio headers"
-            _muxer = new WebmOpusMuxer(sampleRate: 16000);
+            _muxer = new WebmOpusMuxer(sampleRate: AudioFormat.SampleRate);
             var headerChunks = _muxer.TakePages();
             if (headerChunks.Length > 0)
             {
@@ -124,7 +125,7 @@ public class CortiProvider : ISttProvider
     public void SendAudio(byte[] pcmData, int offset, int count)
     {
         var ws = _ws;
-        if (ws?.State != WebSocketState.Open || _muxer == null) return;
+        if (!_connected || ws?.State != WebSocketState.Open || _muxer == null) return;
 
         try
         {
@@ -164,10 +165,17 @@ public class CortiProvider : ISttProvider
         }
     }
 
-    public Task SendKeepAliveAsync() => Task.CompletedTask;
-
-    public async Task FinalizeAsync()
+    public async Task EndSessionAsync()
     {
+        // Tail buffer: audio keeps flowing from SttService while we wait,
+        // capturing the last spoken word that may still be in the mic buffer.
+        await Task.Delay(300);
+
+        // Stop accepting new audio and let any in-flight fire-and-forget send drain.
+        // ClientWebSocket only allows one outstanding SendAsync at a time.
+        _connected = false;
+        await Task.Delay(50);
+
         var ws = _ws;
         if (ws?.State != WebSocketState.Open) return;
 
@@ -199,14 +207,15 @@ public class CortiProvider : ISttProvider
             var msg = Encoding.UTF8.GetBytes("{\"type\":\"flush\"}");
             await ws.SendAsync(new ArraySegment<byte>(msg), WebSocketMessageType.Text, true, CancellationToken.None);
             Logger.Trace("CortiProvider: Sent flush");
+            // No disconnect — Corti charges by connection time, keep alive for next PTT press
         }
         catch (Exception ex)
         {
-            Logger.Trace($"CortiProvider: Flush error: {ex.Message}");
+            Logger.Trace($"CortiProvider: EndSession error: {ex.Message}");
         }
     }
 
-    public async Task DisconnectAsync()
+    public async Task ShutdownAsync()
     {
         _connected = false;
         ConnectionStateChanged?.Invoke(false);
@@ -236,7 +245,7 @@ public class CortiProvider : ISttProvider
         ws?.Dispose();
         cts?.Dispose();
 
-        Logger.Trace("CortiProvider: Disconnected");
+        Logger.Trace("CortiProvider: Shutdown");
     }
 
     private async Task<string?> GetAccessTokenAsync(CancellationToken ct)
@@ -411,6 +420,6 @@ public class CortiProvider : ISttProvider
 
     public void Dispose()
     {
-        try { DisconnectAsync().GetAwaiter().GetResult(); } catch { }
+        try { ShutdownAsync().GetAwaiter().GetResult(); } catch { }
     }
 }
