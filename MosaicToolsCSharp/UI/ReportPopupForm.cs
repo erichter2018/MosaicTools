@@ -104,6 +104,7 @@ public class ReportPopupForm : Form
     private CorrelationResult? _correlationResult;
     private CorrelationResult? _previousCorrelation; // Retained to prevent regression on noisy scrapes
     private bool _showingStaleContent; // True when showing cached report while live report is being updated
+    private bool _radAiImpressionActive; // True when RadAI impression was successfully inserted
     private System.Windows.Forms.Timer? _stalePulseTimer;
     private float _stalePulsePhase; // 0..2π for smooth sine wave
     private int? _accessionSeed; // Hash of accession for consistent rainbow colors per study
@@ -426,6 +427,8 @@ public class ReportPopupForm : Form
             _correlationResult = null;
         }
         _formattedText = SanitizeText(FormatReportText(newReportText)).Replace("\r\n", "\n");
+        if (_radAiImpressionActive)
+            _formattedText = _formattedText.Replace("IMPRESSION:", "RadAI IMPRESSION:");
 
         if (_useLayeredWindow)
         {
@@ -462,6 +465,35 @@ public class ReportPopupForm : Form
         }
 
         Logger.Trace($"ReportPopup updated: {newReportText.Length} chars, baseline={_baselineReport?.Length ?? 0} chars, mode={_displayMode}");
+    }
+
+    /// <summary>
+    /// Mark the impression section as RadAI-generated. Changes "IMPRESSION:" header to "RadAI IMPRESSION:".
+    /// </summary>
+    public void SetRadAiImpressionActive(bool active)
+    {
+        if (_radAiImpressionActive == active) return;
+        _radAiImpressionActive = active;
+
+        // Refresh the formatted text to apply/remove the label
+        _formattedText = SanitizeText(FormatReportText(_currentReportText)).Replace("\r\n", "\n");
+        if (_radAiImpressionActive)
+            _formattedText = _formattedText.Replace("IMPRESSION:", "RadAI IMPRESSION:");
+
+        if (_useLayeredWindow)
+        {
+            RenderAndUpdate();
+        }
+        else if (_richTextBox != null)
+        {
+            _richTextBox.Text = _formattedText;
+            _richTextBox.SelectAll();
+            _richTextBox.SelectionFont = _richTextBox.Font;
+            _richTextBox.SelectionColor = Color.Gainsboro;
+            _richTextBox.SelectionBackColor = _richTextBox.BackColor;
+            _richTextBox.Select(0, 0);
+            ApplyCurrentModeFormatting();
+        }
     }
 
     /// <summary>
@@ -579,7 +611,7 @@ public class ReportPopupForm : Form
                 continue;
             }
 
-            bool isHeader = (line == "FINDINGS:" || line == "IMPRESSION:");
+            bool isHeader = (line == "FINDINGS:" || line == "IMPRESSION:" || line == "RadAI IMPRESSION:");
             var font = isHeader ? _headerFont : _normalFont;
 
             var layoutRect = new RectangleF(padding, y, maxWidth, 10000);
@@ -766,7 +798,7 @@ public class ReportPopupForm : Form
                 continue;
             }
 
-            bool isHeader = (line == "FINDINGS:" || line == "IMPRESSION:");
+            bool isHeader = (line == "FINDINGS:" || line == "IMPRESSION:" || line == "RadAI IMPRESSION:");
             var font = isHeader ? _headerFont : _normalFont;
 
             var measured = g.MeasureString(line, font, maxWidth, sf);
@@ -1321,7 +1353,7 @@ public class ReportPopupForm : Form
     {
         if (_richTextBox == null) return;
 
-        FormatKeywords(_richTextBox, new[] { "IMPRESSION:", "FINDINGS:" });
+        FormatKeywords(_richTextBox, new[] { "IMPRESSION:", "RadAI IMPRESSION:", "FINDINGS:" });
 
         if (_displayMode == ReportDisplayMode.Changes)
         {

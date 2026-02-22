@@ -81,6 +81,10 @@ public class ClinicalHistoryForm : Form
     private string? _currentDisplayedText;
     private bool _currentTextWasFixed = false;
 
+    // Patient demographics for auto-add to pasted clinical history
+    private int? _patientAge;
+    private string? _patientGender;
+
     // Gender check - terms that are impossible for the opposite gender
     private static readonly string[] FemaleOnlyTerms = {
         "uterus", "uterine", "ovary", "ovaries", "ovarian",
@@ -633,17 +637,26 @@ public class ClinicalHistoryForm : Form
     /// <summary>
     /// Set clinical history with auto-fix support.
     /// </summary>
-    public void SetClinicalHistoryWithAutoFix(string? preCleaned, string? cleaned, string? accession = null)
+    public void SetClinicalHistoryWithAutoFix(string? preCleaned, string? cleaned, string? accession = null,
+        int? patientAge = null, string? patientGender = null)
     {
         if (InvokeRequired)
         {
-            BeginInvoke(() => SetClinicalHistoryWithAutoFix(preCleaned, cleaned, accession));
+            BeginInvoke(() => SetClinicalHistoryWithAutoFix(preCleaned, cleaned, accession, patientAge, patientGender));
             return;
         }
+
+        _patientAge = patientAge;
+        _patientGender = patientGender;
 
         bool wasFixed = !string.IsNullOrWhiteSpace(preCleaned) &&
                         !string.IsNullOrWhiteSpace(cleaned) &&
                         !string.Equals(preCleaned, cleaned, StringComparison.Ordinal);
+
+        // Demographics needed: settings enabled + data available
+        bool demographicsNeeded = !string.IsNullOrWhiteSpace(cleaned) &&
+            ((_config.AutoAddAgeToClinicalHistory && patientAge.HasValue) ||
+             (_config.AutoAddGenderToClinicalHistory && !string.IsNullOrWhiteSpace(patientGender)));
 
         SetClinicalHistory(cleaned, wasFixed);
 
@@ -663,7 +676,7 @@ public class ClinicalHistoryForm : Form
 
         // Auto-fix check (not logged — fires every scrape cycle)
 
-        if (!wasFixed)
+        if (!wasFixed && !demographicsNeeded)
         {
             _onAutoFixComplete?.Invoke();
             return;
@@ -1180,7 +1193,12 @@ public class ClinicalHistoryForm : Form
         }
 
         var trimmedText = text.TrimEnd(' ', '.');
-        var formatted = $"\nClinical history: {trimmedText}.\n";
+
+        // Build demographics prefix: "65-year-old male. " or just age/gender based on settings
+        var demoPrefix = BuildDemographicsPrefix();
+        var formatted = string.IsNullOrEmpty(demoPrefix)
+            ? $"\nClinical history: {trimmedText}.\n"
+            : $"\nClinical history: {demoPrefix}{trimmedText}.\n";
 
         System.Threading.Tasks.Task.Run(() =>
         {
@@ -1239,6 +1257,28 @@ public class ClinicalHistoryForm : Form
                 }
             }
         });
+    }
+
+    /// <summary>
+    /// Build demographics prefix from patient age/gender based on config settings.
+    /// Returns e.g. "65-year-old male. " or "65-year-old. " or "Male. " or empty string.
+    /// </summary>
+    private string BuildDemographicsPrefix()
+    {
+        var addAge = _config.AutoAddAgeToClinicalHistory && _patientAge.HasValue;
+        var addGender = _config.AutoAddGenderToClinicalHistory && !string.IsNullOrWhiteSpace(_patientGender);
+
+        if (!addAge && !addGender)
+            return "";
+
+        if (addAge && addGender)
+            return $"{_patientAge}-year-old {_patientGender!.ToLowerInvariant()}. ";
+
+        if (addAge)
+            return $"{_patientAge}-year-old. ";
+
+        // addGender only
+        return $"{_patientGender!.Substring(0, 1).ToUpperInvariant()}{_patientGender.Substring(1).ToLowerInvariant()}. ";
     }
 
     #endregion

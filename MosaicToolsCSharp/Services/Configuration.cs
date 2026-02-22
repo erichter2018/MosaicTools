@@ -118,6 +118,12 @@ public class Configuration
     [JsonPropertyName("auto_fix_clinical_history")]
     public bool AutoFixClinicalHistory { get; set; } = false;
 
+    [JsonPropertyName("auto_add_age_to_clinical_history")]
+    public bool AutoAddAgeToClinicalHistory { get; set; } = false;
+
+    [JsonPropertyName("auto_add_gender_to_clinical_history")]
+    public bool AutoAddGenderToClinicalHistory { get; set; } = false;
+
     [JsonPropertyName("show_drafted_indicator")]
     public bool ShowDraftedIndicator { get; set; } = false;
 

@@ -1,3 +1,7 @@
+3.8.1
+- Auto-add patient age and sex to clinical history when auto-pasting corrected text
+- Report popup: "IMPRESSION" header changes to "RadAI IMPRESSION" after successful RadAI insert
+
 3.8.0
 - Voice commands: say "process report" or "sign report" during dictation to trigger actions
 - Voice macros: say "insert/macro {name}" during dictation to insert macro text

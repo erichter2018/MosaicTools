@@ -2784,6 +2784,8 @@ public class ActionController : IDisposable
                         try { _currentRadAiOverlay.Close(); } catch { }
                         _currentRadAiOverlay = null;
                     }
+                    if (_currentReportPopup is { IsDisposed: false })
+                        _currentReportPopup.SetRadAiImpressionActive(true);
                     _mainForm.ShowStatusToast("RadAI impression inserted", 3000);
                 });
             }
@@ -2797,7 +2799,12 @@ public class ActionController : IDisposable
         {
             // Classic popup mode: no verification, just toast
             Logger.Trace("RadAI Insert: Impression replaced in report");
-            InvokeUI(() => _mainForm.ShowStatusToast("RadAI impression inserted", 3000));
+            InvokeUI(() =>
+            {
+                if (_currentReportPopup is { IsDisposed: false })
+                    _currentReportPopup.SetRadAiImpressionActive(true);
+                _mainForm.ShowStatusToast("RadAI impression inserted", 3000);
+            });
         }
     }
 
@@ -3668,7 +3675,8 @@ public class ActionController : IDisposable
         bool newGenderMismatch = false;
         string? templateDescription = null;
         string? templateName = null;
-        string? patientGender = null;
+        string? patientGender = _mosaicReader.LastPatientGender;
+        int? patientAge = _mosaicReader.LastPatientAge;
         List<string>? genderMismatches = null;
 
         // Check template matching (red border when mismatch) if enabled
@@ -3683,7 +3691,6 @@ public class ActionController : IDisposable
         // Check for gender mismatch
         if (_config.GenderCheckEnabled && !string.IsNullOrWhiteSpace(reportText))
         {
-            patientGender = _mosaicReader.LastPatientGender;
             genderMismatches = ClinicalHistoryForm.CheckGenderMismatch(reportText, patientGender);
             newGenderMismatch = genderMismatches.Count > 0;
         }
@@ -3784,7 +3791,7 @@ public class ActionController : IDisposable
             // Only update if we have content - don't clear during brief processing gaps
             if (!string.IsNullOrWhiteSpace(reportText))
             {
-                BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
+                BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession, patientAge, patientGender));
                 BatchUI(() => _mainForm.UpdateClinicalHistoryTextColor(reportText));
             }
 
@@ -3828,7 +3835,7 @@ public class ActionController : IDisposable
             // (needed for auto-fix recheck to detect Mosaic self-corrections)
             if (!string.IsNullOrWhiteSpace(reportText))
             {
-                BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession));
+                BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession, patientAge, patientGender));
             }
 
             // Determine highest priority alert to show

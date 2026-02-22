@@ -20,6 +20,8 @@ public class AlertsSection : SettingsSection
     private readonly CheckBox _alwaysShowClinicalHistoryCheck;
     private readonly CheckBox _hideClinicalHistoryWhenNoStudyCheck;
     private readonly CheckBox _autoFixClinicalHistoryCheck;
+    private readonly CheckBox _autoAddAgeCheck;
+    private readonly CheckBox _autoAddGenderCheck;
     private readonly CheckBox _showDraftedIndicatorCheck;
     private readonly CheckBox _showTemplateMismatchCheck;
     private readonly CheckBox _genderCheckEnabledCheck;
@@ -74,6 +76,14 @@ public class AlertsSection : SettingsSection
 
         _autoFixClinicalHistoryCheck = AddCheckBox("Auto-paste corrected history", LeftMargin + 50, _nextY,
             "Automatically paste corrected clinical history to Mosaic\nwhen malformed text is detected.", true);
+        _nextY += SubRowHeight;
+
+        _autoAddAgeCheck = AddCheckBox("Add patient age", LeftMargin + 50, _nextY,
+            "Prepend patient age (e.g. \"65-year-old\") to clinical history\nwhen auto-pasting corrected text.", true);
+        _nextY += SubRowHeight;
+
+        _autoAddGenderCheck = AddCheckBox("Add patient sex", LeftMargin + 50, _nextY,
+            "Prepend patient sex (e.g. \"male\" or \"female\") to clinical history\nwhen auto-pasting corrected text.", true);
         _nextY += SubRowHeight;
 
         _showDraftedIndicatorCheck = AddCheckBox("Show Drafted indicator", LeftMargin + 50, _nextY,
@@ -165,6 +175,8 @@ public class AlertsSection : SettingsSection
         _alwaysShowClinicalHistoryCheck.Enabled = enabled;
         _hideClinicalHistoryWhenNoStudyCheck.Enabled = enabled && _alwaysShowClinicalHistoryCheck.Checked;
         _autoFixClinicalHistoryCheck.Enabled = enabled;
+        _autoAddAgeCheck.Enabled = enabled;
+        _autoAddGenderCheck.Enabled = enabled;
         _showDraftedIndicatorCheck.Enabled = enabled;
 
         var subColor = enabled ? Color.FromArgb(180, 180, 180) : Color.FromArgb(100, 100, 100);
@@ -172,6 +184,8 @@ public class AlertsSection : SettingsSection
         _hideClinicalHistoryWhenNoStudyCheck.ForeColor = enabled && _alwaysShowClinicalHistoryCheck.Checked
             ? Color.FromArgb(180, 180, 180) : Color.FromArgb(100, 100, 100);
         _autoFixClinicalHistoryCheck.ForeColor = subColor;
+        _autoAddAgeCheck.ForeColor = subColor;
+        _autoAddGenderCheck.ForeColor = subColor;
         _showDraftedIndicatorCheck.ForeColor = subColor;
     }
 
@@ -221,6 +235,8 @@ public class AlertsSection : SettingsSection
         _alwaysShowClinicalHistoryCheck.Checked = config.AlwaysShowClinicalHistory;
         _hideClinicalHistoryWhenNoStudyCheck.Checked = config.HideClinicalHistoryWhenNoStudy;
         _autoFixClinicalHistoryCheck.Checked = config.AutoFixClinicalHistory;
+        _autoAddAgeCheck.Checked = config.AutoAddAgeToClinicalHistory;
+        _autoAddGenderCheck.Checked = config.AutoAddGenderToClinicalHistory;
         _showDraftedIndicatorCheck.Checked = config.ShowDraftedIndicator;
         _showTemplateMismatchCheck.Checked = config.ShowTemplateMismatch;
         _genderCheckEnabledCheck.Checked = config.GenderCheckEnabled;
@@ -245,6 +261,8 @@ public class AlertsSection : SettingsSection
         config.AlwaysShowClinicalHistory = _alwaysShowClinicalHistoryCheck.Checked;
         config.HideClinicalHistoryWhenNoStudy = _hideClinicalHistoryWhenNoStudyCheck.Checked;
         config.AutoFixClinicalHistory = _autoFixClinicalHistoryCheck.Checked;
+        config.AutoAddAgeToClinicalHistory = _autoAddAgeCheck.Checked;
+        config.AutoAddGenderToClinicalHistory = _autoAddGenderCheck.Checked;
         config.ShowDraftedIndicator = _showDraftedIndicatorCheck.Checked;
         config.ShowTemplateMismatch = _showTemplateMismatchCheck.Checked;
         config.GenderCheckEnabled = _genderCheckEnabledCheck.Checked;
