@@ -1495,9 +1495,9 @@ public class ActionController : IDisposable
             return;
         }
 
-        // Find all matching enabled macros
+        // Find all matching enabled macros (exclude voice-only macros — they trigger via speech, not study match)
         var matchingMacros = _config.Macros
-            .Where(m => m.Enabled && m.MatchesStudy(studyDescription))
+            .Where(m => m.Enabled && !m.Voice && m.MatchesStudy(studyDescription))
             .ToList();
 
         if (matchingMacros.Count == 0)
