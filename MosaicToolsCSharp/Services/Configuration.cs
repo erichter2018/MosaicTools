@@ -344,6 +344,9 @@ public class Configuration
     [JsonPropertyName("custom_stt_enabled")]
     public bool CustomSttEnabled { get; set; } = false;
 
+    [JsonPropertyName("stt_auto_start_on_case")]
+    public bool SttAutoStartOnCase { get; set; } = false;
+
     [JsonPropertyName("stt_api_key")]
     public string SttApiKey { get; set; } = ""; // Deepgram API key (kept for backward compat)
 

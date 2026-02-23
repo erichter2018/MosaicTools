@@ -1,3 +1,7 @@
+3.8.3
+- STT: Auto-start recording on case open (new setting in STT > Display)
+- STT: Auto-restart after Process Report, full stop on Sign Report
+
 3.8.2
 - Fix voice-activated macros being auto-inserted into transcript when a report is opened
 

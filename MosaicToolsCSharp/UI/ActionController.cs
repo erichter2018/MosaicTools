@@ -1044,6 +1044,13 @@ public class ActionController : IDisposable
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(100);
             NativeWindows.SendAltKey('P');
+
+            // Auto-restart STT after process report
+            if (_config.SttAutoStartOnCase)
+            {
+                Thread.Sleep(300);
+                PerformToggleRecordStt(true);
+            }
         }
         else
         {
@@ -1303,6 +1310,13 @@ public class ActionController : IDisposable
         // This flag will be used when accession changes to send the appropriate notification
         _currentAccessionSigned = true;
         Logger.Trace($"RVUCounter: Marked accession '{_lastNonEmptyAccession}' as signed");
+
+        // Auto-stop custom STT on sign (full stop, no restart)
+        if (_config.SttAutoStartOnCase && _config.CustomSttEnabled
+            && _sttService != null && _sttService.IsRecording)
+        {
+            PerformToggleRecordStt(false);
+        }
 
         // [CustomSTT] When Custom STT is enabled, always send Alt+F (Mosaic doesn't have the PowerMic)
         if (_config.CustomSttEnabled)
@@ -3393,6 +3407,13 @@ public class ActionController : IDisposable
             else
             {
                 InvokeUI(() => _mainForm.SetStrokeState(false));
+            }
+
+            // Auto-start custom STT on new case
+            if (_config.SttAutoStartOnCase && _config.CustomSttEnabled
+                && _sttService != null && !_sttService.IsRecording)
+            {
+                PerformToggleRecordStt(true);
             }
         }
         else

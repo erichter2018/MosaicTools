@@ -36,6 +36,7 @@ public class SttSection : SettingsSection
     private readonly Label _startBeepVolLabel;
     private readonly Label _stopBeepVolLabel;
     private readonly CheckBox _showIndicatorCheck;
+    private readonly CheckBox _autoStartCheck;
 
     // Provider dropdown indices
     private const int ProviderDeepgramMedical = 0;
@@ -150,6 +151,10 @@ public class SttSection : SettingsSection
 
         _showIndicatorCheck = AddCheckBox("Show dictation indicator", LeftMargin + 25, _nextY,
             "Show a floating indicator with live transcription text while dictating.");
+        _nextY += RowHeight;
+
+        _autoStartCheck = AddCheckBox("Auto-start on case open", LeftMargin + 25, _nextY,
+            "Automatically start recording when a new study opens. Restarts after Process Report, stops on Sign Report.");
         _nextY += RowHeight;
 
         UpdateHeight();
@@ -362,6 +367,7 @@ public class SttSection : SettingsSection
         _startBeepVolume.Value = Math.Clamp((int)(config.SttStartBeepVolume * 100), 0, 100);
         _stopBeepVolume.Value = Math.Clamp((int)(config.SttStopBeepVolume * 100), 0, 100);
         _showIndicatorCheck.Checked = config.SttShowIndicator;
+        _autoStartCheck.Checked = config.SttAutoStartOnCase;
 
         UpdateControlStates();
     }
@@ -404,5 +410,6 @@ public class SttSection : SettingsSection
         config.SttStartBeepVolume = _startBeepVolume.Value / 100.0;
         config.SttStopBeepVolume = _stopBeepVolume.Value / 100.0;
         config.SttShowIndicator = _showIndicatorCheck.Checked;
+        config.SttAutoStartOnCase = _autoStartCheck.Checked;
     }
 }
