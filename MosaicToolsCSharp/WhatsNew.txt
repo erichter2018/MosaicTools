@@ -1,3 +1,14 @@
+3.8.5
+- Fix: COM wrapper memory leak in Clario recursive traversal (leaked 100K+ COM objects over a shift)
+- Fix: COM wrapper leak in Aidoc widget scraping
+- Fix: Set UIA transaction/connection timeouts (5s/10s) to prevent unbounded blocking
+- Performance: Dedicated low-priority scrape thread replaces ThreadPool timer (prevents pool saturation)
+- Performance: Timeout wrapper on heaviest UIA calls (patient info, Clario priority, fallback doc search)
+- Performance: Throttle discard dialog check to 10s window after Process/Sign Report
+- Performance: Clario priority retry capped at 5 with exponential backoff (3s→48s)
+- Performance: Aidoc scrape throttled to 5s minimum interval
+- Performance: Metadata sweep interval increased from 2s to 5s
+
 3.8.4
 - Performance: Cache report document and ProseMirror editor between scrapes (avoid expensive tree search every tick)
 - Performance: Throttle metadata sweep (DRAFTED/Description) to every 2s instead of every scrape

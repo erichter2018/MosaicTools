@@ -89,7 +89,6 @@ public class ActionController : IDisposable
     // State
     private volatile bool _dictationActive = false;
     private volatile bool _isUserActive = false;
-    private int _scrapeRunning = 0; // Reentrancy guard for scrape timer
     private long _scrapeStartedTicks; // Watchdog: when current scrape started (Interlocked)
     private volatile bool _stopThread = false;
 
@@ -121,7 +120,11 @@ public class ActionController : IDisposable
     private int _pttBusy = 0;
     private DateTime _lastSyncTime = DateTime.Now;
     private readonly System.Threading.Timer? _syncTimer;
-    private System.Threading.Timer? _scrapeTimer;
+    // Dedicated scrape thread (replaces System.Threading.Timer to avoid ThreadPool saturation)
+    private Thread? _scrapeThread;
+    private CancellationTokenSource? _scrapeStopCts;
+    private readonly ManualResetEventSlim _scrapeWakeEvent = new(false);
+    private volatile int _scrapeIntervalMs;
     private DateTime _lastManualToggleTime = DateTime.MinValue;
     private int _consecutiveInactiveCount = 0; // For indicator debounce
 
@@ -156,6 +159,8 @@ public class ActionController : IDisposable
     // RVUCounter integration - track if discard dialog was shown for current accession
     // If dialog was shown while on accession X, and then X changes, X was discarded
     private bool _discardDialogShownForCurrentAccession = false;
+    // Discard dialog check throttle — only check during a 10s window after Process/Sign Report
+    private long _discardDialogCheckUntilTick64;
 
     // Pending macro insertion - wait for clinical history to be visible before inserting
     private string? _pendingMacroAccession;
@@ -166,12 +171,15 @@ public class ActionController : IDisposable
     private bool _genderMismatchActive = false;
     private bool _strokeDetectedActive = false;
     private bool _pendingClarioPriorityRetry = false;
+    private int _clarioPriorityRetryCount = 0;
+    private long _nextClarioPriorityRetryTick64 = 0;
     private bool _clinicalHistoryVisible = false;
 
     // Aidoc state tracking
     private string? _lastAidocFindings; // comma-joined relevant finding types
     private bool _lastAidocRelevant = false;
     private readonly HashSet<string> _aidocConfirmedNegative = new(StringComparer.OrdinalIgnoreCase); // "once negative, stay negative" per study
+    private long _lastAidocScrapeTick64; // Throttle: minimum 5s between Aidoc scrapes
 
     // RecoMD state tracking — continuous send on every scrape tick
     private string? _recoMdOpenedForAccession; // accession currently opened in RecoMD
@@ -1039,6 +1047,7 @@ public class ActionController : IDisposable
     {
         Logger.Trace($"Process Report (Source: {source})");
         RequestReportScrapeBurst(ProcessReportBurstMs, "Process Report");
+        _discardDialogCheckUntilTick64 = Environment.TickCount64 + 10_000;
 
         // Mark that Process Report was pressed for this accession (for diff highlighting)
         _processReportPressedForCurrentAccession = true;
@@ -1292,9 +1301,8 @@ public class ActionController : IDisposable
 
     private void RestartScrapeTimer(int intervalMs)
     {
-        var timer = _scrapeTimer;
-        try { timer?.Change(intervalMs, intervalMs); }
-        catch (ObjectDisposedException) { return; }
+        _scrapeIntervalMs = intervalMs;
+        _scrapeWakeEvent.Set(); // Wake the thread so it picks up the new interval immediately
         Logger.Trace($"Scrape timer interval changed to {intervalMs}ms");
     }
 
@@ -1311,7 +1319,7 @@ public class ActionController : IDisposable
             if (Interlocked.CompareExchange(ref _reportBurstUntilTick64, requestedUntil, current) == current)
             {
                 Logger.Trace($"Report scrape burst requested: {reason} ({durationMs}ms)");
-                if (!_searchingForImpression && _scrapeTimer != null)
+                if (!_searchingForImpression && _scrapeThread != null)
                     RestartScrapeTimer(_fastScrapeIntervalMs);
                 return;
             }
@@ -1363,6 +1371,7 @@ public class ActionController : IDisposable
     private void PerformSignReport(string source = "Manual")
     {
         Logger.Trace($"Sign Report (Source: {source})");
+        _discardDialogCheckUntilTick64 = Environment.TickCount64 + 10_000;
 
         // Close report popup if open
         if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
@@ -3028,76 +3037,46 @@ public class ActionController : IDisposable
     
     #region Mosaic Scrape Timer
 
-    private static bool TryEnterScrapeBackgroundMode(out ThreadPriority previousPriority, out bool usedManagedFallback)
-    {
-        previousPriority = Thread.CurrentThread.Priority;
-        usedManagedFallback = false;
-
-        try
-        {
-            if (SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN))
-                return true;
-        }
-        catch { }
-
-        // Fallback when background mode is unavailable/fails on the current thread.
-        try
-        {
-            Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
-            usedManagedFallback = true;
-        }
-        catch { }
-        return false;
-    }
-
-    private static void ExitScrapeBackgroundMode(bool backgroundModeActive, ThreadPriority previousPriority, bool usedManagedFallback)
-    {
-        if (backgroundModeActive)
-        {
-            try { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END); } catch { }
-            return;
-        }
-
-        if (usedManagedFallback)
-        {
-            try { Thread.CurrentThread.Priority = previousPriority; } catch { }
-        }
-    }
-    
     private void StartMosaicScrapeTimer()
     {
-        if (_scrapeTimer != null) return; // Already running
+        if (_scrapeThread != null) return; // Already running
 
-        Logger.Trace($"Starting Mosaic scrape timer ({_config.ScrapeIntervalSeconds}s interval)...");
-        _scrapeTimer = new System.Threading.Timer(_ =>
+        _scrapeIntervalMs = NormalScrapeIntervalMs;
+        _scrapeStopCts = new CancellationTokenSource();
+        var cts = _scrapeStopCts;
+
+        Logger.Trace($"Starting Mosaic scrape thread ({_config.ScrapeIntervalSeconds}s interval)...");
+        _scrapeThread = new Thread(() => ScrapeThreadLoop(cts.Token))
         {
-            if (_isUserActive) return; // Don't scrape during user actions
-            if (Interlocked.CompareExchange(ref _scrapeRunning, 1, 0) != 0)
-            {
-                // Watchdog: if a scrape has been running for >30s, it's probably hung in a COM call.
-                // Force-release the guard so future scrapes aren't permanently blocked.
-                var startTicks = Interlocked.Read(ref _scrapeStartedTicks);
-                if (startTicks > 0)
-                {
-                    var elapsed = (DateTime.UtcNow.Ticks - startTicks) / (double)TimeSpan.TicksPerSecond;
-                    if (elapsed > 30)
-                    {
-                        Logger.Trace($"Scrape watchdog: force-releasing hung scrape after {elapsed:F0}s");
-                        Interlocked.Exchange(ref _scrapeRunning, 0);
-                        Interlocked.Exchange(ref _scrapeStartedTicks, 0);
-                        // Don't proceed on this tick — let the next timer fire start fresh
-                    }
-                }
-                return;
-            }
+            Name = "MosaicScrape",
+            IsBackground = true,
+            Priority = ThreadPriority.Lowest
+        };
+        // Set Win32 THREAD_MODE_BACKGROUND_BEGIN permanently on this thread
+        _scrapeThread.Start();
+    }
+
+    private void ScrapeThreadLoop(CancellationToken ct)
+    {
+        // Enter permanent background mode on this thread
+        try { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN); } catch { }
+
+        while (!ct.IsCancellationRequested)
+        {
+            // Sleep for the configured interval, wake early on interval change or stop
+            _scrapeWakeEvent.Reset();
+            _scrapeWakeEvent.Wait(_scrapeIntervalMs, ct);
+            if (ct.IsCancellationRequested) break;
+
+            if (_isUserActive) continue; // Don't scrape during user actions
+
             Interlocked.Exchange(ref _scrapeStartedTicks, DateTime.UtcNow.Ticks);
-            bool scrapeInBackgroundMode = TryEnterScrapeBackgroundMode(out var previousThreadPriority, out var usedManagedPriorityFallback);
 
             try
             {
                 long nowTick64 = Environment.TickCount64;
                 if (ShouldThrottleFullReportScrape(nowTick64))
-                    return;
+                    continue;
                 Interlocked.Exchange(ref _lastFullReportScrapeTick64, nowTick64);
 
                 // Only check drafted status if we need it for features
@@ -3110,7 +3089,7 @@ public class ActionController : IDisposable
                 var reportText = _mosaicReader.GetFinalReportFast(needDraftedCheck);
 
                 // Bail out if user action started during the scrape
-                if (_isUserActive) return;
+                if (_isUserActive) continue;
 
                 // Idle backoff: slow down scraping when no report content is found
                 // (either no study open, or study visible but ProseMirror not accessible)
@@ -3219,8 +3198,10 @@ public class ActionController : IDisposable
 
                 // Check for discard dialog (RVUCounter integration)
                 // Must check BEFORE accession change detection - dialog disappears when user clicks YES
-                // Only check when a study is open (avoids unnecessary FlaUI tree search)
-                if (!string.IsNullOrEmpty(currentAccession) && _mosaicReader.IsDiscardDialogVisible())
+                // Only check during a brief window after Process/Sign Report to avoid unnecessary FlaUI tree search every tick
+                if (!string.IsNullOrEmpty(currentAccession)
+                    && nowTick64 < _discardDialogCheckUntilTick64
+                    && _mosaicReader.IsDiscardDialogVisible())
                 {
                     _discardDialogShownForCurrentAccession = true;
                     Logger.Trace("RVUCounter: Discard dialog detected for current accession");
@@ -3260,21 +3241,23 @@ public class ActionController : IDisposable
                 // Flush all batched UI updates in a single BeginInvoke call.
                 // This reduces WM_USER message spam that can cause Windows to
                 // silently remove the low-level keyboard hook.
-                ExitScrapeBackgroundMode(scrapeInBackgroundMode, previousThreadPriority, usedManagedPriorityFallback);
                 FlushUI();
                 Interlocked.Exchange(ref _scrapeStartedTicks, 0);
-                Interlocked.Exchange(ref _scrapeRunning, 0);
             }
-        }, null, 0, NormalScrapeIntervalMs);
+        }
     }
-    
+
     private void StopMosaicScrapeTimer()
     {
-        if (_scrapeTimer != null)
+        if (_scrapeThread != null)
         {
-            Logger.Trace("Stopping Mosaic scrape timer...");
-            _scrapeTimer.Dispose();
-            _scrapeTimer = null;
+            Logger.Trace("Stopping Mosaic scrape thread...");
+            _scrapeStopCts?.Cancel();
+            _scrapeWakeEvent.Set(); // Wake thread so it sees cancellation
+            _scrapeThread.Join(5000);
+            _scrapeStopCts?.Dispose();
+            _scrapeStopCts = null;
+            _scrapeThread = null;
         }
     }
     
@@ -3533,6 +3516,8 @@ public class ActionController : IDisposable
             // If Clario hasn't caught up yet (accession mismatch / null priority),
             // flag for retry on subsequent scrape ticks
             _pendingClarioPriorityRetry = string.IsNullOrEmpty(_automationService.LastClarioPriority);
+            _clarioPriorityRetryCount = 0;
+            _nextClarioPriorityRetryTick64 = 0;
 
             if (_config.StrokeDetectionEnabled)
             {
@@ -3852,17 +3837,28 @@ public class ActionController : IDisposable
 
         // Retry Clario priority extraction if it failed on accession change
         // (Clario may not have updated to the new study yet)
-        if (_pendingClarioPriorityRetry && !string.IsNullOrEmpty(currentAccession))
+        // Capped at 5 retries with exponential backoff (3s, 6s, 12s, 24s, 48s) to prevent
+        // the recursive depth-25 Clario traversal from running every tick indefinitely.
+        long clarioNow = Environment.TickCount64;
+        if (_pendingClarioPriorityRetry && !string.IsNullOrEmpty(currentAccession)
+            && _clarioPriorityRetryCount < 5 && clarioNow >= _nextClarioPriorityRetryTick64)
         {
+            _clarioPriorityRetryCount++;
+            _nextClarioPriorityRetryTick64 = clarioNow + (3000L << (_clarioPriorityRetryCount - 1)); // 3s, 6s, 12s, 24s, 48s
             ExtractClarioPriorityAndClass(currentAccession);
             if (!string.IsNullOrEmpty(_automationService.LastClarioPriority))
             {
                 _pendingClarioPriorityRetry = false;
-                Logger.Trace($"Clario priority retry succeeded: '{_automationService.LastClarioPriority}'");
+                Logger.Trace($"Clario priority retry #{_clarioPriorityRetryCount} succeeded: '{_automationService.LastClarioPriority}'");
                 if (_config.StrokeDetectionEnabled)
                 {
                     PerformStrokeDetection(currentAccession, reportText);
                 }
+            }
+            else if (_clarioPriorityRetryCount >= 5)
+            {
+                _pendingClarioPriorityRetry = false;
+                Logger.Trace("Clario priority retry exhausted (5 attempts), giving up");
             }
         }
 
@@ -3871,8 +3867,11 @@ public class ActionController : IDisposable
         string? aidocFindingText = null;
         List<string>? relevantFindings = null;
         bool prevAidocRelevant = _lastAidocRelevant;
-        if (_config.AidocScrapeEnabled && !string.IsNullOrEmpty(currentAccession))
+        long aidocNow = Environment.TickCount64;
+        if (_config.AidocScrapeEnabled && !string.IsNullOrEmpty(currentAccession)
+            && (aidocNow - _lastAidocScrapeTick64) >= 5000)
         {
+            _lastAidocScrapeTick64 = aidocNow;
             try
             {
                 var aidocResult = _aidocService.ScrapeShortcutWidget();
@@ -4864,7 +4863,8 @@ public class ActionController : IDisposable
         _actionThread.Join(500);
         _syncTimer?.Dispose();
         _dictationSyncTimer?.Dispose();
-        _scrapeTimer?.Dispose();
+        StopMosaicScrapeTimer();
+        _scrapeWakeEvent.Dispose();
         _hidService?.Dispose();
         _keyboardService?.Dispose();
         _automationService.Dispose();

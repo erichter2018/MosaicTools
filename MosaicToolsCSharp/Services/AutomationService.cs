@@ -1,4 +1,5 @@
 using System.Threading;
+using System.Threading.Tasks;
 using System.Text.RegularExpressions;
 using System.Runtime.InteropServices;
 using FlaUI.Core;
@@ -31,7 +32,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     private volatile AutomationElement? _cachedReportEditor;
     private long _lastMetadataSweepTick64;
     private int _cachedEditorHitCount;
-    private const int MetadataSweepMinIntervalMs = 2000;
+    private const int MetadataSweepMinIntervalMs = 5000;
     private const int SlowScrapeLogThresholdMs = 250;
     
     // Last scraped final report (public for external access)
@@ -101,6 +102,8 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     public AutomationService()
     {
         _automation = new UIA3Automation();
+        _automation.TransactionTimeout = TimeSpan.FromSeconds(5);
+        _automation.ConnectionTimeout = TimeSpan.FromSeconds(10);
     }
     
     #region Clario Methods
@@ -376,6 +379,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     {
         if (depth > maxDepth) return;
 
+        AutomationElement[]? children = null;
         try
         {
             string automationId = element.Properties.AutomationId.ValueOrDefault ?? "";
@@ -402,12 +406,17 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             }
 
             // Recurse into children
-            foreach (var child in element.FindAllChildren())
+            children = element.FindAllChildren();
+            foreach (var child in children)
             {
                 CollectClarioElements(child, depth + 1, maxDepth, elements);
             }
         }
         catch { /* Element may become stale */ }
+        finally
+        {
+            ReleaseElements(children);
+        }
     }
 
     /// <summary>
@@ -518,7 +527,10 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         {
             try
             {
-                var elements = GetClarioElementsRecursive(chromeWindow, maxDepth);
+                var depth = maxDepth;
+                var win = chromeWindow;
+                var elements = RunWithTimeout(() => GetClarioElementsRecursive(win, depth), 3000, $"ClarioPriority-depth{depth}");
+                if (elements == null) continue;
                 var extracted = ExtractPriorityDataFromElements(elements);
 
                 // Merge newly found values
@@ -1755,7 +1767,9 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             if (needsPatientInfoExtraction)
             try
             {
-                allInfoElements = _cachedSlimHubWindow.FindAllDescendants();
+                var win = _cachedSlimHubWindow;
+                allInfoElements = RunWithTimeout(() => win.FindAllDescendants(), 3000, "PatientInfo");
+                if (allInfoElements == null) throw new TimeoutException("PatientInfo FindAllDescendants timed out");
                 string? pendingInfoField = null; // Tracks label→button pairs for 2.0.3
 
                 foreach (var el in allInfoElements)
@@ -2037,8 +2051,11 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             {
                 try
                 {
-                    var documents = _cachedSlimHubWindow.FindAllDescendants(cf =>
-                        cf.ByControlType(FlaUI.Core.Definitions.ControlType.Document));
+                    var win = _cachedSlimHubWindow;
+                    var documents = RunWithTimeout(
+                        () => win.FindAllDescendants(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Document)),
+                        2000, "FallbackDocSearch");
+                    if (documents == null) throw new TimeoutException("FallbackDocSearch timed out");
 
                     foreach (var doc in documents)
                     {
@@ -2983,15 +3000,20 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             }
 
             // Recurse into children
+            AutomationElement[]? children = null;
             try
             {
-                var children = element.FindAllChildren();
+                children = element.FindAllChildren();
                 foreach (var child in children)
                 {
                     DumpElementRecursive(child, sb, method, depth + 1, maxDepth, ref count);
                 }
             }
             catch { }
+            finally
+            {
+                ReleaseElements(children);
+            }
         }
         catch { }
     }
@@ -3001,6 +3023,22 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         if (string.IsNullOrEmpty(value)) return "";
         if (value.Length <= maxLength) return value;
         return value.Substring(0, maxLength) + "...";
+    }
+
+    #endregion
+
+    #region UIA Timeout Wrapper
+
+    /// <summary>
+    /// Run a FlaUI/UIA operation with a timeout. Returns null if the operation exceeds the timeout.
+    /// Prevents single hung COM calls from blocking the scrape thread indefinitely.
+    /// </summary>
+    private T? RunWithTimeout<T>(Func<T> op, int timeoutMs, string name) where T : class
+    {
+        var task = Task.Run(op);
+        if (task.Wait(timeoutMs)) return task.Result;
+        Logger.Trace($"UIA timeout ({name}): abandoned after {timeoutMs}ms");
+        return null;
     }
 
     #endregion

@@ -110,22 +110,23 @@ public class AidocService
     /// </summary>
     public AidocResult? ScrapeShortcutWidget()
     {
+        AutomationElement? widget = null, renderHost = null, group = null;
         try
         {
             var desktop = _automation.GetDesktop();
             var cf = _automation.ConditionFactory;
 
-            var widget = desktop.FindFirstChild(
+            widget = desktop.FindFirstChild(
                 cf.ByName("aidoc-shortcut").And(cf.ByClassName("Chrome_WidgetWin_1")));
 
             if (widget == null)
                 return null;
 
-            var renderHost = widget.FindFirstChild(cf.ByClassName("Chrome_RenderWidgetHostHWND"));
+            renderHost = widget.FindFirstChild(cf.ByClassName("Chrome_RenderWidgetHostHWND"));
             if (renderHost == null)
                 return null;
 
-            var group = renderHost.FindFirstChild(cf.ByControlType(FlaUI.Core.Definitions.ControlType.Group));
+            group = renderHost.FindFirstChild(cf.ByControlType(FlaUI.Core.Definitions.ControlType.Group));
             if (group == null)
                 return null;
 
@@ -216,6 +217,12 @@ public class AidocService
         {
             Logger.Trace($"Aidoc scrape error: {ex.Message}");
             return null;
+        }
+        finally
+        {
+            AutomationService.ReleaseElement(group);
+            AutomationService.ReleaseElement(renderHost);
+            AutomationService.ReleaseElement(widget);
         }
     }
 
