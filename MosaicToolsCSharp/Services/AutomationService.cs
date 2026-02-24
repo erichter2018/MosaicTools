@@ -26,6 +26,13 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     // Cached report document name (detected once, reused for fast lookups)
     // e.g., "RADPAIR" on Mosaic 2.0.3+, or contains "Report" on older versions
     private volatile string? _cachedReportDocName;
+    // Cached report document/editor for cheap repeated report reads between metadata sweeps.
+    private volatile AutomationElement? _cachedReportDocument;
+    private volatile AutomationElement? _cachedReportEditor;
+    private long _lastMetadataSweepTick64;
+    private int _cachedEditorHitCount;
+    private const int MetadataSweepMinIntervalMs = 2000;
+    private const int SlowScrapeLogThresholdMs = 250;
     
     // Last scraped final report (public for external access)
     public string? LastFinalReport { get; private set; }
@@ -34,7 +41,13 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     /// Note: _lastPatientInfoAccession is NOT cleared here — patient info re-extraction
     /// is already triggered when the accession changes (different from previous), and clearing
     /// it here caused expensive FindAllDescendants to run redundantly on every study change.
-    public void ClearLastReport() { LastFinalReport = null; }
+    public void ClearLastReport()
+    {
+        LastFinalReport = null;
+        LastTemplateName = null;
+        InvalidateReportDocumentCache();
+        _lastMetadataSweepTick64 = 0;
+    }
 
     // Addendum detection: set during scraping when any ProseMirror candidate starts with "Addendum"
     public bool IsAddendumDetected { get; private set; }
@@ -1391,6 +1404,180 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
         return null;
     }
+
+    private void InvalidateReportEditorCache()
+    {
+        var editor = _cachedReportEditor;
+        _cachedReportEditor = null;
+        ReleaseElement(editor);
+    }
+
+    private void InvalidateReportDocumentCache()
+    {
+        InvalidateReportEditorCache();
+        var doc = _cachedReportDocument;
+        _cachedReportDocument = null;
+        ReleaseElement(doc);
+    }
+
+    private void InvalidateMosaicWindowCache()
+    {
+        InvalidateReportDocumentCache();
+        var win = _cachedSlimHubWindow;
+        _cachedSlimHubWindow = null;
+        _cachedReportDocName = null;
+        _lastMetadataSweepTick64 = 0;
+        ReleaseElement(win);
+    }
+
+    private void CacheReportDocument(AutomationElement? reportDoc)
+    {
+        if (reportDoc == null) return;
+        var old = _cachedReportDocument;
+        if (ReferenceEquals(old, reportDoc)) return;
+
+        // FlaUI often returns a fresh wrapper for the same underlying Report Document on each scrape.
+        // Invalidating the cached ProseMirror editor on wrapper churn defeats the fast path and forces
+        // a full ProseMirror search every tick. Let TryReadCachedReportEditor() prove staleness instead.
+        bool shouldInvalidateEditor = false;
+        try
+        {
+            if (old == null)
+            {
+                shouldInvalidateEditor = false;
+            }
+            else
+            {
+                var oldName = old.Name ?? "";
+                var newName = reportDoc.Name ?? "";
+                // If the report document name changes, the editor subtree likely rebuilt.
+                shouldInvalidateEditor = !string.Equals(oldName, newName, StringComparison.Ordinal);
+            }
+        }
+        catch
+        {
+            // If we can't inspect the old wrapper, keep the editor cache and let read validation handle it.
+            shouldInvalidateEditor = false;
+        }
+
+        _cachedReportDocument = reportDoc;
+        ReleaseElement(old);
+        if (shouldInvalidateEditor)
+            InvalidateReportEditorCache();
+    }
+
+    private void CacheReportEditor(AutomationElement? editor)
+    {
+        if (editor == null) return;
+        var old = _cachedReportEditor;
+        if (ReferenceEquals(old, editor)) return;
+        _cachedReportEditor = editor;
+        ReleaseElement(old);
+    }
+
+    private bool IsMetadataSweepDue(long nowTick64, bool needDescription)
+    {
+        if (needDescription) return true;
+        return nowTick64 - _lastMetadataSweepTick64 >= MetadataSweepMinIntervalMs;
+    }
+
+    private static string ReadProseMirrorCandidateText(AutomationElement candidate, out bool hasReplChar)
+    {
+        string text = candidate.Name ?? "";
+        hasReplChar = text.Contains('\uFFFC');
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            var valPattern = candidate.Patterns.Value.PatternOrDefault;
+            if (valPattern != null)
+            {
+                text = valPattern.Value.Value;
+                hasReplChar = hasReplChar || text.Contains('\uFFFC');
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            var txtPattern = candidate.Patterns.Text.PatternOrDefault;
+            if (txtPattern != null)
+            {
+                text = txtPattern.DocumentRange.GetText(-1);
+                hasReplChar = hasReplChar || text.Contains('\uFFFC');
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            AutomationElement[]? childTexts = null;
+            try
+            {
+                childTexts = candidate.FindAllDescendants(cf =>
+                    cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
+                if (childTexts.Length > 0)
+                {
+                    var sb = new System.Text.StringBuilder();
+                    foreach (var ct in childTexts)
+                    {
+                        var childName = ct.Name;
+                        if (!string.IsNullOrWhiteSpace(childName))
+                            sb.AppendLine(childName);
+                    }
+                    text = sb.ToString();
+                }
+            }
+            catch
+            {
+                text = "";
+            }
+            finally
+            {
+                ReleaseElements(childTexts);
+            }
+        }
+
+        return text;
+    }
+
+    private bool TryReadCachedReportEditor(out string? text)
+    {
+        text = null;
+        var editor = _cachedReportEditor;
+        if (editor == null) return false;
+
+        try
+        {
+            _ = editor.ControlType; // Validate COM wrapper before reuse
+            var candidateText = ReadProseMirrorCandidateText(editor, out _);
+            if (string.IsNullOrWhiteSpace(candidateText))
+            {
+                InvalidateReportEditorCache();
+                return false;
+            }
+
+            var trimmed = candidateText.TrimStart();
+            if (!trimmed.StartsWith("EXAM:", StringComparison.OrdinalIgnoreCase) &&
+                !trimmed.StartsWith("Addendum", StringComparison.OrdinalIgnoreCase))
+            {
+                // DOM likely rebuilt and our cached element now resolves to transcript/other content.
+                InvalidateReportEditorCache();
+                return false;
+            }
+
+            text = candidateText;
+            return true;
+        }
+        catch
+        {
+            InvalidateReportEditorCache();
+            return false;
+        }
+    }
+
+    private static void LogSlowScrape(string stage, long elapsedMs)
+    {
+        if (elapsedMs >= SlowScrapeLogThresholdMs)
+            Logger.Trace($"GetFinalReportFast: slow scrape ({stage}) {elapsedMs}ms");
+    }
     
     /// <summary>
     /// Fast scrape of the Final Report from Mosaic/SlimHub.
@@ -1414,15 +1601,13 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                                    
                     if (!isValid)
                     {
-                        _cachedSlimHubWindow = null;
-                        _cachedReportDocName = null; // Clear stale doc name when window changes
+                        InvalidateMosaicWindowCache();
                         Logger.Trace("GetFinalReportFast: Cached window invalid/closed.");
                     }
                 }
                 catch
                 {
-                    _cachedSlimHubWindow = null;
-                    _cachedReportDocName = null;
+                    InvalidateMosaicWindowCache();
                 }
             }
 
@@ -1474,8 +1659,8 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             }
 
             // Single traversal: find DRAFTED status, Report document, Description, and Accession
+            long nowTick64 = Environment.TickCount64;
             AutomationElement? reportDoc = null;
-            LastDescription = null; // Reset
             LastTemplateName = null; // Reset - prevents stale template from previous study causing false mismatch
             LastAccession = null; // Reset - will be set if found, stays null if no study open
 
@@ -1530,6 +1715,13 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             catch (Exception ex)
             {
                 Logger.Trace($"Accession extraction error: {ex.Message}");
+            }
+
+            if (string.IsNullOrEmpty(LastAccession))
+            {
+                LastDescription = null;
+                LastDraftedState = false;
+                InvalidateReportDocumentCache();
             }
 
 
@@ -1761,9 +1953,11 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             // Use cached document name if available (avoids fallback search on every scrape)
             var reportDocSearchName = _cachedReportDocName ?? "Report";
 
-            if (checkDraftedStatus)
+            bool runMetadataSweep = checkDraftedStatus && IsMetadataSweepDue(nowTick64, string.IsNullOrEmpty(LastDescription));
+            if (runMetadataSweep)
             {
-                // Search for DRAFTED, Report doc, and Description in one traversal using OR condition
+                // Search for DRAFTED, Report doc, and Description in one traversal using OR condition.
+                // This is expensive, so we throttle it and reuse the last values between sweeps.
                 var draftedCondition = _cachedSlimHubWindow.ConditionFactory
                     .ByControlType(FlaUI.Core.Definitions.ControlType.Text)
                     .And(_cachedSlimHubWindow.ConditionFactory.ByName("DRAFTED"));
@@ -1773,13 +1967,13 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                 var descriptionTextCondition = _cachedSlimHubWindow.ConditionFactory
                     .ByControlType(FlaUI.Core.Definitions.ControlType.Text)
                     .And(_cachedSlimHubWindow.ConditionFactory.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
-                // Mosaic 2.0.4: Description is a Button with inline "Description: XR CHEST 1 VIEW"
                 var descriptionButtonCondition = _cachedSlimHubWindow.ConditionFactory
                     .ByControlType(FlaUI.Core.Definitions.ControlType.Button)
                     .And(_cachedSlimHubWindow.ConditionFactory.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
                 var combinedCondition = draftedCondition.Or(reportCondition).Or(descriptionTextCondition).Or(descriptionButtonCondition);
 
                 var elements = _cachedSlimHubWindow.FindAllDescendants(combinedCondition);
+                _lastMetadataSweepTick64 = nowTick64;
 
                 LastDraftedState = false;
                 foreach (var el in elements)
@@ -1797,8 +1991,6 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                               el.ControlType == FlaUI.Core.Definitions.ControlType.Button) &&
                              el.Name?.StartsWith("Description:", StringComparison.OrdinalIgnoreCase) == true)
                     {
-                        // Extract description text after "Description: "
-                        // Works for both Text (2.0.2/2.0.3) and Button (2.0.4) elements
                         var descVal = el.Name.Substring("Description:".Length).Trim();
                         if (!string.IsNullOrEmpty(descVal))
                         {
@@ -1808,13 +2000,29 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                     }
                 }
 
-                // Release all elements except reportDoc (still needed below)
                 foreach (var el in elements)
                     if (el != reportDoc) ReleaseElement(el);
             }
             else
             {
-                // Just find the Report document
+                reportDoc = _cachedReportDocument;
+                if (reportDoc != null)
+                {
+                    try
+                    {
+                        _ = reportDoc.ControlType; // Validate cached wrapper
+                    }
+                    catch
+                    {
+                        InvalidateReportDocumentCache();
+                        reportDoc = null;
+                    }
+                }
+            }
+
+            if (reportDoc == null)
+            {
+                // Cheap path on most ticks: just find the Report document.
                 reportDoc = _cachedSlimHubWindow.FindFirstDescendant(cf =>
                     cf.ByControlType(FlaUI.Core.Definitions.ControlType.Document)
                     .And(cf.ByName(reportDocSearchName, FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring)));
@@ -1867,13 +2075,27 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
             if (reportDoc == null)
             {
+                InvalidateReportDocumentCache();
                 Logger.Trace($"GetFinalReportFast: Report Document not found ({sw.ElapsedMilliseconds}ms)");
                 return null;
             }
+            CacheReportDocument(reportDoc);
 
             // Strategy from Python: Look for ProseMirror editor
             // This is robust for Tiptap editors used in Mosaic
             var flowDoc = reportDoc; // Start search from the document
+
+            if (TryReadCachedReportEditor(out var cachedReportText) && !string.IsNullOrEmpty(cachedReportText))
+            {
+                _cachedEditorHitCount++;
+                if (_cachedEditorHitCount <= 3 || _cachedEditorHitCount % 20 == 0)
+                    Logger.Trace($"GetFinalReportFast: cached-editor hit #{_cachedEditorHitCount} ({sw.ElapsedMilliseconds}ms)");
+                IsAddendumDetected = cachedReportText.TrimStart().StartsWith("Addendum", StringComparison.OrdinalIgnoreCase);
+                LastFinalReport = cachedReportText;
+                LastTemplateName = ExtractTemplateName(cachedReportText);
+                LogSlowScrape("cached-editor", sw.ElapsedMilliseconds);
+                return cachedReportText;
+            }
             
             // Find all potential editors
             var candidates = flowDoc.FindAllDescendants(cf => 
@@ -1887,61 +2109,12 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
                 string bestText = "";
                 int maxScore = -1;
+                AutomationElement? bestCandidate = null;
                 string[] keywords = { "TECHNIQUE", "CLINICAL HISTORY", "FINDINGS", "IMPRESSION", "EXAM" };
 
                 foreach (var candidate in candidates)
                 {
-                    string text = candidate.Name ?? "";
-                    bool hasReplChar = text.Contains('\uFFFC');
-
-                    // Try ValuePattern (common for edit controls)
-                    if (string.IsNullOrWhiteSpace(text))
-                    {
-                        var valPattern = candidate.Patterns.Value.PatternOrDefault;
-                        if (valPattern != null)
-                        {
-                            text = valPattern.Value.Value;
-                            hasReplChar = hasReplChar || text.Contains('\uFFFC');
-                        }
-                    }
-
-                    // Try TextPattern (rich edit controls)
-                    if (string.IsNullOrWhiteSpace(text))
-                    {
-                        var txtPattern = candidate.Patterns.Text.PatternOrDefault;
-                        if (txtPattern != null)
-                        {
-                            text = txtPattern.DocumentRange.GetText(-1);
-                            hasReplChar = hasReplChar || text.Contains('\uFFFC');
-                        }
-                    }
-
-                    // Mosaic 2.0.3: ProseMirror Name is empty; content is in child Text elements
-                    if (string.IsNullOrWhiteSpace(text))
-                    {
-                        AutomationElement[]? childTexts = null;
-                        try
-                        {
-                            childTexts = candidate.FindAllDescendants(cf =>
-                                cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
-                            if (childTexts.Length > 0)
-                            {
-                                var sb = new System.Text.StringBuilder();
-                                foreach (var ct in childTexts)
-                                {
-                                    var childName = ct.Name;
-                                    if (!string.IsNullOrWhiteSpace(childName))
-                                        sb.AppendLine(childName);
-                                }
-                                text = sb.ToString();
-                            }
-                        }
-                        catch { }
-                        finally
-                        {
-                            ReleaseElements(childTexts);
-                        }
-                    }
+                    string text = ReadProseMirrorCandidateText(candidate, out bool hasReplChar);
 
                     if (string.IsNullOrWhiteSpace(text)) continue;
 
@@ -1971,6 +2144,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                     {
                         maxScore = score;
                         bestText = text;
+                        bestCandidate = candidate;
                     }
                 }
 
@@ -1991,7 +2165,10 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                     // ProseMirror success (not logged — fires every scrape cycle)
                     LastFinalReport = bestText;
                     LastTemplateName = ExtractTemplateName(bestText);
-                    ReleaseElements(candidates);
+                    CacheReportEditor(bestCandidate);
+                    LogSlowScrape("prosemirror", sw.ElapsedMilliseconds);
+                    foreach (var c in candidates)
+                        if (!ReferenceEquals(c, bestCandidate)) ReleaseElement(c);
                     return bestText;
                 }
 
@@ -2001,35 +2178,10 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                 {
                     string bestFallback = "";
                     int bestFallbackScore = 0;
+                    AutomationElement? bestFallbackCandidate = null;
                     foreach (var candidate in candidates)
                     {
-                        string text = candidate.Name ?? "";
-                        bool hasReplChar2 = text.Contains('\uFFFC');
-                        if (string.IsNullOrWhiteSpace(text))
-                        {
-                            AutomationElement[]? childTexts = null;
-                            try
-                            {
-                                childTexts = candidate.FindAllDescendants(cf =>
-                                    cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text));
-                                if (childTexts.Length > 0)
-                                {
-                                    var sb = new System.Text.StringBuilder();
-                                    foreach (var ct in childTexts)
-                                    {
-                                        var childName = ct.Name;
-                                        if (!string.IsNullOrWhiteSpace(childName))
-                                            sb.AppendLine(childName);
-                                    }
-                                    text = sb.ToString();
-                                }
-                            }
-                            catch { continue; }
-                            finally
-                            {
-                                ReleaseElements(childTexts);
-                            }
-                        }
+                        string text = ReadProseMirrorCandidateText(candidate, out bool hasReplChar2);
                         if (string.IsNullOrWhiteSpace(text) || text.Length < 50) continue;
 
                         // Detect addendum in fallback path too
@@ -2050,6 +2202,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                         {
                             bestFallbackScore = score;
                             bestFallback = text;
+                            bestFallbackCandidate = candidate;
                         }
                     }
 
@@ -2069,7 +2222,10 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                         Logger.Trace($"GetFinalReportFast: ProseMirror v2.0.3 fallback SUCCESS in {sw.ElapsedMilliseconds}ms, {lineCount} lines, Score={bestFallbackScore}");
                         LastFinalReport = bestFallback;
                         LastTemplateName = ExtractTemplateName(bestFallback);
-                        ReleaseElements(candidates);
+                        CacheReportEditor(bestFallbackCandidate);
+                        LogSlowScrape("prosemirror-fallback", sw.ElapsedMilliseconds);
+                        foreach (var c in candidates)
+                            if (!ReferenceEquals(c, bestFallbackCandidate)) ReleaseElement(c);
                         return bestFallback;
                     }
                 }
@@ -2125,19 +2281,21 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                         Logger.Trace($"GetFinalReportFast: Fallback SUCCESS in {sw.ElapsedMilliseconds}ms, {lineCount} lines");
                         LastFinalReport = fullText;
                         LastTemplateName = ExtractTemplateName(fullText);
+                        InvalidateReportEditorCache(); // ProseMirror cache may be stale if we needed fragment fallback
+                        LogSlowScrape("fragment-fallback", sw.ElapsedMilliseconds);
                         return fullText;
                     }
                 }
             }
             
+            InvalidateReportEditorCache();
             Logger.Trace($"GetFinalReportFast: Failed to find report content ({sw.ElapsedMilliseconds}ms)");
 
         }
         catch (Exception ex)
         {
             Logger.Trace($"GetFinalReportFast error: {ex.Message} ({sw.ElapsedMilliseconds}ms)");
-            _cachedSlimHubWindow = null; // Invalidate cache on error
-            _cachedReportDocName = null;
+            InvalidateMosaicWindowCache();
         }
         
         return null;
@@ -2880,8 +3038,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
     public void Dispose()
     {
-        _cachedSlimHubWindow = null;
-        _cachedReportDocName = null;
+        InvalidateMosaicWindowCache();
         _automation.Dispose();
     }
 }

@@ -1,3 +1,11 @@
+3.8.4
+- Performance: Cache report document and ProseMirror editor between scrapes (avoid expensive tree search every tick)
+- Performance: Throttle metadata sweep (DRAFTED/Description) to every 2s instead of every scrape
+- Performance: Adaptive report scrape throttle — steady-state polling slows to 2.5s when study is stable
+- Performance: Burst mode — dictation, Process Report, and Show Report temporarily boost scrape rate
+- Performance: Scrape thread runs at background priority to reduce input lag
+- Cleanup: Remove legacy Python codebase (MosaicTools.pyw)
+
 3.8.3
 - STT: Auto-start recording on case open (new setting in STT > Display)
 - STT: Auto-restart after Process Report, full stop on Sign Report

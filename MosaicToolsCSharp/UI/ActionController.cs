@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using MosaicTools.Services;
@@ -20,6 +21,16 @@ public struct ActionRequest
 
 public class ActionController : IDisposable
 {
+    private const int THREAD_MODE_BACKGROUND_BEGIN = 0x00010000;
+    private const int THREAD_MODE_BACKGROUND_END = 0x00020000;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetCurrentThread();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetThreadPriority(IntPtr hThread, int nPriority);
+
     private readonly Configuration _config;
     private readonly MainForm _mainForm;
     
@@ -95,9 +106,16 @@ public class ActionController : IDisposable
     private int _studyLoadScrapeIntervalMs = 500;
     private const int IdleScrapeIntervalMs = 10_000; // Slow polling when no study is open
     private const int DeepIdleScrapeIntervalMs = 30_000; // Very slow polling after extended idle (reduces UIA load)
+    private const int SteadyStateReportScrapeMinIntervalMs = 2500; // Throttle unchanged report polling while study is stable
+    private const int DictationStopBurstMs = 5000; // Keep fast scrapes briefly for final transcript/render updates
+    private const int ProcessReportBurstMs = 30000; // Mosaic can rebuild editor for a while after Alt+P
+    private const int ShowReportBurstMs = 15000; // Keep popup-fed updates responsive after opening/toggling
     private int _consecutiveIdleScrapes = 0; // Counts scrapes with no report content
     private int _scrapesSinceLastGc = 0; // Counter for periodic GC to release FlaUI COM wrappers
     private int _scrapeHeartbeatCount = 0; // Heartbeat counter for diagnostic logging
+    private long _lastFullReportScrapeTick64; // Tick64 timestamp of last full GetFinalReportFast call
+    private long _reportBurstUntilTick64; // Burst mode deadline for temporary rapid report scraping
+    private int _scrapeThrottleSkipCount; // Sampled logging for adaptive throttle skips
 
     // PTT (Push-to-talk) state (int for Interlocked atomicity)
     private int _pttBusy = 0;
@@ -951,6 +969,10 @@ public class ActionController : IDisposable
         }
 
         Logger.Trace($"Dictation toggle initiated. State: {_dictationActive}");
+        if (_dictationActive)
+            RequestReportScrapeBurst(_fastScrapeIntervalMs * 4, "Dictation started");
+        else
+            RequestReportScrapeBurst(DictationStopBurstMs, "Dictation stopped");
     }
 
     // [CustomSTT] Toggle recording via SttService instead of Mosaic's built-in dictation
@@ -1007,11 +1029,16 @@ public class ActionController : IDisposable
         }
 
         Logger.Trace($"CustomSTT: Recording toggled to {newState}");
+        if (newState)
+            RequestReportScrapeBurst(_fastScrapeIntervalMs * 4, "CustomSTT started");
+        else
+            RequestReportScrapeBurst(DictationStopBurstMs, "CustomSTT stopped");
     }
 
     private void PerformProcessReport(string source = "Manual")
     {
         Logger.Trace($"Process Report (Source: {source})");
+        RequestReportScrapeBurst(ProcessReportBurstMs, "Process Report");
 
         // Mark that Process Report was pressed for this accession (for diff highlighting)
         _processReportPressedForCurrentAccession = true;
@@ -1269,6 +1296,68 @@ public class ActionController : IDisposable
         try { timer?.Change(intervalMs, intervalMs); }
         catch (ObjectDisposedException) { return; }
         Logger.Trace($"Scrape timer interval changed to {intervalMs}ms");
+    }
+
+    private void RequestReportScrapeBurst(int durationMs, string reason)
+    {
+        if (durationMs <= 0) return;
+
+        long nowTick64 = Environment.TickCount64;
+        long requestedUntil = nowTick64 + durationMs;
+        while (true)
+        {
+            long current = Interlocked.Read(ref _reportBurstUntilTick64);
+            if (current >= requestedUntil) return;
+            if (Interlocked.CompareExchange(ref _reportBurstUntilTick64, requestedUntil, current) == current)
+            {
+                Logger.Trace($"Report scrape burst requested: {reason} ({durationMs}ms)");
+                if (!_searchingForImpression && _scrapeTimer != null)
+                    RestartScrapeTimer(_fastScrapeIntervalMs);
+                return;
+            }
+        }
+    }
+
+    private bool IsReportPopupVisible()
+    {
+        var popup = _currentReportPopup;
+        return popup != null && !popup.IsDisposed && popup.Visible;
+    }
+
+    private bool IsReportBurstModeActive(long nowTick64)
+    {
+        if (_dictationActive) return true;
+        if (_searchingForImpression) return true;
+        if (_needsBaselineCapture) return true;
+        if (_radAiAutoInsertPending) return true;
+        if (IsReportPopupVisible()) return true;
+        return nowTick64 < Interlocked.Read(ref _reportBurstUntilTick64);
+    }
+
+    private bool ShouldThrottleFullReportScrape(long nowTick64)
+    {
+        if (string.IsNullOrEmpty(_lastNonEmptyAccession) && string.IsNullOrEmpty(_mosaicReader.LastAccession))
+            return false;
+
+        if (IsReportBurstModeActive(nowTick64))
+            return false;
+
+        int minIntervalMs = Math.Max(NormalScrapeIntervalMs, SteadyStateReportScrapeMinIntervalMs);
+        if (minIntervalMs <= 0)
+            return false;
+
+        long last = Interlocked.Read(ref _lastFullReportScrapeTick64);
+        if (last > 0 && nowTick64 - last < minIntervalMs)
+        {
+            _scrapeThrottleSkipCount++;
+            if (_scrapeThrottleSkipCount <= 3 || _scrapeThrottleSkipCount % 20 == 0)
+            {
+                Logger.Trace($"Adaptive scrape throttle: skipped full report scrape #{_scrapeThrottleSkipCount} (elapsed={nowTick64 - last}ms, min={minIntervalMs}ms)");
+            }
+            return true;
+        }
+
+        return false;
     }
 
     private void PerformSignReport(string source = "Manual")
@@ -2039,6 +2128,7 @@ public class ActionController : IDisposable
     private void PerformShowReport()
     {
         Logger.Trace("Show Report (scrape method)");
+        RequestReportScrapeBurst(ShowReportBurstMs, "Show Report");
 
         // Toggle Logic: If open, try click cycle first, then close
         if (_currentReportPopup != null && !_currentReportPopup.IsDisposed && _currentReportPopup.Visible)
@@ -2937,6 +3027,42 @@ public class ActionController : IDisposable
     #endregion
     
     #region Mosaic Scrape Timer
+
+    private static bool TryEnterScrapeBackgroundMode(out ThreadPriority previousPriority, out bool usedManagedFallback)
+    {
+        previousPriority = Thread.CurrentThread.Priority;
+        usedManagedFallback = false;
+
+        try
+        {
+            if (SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN))
+                return true;
+        }
+        catch { }
+
+        // Fallback when background mode is unavailable/fails on the current thread.
+        try
+        {
+            Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+            usedManagedFallback = true;
+        }
+        catch { }
+        return false;
+    }
+
+    private static void ExitScrapeBackgroundMode(bool backgroundModeActive, ThreadPriority previousPriority, bool usedManagedFallback)
+    {
+        if (backgroundModeActive)
+        {
+            try { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END); } catch { }
+            return;
+        }
+
+        if (usedManagedFallback)
+        {
+            try { Thread.CurrentThread.Priority = previousPriority; } catch { }
+        }
+    }
     
     private void StartMosaicScrapeTimer()
     {
@@ -2965,9 +3091,15 @@ public class ActionController : IDisposable
                 return;
             }
             Interlocked.Exchange(ref _scrapeStartedTicks, DateTime.UtcNow.Ticks);
+            bool scrapeInBackgroundMode = TryEnterScrapeBackgroundMode(out var previousThreadPriority, out var usedManagedPriorityFallback);
 
             try
             {
+                long nowTick64 = Environment.TickCount64;
+                if (ShouldThrottleFullReportScrape(nowTick64))
+                    return;
+                Interlocked.Exchange(ref _lastFullReportScrapeTick64, nowTick64);
+
                 // Only check drafted status if we need it for features
                 // Also need it for macros since Description extraction happens during drafted check
                 bool needDraftedCheck = _config.ShowDraftedIndicator ||
@@ -2985,10 +3117,11 @@ public class ActionController : IDisposable
                 // Two tiers: 10s after 3 idle scrapes, 30s after 10 idle scrapes.
                 // Heavy FlaUI/UIA calls every few seconds cause system-wide input lag
                 // (mouse jumpiness, keyboard hook death) even when finding nothing.
+                bool suppressIdleBackoff = IsReportBurstModeActive(nowTick64);
                 if (string.IsNullOrEmpty(reportText))
                 {
                     _consecutiveIdleScrapes++;
-                    if (!_searchingForImpression && !_needsBaselineCapture)
+                    if (!suppressIdleBackoff)
                     {
                         if (_consecutiveIdleScrapes >= 10)
                         {
@@ -3008,7 +3141,7 @@ public class ActionController : IDisposable
                 {
                     _consecutiveIdleScrapes = 0;
                     // Restore normal rate (unless fast/study-load mode is active)
-                    if (!_searchingForImpression && !_needsBaselineCapture)
+                    if (!_searchingForImpression && !_needsBaselineCapture && !IsReportBurstModeActive(nowTick64))
                         RestartScrapeTimer(NormalScrapeIntervalMs);
                 }
 
@@ -3127,6 +3260,7 @@ public class ActionController : IDisposable
                 // Flush all batched UI updates in a single BeginInvoke call.
                 // This reduces WM_USER message spam that can cause Windows to
                 // silently remove the low-level keyboard hook.
+                ExitScrapeBackgroundMode(scrapeInBackgroundMode, previousThreadPriority, usedManagedPriorityFallback);
                 FlushUI();
                 Interlocked.Exchange(ref _scrapeStartedTicks, 0);
                 Interlocked.Exchange(ref _scrapeRunning, 0);
