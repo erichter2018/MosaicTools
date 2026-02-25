@@ -29,15 +29,17 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     // Cached window for fast repeated scrapes (volatile: read from STA thread, written from scrape thread)
     private volatile AutomationElement? _cachedSlimHubWindow;
 
+    // Cached "Current Study" parent container — avoids expensive FindFirstDescendant tree walk
+    // on accession checks. Validated each use; invalidated on window cache reset.
+    private volatile AutomationElement? _cachedCurrentStudyParent;
+
     // Cached report document name (detected once, reused for fast lookups)
     // e.g., "RADPAIR" on Mosaic 2.0.3+, or contains "Report" on older versions
     private volatile string? _cachedReportDocName;
     // Cached report document/editor for cheap repeated report reads between metadata sweeps.
     private volatile AutomationElement? _cachedReportDocument;
     private volatile AutomationElement? _cachedReportEditor;
-    private long _lastMetadataSweepTick64;
     private int _cachedEditorHitCount;
-    private const int MetadataSweepMinIntervalMs = 5000;
     private const int SlowScrapeLogThresholdMs = 250;
     // CacheRequest circuit breaker: disable after consecutive failures to avoid wasting time
     // on E_FAIL calls. Re-enable after cooldown period.
@@ -45,12 +47,6 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     private long _cacheRequestDisabledUntilTick64;
     private const int CacheRequestFailThreshold = 3;
     private const int CacheRequestCooldownMs = 300_000; // 5 minutes
-    // Metadata sweep circuit breaker: skip the entire FindAllDescendants call after
-    // consecutive E_FAIL errors (the COM call itself fails, not just the CacheRequest).
-    private int _metadataSweepFailCount;
-    private long _metadataSweepDisabledUntilTick64;
-    private const int MetadataSweepFailThreshold = 5;
-    private const int MetadataSweepCooldownMs = 60_000; // 1 minute
     // Rate-limit expensive FindAllDescendants(ProseMirror) searches.
     // Chrome's accessibility tree grows from each FindAllDescendants call and never shrinks,
     // causing progressive degradation. Limit to once per 10s; return stale data between.
@@ -72,7 +68,11 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     // Study changes will be detected with up to 10s delay (acceptable — Mosaic itself takes seconds to load).
     private long _lastAccessionCheckTick64;
     private const int AccessionCheckIntervalMs = 10_000; // 10 seconds between full tree walks
-    
+    // Patient name retry cap: stop searching after N failures for the same accession.
+    // Prevents 3 UIA tree walks per tick when name format can't be matched.
+    private int _patientNameSearchFailCount;
+    private const int PatientNameSearchMaxRetries = 3;
+
     // Last scraped final report (public for external access)
     public string? LastFinalReport { get; private set; }
 
@@ -82,8 +82,6 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         LastFinalReport = null;
         LastTemplateName = null;
         InvalidateReportDocumentCache();
-        _lastMetadataSweepTick64 = 0;
-        _metadataSweepFailCount = 0; // Reset circuit breaker on study change
         _lastProsemirrorSearchTick64 = 0; // Allow immediate search for new study
         _lastAccessionCheckTick64 = 0; // Force immediate accession re-check
     }
@@ -135,7 +133,6 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
     // Accession for which patient info (gender, MRN, site code, name) was last extracted
     // Used to skip expensive FindAllDescendants when the same study is still open
-    private string? _lastPatientInfoAccession;
 
     // Retry counter for patient info extraction. Unfiltered FindAllDescendants() is very
     // expensive — if gender/MRN aren't found after a few attempts (UI layout mismatch),
@@ -145,7 +142,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     // from cross-process calls. This native memory grows monotonically and is only freed
     // when the IUIAutomation COM object is released. Periodic reset prevents unbounded growth.
     private long _lastUiaResetTick64;
-    private const int UiaResetIntervalMs = 5 * 60 * 1000; // 5 minutes
+    private const int UiaResetIntervalMs = 30 * 60 * 1000; // 30 minutes (cold-start penalty is 11-18s)
 
     // UIA call counter for diagnostics. Tracks approximate number of cross-process UIA calls.
     private long _uiaCallCount;
@@ -231,7 +228,6 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         ResetUiaConnection();
         _lastUiaResetTick64 = now;
         _cacheRequestFailCount = 0; // Reset circuit breakers — fresh UIA connection
-        _metadataSweepFailCount = 0;
         return true;
     }
     
@@ -1584,10 +1580,12 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     {
         InvalidateReportDocumentCache();
         var win = _cachedSlimHubWindow;
+        var csParent = _cachedCurrentStudyParent;
         _cachedSlimHubWindow = null;
         _cachedReportDocName = null;
-        _lastMetadataSweepTick64 = 0;
+        _cachedCurrentStudyParent = null;
         ReleaseElement(win);
+        ReleaseElement(csParent);
     }
 
     private void CacheReportDocument(AutomationElement? reportDoc)
@@ -1633,12 +1631,6 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         if (ReferenceEquals(old, editor)) return;
         _cachedReportEditor = editor;
         ReleaseElement(old);
-    }
-
-    private bool IsMetadataSweepDue(long nowTick64, bool needDescription)
-    {
-        if (needDescription) return true;
-        return nowTick64 - _lastMetadataSweepTick64 >= MetadataSweepMinIntervalMs;
     }
 
     private static string ReadProseMirrorCandidateText(AutomationElement candidate, out bool hasReplChar)
@@ -1760,7 +1752,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     /// Fast scrape of the Final Report from Mosaic/SlimHub.
     /// Uses caching and targeted search for speed.
     /// </summary>
-    public string? GetFinalReportFast(bool checkDraftedStatus = false)
+    public string? GetFinalReportFast()
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         // Approximate UIA call count for this tick (accession walk + editor read + metadata sweep)
@@ -1841,7 +1833,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             // FindFirstBuildCache/FindAllBuildCache — causes E_FAIL on document-level queries.
             // The E_FAIL isolation fix (preventing cache invalidation) provides the main
             // performance benefit; CacheRequest savings are marginal in comparison.
-            return GetFinalReportFastInner(checkDraftedStatus, sw);
+            return GetFinalReportFastInner(sw);
         }
         catch (Exception ex)
         {
@@ -1852,7 +1844,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         return null;
     }
 
-    private string? GetFinalReportFastInner(bool checkDraftedStatus, System.Diagnostics.Stopwatch sw)
+    private string? GetFinalReportFastInner(System.Diagnostics.Stopwatch sw)
     {
             // Single traversal: find DRAFTED status, Report document, Description, and Accession
             long nowTick64 = Environment.TickCount64;
@@ -1865,57 +1857,184 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             bool skipAccessionCheck = LastAccession != null
                 && nowTick64 - _lastAccessionCheckTick64 < AccessionCheckIntervalMs;
 
+            // Single-pass extraction: find "Current Study" element, get parent's children,
+            // and extract ALL metadata (accession, description, gender, age, MRN, site code,
+            // patient name, DRAFTED status) in one traversal. Replaces 6+ separate
+            // FindFirstDescendant tree walks that were the #1 cause of performance degradation.
             if (!skipAccessionCheck)
             {
                 _lastAccessionCheckTick64 = nowTick64;
-                LastAccession = null; // Reset - will be set if found
-                LastDescription = null; // Reset - re-extracted alongside accession
-            }
+                // Reset all fields — re-extracted fresh from siblings every accession check.
+                // This ensures patient info is never stale from a previous study.
+                LastAccession = null;
+                LastDescription = null;
+                LastDraftedState = false;
+                LastPatientGender = null;
+                LastPatientAge = null;
+                LastPatientName = null;
+                LastSiteCode = null;
+                LastMrn = null;
+                _patientNameSearchFailCount = 0;
 
-            // Extract accession: find "Current Study" text and the next text element after it
-            // Throttled: skip the expensive tree walk on most ticks when accession is already known.
-            if (!skipAccessionCheck)
-            {
                 AutomationElement? currentStudyElement = null;
                 AutomationElement? csParent = null;
+                bool usedCachedParent = false;
                 try
                 {
-                    currentStudyElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
-                        cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text)
-                        .And(cf.ByName("Current Study")));
-
-                    if (currentStudyElement != null)
+                    // Fast path: reuse cached parent container (skips FindFirstDescendant tree walk)
+                    csParent = _cachedCurrentStudyParent;
+                    if (csParent != null)
                     {
-                        // Get parent and find all children (Text in 2.0.2, Button in 2.0.3)
-                        csParent = currentStudyElement.Parent;
-                        if (csParent != null)
+                        try
                         {
-                            var allChildren = csParent.FindAllChildren();
-                            try
+                            // Validate: if the element is stale, Name will throw or return unexpected value
+                            var _ = csParent.Name;
+                            usedCachedParent = true;
+                        }
+                        catch
+                        {
+                            // Stale — fall through to full search
+                            ReleaseElement(csParent);
+                            _cachedCurrentStudyParent = null;
+                            csParent = null;
+                        }
+                    }
+
+                    // Slow path: full tree walk to find "Current Study", then get parent
+                    if (csParent == null)
+                    {
+                        currentStudyElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
+                            cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text)
+                            .And(cf.ByName("Current Study")));
+
+                        if (currentStudyElement != null)
+                        {
+                            csParent = currentStudyElement.Parent;
+                            // Cache for next time
+                            if (csParent != null)
                             {
-                                bool foundCurrentStudy = false;
+                                var oldCached = _cachedCurrentStudyParent;
+                                _cachedCurrentStudyParent = csParent;
+                                ReleaseElement(oldCached);
+                            }
+                        }
+                    }
+
+                    if (csParent != null)
+                    {
+                        var allChildren = csParent.FindAllChildren();
+                        try
+                        {
+                            bool foundCurrentStudy = false;
+                            bool needPatientName = LastPatientName == null
+                                && _patientNameSearchFailCount < PatientNameSearchMaxRetries;
+
                                 foreach (var child in allChildren)
                                 {
                                     try
                                     {
-                                        if (foundCurrentStudy)
+                                        var name = (child.Name ?? "").Trim();
+                                        if (string.IsNullOrWhiteSpace(name)) continue;
+
+                                        // Extract accession: first non-status element after "Current Study"
+                                        if (foundCurrentStudy && LastAccession == null)
                                         {
-                                            var accession = (child.Name ?? "").Trim();
-                                            // Skip status words and empty elements
-                                            if (string.IsNullOrWhiteSpace(accession) || accession == "Current Study" ||
-                                                accession == "DRAFTED" || accession == "UNDRAFTED" || accession == "SIGNED")
+                                            if (name == "DRAFTED")
                                             {
-                                                continue; // Keep looking for accession
+                                                LastDraftedState = true;
                                             }
-                                            LastAccession = accession;
-                                            break;
+                                            else if (name != "Current Study" &&
+                                                     name != "UNDRAFTED" && name != "SIGNED")
+                                            {
+                                                LastAccession = name;
+                                            }
+                                            continue;
                                         }
-                                        if ((child.Name ?? "") == "Current Study")
+                                        if (name == "Current Study")
                                         {
                                             foundCurrentStudy = true;
+                                            continue;
+                                        }
+
+                                        // DRAFTED status (extracted from siblings directly)
+                                        if (name == "DRAFTED")
+                                        {
+                                            LastDraftedState = true;
+                                            continue;
+                                        }
+
+                                        // Gender + Age: "FEMALE, AGE 57, DOB: 04/23/1968"
+                                        if (LastPatientGender == null &&
+                                            name.Contains(", AGE", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            var upper = name.ToUpperInvariant();
+                                            if (upper.StartsWith("MALE"))
+                                                LastPatientGender = "Male";
+                                            else if (upper.StartsWith("FEMALE"))
+                                                LastPatientGender = "Female";
+                                            var ageMatch = Regex.Match(upper, @"AGE\s*(\d+)");
+                                            if (ageMatch.Success)
+                                                LastPatientAge = int.Parse(ageMatch.Groups[1].Value);
+                                            continue;
+                                        }
+
+                                        // MRN: "MRN: K71892WC"
+                                        if (LastMrn == null &&
+                                            name.StartsWith("MRN:", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            var mrnMatch = Regex.Match(name, @"MRN:\s*([A-Z0-9-]{5,20})", RegexOptions.IgnoreCase);
+                                            if (mrnMatch.Success)
+                                                LastMrn = mrnMatch.Groups[1].Value.ToUpperInvariant();
+                                            continue;
+                                        }
+
+                                        // Site Code: "Site Code: WC"
+                                        if (LastSiteCode == null &&
+                                            name.StartsWith("Site Code:", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            var siteMatch = Regex.Match(name, @"Site\s*Code:\s*([A-Z]{2,5})", RegexOptions.IgnoreCase);
+                                            if (siteMatch.Success)
+                                                LastSiteCode = siteMatch.Groups[1].Value.ToUpperInvariant();
+                                            continue;
+                                        }
+
+                                        // Description: "Description: CT CHEST ABDOMEN..."
+                                        if (LastDescription == null &&
+                                            name.StartsWith("Description:", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            var desc = name.Substring("Description:".Length).Trim();
+                                            if (!string.IsNullOrEmpty(desc))
+                                                LastDescription = desc;
+                                            continue;
+                                        }
+
+                                        // Patient Name: first element that passes IsPatientNameCandidate
+                                        // Must be before "Current Study" (which sets foundCurrentStudy)
+                                        if (needPatientName && !foundCurrentStudy &&
+                                            IsPatientNameCandidate(name.ToUpperInvariant()))
+                                        {
+                                            LastPatientName = ToTitleCase(name.ToUpperInvariant());
+                                            needPatientName = false;
+                                            continue;
                                         }
                                     }
                                     catch { continue; }
+                                }
+
+                                // Track patient name search failure
+                                if (LastPatientName == null && LastPatientGender != null
+                                    && _patientNameSearchFailCount < PatientNameSearchMaxRetries)
+                                {
+                                    _patientNameSearchFailCount++;
+                                    if (_patientNameSearchFailCount >= PatientNameSearchMaxRetries)
+                                        Logger.Trace($"Patient name: giving up after {PatientNameSearchMaxRetries} attempts");
+                                }
+
+                                // Invalidate cached parent if "Current Study" not found in siblings
+                                if (!foundCurrentStudy && usedCachedParent)
+                                {
+                                    _cachedCurrentStudyParent = null;
+                                    ReleaseElement(csParent);
                                 }
                             }
                             finally
@@ -1923,15 +2042,17 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                                 ReleaseElements(allChildren);
                             }
                         }
-                    }
                 }
                 catch (Exception ex)
                 {
                     Logger.Trace($"Accession extraction error: {ex.Message}");
+                    // Invalidate cached parent on error — may be stale
+                    _cachedCurrentStudyParent = null;
+                    ReleaseElement(csParent);
                 }
                 finally
                 {
-                    ReleaseElement(csParent);
+                    // Only release currentStudyElement (from slow path); csParent is cached
                     ReleaseElement(currentStudyElement);
                 }
             }
@@ -1943,303 +2064,11 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                 InvalidateReportDocumentCache();
             }
 
-            // Fast targeted extraction via FindFirstDescendant for fields that
-            // FindAllDescendants can no longer retrieve (E_FAIL on Mosaic 2.0.4).
-            if (!string.IsNullOrEmpty(LastAccession))
-            {
-                // Description: "Description: CT ABDOMEN PELVIS..."
-                if (LastDescription == null)
-                {
-                    AutomationElement? descElement = null;
-                    try
-                    {
-                        descElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
-                            cf.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
-                        if (descElement != null)
-                        {
-                            var descName = descElement.Name ?? "";
-                            if (descName.StartsWith("Description:", StringComparison.OrdinalIgnoreCase))
-                            {
-                                var desc = descName.Substring("Description:".Length).Trim();
-                                if (!string.IsNullOrEmpty(desc))
-                                    LastDescription = desc;
-                            }
-                        }
-                    }
-                    catch { }
-                    finally { ReleaseElement(descElement); }
-                }
-
-                // Clear patient info fields when study changes so fast extraction re-runs.
-                // MUST run BEFORE extraction — otherwise extraction finds values on each tick
-                // and then clearing wipes them, preventing _lastPatientInfoAccession from updating.
-                if (!string.IsNullOrEmpty(LastAccession) && LastAccession != _lastPatientInfoAccession)
-                {
-                    LastPatientGender = null;
-                    LastPatientAge = null;
-                    LastPatientName = null;
-                    LastSiteCode = null;
-                    LastMrn = null;
-                }
-
-                // Gender + Age: "Male, Age 45" or "Female, Age 72" (case varies by Mosaic version)
-                if (LastPatientGender == null)
-                {
-                    AutomationElement? genderElement = null;
-                    try
-                    {
-                        genderElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
-                            cf.ByName(", AGE",
-                                FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring
-                                | FlaUI.Core.Definitions.PropertyConditionFlags.IgnoreCase));
-                        if (genderElement != null)
-                        {
-                            var genderText = (genderElement.Name ?? "").ToUpperInvariant();
-                            Logger.Trace($"Fast gender/age element found: '{genderElement.Name}'");
-                            if (genderText.StartsWith("MALE"))
-                                LastPatientGender = "Male";
-                            else if (genderText.StartsWith("FEMALE"))
-                                LastPatientGender = "Female";
-
-                            var ageMatch = Regex.Match(genderText, @"AGE\s*(\d+)");
-                            if (ageMatch.Success)
-                                LastPatientAge = int.Parse(ageMatch.Groups[1].Value);
-                        }
-                        else
-                        {
-                            Logger.Trace("Fast gender/age: element not found");
-                        }
-                    }
-                    catch (Exception ex) { Logger.Trace($"Fast gender/age error: {ex.Message}"); }
-                    finally { ReleaseElement(genderElement); }
-                }
-
-                // MRN: "MRN: 12345678"
-                if (LastMrn == null)
-                {
-                    AutomationElement? mrnElement = null;
-                    try
-                    {
-                        mrnElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
-                            cf.ByName("MRN:",
-                                FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring
-                                | FlaUI.Core.Definitions.PropertyConditionFlags.IgnoreCase));
-                        if (mrnElement != null)
-                        {
-                            var mrnName = mrnElement.Name ?? "";
-                            Logger.Trace($"Fast MRN element found: '{mrnName}'");
-                            var mrnMatch = Regex.Match(mrnName, @"MRN:\s*([A-Z0-9]{5,20})", RegexOptions.IgnoreCase);
-                            if (mrnMatch.Success)
-                                LastMrn = mrnMatch.Groups[1].Value.ToUpperInvariant();
-                        }
-                        else
-                        {
-                            Logger.Trace("Fast MRN: element not found");
-                        }
-                    }
-                    catch (Exception ex) { Logger.Trace($"Fast MRN error: {ex.Message}"); }
-                    finally { ReleaseElement(mrnElement); }
-                }
-
-                // Site Code: "Site Code: XXX"
-                if (LastSiteCode == null)
-                {
-                    AutomationElement? siteElement = null;
-                    try
-                    {
-                        siteElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
-                            cf.ByName("Site Code:",
-                                FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring
-                                | FlaUI.Core.Definitions.PropertyConditionFlags.IgnoreCase));
-                        if (siteElement != null)
-                        {
-                            var siteName = siteElement.Name ?? "";
-                            var siteMatch = Regex.Match(siteName, @"Site\s*Code:\s*([A-Z]{2,5})", RegexOptions.IgnoreCase);
-                            if (siteMatch.Success)
-                                LastSiteCode = siteMatch.Groups[1].Value.ToUpperInvariant();
-                        }
-                    }
-                    catch { }
-                    finally { ReleaseElement(siteElement); }
-                }
-
-                // Patient Name: no label prefix, so use gender/age element as anchor and search siblings
-                if (LastPatientName == null && LastPatientGender != null)
-                {
-                    AutomationElement? anchorElement = null;
-                    AutomationElement? parentElement = null;
-                    AutomationElement[]? siblings = null;
-                    try
-                    {
-                        anchorElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
-                            cf.ByName(", AGE",
-                                FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring
-                                | FlaUI.Core.Definitions.PropertyConditionFlags.IgnoreCase));
-                        if (anchorElement != null)
-                        {
-                            parentElement = anchorElement.Parent;
-                            if (parentElement != null)
-                            {
-                                siblings = parentElement.FindAllChildren();
-                                if (siblings != null)
-                                {
-                                    var sibNames = new System.Text.StringBuilder();
-                                    foreach (var sib in siblings)
-                                    {
-                                        try
-                                        {
-                                            var sibName = (sib.Name ?? "").Trim();
-                                            sibNames.Append($"[{sibName}] ");
-                                            if (IsPatientNameCandidate(sibName.ToUpperInvariant()))
-                                            {
-                                                LastPatientName = ToTitleCase(sibName.ToUpperInvariant());
-                                                Logger.Trace($"Fast patient name found: '{LastPatientName}'");
-                                                break;
-                                            }
-                                        }
-                                        catch { }
-                                    }
-                                    if (LastPatientName == null)
-                                        Logger.Trace($"Fast patient name: no match in {siblings.Length} siblings: {sibNames}");
-                                }
-                            }
-                            else
-                            {
-                                Logger.Trace("Fast patient name: anchor parent is null");
-                            }
-                        }
-                        else
-                        {
-                            Logger.Trace("Fast patient name: anchor element ', AGE' not found");
-                        }
-                    }
-                    catch (Exception ex) { Logger.Trace($"Fast patient name error: {ex.Message}"); }
-                    finally
-                    {
-                        ReleaseElements(siblings);
-                        ReleaseElement(parentElement);
-                        ReleaseElement(anchorElement);
-                    }
-                }
-            }
-
-
-            // Mark patient info as done for this accession once key fields are found
-            if (LastPatientGender != null && LastMrn != null && !string.IsNullOrEmpty(LastAccession))
-                _lastPatientInfoAccession = LastAccession;
-
             // Use cached document name if available (avoids fallback search on every scrape)
             var reportDocSearchName = _cachedReportDocName ?? "Report";
 
-            bool runMetadataSweep = checkDraftedStatus && IsMetadataSweepDue(nowTick64, string.IsNullOrEmpty(LastDescription));
-            // Circuit breaker: skip entire metadata sweep after consecutive E_FAIL errors.
-            // The FindAllDescendants COM call itself fails (not just CacheRequest), so retrying
-            // every tick wastes CPU and COM round-trips. Skip for 1 minute, then retry.
-            if (runMetadataSweep && _metadataSweepFailCount >= MetadataSweepFailThreshold
-                && nowTick64 < _metadataSweepDisabledUntilTick64)
-            {
-                runMetadataSweep = false;
-            }
-            if (runMetadataSweep)
-            {
-                // Search for DRAFTED, Report doc, and Description in one traversal using OR condition.
-                // This is expensive, so we throttle it and reuse the last values between sweeps.
-                AutomationElement[]? metadataElements = null;
-                try
-                {
-                    var draftedCondition = _cachedSlimHubWindow.ConditionFactory
-                        .ByControlType(FlaUI.Core.Definitions.ControlType.Text)
-                        .And(_cachedSlimHubWindow.ConditionFactory.ByName("DRAFTED"));
-                    var reportCondition = _cachedSlimHubWindow.ConditionFactory
-                        .ByControlType(FlaUI.Core.Definitions.ControlType.Document)
-                        .And(_cachedSlimHubWindow.ConditionFactory.ByName(reportDocSearchName, FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
-                    var descriptionTextCondition = _cachedSlimHubWindow.ConditionFactory
-                        .ByControlType(FlaUI.Core.Definitions.ControlType.Text)
-                        .And(_cachedSlimHubWindow.ConditionFactory.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
-                    var descriptionButtonCondition = _cachedSlimHubWindow.ConditionFactory
-                        .ByControlType(FlaUI.Core.Definitions.ControlType.Button)
-                        .And(_cachedSlimHubWindow.ConditionFactory.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
-                    var combinedCondition = draftedCondition.Or(reportCondition).Or(descriptionTextCondition).Or(descriptionButtonCondition);
-
-                    // CacheRequest: pre-fetch Name+ControlType for matched descendants.
-                    // Turns ~100 cross-process COM calls into ~1.
-                    // Scoped narrowly — Chrome only supports BuildCache on window-level FindAll.
-                    // Circuit breaker: skip CacheRequest after consecutive failures.
-                    if (IsCacheRequestEnabled(nowTick64))
-                    {
-                        try
-                        {
-                            using (CreatePropertyCacheRequest().Activate())
-                            metadataElements = _cachedSlimHubWindow.FindAllDescendants(combinedCondition);
-                            OnCacheRequestSuccess();
-                        }
-                        catch
-                        {
-                            OnCacheRequestFailure(nowTick64);
-                            // Fallback: retry without CacheRequest
-                            metadataElements = _cachedSlimHubWindow.FindAllDescendants(combinedCondition);
-                        }
-                    }
-                    else
-                    {
-                        metadataElements = _cachedSlimHubWindow.FindAllDescendants(combinedCondition);
-                    }
-                    _lastMetadataSweepTick64 = nowTick64;
-
-                    LastDraftedState = false;
-                    foreach (var el in metadataElements)
-                    {
-                        var elType = el.ControlType;
-                        var elName = (el.Name ?? "");
-                        if (elType == FlaUI.Core.Definitions.ControlType.Text && elName == "DRAFTED")
-                        {
-                            LastDraftedState = true;
-                        }
-                        else if (elType == FlaUI.Core.Definitions.ControlType.Document &&
-                                 elName.Contains(reportDocSearchName) && reportDoc == null)
-                        {
-                            reportDoc = el;
-                        }
-                        else if ((elType == FlaUI.Core.Definitions.ControlType.Text ||
-                                  elType == FlaUI.Core.Definitions.ControlType.Button) &&
-                                 elName.StartsWith("Description:", StringComparison.OrdinalIgnoreCase))
-                        {
-                            var descVal = elName.Substring("Description:".Length).Trim();
-                            if (!string.IsNullOrEmpty(descVal))
-                            {
-                                LastDescription = descVal;
-                                Logger.Trace($"Found Description: {LastDescription}");
-                            }
-                        }
-                    }
-                    _metadataSweepFailCount = 0; // Full success (find + property reads) — reset circuit breaker
-                }
-                catch (Exception ex)
-                {
-                    _metadataSweepFailCount++;
-                    if (_metadataSweepFailCount >= MetadataSweepFailThreshold)
-                    {
-                        _metadataSweepDisabledUntilTick64 = nowTick64 + MetadataSweepCooldownMs;
-                        Logger.Trace($"Metadata sweep circuit breaker: disabled for {MetadataSweepCooldownMs / 1000}s after {_metadataSweepFailCount} consecutive failures");
-                    }
-                    else
-                    {
-                        Logger.Trace($"Metadata sweep error ({_metadataSweepFailCount}/{MetadataSweepFailThreshold}): {ex.Message}");
-                    }
-                }
-                finally
-                {
-                    if (metadataElements != null)
-                        foreach (var el in metadataElements)
-                            if (el != reportDoc) ReleaseElement(el);
-                }
-            }
-            else
-            {
-                reportDoc = _cachedReportDocument;
-                // Skip ControlType validation — it's an extra COM cross-process call per tick.
-                // If the cached document is stale, the FindFirstDescendant below will get a fresh one.
-            }
+            // Use cached report document when not doing a full search
+            reportDoc = _cachedReportDocument;
 
             if (reportDoc == null)
             {
@@ -3050,8 +2879,12 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             if (word.Length <= 3 && (word == "JR" || word == "SR" || word == "II" || word == "III" || word == "IV"))
                 continue;
 
-            // Must be at least 2 characters (for actual name parts)
-            if (word.Length < 2) return false;
+            // Single character: allow uppercase letter (middle initial like "A", "J")
+            if (word.Length == 1)
+            {
+                if (word[0] >= 'A' && word[0] <= 'Z') continue;
+                return false;
+            }
 
             // Check each character: must be A-Z, hyphen, or apostrophe
             foreach (var ch in word)
@@ -3353,8 +3186,6 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         InvalidateMosaicWindowCache();
         ReleaseElement(_cachedDesktop);
         _cachedDesktop = null;
-        // Don't reset _lastPatientInfoAccession — fast extraction checks
-        // LastPatientGender == null etc. and will re-extract on subsequent ticks.
         LastPatientGender = null;
         LastPatientAge = null;
         LastPatientName = null;

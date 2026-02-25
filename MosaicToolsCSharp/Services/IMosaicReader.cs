@@ -21,7 +21,7 @@ public interface IMosaicReader
     bool IsAddendumDetected { get; }
 
     // Data retrieval
-    string? GetFinalReportFast(bool checkDraftedStatus = false);
+    string? GetFinalReportFast();
     string? GetReportTextContent();
     bool IsDiscardDialogVisible();
     bool IsDictationActiveUIA();

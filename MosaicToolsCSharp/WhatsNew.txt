@@ -1,3 +1,12 @@
+3.8.7
+- Fix: Patient name from previous study sent to RVUCounter on study change (stale data for first accession check)
+- Fix: DRAFTED status not detected when it appears before accession in Mosaic sibling order
+- Performance: Single-pass extraction replaces 6+ separate FindFirstDescendant tree walks per scrape
+- Performance: Cache "Current Study" parent container — skips full tree walk on accession checks
+- Performance: Removed redundant targeted DRAFTED check (already extracted in single-pass)
+- Performance: Patient name middle initial fix — prevents retry-every-tick when name has single-letter word
+- Performance: UIA reset interval increased from 5min to 30min (cold-start penalty was 11-18s)
+
 3.8.6
 - Fix: Report popup briefly showing transcript text during editor rebuild after Process Report
 - Fix: Report popup not clearing immediately on sign or accession change

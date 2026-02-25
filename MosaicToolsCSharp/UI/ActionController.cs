@@ -3145,14 +3145,8 @@ public class ActionController : IDisposable
             // ProseMirror search throttle (3s instead of 10s) for faster report pickup.
             _automationService.IsBurstModeActive = IsReportBurstModeActive(nowTick64);
 
-            // Only check drafted status if we need it for features
-            // Also need it for macros since Description extraction happens during drafted check
-            bool needDraftedCheck = _config.ShowDraftedIndicator ||
-                                    _config.ShowImpression ||
-                                    (_config.MacrosEnabled && _config.Macros.Count > 0);
-
             // Scrape Mosaic for report data
-            var reportText = _mosaicReader.GetFinalReportFast(needDraftedCheck);
+            var reportText = _mosaicReader.GetFinalReportFast();
 
             // Bail out if user action started during the scrape
             if (_isUserActive) return;
