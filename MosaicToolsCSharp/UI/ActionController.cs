@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -100,15 +101,15 @@ public class ActionController : IDisposable
     // Impression delete state
     private string? _pendingImpressionReplaceText;
     private volatile bool _impressionDeletePending;
-    private int NormalScrapeIntervalMs => _config.ScrapeIntervalSeconds * 1000;
-    private int _fastScrapeIntervalMs = 1000;
+    private int NormalScrapeIntervalMs => Math.Max(_config.ScrapeIntervalSeconds * 1000, 3000); // Floor at 3s — heavy UIA calls cause system lag
+    private int _fastScrapeIntervalMs = 1000; // Burst-mode interval for responsive UI after actions
     private int _studyLoadScrapeIntervalMs = 500;
     private const int IdleScrapeIntervalMs = 10_000; // Slow polling when no study is open
     private const int DeepIdleScrapeIntervalMs = 30_000; // Very slow polling after extended idle (reduces UIA load)
-    private const int SteadyStateReportScrapeMinIntervalMs = 2500; // Throttle unchanged report polling while study is stable
-    private const int DictationStopBurstMs = 5000; // Keep fast scrapes briefly for final transcript/render updates
-    private const int ProcessReportBurstMs = 30000; // Mosaic can rebuild editor for a while after Alt+P
-    private const int ShowReportBurstMs = 15000; // Keep popup-fed updates responsive after opening/toggling
+    private const int SteadyStateReportScrapeMinIntervalMs = 3000; // Throttle unchanged report polling while study is stable
+    private const int DictationStopBurstMs = 3000; // Brief burst for final transcript/render updates
+    private const int ProcessReportBurstMs = 20000; // Mosaic editor rebuild takes 15-18s
+    private const int ShowReportBurstMs = 5000; // Brief burst after opening report popup
     private int _consecutiveIdleScrapes = 0; // Counts scrapes with no report content
     private int _scrapesSinceLastGc = 0; // Counter for periodic GC to release FlaUI COM wrappers
     private int _scrapeHeartbeatCount = 0; // Heartbeat counter for diagnostic logging
@@ -121,10 +122,8 @@ public class ActionController : IDisposable
     private DateTime _lastSyncTime = DateTime.Now;
     private readonly System.Threading.Timer? _syncTimer;
     // Dedicated scrape thread (replaces System.Threading.Timer to avoid ThreadPool saturation)
-    private Thread? _scrapeThread;
-    private CancellationTokenSource? _scrapeStopCts;
-    private readonly ManualResetEventSlim _scrapeWakeEvent = new(false);
-    private volatile int _scrapeIntervalMs;
+    private System.Threading.Timer? _scrapeTimer;
+    private volatile int _scrapeRunning; // Reentrancy guard (0=idle, 1=running)
     private DateTime _lastManualToggleTime = DateTime.MinValue;
     private int _consecutiveInactiveCount = 0; // For indicator debounce
 
@@ -250,7 +249,7 @@ public class ActionController : IDisposable
         _pipeService = new PipeService();
         _pipeService.Start();
         _templateDatabase = new TemplateDatabase();
-        _aidocService = new AidocService(_automationService.Automation);
+        _aidocService = new AidocService(_automationService);
         _radAiService = RadAiService.TryCreate();  // [RadAI]
 
         _actionThread = new Thread(ActionLoop) { IsBackground = true };
@@ -417,7 +416,7 @@ public class ActionController : IDisposable
                     transcript = char.ToLower(transcript[0]) + transcript[1..];
 
                 var hasTextToPaste = transcript.Length > 0;
-                var textToPaste = " " + transcript;
+                var textToPaste = " " + transcript + " ";
 
                 // Capture trigger info for use on STA thread
                 var triggerKind = voiceTrigger.Kind;
@@ -814,9 +813,8 @@ public class ActionController : IDisposable
             Thread.Sleep(syncDelayMs);
             if (_syncCheckToken != currentToken) return;
 
-            // Check registry + UIA fallback
+            // Check registry (UIA fallback disabled — creating UIA3Automation per call is extremely heavy)
             bool? isRealActive = NativeWindows.IsMicrophoneActiveFromRegistry();
-            if (isRealActive == null) isRealActive = NativeWindows.IsMicrophoneActiveFromUia();
 
             if (isRealActive == true && !_dictationActive)
             {
@@ -977,9 +975,7 @@ public class ActionController : IDisposable
         }
 
         Logger.Trace($"Dictation toggle initiated. State: {_dictationActive}");
-        if (_dictationActive)
-            RequestReportScrapeBurst(_fastScrapeIntervalMs * 4, "Dictation started");
-        else
+        if (!_dictationActive)
             RequestReportScrapeBurst(DictationStopBurstMs, "Dictation stopped");
     }
 
@@ -1037,9 +1033,7 @@ public class ActionController : IDisposable
         }
 
         Logger.Trace($"CustomSTT: Recording toggled to {newState}");
-        if (newState)
-            RequestReportScrapeBurst(_fastScrapeIntervalMs * 4, "CustomSTT started");
-        else
+        if (!newState)
             RequestReportScrapeBurst(DictationStopBurstMs, "CustomSTT stopped");
     }
 
@@ -1136,7 +1130,11 @@ public class ActionController : IDisposable
                 NativeWindows.SendAltKey('P');
             }
         }
-        
+
+        // Invalidate the cached ProseMirror editor element. After Alt+P, Mosaic rebuilds
+        // the editor — the old cached element returns stale pre-process text for 10-15s.
+        _mosaicReader.InvalidateEditorCache();
+
         // Scroll down if enabled (3 rapid Page Down presses)
         // Scroll down if enabled (Smart Scroll)
         if (_config.ScrollToBottomOnProcess)
@@ -1301,8 +1299,7 @@ public class ActionController : IDisposable
 
     private void RestartScrapeTimer(int intervalMs)
     {
-        _scrapeIntervalMs = intervalMs;
-        _scrapeWakeEvent.Set(); // Wake the thread so it picks up the new interval immediately
+        _scrapeTimer?.Change(intervalMs, intervalMs);
         Logger.Trace($"Scrape timer interval changed to {intervalMs}ms");
     }
 
@@ -1319,7 +1316,7 @@ public class ActionController : IDisposable
             if (Interlocked.CompareExchange(ref _reportBurstUntilTick64, requestedUntil, current) == current)
             {
                 Logger.Trace($"Report scrape burst requested: {reason} ({durationMs}ms)");
-                if (!_searchingForImpression && _scrapeThread != null)
+                if (!_searchingForImpression && _scrapeTimer != null)
                     RestartScrapeTimer(_fastScrapeIntervalMs);
                 return;
             }
@@ -1334,11 +1331,13 @@ public class ActionController : IDisposable
 
     private bool IsReportBurstModeActive(long nowTick64)
     {
-        if (_dictationActive) return true;
         if (_searchingForImpression) return true;
         if (_needsBaselineCapture) return true;
         if (_radAiAutoInsertPending) return true;
-        if (IsReportPopupVisible()) return true;
+        // Note: _dictationActive and IsReportPopupVisible deliberately excluded —
+        // they were keeping burst mode permanently active during normal reading,
+        // defeating the adaptive throttle and hammering UIA every 1s.
+        // Dictation/popup updates use timed bursts (RequestReportScrapeBurst) instead.
         return nowTick64 < Interlocked.Read(ref _reportBurstUntilTick64);
     }
 
@@ -2870,26 +2869,37 @@ public class ActionController : IDisposable
             Thread.Sleep(100);
         }
 
+        // Kick off burst scraping so popup catches the update quickly
+        RequestReportScrapeBurst(5000, "RadAI Insert");
+
         // Overlay mode: verify the paste succeeded, then auto-close
         if (_currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed)
         {
-            Thread.Sleep(500); // Give Mosaic time to process the paste
-            _mosaicReader.GetFinalReportFast();
-            var updatedReport = _mosaicReader.LastFinalReport ?? "";
-
-            // Verify: check if the first impression item appears in the report
+            // Verify with retries — Mosaic needs time to process the paste and
+            // the UIA cached element may not reflect the new content immediately.
             bool verified = false;
-            if (items.Length > 0 && !string.IsNullOrEmpty(updatedReport))
+            string updatedReport = "";
+            var checkText = items.Length > 0 ? items[0].Trim() : "";
+            if (checkText.Length > 30) checkText = checkText.Substring(0, 30);
+
+            for (int attempt = 0; attempt < 3 && !verified; attempt++)
             {
-                var checkText = items[0].Trim();
-                if (checkText.Length > 30) checkText = checkText.Substring(0, 30);
-                verified = updatedReport.Contains(checkText, StringComparison.OrdinalIgnoreCase);
+                Thread.Sleep(attempt == 0 ? 500 : 1000);
+                _mosaicReader.InvalidateEditorCache(); // Force fresh read
+                _mosaicReader.GetFinalReportFast();
+                updatedReport = _mosaicReader.LastFinalReport ?? "";
+                if (!string.IsNullOrEmpty(checkText) && !string.IsNullOrEmpty(updatedReport))
+                    verified = updatedReport.Contains(checkText, StringComparison.OrdinalIgnoreCase);
+                if (!verified)
+                    Logger.Trace($"RadAI Insert: Verification attempt {attempt + 1}/3 failed");
             }
 
             if (verified)
             {
                 Logger.Trace("RadAI Insert: Verified — impression found in report");
                 _pendingRadAiImpressionItems = null;
+                // Push updated report to popup immediately (bypass BatchUI for instant update)
+                UpdateReportPopup(updatedReport, immediate: true);
                 InvokeUI(() =>
                 {
                     if (_currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed)
@@ -2904,13 +2914,34 @@ public class ActionController : IDisposable
             }
             else
             {
-                Logger.Trace("RadAI Insert: Verification failed — impression not found in report");
-                InvokeUI(() => _mainForm.ShowStatusToast("RadAI insert may have failed — try again", 4000));
+                Logger.Trace("RadAI Insert: Verification failed after 3 attempts — proceeding anyway");
+                // Proceed with best-effort: close overlay and mark as inserted
+                _pendingRadAiImpressionItems = null;
+                if (!string.IsNullOrEmpty(updatedReport))
+                    UpdateReportPopup(updatedReport, immediate: true);
+                InvokeUI(() =>
+                {
+                    if (_currentRadAiOverlay != null && !_currentRadAiOverlay.IsDisposed)
+                    {
+                        try { _currentRadAiOverlay.Close(); } catch { }
+                        _currentRadAiOverlay = null;
+                    }
+                    if (_currentReportPopup is { IsDisposed: false })
+                        _currentReportPopup.SetRadAiImpressionActive(true);
+                    _mainForm.ShowStatusToast("RadAI impression inserted", 3000);
+                });
             }
         }
         else
         {
-            // Classic popup mode: no verification, just toast
+            // Classic popup mode: scrape and push to popup immediately
+            Thread.Sleep(500);
+            _mosaicReader.InvalidateEditorCache(); // Force fresh read after paste
+            _mosaicReader.GetFinalReportFast();
+            var updatedReport = _mosaicReader.LastFinalReport;
+            if (!string.IsNullOrEmpty(updatedReport))
+                UpdateReportPopup(updatedReport, immediate: true);
+            _pendingRadAiImpressionItems = null;
             Logger.Trace("RadAI Insert: Impression replaced in report");
             InvokeUI(() =>
             {
@@ -3039,226 +3070,264 @@ public class ActionController : IDisposable
 
     private void StartMosaicScrapeTimer()
     {
-        if (_scrapeThread != null) return; // Already running
+        if (_scrapeTimer != null) return;
 
-        _scrapeIntervalMs = NormalScrapeIntervalMs;
-        _scrapeStopCts = new CancellationTokenSource();
-        var cts = _scrapeStopCts;
-
-        Logger.Trace($"Starting Mosaic scrape thread ({_config.ScrapeIntervalSeconds}s interval)...");
-        _scrapeThread = new Thread(() => ScrapeThreadLoop(cts.Token))
-        {
-            Name = "MosaicScrape",
-            IsBackground = true,
-            Priority = ThreadPriority.Lowest
-        };
-        // Set Win32 THREAD_MODE_BACKGROUND_BEGIN permanently on this thread
-        _scrapeThread.Start();
+        int intervalMs = NormalScrapeIntervalMs;
+        Logger.Trace($"Starting Mosaic scrape timer ({_config.ScrapeIntervalSeconds}s interval)...");
+        _scrapeTimer = new System.Threading.Timer(ScrapeTimerCallback, null, intervalMs, intervalMs);
     }
 
-    private void ScrapeThreadLoop(CancellationToken ct)
+    private void ScrapeTimerCallback(object? state)
     {
-        // Enter permanent background mode on this thread
-        try { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN); } catch { }
-
-        while (!ct.IsCancellationRequested)
+        // Reentrancy guard — if previous tick is still running, skip this one
+        if (Interlocked.CompareExchange(ref _scrapeRunning, 1, 0) != 0)
         {
-            // Sleep for the configured interval, wake early on interval change or stop
-            _scrapeWakeEvent.Reset();
-            _scrapeWakeEvent.Wait(_scrapeIntervalMs, ct);
-            if (ct.IsCancellationRequested) break;
-
-            if (_isUserActive) continue; // Don't scrape during user actions
-
-            Interlocked.Exchange(ref _scrapeStartedTicks, DateTime.UtcNow.Ticks);
-
-            try
+            // Watchdog: if a scrape has been running for >30s, it's probably hung in a COM call.
+            // Force-release the guard so future scrapes aren't permanently blocked.
+            var startTicks = Interlocked.Read(ref _scrapeStartedTicks);
+            if (startTicks > 0)
             {
-                long nowTick64 = Environment.TickCount64;
-                if (ShouldThrottleFullReportScrape(nowTick64))
-                    continue;
-                Interlocked.Exchange(ref _lastFullReportScrapeTick64, nowTick64);
-
-                // Only check drafted status if we need it for features
-                // Also need it for macros since Description extraction happens during drafted check
-                bool needDraftedCheck = _config.ShowDraftedIndicator ||
-                                        _config.ShowImpression ||
-                                        (_config.MacrosEnabled && _config.Macros.Count > 0);
-
-                // Scrape Mosaic for report data
-                var reportText = _mosaicReader.GetFinalReportFast(needDraftedCheck);
-
-                // Bail out if user action started during the scrape
-                if (_isUserActive) continue;
-
-                // Idle backoff: slow down scraping when no report content is found
-                // (either no study open, or study visible but ProseMirror not accessible)
-                // Two tiers: 10s after 3 idle scrapes, 30s after 10 idle scrapes.
-                // Heavy FlaUI/UIA calls every few seconds cause system-wide input lag
-                // (mouse jumpiness, keyboard hook death) even when finding nothing.
-                bool suppressIdleBackoff = IsReportBurstModeActive(nowTick64);
-                if (string.IsNullOrEmpty(reportText))
+                var elapsed = (DateTime.UtcNow.Ticks - startTicks) / (double)TimeSpan.TicksPerSecond;
+                if (elapsed > 30)
                 {
-                    _consecutiveIdleScrapes++;
-                    if (!suppressIdleBackoff)
+                    Logger.Trace($"Scrape watchdog: force-releasing hung scrape after {elapsed:F0}s");
+                    Interlocked.Exchange(ref _scrapeRunning, 0);
+                    Interlocked.Exchange(ref _scrapeStartedTicks, 0);
+                    // Don't proceed on this tick — let the next timer fire start fresh
+                }
+            }
+            return;
+        }
+
+        if (_isUserActive) { Interlocked.Exchange(ref _scrapeRunning, 0); return; }
+
+        // Enter background mode for this callback only (lower CPU/IO/memory priority)
+        bool enteredBackground = false;
+        try { enteredBackground = SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN); } catch { }
+
+        Interlocked.Exchange(ref _scrapeStartedTicks, DateTime.UtcNow.Ticks);
+        long tickStartTick64 = Environment.TickCount64;
+
+        try
+        {
+            // Periodic UIA reset: UIAutomationCore.dll accumulates native state
+            // from cross-process calls. Reset every 10 minutes to prevent unbounded growth.
+            _automationService.CheckPeriodicUiaReset();
+
+            long nowTick64 = Environment.TickCount64;
+            if (ShouldThrottleFullReportScrape(nowTick64))
+                return;
+            Interlocked.Exchange(ref _lastFullReportScrapeTick64, nowTick64);
+
+            // Tell AutomationService whether burst mode is active so it can relax the
+            // ProseMirror search throttle (3s instead of 10s) for faster report pickup.
+            _automationService.IsBurstModeActive = IsReportBurstModeActive(nowTick64);
+
+            // Only check drafted status if we need it for features
+            // Also need it for macros since Description extraction happens during drafted check
+            bool needDraftedCheck = _config.ShowDraftedIndicator ||
+                                    _config.ShowImpression ||
+                                    (_config.MacrosEnabled && _config.Macros.Count > 0);
+
+            // Scrape Mosaic for report data
+            var reportText = _mosaicReader.GetFinalReportFast(needDraftedCheck);
+
+            // Bail out if user action started during the scrape
+            if (_isUserActive) return;
+
+            // Idle backoff: slow down scraping when no report content is found
+            // (either no study open, or study visible but ProseMirror not accessible)
+            // Two tiers: 10s after 3 idle scrapes, 30s after 10 idle scrapes.
+            // Heavy FlaUI/UIA calls every few seconds cause system-wide input lag
+            // (mouse jumpiness, keyboard hook death) even when finding nothing.
+            bool suppressIdleBackoff = IsReportBurstModeActive(nowTick64);
+            if (string.IsNullOrEmpty(reportText))
+            {
+                _consecutiveIdleScrapes++;
+                if (!suppressIdleBackoff)
+                {
+                    if (_consecutiveIdleScrapes >= 10)
                     {
-                        if (_consecutiveIdleScrapes >= 10)
-                        {
-                            RestartScrapeTimer(DeepIdleScrapeIntervalMs);
-                            if (_consecutiveIdleScrapes == 10)
-                                Logger.Trace("Scrape deep idle: slowing to 30s (extended no report content)");
-                        }
-                        else if (_consecutiveIdleScrapes >= 3)
-                        {
-                            RestartScrapeTimer(IdleScrapeIntervalMs);
-                            if (_consecutiveIdleScrapes == 3)
-                                Logger.Trace("Scrape idle backoff: slowing to 10s (no report content)");
-                        }
+                        RestartScrapeTimer(DeepIdleScrapeIntervalMs);
+                        if (_consecutiveIdleScrapes == 10)
+                            Logger.Trace("Scrape deep idle: slowing to 30s (extended no report content)");
+                    }
+                    else if (_consecutiveIdleScrapes >= 3)
+                    {
+                        RestartScrapeTimer(IdleScrapeIntervalMs);
+                        if (_consecutiveIdleScrapes == 3)
+                            Logger.Trace("Scrape idle backoff: slowing to 10s (no report content)");
                     }
                 }
-                else if (_consecutiveIdleScrapes > 0)
-                {
-                    _consecutiveIdleScrapes = 0;
-                    // Restore normal rate (unless fast/study-load mode is active)
-                    if (!_searchingForImpression && !_needsBaselineCapture && !IsReportBurstModeActive(nowTick64))
-                        RestartScrapeTimer(NormalScrapeIntervalMs);
-                }
+            }
+            else if (_consecutiveIdleScrapes > 0)
+            {
+                _consecutiveIdleScrapes = 0;
+                // Restore normal rate (unless fast/study-load mode is active)
+                if (!_searchingForImpression && !_needsBaselineCapture && !IsReportBurstModeActive(nowTick64))
+                    RestartScrapeTimer(NormalScrapeIntervalMs);
+            }
 
-                // Scrape heartbeat: log every ~120 ticks (~4 min at 2s) to confirm timer is alive
-                _scrapeHeartbeatCount++;
-                if (_scrapeHeartbeatCount >= 120)
-                {
-                    _scrapeHeartbeatCount = 0;
-                    var acc = _mosaicReader.LastAccession ?? "(none)";
-                    Logger.Trace($"Scrape heartbeat: acc={acc}, idle={_consecutiveIdleScrapes}, clinHist={_clinicalHistoryVisible}");
-                }
+            // Scrape heartbeat: log every ~120 ticks (~4 min at 2s) to confirm timer is alive
+            _scrapeHeartbeatCount++;
+            if (_scrapeHeartbeatCount >= 120)
+            {
+                _scrapeHeartbeatCount = 0;
+                var acc = _mosaicReader.LastAccession ?? "(none)";
+                var proc = Process.GetCurrentProcess();
+                long managedMb = GC.GetTotalMemory(false) / (1024 * 1024);
+                long workingSetMb = proc.WorkingSet64 / (1024 * 1024);
+                long privateMb = proc.PrivateMemorySize64 / (1024 * 1024);
+                int handles = proc.HandleCount;
+                int threads = proc.Threads.Count;
+                int gen0 = GC.CollectionCount(0);
+                int gen1 = GC.CollectionCount(1);
+                int gen2 = GC.CollectionCount(2);
+                Logger.Trace($"Scrape heartbeat: acc={acc}, idle={_consecutiveIdleScrapes}, clinHist={_clinicalHistoryVisible}");
+                long uiaCalls = _automationService.UiaCallCount;
+                Logger.Trace($"  Memory: managed={managedMb}MB, workingSet={workingSetMb}MB, private={privateMb}MB, handles={handles}, threads={threads}, GC={gen0}/{gen1}/{gen2}, uiaCalls={uiaCalls}");
+            }
 
-                // Periodic GC: safety net for any COM wrappers that escape deterministic release
-                // (e.g., _cachedSlimHubWindow, elements accessed via indexed properties).
-                // Most COM objects are now released immediately via ReleaseElement/ReleaseElements,
-                // so this runs much less frequently as a backstop.
-                _scrapesSinceLastGc++;
-                if (_scrapesSinceLastGc >= 120)
-                {
-                    _scrapesSinceLastGc = 0;
-                    GC.Collect(2, GCCollectionMode.Forced);
-                    GC.WaitForPendingFinalizers();
-                }
+            // Periodic GC: safety net for COM wrappers that escape deterministic release
+            // (e.g., cached elements, elements accessed via indexed properties).
+            // Most COM objects are released immediately via ReleaseElement/ReleaseElements.
+            // Every 120 ticks (~6 min at 3s) as a backstop.
+            _scrapesSinceLastGc++;
+            if (_scrapesSinceLastGc >= 120)
+            {
+                _scrapesSinceLastGc = 0;
+                GC.Collect(2, GCCollectionMode.Forced);
+                GC.WaitForPendingFinalizers();
+            }
 
-                // [RadAI] Auto-insert: trigger when scrape succeeds after Process Report.
-                // After Alt+P, Mosaic rebuilds the editor (15-25s). During rebuild, GetFinalReportFast
-                // returns stale cached text (U+FFFC filter). Once the editor stabilizes, the scrape
-                // returns fresh text that differs from the pre-process snapshot — that's our signal.
-                if (_radAiAutoInsertPending && !string.IsNullOrEmpty(reportText))
+            // [RadAI] Auto-insert: trigger when scrape succeeds after Process Report.
+            // After Alt+P, Mosaic rebuilds the editor (15-25s). During rebuild, GetFinalReportFast
+            // returns stale cached text (U+FFFC filter). Once the editor stabilizes, the scrape
+            // returns fresh text that differs from the pre-process snapshot — that's our signal.
+            if (_radAiAutoInsertPending && !string.IsNullOrEmpty(reportText))
+            {
+                if ((DateTime.Now - _radAiAutoInsertRequestTime).TotalSeconds > 60)
                 {
-                    if ((DateTime.Now - _radAiAutoInsertRequestTime).TotalSeconds > 60)
+                    Logger.Trace("RadAI: Auto-insert timed out (60s), cancelling");
+                    _radAiAutoInsertPending = false;
+                }
+                else
+                {
+                    var preProcess = _radAiPreProcessReport ?? "";
+                    if (reportText != preProcess
+                        && reportText.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase))
                     {
-                        Logger.Trace("RadAI: Auto-insert timed out (60s), cancelling");
+                        Logger.Trace($"RadAI: Report stabilized after Process Report ({reportText.Length} chars), triggering auto-insert");
                         _radAiAutoInsertPending = false;
-                    }
-                    else
-                    {
-                        var preProcess = _radAiPreProcessReport ?? "";
-                        if (reportText != preProcess
-                            && reportText.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase))
-                        {
-                            Logger.Trace($"RadAI: Report stabilized after Process Report ({reportText.Length} chars), triggering auto-insert");
-                            _radAiAutoInsertPending = false;
-                            _actionQueue.Enqueue(new ActionRequest { Action = Actions.RadAiImpression, Source = "AutoProcess" });
-                            _actionQueue.Enqueue(new ActionRequest { Action = "__RadAiInsert__", Source = "AutoProcess" });
-                        }
+                        _actionQueue.Enqueue(new ActionRequest { Action = Actions.RadAiImpression, Source = "AutoProcess" });
+                        _actionQueue.Enqueue(new ActionRequest { Action = "__RadAiInsert__", Source = "AutoProcess" });
                     }
                 }
-
-                // Check for new study (non-empty accession different from last non-empty)
-                var currentAccession = _mosaicReader.LastAccession;
-
-                // Clear stale Clario data when accession changes, before pipe send
-                if (!string.IsNullOrEmpty(currentAccession) && currentAccession != _lastNonEmptyAccession)
-                {
-                    _automationService.ClearStrokeState();
-                }
-
-                // Send study data over pipe (only sends when changed, record equality)
-                _pipeService.SendStudyData(new StudyDataMessage(
-                    Type: "study_data",
-                    Accession: currentAccession,
-                    Description: _mosaicReader.LastDescription,
-                    TemplateName: _mosaicReader.LastTemplateName,
-                    PatientName: _mosaicReader.LastPatientName,
-                    PatientGender: _mosaicReader.LastPatientGender,
-                    Mrn: _mosaicReader.LastMrn,
-                    SiteCode: _mosaicReader.LastSiteCode,
-                    ClarioPriority: _automationService.LastClarioPriority,
-                    ClarioClass: _automationService.LastClarioClass,
-                    Drafted: _mosaicReader.LastDraftedState,
-                    HasCritical: !string.IsNullOrEmpty(currentAccession) && HasCriticalNoteForAccession(currentAccession),
-                    Timestamp: DateTime.UtcNow.ToString("o")
-                ));
-
-                // Check for discard dialog (RVUCounter integration)
-                // Must check BEFORE accession change detection - dialog disappears when user clicks YES
-                // Only check during a brief window after Process/Sign Report to avoid unnecessary FlaUI tree search every tick
-                if (!string.IsNullOrEmpty(currentAccession)
-                    && nowTick64 < _discardDialogCheckUntilTick64
-                    && _mosaicReader.IsDiscardDialogVisible())
-                {
-                    _discardDialogShownForCurrentAccession = true;
-                    Logger.Trace("RVUCounter: Discard dialog detected for current accession");
-                }
-
-                // Detect accession change with flap debounce
-                var (accessionChanged, studyClosed) = DetectAccessionChange(currentAccession);
-
-                if (accessionChanged)
-                    OnStudyChanged(currentAccession, reportText, studyClosed);
-
-                UpdateRecoMd(currentAccession, reportText);
-
-                RecordTemplateIfNeeded(reportText);
-
-                CaptureBaselineReport(reportText);
-
-                UpdateReportPopup(reportText);
-
-                InsertPendingMacros(currentAccession, reportText);
-
-                UpdateClinicalHistoryAndAlerts(currentAccession, reportText);
-
-                UpdateImpressionDisplay(reportText);
-
-                // Re-assert topmost on all tool windows periodically.
-                // Other apps (Chrome, InteleViewer) can steal topmost status;
-                // without this, our windows stay behind until an action is triggered.
-                BatchUI(() => _mainForm.EnsureWindowsOnTop());
             }
-            catch (Exception ex)
+
+            // Check for new study (non-empty accession different from last non-empty)
+            var currentAccession = _mosaicReader.LastAccession;
+
+            // Clear stale Clario data when accession changes, before pipe send
+            if (!string.IsNullOrEmpty(currentAccession) && currentAccession != _lastNonEmptyAccession)
             {
-                Logger.Trace($"Mosaic scrape error: {ex.Message}");
+                _automationService.ClearStrokeState();
             }
-            finally
+
+            // Send study data over pipe (only sends when changed, record equality)
+            _pipeService.SendStudyData(new StudyDataMessage(
+                Type: "study_data",
+                Accession: currentAccession,
+                Description: _mosaicReader.LastDescription ?? _mosaicReader.LastTemplateName,
+                TemplateName: _mosaicReader.LastTemplateName,
+                PatientName: _mosaicReader.LastPatientName,
+                PatientGender: _mosaicReader.LastPatientGender,
+                Mrn: _mosaicReader.LastMrn,
+                SiteCode: _mosaicReader.LastSiteCode,
+                ClarioPriority: _automationService.LastClarioPriority,
+                ClarioClass: _automationService.LastClarioClass,
+                Drafted: _mosaicReader.LastDraftedState,
+                HasCritical: !string.IsNullOrEmpty(currentAccession) && HasCriticalNoteForAccession(currentAccession),
+                Timestamp: DateTime.UtcNow.ToString("o")
+            ));
+
+            // Check for discard dialog (RVUCounter integration)
+            // Must check BEFORE accession change detection - dialog disappears when user clicks YES
+            // Only check during a brief window after Process/Sign Report to avoid unnecessary FlaUI tree search every tick
+            if (!string.IsNullOrEmpty(currentAccession)
+                && nowTick64 < _discardDialogCheckUntilTick64
+                && _mosaicReader.IsDiscardDialogVisible())
             {
-                // Flush all batched UI updates in a single BeginInvoke call.
-                // This reduces WM_USER message spam that can cause Windows to
-                // silently remove the low-level keyboard hook.
-                FlushUI();
-                Interlocked.Exchange(ref _scrapeStartedTicks, 0);
+                _discardDialogShownForCurrentAccession = true;
+                Logger.Trace("RVUCounter: Discard dialog detected for current accession");
             }
+
+            // Detect accession change with flap debounce
+            var (accessionChanged, studyClosed) = DetectAccessionChange(currentAccession);
+
+            if (accessionChanged)
+                OnStudyChanged(currentAccession, reportText, studyClosed);
+
+            // Close report popup immediately when accession goes empty (don't wait for debounce).
+            // The debounce protects state reset / RVU notifications from false flaps, but there's
+            // no reason to keep showing stale report content during the 3-tick confirmation window.
+            if (_pendingCloseAccession != null && _pendingCloseTickCount == 1
+                && _currentReportPopup != null && !_currentReportPopup.IsDisposed)
+            {
+                var stalePopup = _currentReportPopup;
+                _currentReportPopup = null;
+                _lastPopupReportText = null;
+                InvokeUI(() => { try { stalePopup.Close(); } catch { } });
+            }
+
+            UpdateRecoMd(currentAccession, reportText);
+
+            RecordTemplateIfNeeded(reportText);
+
+            CaptureBaselineReport(reportText);
+
+            UpdateReportPopup(reportText);
+
+            InsertPendingMacros(currentAccession, reportText);
+
+            UpdateClinicalHistoryAndAlerts(currentAccession, reportText, tickStartTick64);
+
+            UpdateImpressionDisplay(reportText);
+
+            // Re-assert topmost on all tool windows periodically.
+            // Other apps (Chrome, InteleViewer) can steal topmost status;
+            // without this, our windows stay behind until an action is triggered.
+            BatchUI(() => _mainForm.EnsureWindowsOnTop());
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Mosaic scrape error: {ex.Message}");
+        }
+        finally
+        {
+            // Exit background mode before flushing UI
+            if (enteredBackground)
+                try { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END); } catch { }
+
+            // Flush all batched UI updates in a single BeginInvoke call.
+            // This reduces WM_USER message spam that can cause Windows to
+            // silently remove the low-level keyboard hook.
+            FlushUI();
+            Interlocked.Exchange(ref _scrapeStartedTicks, 0);
+
+            // Log total tick duration (UIA + processing + UI flush) for degradation tracking
+            long tickMs = Environment.TickCount64 - tickStartTick64;
+            if (tickMs > 500)
+                Logger.Trace($"Scrape tick: {tickMs}ms total");
+
+            Interlocked.Exchange(ref _scrapeRunning, 0);
         }
     }
 
     private void StopMosaicScrapeTimer()
     {
-        if (_scrapeThread != null)
-        {
-            Logger.Trace("Stopping Mosaic scrape thread...");
-            _scrapeStopCts?.Cancel();
-            _scrapeWakeEvent.Set(); // Wake thread so it sees cancellation
-            _scrapeThread.Join(5000);
-            _scrapeStopCts?.Dispose();
-            _scrapeStopCts = null;
-            _scrapeThread = null;
-        }
+        _scrapeTimer?.Dispose();
+        _scrapeTimer = null;
     }
     
     public void ToggleMosaicScraper(bool enabled)
@@ -3422,12 +3491,20 @@ public class ActionController : IDisposable
         _templateRecordedForStudy = false;
         _lastPopupReportText = null;
         _mosaicReader.ClearLastReport();
-        // Close stale report popup from prior study
+
+        // Full UIA reset: dispose and recreate the UIA automation connection.
+        // Chrome's accessibility tree grows from repeated FindAllDescendants calls and never
+        // shrinks. Resetting the connection forces Chrome to rebuild from scratch. Study change
+        // is the ideal time — user can't dictate for a few seconds anyway.
+        _automationService.ResetUiaConnection();
+        _scrapesSinceLastGc = 0; // GC already ran inside ResetUiaConnection
+
+        // Close stale report popup from prior study (immediate — don't defer via BatchUI)
         if (_currentReportPopup != null && !_currentReportPopup.IsDisposed)
         {
             var stalePopup = _currentReportPopup;
             _currentReportPopup = null;
-            BatchUI(() => { try { stalePopup.Close(); } catch { } });
+            InvokeUI(() => { try { stalePopup.Close(); } catch { } });
         }
         // [RadAI] Cancel pending auto-insert and close stale popup/overlay from prior study
         _radAiAutoInsertPending = false;
@@ -3509,13 +3586,11 @@ public class ActionController : IDisposable
             _searchingForImpression = false;
             _impressionFromProcessReport = false;
 
-            // Always extract Clario Priority/Class for pipe broadcasts
-            // Stroke detection UI logic only runs if that feature is enabled
-            ExtractClarioPriorityAndClass(currentAccession);
-
-            // If Clario hasn't caught up yet (accession mismatch / null priority),
-            // flag for retry on subsequent scrape ticks
-            _pendingClarioPriorityRetry = string.IsNullOrEmpty(_automationService.LastClarioPriority);
+            // Defer Clario Priority/Class extraction to subsequent ticks.
+            // UIA connection was just reset — doing a depth-12 Chrome traversal on
+            // the same tick as GetFinalReportFast causes 15+ second mega-ticks.
+            // The retry mechanism handles it on the next tick(s).
+            _pendingClarioPriorityRetry = true;
             _clarioPriorityRetryCount = 0;
             _nextClarioPriorityRetryTick64 = 0;
 
@@ -3759,7 +3834,7 @@ public class ActionController : IDisposable
     /// Also detects auto-processing on drafted studies.
     /// Future API: replaced by report.changed event handler.
     /// </summary>
-    private void UpdateReportPopup(string? reportText)
+    private void UpdateReportPopup(string? reportText, bool immediate = false)
     {
         // Detect auto-processing on drafted studies: if baseline was captured and report changed, enable diff
         if (!_draftedAutoProcessDetected && !_processReportPressedForCurrentAccession
@@ -3781,7 +3856,11 @@ public class ActionController : IDisposable
             {
                 Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
                 _lastPopupReportText = reportText;
-                BatchUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
+                // immediate=true bypasses BatchUI for instant update (used by RadAI insert)
+                if (immediate)
+                    InvokeUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
+                else
+                    BatchUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
             }
             else if (string.IsNullOrEmpty(reportText) && !string.IsNullOrEmpty(_lastPopupReportText))
             {
@@ -3791,11 +3870,12 @@ public class ActionController : IDisposable
                 BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
             }
             else if (!string.IsNullOrEmpty(reportText) &&
-                (!_processReportPressedForCurrentAccession || (DateTime.UtcNow - _staleSetTime).TotalSeconds > 10))
+                (!_processReportPressedForCurrentAccession || (DateTime.UtcNow - _staleSetTime).TotalSeconds > 30))
             {
                 // Report text is available and matches last text - clear stale indicator if showing.
                 // Don't clear if Process Report was just pressed (still waiting for report to regenerate),
-                // but force-clear after 10s to prevent stuck stale indicator.
+                // but force-clear after 30s to prevent stuck stale indicator.
+                // (Mosaic editor rebuild takes 15-18s; 10s was clearing prematurely.)
                 BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
             }
         }
@@ -3805,7 +3885,7 @@ public class ActionController : IDisposable
     /// Update clinical history display, template/gender/stroke/Aidoc alerts.
     /// Future API: replaced by study.opened + report.changed event handlers.
     /// </summary>
-    private void UpdateClinicalHistoryAndAlerts(string? currentAccession, string? reportText)
+    private void UpdateClinicalHistoryAndAlerts(string? currentAccession, string? reportText, long tickStartTick64 = 0)
     {
         if (!_config.ShowClinicalHistory)
             return;
@@ -3835,12 +3915,17 @@ public class ActionController : IDisposable
             newGenderMismatch = genderMismatches.Count > 0;
         }
 
+        // Tick budget: skip heavy cross-process UIA operations (Clario traversal, Aidoc scrape)
+        // if this tick has already spent 3+ seconds. Deferred work runs on the next tick.
+        // Prevents 15+ second mega-ticks on study change when everything fires at once.
+        long clarioNow = Environment.TickCount64;
+        bool tickBudgetExceeded = tickStartTick64 > 0 && (clarioNow - tickStartTick64) > 3000;
+
         // Retry Clario priority extraction if it failed on accession change
         // (Clario may not have updated to the new study yet)
         // Capped at 5 retries with exponential backoff (3s, 6s, 12s, 24s, 48s) to prevent
         // the recursive depth-25 Clario traversal from running every tick indefinitely.
-        long clarioNow = Environment.TickCount64;
-        if (_pendingClarioPriorityRetry && !string.IsNullOrEmpty(currentAccession)
+        if (!tickBudgetExceeded && _pendingClarioPriorityRetry && !string.IsNullOrEmpty(currentAccession)
             && _clarioPriorityRetryCount < 5 && clarioNow >= _nextClarioPriorityRetryTick64)
         {
             _clarioPriorityRetryCount++;
@@ -3868,7 +3953,7 @@ public class ActionController : IDisposable
         List<string>? relevantFindings = null;
         bool prevAidocRelevant = _lastAidocRelevant;
         long aidocNow = Environment.TickCount64;
-        if (_config.AidocScrapeEnabled && !string.IsNullOrEmpty(currentAccession)
+        if (!tickBudgetExceeded && _config.AidocScrapeEnabled && !string.IsNullOrEmpty(currentAccession)
             && (aidocNow - _lastAidocScrapeTick64) >= 5000)
         {
             _lastAidocScrapeTick64 = aidocNow;
@@ -4864,7 +4949,6 @@ public class ActionController : IDisposable
         _syncTimer?.Dispose();
         _dictationSyncTimer?.Dispose();
         StopMosaicScrapeTimer();
-        _scrapeWakeEvent.Dispose();
         _hidService?.Dispose();
         _keyboardService?.Dispose();
         _automationService.Dispose();

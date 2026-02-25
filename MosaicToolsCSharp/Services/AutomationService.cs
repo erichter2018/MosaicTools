@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using FlaUI.Core;
 using FlaUI.Core.AutomationElements;
 using FlaUI.Core.Conditions;
+using FlaUI.Core.Definitions;
 using FlaUI.UIA3;
 
 namespace MosaicTools.Services;
@@ -16,10 +17,14 @@ namespace MosaicTools.Services;
 /// </summary>
 public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 {
-    private readonly UIA3Automation _automation;
+    private UIA3Automation _automation;
 
     /// <summary>Expose the FlaUI automation instance for reuse by other services (e.g., AidocService).</summary>
     public UIA3Automation Automation => _automation;
+
+    // Cached desktop element — avoids creating a new COM wrapper per GetDesktop() call.
+    // Cleared on UIA reset. Access via GetCachedDesktop().
+    private AutomationElement? _cachedDesktop;
     
     // Cached window for fast repeated scrapes (volatile: read from STA thread, written from scrape thread)
     private volatile AutomationElement? _cachedSlimHubWindow;
@@ -34,20 +39,59 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     private int _cachedEditorHitCount;
     private const int MetadataSweepMinIntervalMs = 5000;
     private const int SlowScrapeLogThresholdMs = 250;
+    // CacheRequest circuit breaker: disable after consecutive failures to avoid wasting time
+    // on E_FAIL calls. Re-enable after cooldown period.
+    private int _cacheRequestFailCount;
+    private long _cacheRequestDisabledUntilTick64;
+    private const int CacheRequestFailThreshold = 3;
+    private const int CacheRequestCooldownMs = 300_000; // 5 minutes
+    // Metadata sweep circuit breaker: skip the entire FindAllDescendants call after
+    // consecutive E_FAIL errors (the COM call itself fails, not just the CacheRequest).
+    private int _metadataSweepFailCount;
+    private long _metadataSweepDisabledUntilTick64;
+    private const int MetadataSweepFailThreshold = 5;
+    private const int MetadataSweepCooldownMs = 60_000; // 1 minute
+    // Rate-limit expensive FindAllDescendants(ProseMirror) searches.
+    // Chrome's accessibility tree grows from each FindAllDescendants call and never shrinks,
+    // causing progressive degradation. Limit to once per 10s; return stale data between.
+    // During burst mode (after Process Report), allow more frequent searches (3s).
+    private long _lastProsemirrorSearchTick64;
+    private const int ProsemirrorSearchMinIntervalMs = 10_000;
+    private const int ProsemirrorSearchBurstIntervalMs = 3_000;
+
+    /// <summary>
+    /// When true, ProseMirror search throttle is relaxed (3s instead of 10s).
+    /// Set by ActionController during burst scraping after Process Report.
+    /// </summary>
+    public volatile bool IsBurstModeActive;
+    // Tolerate transient editor cache failures before falling back to expensive search
+    private int _editorCacheFailCount;
+    private const int EditorCacheFailTolerance = 3;
+    // Throttle accession extraction: the tree walk (FindFirstDescendant + Parent + FindAllChildren)
+    // does ~10 COM calls per tick. Only re-check every 10 seconds during steady state.
+    // Study changes will be detected with up to 10s delay (acceptable — Mosaic itself takes seconds to load).
+    private long _lastAccessionCheckTick64;
+    private const int AccessionCheckIntervalMs = 10_000; // 10 seconds between full tree walks
     
     // Last scraped final report (public for external access)
     public string? LastFinalReport { get; private set; }
 
     /// <summary>Clear cached report text (call on accession change to prevent stale data).</summary>
-    /// Note: _lastPatientInfoAccession is NOT cleared here — patient info re-extraction
-    /// is already triggered when the accession changes (different from previous), and clearing
-    /// it here caused expensive FindAllDescendants to run redundantly on every study change.
     public void ClearLastReport()
     {
         LastFinalReport = null;
         LastTemplateName = null;
         InvalidateReportDocumentCache();
         _lastMetadataSweepTick64 = 0;
+        _metadataSweepFailCount = 0; // Reset circuit breaker on study change
+        _lastProsemirrorSearchTick64 = 0; // Allow immediate search for new study
+        _lastAccessionCheckTick64 = 0; // Force immediate accession re-check
+    }
+
+    public void InvalidateEditorCache()
+    {
+        InvalidateReportEditorCache();
+        _lastProsemirrorSearchTick64 = 0; // Allow immediate ProseMirror search
     }
 
     // Addendum detection: set during scraping when any ProseMirror candidate starts with "Addendum"
@@ -96,14 +140,99 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     // Retry counter for patient info extraction. Unfiltered FindAllDescendants() is very
     // expensive — if gender/MRN aren't found after a few attempts (UI layout mismatch),
     // stop retrying to prevent thousands of leaked COM wrappers per minute.
-    private int _patientInfoRetryCount;
-    private const int MaxPatientInfoRetries = 5;
+
+    // Periodic UIA reset: UIAutomationCore.dll accumulates internal proxy/cache state
+    // from cross-process calls. This native memory grows monotonically and is only freed
+    // when the IUIAutomation COM object is released. Periodic reset prevents unbounded growth.
+    private long _lastUiaResetTick64;
+    private const int UiaResetIntervalMs = 5 * 60 * 1000; // 5 minutes
+
+    // UIA call counter for diagnostics. Tracks approximate number of cross-process UIA calls.
+    private long _uiaCallCount;
+    /// <summary>Approximate total UIA calls since last reset. For diagnostics.</summary>
+    public long UiaCallCount => Interlocked.Read(ref _uiaCallCount);
+    internal void IncrementUiaCallCount(int count = 1) => Interlocked.Add(ref _uiaCallCount, count);
 
     public AutomationService()
     {
-        _automation = new UIA3Automation();
-        _automation.TransactionTimeout = TimeSpan.FromSeconds(5);
-        _automation.ConnectionTimeout = TimeSpan.FromSeconds(10);
+        // CRITICAL: Create UIA3Automation on MTA thread, NOT the STA UI thread.
+        // When created on STA, all UIA calls from the MTA scrape thread get marshaled
+        // through the UI thread's message pump, blocking it and killing keyboard hooks.
+        // CUIAutomation has ThreadingModel=Both, meaning it lives in the caller's apartment.
+        _automation = Task.Run(() => new UIA3Automation()).GetAwaiter().GetResult();
+        _lastUiaResetTick64 = Environment.TickCount64;
+        // Note: TransactionTimeout/ConnectionTimeout removed — they caused silent
+        // COMExceptions in empty catch blocks that degraded UIA connections over time.
+        // The COM leak fix + scrape throttling are sufficient to prevent unbounded blocking.
+    }
+
+    /// <summary>
+    /// Create a CacheRequest that pre-fetches Name, ControlType, and ClassName.
+    /// When active, FindFirst/FindAll auto-route to BuildCache variants — one COM call
+    /// fetches elements + properties. Subsequent .Name/.ControlType reads are local cache hits.
+    /// Pre-cached elements (_cachedReportEditor) must be read inside CacheRequest.ForceNoCache().
+    /// </summary>
+    private CacheRequest CreatePropertyCacheRequest()
+    {
+        var cr = new CacheRequest();
+        cr.TreeScope = TreeScope.Element | TreeScope.Children | TreeScope.Descendants;
+        cr.Add(_automation.PropertyLibrary.Element.Name);
+        cr.Add(_automation.PropertyLibrary.Element.ControlType);
+        cr.Add(_automation.PropertyLibrary.Element.ClassName);
+        return cr;
+    }
+
+    /// <summary>
+    /// Whether CacheRequest is currently allowed (not circuit-broken).
+    /// </summary>
+    private bool IsCacheRequestEnabled(long nowTick64)
+    {
+        if (_cacheRequestFailCount < CacheRequestFailThreshold) return true;
+        if (nowTick64 >= _cacheRequestDisabledUntilTick64)
+        {
+            // Cooldown expired — re-enable and reset
+            _cacheRequestFailCount = 0;
+            Logger.Trace("CacheRequest circuit breaker: re-enabled after cooldown");
+            return true;
+        }
+        return false;
+    }
+
+    private void OnCacheRequestSuccess()
+    {
+        if (_cacheRequestFailCount > 0)
+        {
+            _cacheRequestFailCount = 0;
+            Logger.Trace("CacheRequest circuit breaker: reset after success");
+        }
+    }
+
+    private void OnCacheRequestFailure(long nowTick64)
+    {
+        _cacheRequestFailCount++;
+        if (_cacheRequestFailCount >= CacheRequestFailThreshold)
+        {
+            _cacheRequestDisabledUntilTick64 = nowTick64 + CacheRequestCooldownMs;
+            Logger.Trace($"CacheRequest circuit breaker: disabled for {CacheRequestCooldownMs / 1000}s after {_cacheRequestFailCount} consecutive failures");
+        }
+    }
+
+    /// <summary>
+    /// Check if periodic UIA reset is due and perform it if so.
+    /// Call from scrape loop. Returns true if reset was performed.
+    /// </summary>
+    public bool CheckPeriodicUiaReset()
+    {
+        long now = Environment.TickCount64;
+        if (now - _lastUiaResetTick64 < UiaResetIntervalMs)
+            return false;
+
+        Logger.Trace("Periodic UIA reset: clearing accumulated UIAutomationCore state");
+        ResetUiaConnection();
+        _lastUiaResetTick64 = now;
+        _cacheRequestFailCount = 0; // Reset circuit breakers — fresh UIA connection
+        _metadataSweepFailCount = 0;
+        return true;
     }
     
     #region Clario Methods
@@ -117,7 +246,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         AutomationElement? found = null;
         try
         {
-            var desktop = _automation.GetDesktop();
+            var desktop = GetCachedDesktop();
             windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
 
             foreach (var window in windows)
@@ -155,10 +284,11 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     /// </summary>
     public string? GetNoteDialogText(AutomationElement window)
     {
+        AutomationElement? dialog = null;
         AutomationElement[]? noteFields = null;
         try
         {
-            var dialog = window.FindFirstDescendant(cf =>
+            dialog = window.FindFirstDescendant(cf =>
                 cf.ByAutomationId("content_patient_note_dialog_Main"));
 
             if (dialog == null) return null;
@@ -183,6 +313,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         finally
         {
             ReleaseElements(noteFields);
+            ReleaseElement(dialog);
         }
 
         return null;
@@ -278,42 +409,49 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             return null;
         }
 
-        // Only focus window if requested (skip for background scrapes to avoid stealing focus)
-        if (focusWindow)
+        try
         {
-            try
+            // Only focus window if requested (skip for background scrapes to avoid stealing focus)
+            if (focusWindow)
             {
-                Logger.Trace("Focusing Clario window before scrape...");
-                window.Focus();
-                Thread.Sleep(500);
+                try
+                {
+                    Logger.Trace("Focusing Clario window before scrape...");
+                    window.Focus();
+                    Thread.Sleep(500);
+                }
+                catch { }
             }
-            catch { }
+
+            // Fast path: Check if Note Dialog is open
+            var noteDialogText = GetNoteDialogText(window);
+            if (noteDialogText != null)
+            {
+                Logger.Trace("SUCCESS: Found open Note Dialog.");
+                return noteDialogText;
+            }
+
+            // Normal path: Exhaustive search
+            var notes = GetExamNoteElements(window, statusCallback: statusCallback);
+
+            if (notes.Count > 0)
+            {
+                // Sort by timestamp (newest first), then by length as a tie-breaker
+                var bestNote = notes
+                    .OrderByDescending(ExtractNoteTimestamp)
+                    .ThenByDescending(n => n.Length)
+                    .First();
+
+                Logger.Trace($"SUCCESS: Returning newest match (len={bestNote.Length})");
+                return bestNote;
+            }
+
+            return null;
         }
-        
-        // Fast path: Check if Note Dialog is open
-        var noteDialogText = GetNoteDialogText(window);
-        if (noteDialogText != null)
+        finally
         {
-            Logger.Trace("SUCCESS: Found open Note Dialog.");
-            return noteDialogText;
+            ReleaseElement(window);
         }
-        
-        // Normal path: Exhaustive search
-        var notes = GetExamNoteElements(window, statusCallback: statusCallback);
-        
-        if (notes.Count > 0)
-        {
-            // Sort by timestamp (newest first), then by length as a tie-breaker
-            var bestNote = notes
-                .OrderByDescending(ExtractNoteTimestamp)
-                .ThenByDescending(n => n.Length)
-                .First();
-                
-            Logger.Trace($"SUCCESS: Returning newest match (len={bestNote.Length})");
-            return bestNote;
-        }
-        
-        return null;
     }
 
     /// <summary>
@@ -520,60 +658,65 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             return null;
         }
 
-        var data = new ClarioPriorityData();
-        int[] searchDepths = { 12, 18, 25 };  // Staggered search
-
-        foreach (var maxDepth in searchDepths)
+        try
         {
-            try
+            var data = new ClarioPriorityData();
+            int[] searchDepths = { 12, 18, 25 };  // Staggered search
+
+            foreach (var maxDepth in searchDepths)
             {
-                var depth = maxDepth;
-                var win = chromeWindow;
-                var elements = RunWithTimeout(() => GetClarioElementsRecursive(win, depth), 3000, $"ClarioPriority-depth{depth}");
-                if (elements == null) continue;
-                var extracted = ExtractPriorityDataFromElements(elements);
-
-                // Merge newly found values
-                if (string.IsNullOrEmpty(data.Priority)) data.Priority = extracted.Priority;
-                if (string.IsNullOrEmpty(data.Class)) data.Class = extracted.Class;
-                if (string.IsNullOrEmpty(data.Accession)) data.Accession = extracted.Accession;
-
-                // Stop if we have Priority (minimum needed for stroke detection)
-                if (!string.IsNullOrEmpty(data.Priority))
+                try
                 {
-                    Logger.Trace($"ExtractClarioPriorityAndClass: Found Priority='{data.Priority}', Class='{data.Class}', Accession='{data.Accession}' at depth {maxDepth}");
-                    break;
+                    var elements = GetClarioElementsRecursive(chromeWindow, maxDepth);
+                    if (elements.Count == 0) continue;
+                    var extracted = ExtractPriorityDataFromElements(elements);
+
+                    // Merge newly found values
+                    if (string.IsNullOrEmpty(data.Priority)) data.Priority = extracted.Priority;
+                    if (string.IsNullOrEmpty(data.Class)) data.Class = extracted.Class;
+                    if (string.IsNullOrEmpty(data.Accession)) data.Accession = extracted.Accession;
+
+                    // Stop if we have Priority (minimum needed for stroke detection)
+                    if (!string.IsNullOrEmpty(data.Priority))
+                    {
+                        Logger.Trace($"ExtractClarioPriorityAndClass: Found Priority='{data.Priority}', Class='{data.Class}', Accession='{data.Accession}' at depth {maxDepth}");
+                        break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Trace($"ExtractClarioPriorityAndClass: Error at depth {maxDepth}: {ex.Message}");
                 }
             }
-            catch (Exception ex)
+
+            // Verify accession if provided
+            if (targetAccession != null &&
+                !string.IsNullOrEmpty(data.Accession) &&
+                !data.Accession.Equals(targetAccession, StringComparison.OrdinalIgnoreCase))
             {
-                Logger.Trace($"ExtractClarioPriorityAndClass: Error at depth {maxDepth}: {ex.Message}");
+                Logger.Trace($"ExtractClarioPriorityAndClass: Accession mismatch - expected '{targetAccession}', got '{data.Accession}'");
+                return null;
             }
-        }
 
-        // Verify accession if provided
-        if (targetAccession != null &&
-            !string.IsNullOrEmpty(data.Accession) &&
-            !data.Accession.Equals(targetAccession, StringComparison.OrdinalIgnoreCase))
+            // Update stored values
+            LastClarioPriority = data.Priority;
+            LastClarioClass = data.Class;
+
+            // Check for stroke
+            IsStrokeStudy = CheckIfStrokeStudy(data.Priority, data.Class);
+
+            if (string.IsNullOrEmpty(data.Priority) && string.IsNullOrEmpty(data.Class))
+            {
+                Logger.Trace("ExtractClarioPriorityAndClass: No Priority or Class found");
+                return null;
+            }
+
+            return data;
+        }
+        finally
         {
-            Logger.Trace($"ExtractClarioPriorityAndClass: Accession mismatch - expected '{targetAccession}', got '{data.Accession}'");
-            return null;
+            ReleaseElement(chromeWindow);
         }
-
-        // Update stored values
-        LastClarioPriority = data.Priority;
-        LastClarioClass = data.Class;
-
-        // Check for stroke
-        IsStrokeStudy = CheckIfStrokeStudy(data.Priority, data.Class);
-
-        if (string.IsNullOrEmpty(data.Priority) && string.IsNullOrEmpty(data.Class))
-        {
-            Logger.Trace("ExtractClarioPriorityAndClass: No Priority or Class found");
-            return null;
-        }
-
-        return data;
     }
 
     /// <summary>
@@ -713,7 +856,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             if (commNoteBtn == null)
             {
                 // Try desktop - popup might be a separate window
-                var desktop = _automation.GetDesktop();
+                var desktop = GetCachedDesktop();
                 commNoteBtn = desktop.FindFirstDescendant(cf =>
                     cf.ByName("Communication Note"));
             }
@@ -771,6 +914,10 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             Logger.Trace($"CreateCriticalCommunicationNote error: {ex.Message}");
             return false;
         }
+        finally
+        {
+            ReleaseElement(clarioWindow);
+        }
     }
 
     /// <summary>
@@ -810,7 +957,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             var hwnd = NativeWindows.FindWindowByTitle(new[] { "mosaic" });
             if (hwnd == IntPtr.Zero) return null;
 
-            var desktop = _automation.GetDesktop();
+            var desktop = GetCachedDesktop();
             windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
 
             foreach (var window in windows)
@@ -1421,6 +1568,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     {
         var editor = _cachedReportEditor;
         _cachedReportEditor = null;
+        _editorCacheFailCount = 0;
         ReleaseElement(editor);
     }
 
@@ -1495,7 +1643,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
     private static string ReadProseMirrorCandidateText(AutomationElement candidate, out bool hasReplChar)
     {
-        string text = candidate.Name ?? "";
+        string text = (candidate.Name ?? "");
         hasReplChar = text.Contains('\uFFFC');
 
         if (string.IsNullOrWhiteSpace(text))
@@ -1530,7 +1678,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                     var sb = new System.Text.StringBuilder();
                     foreach (var ct in childTexts)
                     {
-                        var childName = ct.Name;
+                        var childName = (ct.Name ?? "");
                         if (!string.IsNullOrWhiteSpace(childName))
                             sb.AppendLine(childName);
                     }
@@ -1558,12 +1706,22 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
         try
         {
-            _ = editor.ControlType; // Validate COM wrapper before reuse
+            // Skip ControlType validation — it's an extra COM cross-process call per tick.
+            // If the wrapper is stale, ReadProseMirrorCandidateText will throw, handled below.
             var candidateText = ReadProseMirrorCandidateText(editor, out _);
             if (string.IsNullOrWhiteSpace(candidateText))
             {
-                InvalidateReportEditorCache();
-                return false;
+                // Tolerate transient empty reads (Chrome briefly returns empty during DOM updates).
+                // Only invalidate after multiple consecutive failures to avoid expensive ProseMirror search.
+                _editorCacheFailCount++;
+                if (_editorCacheFailCount >= EditorCacheFailTolerance)
+                {
+                    InvalidateReportEditorCache();
+                    return false;
+                }
+                // Return stale data while tolerating transient failure
+                text = LastFinalReport;
+                return text != null;
             }
 
             var trimmed = candidateText.TrimStart();
@@ -1575,13 +1733,20 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                 return false;
             }
 
+            _editorCacheFailCount = 0; // Reset on successful read
             text = candidateText;
             return true;
         }
         catch
         {
-            InvalidateReportEditorCache();
-            return false;
+            _editorCacheFailCount++;
+            if (_editorCacheFailCount >= EditorCacheFailTolerance)
+            {
+                InvalidateReportEditorCache();
+                return false;
+            }
+            text = LastFinalReport;
+            return text != null;
         }
     }
 
@@ -1598,7 +1763,9 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     public string? GetFinalReportFast(bool checkDraftedStatus = false)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        
+        // Approximate UIA call count for this tick (accession walk + editor read + metadata sweep)
+        IncrementUiaCallCount(10);
+
         try
         {
             // Try to use cached window first
@@ -1634,7 +1801,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                     return null;
                 }
 
-                var desktop = _automation.GetDesktop();
+                var desktop = GetCachedDesktop();
                 var windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
 
                 try
@@ -1670,63 +1837,103 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                 return null;
             }
 
+            // CacheRequest disabled: Chrome's accessibility provider doesn't reliably support
+            // FindFirstBuildCache/FindAllBuildCache — causes E_FAIL on document-level queries.
+            // The E_FAIL isolation fix (preventing cache invalidation) provides the main
+            // performance benefit; CacheRequest savings are marginal in comparison.
+            return GetFinalReportFastInner(checkDraftedStatus, sw);
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"GetFinalReportFast error: {ex.Message} ({sw.ElapsedMilliseconds}ms)");
+            InvalidateMosaicWindowCache();
+        }
+
+        return null;
+    }
+
+    private string? GetFinalReportFastInner(bool checkDraftedStatus, System.Diagnostics.Stopwatch sw)
+    {
             // Single traversal: find DRAFTED status, Report document, Description, and Accession
             long nowTick64 = Environment.TickCount64;
             AutomationElement? reportDoc = null;
             LastTemplateName = null; // Reset - prevents stale template from previous study causing false mismatch
-            LastAccession = null; // Reset - will be set if found, stays null if no study open
+
+            // Throttle accession tree walk: skip if we already have an accession and checked recently.
+            // The full walk (FindFirstDescendant + Parent + FindAllChildren) does ~10 COM calls.
+            // On steady-state ticks, reuse the cached value to minimize cross-process COM traffic.
+            bool skipAccessionCheck = LastAccession != null
+                && nowTick64 - _lastAccessionCheckTick64 < AccessionCheckIntervalMs;
+
+            if (!skipAccessionCheck)
+            {
+                _lastAccessionCheckTick64 = nowTick64;
+                LastAccession = null; // Reset - will be set if found
+                LastDescription = null; // Reset - re-extracted alongside accession
+            }
 
             // Extract accession: find "Current Study" text and the next text element after it
-            try
+            // Throttled: skip the expensive tree walk on most ticks when accession is already known.
+            if (!skipAccessionCheck)
             {
-                var currentStudyElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
-                    cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text)
-                    .And(cf.ByName("Current Study")));
-
-                if (currentStudyElement != null)
+                AutomationElement? currentStudyElement = null;
+                AutomationElement? csParent = null;
+                try
                 {
-                    // Get parent and find all children (Text in 2.0.2, Button in 2.0.3)
-                    var parent = currentStudyElement.Parent;
-                    if (parent != null)
+                    currentStudyElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
+                        cf.ByControlType(FlaUI.Core.Definitions.ControlType.Text)
+                        .And(cf.ByName("Current Study")));
+
+                    if (currentStudyElement != null)
                     {
-                        var allChildren = parent.FindAllChildren();
-                        try
+                        // Get parent and find all children (Text in 2.0.2, Button in 2.0.3)
+                        csParent = currentStudyElement.Parent;
+                        if (csParent != null)
                         {
-                            bool foundCurrentStudy = false;
-                            foreach (var child in allChildren)
+                            var allChildren = csParent.FindAllChildren();
+                            try
                             {
-                                try
+                                bool foundCurrentStudy = false;
+                                foreach (var child in allChildren)
                                 {
-                                    if (foundCurrentStudy)
+                                    try
                                     {
-                                        var accession = child.Name?.Trim();
-                                        // Skip status words and empty elements
-                                        if (string.IsNullOrWhiteSpace(accession) || accession == "Current Study" ||
-                                            accession == "DRAFTED" || accession == "UNDRAFTED" || accession == "SIGNED")
+                                        if (foundCurrentStudy)
                                         {
-                                            continue; // Keep looking for accession
+                                            var accession = (child.Name ?? "").Trim();
+                                            // Skip status words and empty elements
+                                            if (string.IsNullOrWhiteSpace(accession) || accession == "Current Study" ||
+                                                accession == "DRAFTED" || accession == "UNDRAFTED" || accession == "SIGNED")
+                                            {
+                                                continue; // Keep looking for accession
+                                            }
+                                            LastAccession = accession;
+                                            break;
                                         }
-                                        LastAccession = accession;
-                                        break;
+                                        if ((child.Name ?? "") == "Current Study")
+                                        {
+                                            foundCurrentStudy = true;
+                                        }
                                     }
-                                    if (child.Name == "Current Study")
-                                    {
-                                        foundCurrentStudy = true;
-                                    }
+                                    catch { continue; }
                                 }
-                                catch { continue; }
                             }
-                        }
-                        finally
-                        {
-                            ReleaseElements(allChildren);
+                            finally
+                            {
+                                ReleaseElements(allChildren);
+                            }
                         }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                Logger.Trace($"Accession extraction error: {ex.Message}");
+                catch (Exception ex)
+                {
+                    Logger.Trace($"Accession extraction error: {ex.Message}");
+                }
+                finally
+                {
+                    ReleaseElement(csParent);
+                    ReleaseElement(currentStudyElement);
+                }
             }
 
             if (string.IsNullOrEmpty(LastAccession))
@@ -1736,302 +1943,302 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                 InvalidateReportDocumentCache();
             }
 
-
-            // Extract patient info from all descendants in a single traversal.
-            // Skip if accession hasn't changed — patient info (gender, MRN, etc.) is stable per study.
-            // Also retry if previous attempt found nothing (e.g. UI was still loading),
-            // but cap retries to prevent unfiltered FindAllDescendants() from running every scrape
-            // indefinitely (major source of COM wrapper leaks and system slowdown).
-            bool accessionChanged = LastAccession != _lastPatientInfoAccession;
-            if (accessionChanged)
-                _patientInfoRetryCount = 0; // Reset counter on new study
-
-            bool needsPatientInfoExtraction = accessionChanged
-                || (!string.IsNullOrEmpty(LastAccession) && LastPatientGender == null && LastMrn == null
-                    && _patientInfoRetryCount < MaxPatientInfoRetries);
-            if (needsPatientInfoExtraction)
+            // Fast targeted extraction via FindFirstDescendant for fields that
+            // FindAllDescendants can no longer retrieve (E_FAIL on Mosaic 2.0.4).
+            if (!string.IsNullOrEmpty(LastAccession))
             {
-                _patientInfoRetryCount++;
-                LastPatientGender = null;
-                LastPatientAge = null;
-                LastPatientName = null;
-                LastSiteCode = null;
-                LastMrn = null;
-            }
-
-            // Handles both Mosaic 2.0.2 (combined Text "Description: XR CHEST") and
-            // 2.0.3 (separate Text "Description:" + Button "XR CHEST") in one pass.
-            // BEGIN Mosaic 2.0.2 compat: When 2.0.2 is retired, the pendingInfoField/Button
-            // logic becomes the only path and the Text-based regex extraction can be removed.
-            AutomationElement[]? allInfoElements = null;
-            if (needsPatientInfoExtraction)
-            try
-            {
-                var win = _cachedSlimHubWindow;
-                allInfoElements = RunWithTimeout(() => win.FindAllDescendants(), 3000, "PatientInfo");
-                if (allInfoElements == null) throw new TimeoutException("PatientInfo FindAllDescendants timed out");
-                string? pendingInfoField = null; // Tracks label→button pairs for 2.0.3
-
-                foreach (var el in allInfoElements)
+                // Description: "Description: CT ABDOMEN PELVIS..."
+                if (LastDescription == null)
                 {
+                    AutomationElement? descElement = null;
                     try
                     {
-                        var ctrlType = el.ControlType;
-                        var name = el.Name ?? "";
-
-                        if (ctrlType == FlaUI.Core.Definitions.ControlType.Text)
+                        descElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
+                            cf.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+                        if (descElement != null)
                         {
-                            var textUpper = name.ToUpperInvariant();
-
-                            // Gender extraction
-                            if (LastPatientGender == null)
+                            var descName = descElement.Name ?? "";
+                            if (descName.StartsWith("Description:", StringComparison.OrdinalIgnoreCase))
                             {
-                                if (textUpper.StartsWith("MALE, AGE") || textUpper.StartsWith("MALE,AGE"))
-                                {
-                                    LastPatientGender = "Male";
-                                    Logger.Trace($"Found Patient Gender: Male");
-                                }
-                                else if (textUpper.StartsWith("FEMALE, AGE") || textUpper.StartsWith("FEMALE,AGE"))
-                                {
-                                    LastPatientGender = "Female";
-                                    Logger.Trace($"Found Patient Gender: Female");
-                                }
-
-                                // Age extraction from same element (e.g., "MALE, AGE 45")
-                                if (LastPatientAge == null)
-                                {
-                                    var ageMatch = Regex.Match(textUpper, @"AGE\s*(\d+)");
-                                    if (ageMatch.Success)
-                                    {
-                                        LastPatientAge = int.Parse(ageMatch.Groups[1].Value);
-                                        Logger.Trace($"Found Patient Age: {LastPatientAge}");
-                                    }
-                                }
-                            }
-
-                            // Site code extraction: pattern "Site Code: XXX" (2.0.2: value in same element)
-                            if (LastSiteCode == null)
-                            {
-                                var siteMatch = Regex.Match(name, @"Site\s*Code:\s*([A-Z]{2,5})", RegexOptions.IgnoreCase);
-                                if (siteMatch.Success)
-                                {
-                                    LastSiteCode = siteMatch.Groups[1].Value.ToUpperInvariant();
-                                    Logger.Trace($"Found Site Code: {LastSiteCode}");
-                                }
-                            }
-
-                            // MRN extraction: pattern "MRN: XXX" (2.0.2: value in same element)
-                            if (LastMrn == null)
-                            {
-                                var mrnMatch = Regex.Match(name, @"MRN:\s*([A-Z0-9]{5,20})", RegexOptions.IgnoreCase);
-                                if (mrnMatch.Success)
-                                {
-                                    LastMrn = mrnMatch.Groups[1].Value.ToUpperInvariant();
-                                    Logger.Trace("Found MRN");
-                                }
-                            }
-
-                            // Patient name extraction
-                            if (LastPatientName == null && IsPatientNameCandidate(textUpper))
-                            {
-                                LastPatientName = ToTitleCase(textUpper);
-                                Logger.Trace("Found Patient Name");
-                            }
-
-                            // Description extraction (2.0.2: "Description: CT ABDOMEN PELVIS...")
-                            if (LastDescription == null && name.StartsWith("Description:", StringComparison.OrdinalIgnoreCase))
-                            {
-                                var desc = name.Substring("Description:".Length).Trim();
+                                var desc = descName.Substring("Description:".Length).Trim();
                                 if (!string.IsNullOrEmpty(desc))
-                                {
                                     LastDescription = desc;
-                                    // Description found (not logged — fires every scrape cycle)
-                                }
                             }
-
-                            // Mosaic 2.0.3: Track label-only Text elements for button-based extraction.
-                            // In 2.0.3, "Description:" is a separate element from the value Button.
-                            var trimmed = name.TrimEnd();
-                            if (string.IsNullOrEmpty(LastDescription) && trimmed.Equals("Description:", StringComparison.OrdinalIgnoreCase))
-                                pendingInfoField = "Description";
-                            else if (LastMrn == null && trimmed.Equals("MRN:", StringComparison.OrdinalIgnoreCase))
-                                pendingInfoField = "MRN";
-                            else if (LastSiteCode == null && trimmed.Equals("Site Code:", StringComparison.OrdinalIgnoreCase))
-                                pendingInfoField = "SiteCode";
-                            else
-                                pendingInfoField = null;
                         }
-                        else if (ctrlType == FlaUI.Core.Definitions.ControlType.Button)
+                    }
+                    catch { }
+                    finally { ReleaseElement(descElement); }
+                }
+
+                // Clear patient info fields when study changes so fast extraction re-runs.
+                // MUST run BEFORE extraction — otherwise extraction finds values on each tick
+                // and then clearing wipes them, preventing _lastPatientInfoAccession from updating.
+                if (!string.IsNullOrEmpty(LastAccession) && LastAccession != _lastPatientInfoAccession)
+                {
+                    LastPatientGender = null;
+                    LastPatientAge = null;
+                    LastPatientName = null;
+                    LastSiteCode = null;
+                    LastMrn = null;
+                }
+
+                // Gender + Age: "Male, Age 45" or "Female, Age 72" (case varies by Mosaic version)
+                if (LastPatientGender == null)
+                {
+                    AutomationElement? genderElement = null;
+                    try
+                    {
+                        genderElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
+                            cf.ByName(", AGE",
+                                FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring
+                                | FlaUI.Core.Definitions.PropertyConditionFlags.IgnoreCase));
+                        if (genderElement != null)
                         {
-                            if (pendingInfoField != null)
+                            var genderText = (genderElement.Name ?? "").ToUpperInvariant();
+                            Logger.Trace($"Fast gender/age element found: '{genderElement.Name}'");
+                            if (genderText.StartsWith("MALE"))
+                                LastPatientGender = "Male";
+                            else if (genderText.StartsWith("FEMALE"))
+                                LastPatientGender = "Female";
+
+                            var ageMatch = Regex.Match(genderText, @"AGE\s*(\d+)");
+                            if (ageMatch.Success)
+                                LastPatientAge = int.Parse(ageMatch.Groups[1].Value);
+                        }
+                        else
+                        {
+                            Logger.Trace("Fast gender/age: element not found");
+                        }
+                    }
+                    catch (Exception ex) { Logger.Trace($"Fast gender/age error: {ex.Message}"); }
+                    finally { ReleaseElement(genderElement); }
+                }
+
+                // MRN: "MRN: 12345678"
+                if (LastMrn == null)
+                {
+                    AutomationElement? mrnElement = null;
+                    try
+                    {
+                        mrnElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
+                            cf.ByName("MRN:",
+                                FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring
+                                | FlaUI.Core.Definitions.PropertyConditionFlags.IgnoreCase));
+                        if (mrnElement != null)
+                        {
+                            var mrnName = mrnElement.Name ?? "";
+                            Logger.Trace($"Fast MRN element found: '{mrnName}'");
+                            var mrnMatch = Regex.Match(mrnName, @"MRN:\s*([A-Z0-9]{5,20})", RegexOptions.IgnoreCase);
+                            if (mrnMatch.Success)
+                                LastMrn = mrnMatch.Groups[1].Value.ToUpperInvariant();
+                        }
+                        else
+                        {
+                            Logger.Trace("Fast MRN: element not found");
+                        }
+                    }
+                    catch (Exception ex) { Logger.Trace($"Fast MRN error: {ex.Message}"); }
+                    finally { ReleaseElement(mrnElement); }
+                }
+
+                // Site Code: "Site Code: XXX"
+                if (LastSiteCode == null)
+                {
+                    AutomationElement? siteElement = null;
+                    try
+                    {
+                        siteElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
+                            cf.ByName("Site Code:",
+                                FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring
+                                | FlaUI.Core.Definitions.PropertyConditionFlags.IgnoreCase));
+                        if (siteElement != null)
+                        {
+                            var siteName = siteElement.Name ?? "";
+                            var siteMatch = Regex.Match(siteName, @"Site\s*Code:\s*([A-Z]{2,5})", RegexOptions.IgnoreCase);
+                            if (siteMatch.Success)
+                                LastSiteCode = siteMatch.Groups[1].Value.ToUpperInvariant();
+                        }
+                    }
+                    catch { }
+                    finally { ReleaseElement(siteElement); }
+                }
+
+                // Patient Name: no label prefix, so use gender/age element as anchor and search siblings
+                if (LastPatientName == null && LastPatientGender != null)
+                {
+                    AutomationElement? anchorElement = null;
+                    AutomationElement? parentElement = null;
+                    AutomationElement[]? siblings = null;
+                    try
+                    {
+                        anchorElement = _cachedSlimHubWindow.FindFirstDescendant(cf =>
+                            cf.ByName(", AGE",
+                                FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring
+                                | FlaUI.Core.Definitions.PropertyConditionFlags.IgnoreCase));
+                        if (anchorElement != null)
+                        {
+                            parentElement = anchorElement.Parent;
+                            if (parentElement != null)
                             {
-                                // Mosaic 2.0.3: Button value following a label Text element
-                                var value = name.Trim();
-                                if (!string.IsNullOrWhiteSpace(value))
+                                siblings = parentElement.FindAllChildren();
+                                if (siblings != null)
                                 {
-                                    switch (pendingInfoField)
+                                    var sibNames = new System.Text.StringBuilder();
+                                    foreach (var sib in siblings)
                                     {
-                                        case "Description":
-                                            if (string.IsNullOrEmpty(LastDescription))
+                                        try
+                                        {
+                                            var sibName = (sib.Name ?? "").Trim();
+                                            sibNames.Append($"[{sibName}] ");
+                                            if (IsPatientNameCandidate(sibName.ToUpperInvariant()))
                                             {
-                                                LastDescription = value;
-                                                // Description v2.0.3 found (not logged — fires every scrape cycle)
+                                                LastPatientName = ToTitleCase(sibName.ToUpperInvariant());
+                                                Logger.Trace($"Fast patient name found: '{LastPatientName}'");
+                                                break;
                                             }
-                                            break;
-                                        case "MRN":
-                                            if (LastMrn == null)
-                                            {
-                                                LastMrn = value.ToUpperInvariant();
-                                                Logger.Trace("Found MRN (v2.0.3)");
-                                            }
-                                            break;
-                                        case "SiteCode":
-                                            if (LastSiteCode == null)
-                                            {
-                                                LastSiteCode = value.ToUpperInvariant();
-                                                Logger.Trace($"Found Site Code (v2.0.3): {LastSiteCode}");
-                                            }
-                                            break;
+                                        }
+                                        catch { }
                                     }
+                                    if (LastPatientName == null)
+                                        Logger.Trace($"Fast patient name: no match in {siblings.Length} siblings: {sibNames}");
                                 }
-                                pendingInfoField = null;
                             }
                             else
                             {
-                                // Mosaic 2.0.4: Button with inline "Key: Value" (e.g., "Description: XR CHEST 1 VIEW")
-                                if (LastDescription == null && name.StartsWith("Description:", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    var desc = name.Substring("Description:".Length).Trim();
-                                    if (!string.IsNullOrEmpty(desc))
-                                    {
-                                        LastDescription = desc;
-                                        // Description v2.0.4 found (not logged — fires every scrape cycle)
-                                    }
-                                }
-                                if (LastMrn == null && name.StartsWith("MRN:", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    var mrnVal = name.Substring("MRN:".Length).Trim();
-                                    if (!string.IsNullOrWhiteSpace(mrnVal))
-                                    {
-                                        LastMrn = mrnVal.ToUpperInvariant();
-                                        Logger.Trace("Found MRN (v2.0.4)");
-                                    }
-                                }
-                                if (LastSiteCode == null && name.StartsWith("Site Code:", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    var scVal = name.Substring("Site Code:".Length).Trim();
-                                    if (!string.IsNullOrWhiteSpace(scVal))
-                                    {
-                                        LastSiteCode = scVal.ToUpperInvariant();
-                                        Logger.Trace($"Found Site Code (v2.0.4): {LastSiteCode}");
-                                    }
-                                }
+                                Logger.Trace("Fast patient name: anchor parent is null");
                             }
                         }
                         else
                         {
-                            pendingInfoField = null; // Reset on non-Text/non-Button elements
+                            Logger.Trace("Fast patient name: anchor element ', AGE' not found");
                         }
                     }
-                    catch { continue; }
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Trace($"Patient info extraction error: {ex.Message}");
-            }
-            finally
-            {
-                ReleaseElements(allInfoElements);
-            }
-
-            // Only mark extraction complete if we actually found patient info.
-            // If the UI was still loading (only chrome elements visible), we'll retry next scrape
-            // (up to MaxPatientInfoRetries to prevent infinite unfiltered FindAllDescendants).
-            if (needsPatientInfoExtraction && !string.IsNullOrEmpty(LastAccession))
-            {
-                if (LastPatientGender != null || LastMrn != null)
-                {
-                    _lastPatientInfoAccession = LastAccession;
-                }
-                else if (_patientInfoRetryCount >= MaxPatientInfoRetries)
-                {
-                    // Give up — mark as done to stop the expensive unfiltered walk
-                    _lastPatientInfoAccession = LastAccession;
-                    Logger.Trace($"Patient info extraction: gave up after {MaxPatientInfoRetries} attempts (acc={LastAccession})");
+                    catch (Exception ex) { Logger.Trace($"Fast patient name error: {ex.Message}"); }
+                    finally
+                    {
+                        ReleaseElements(siblings);
+                        ReleaseElement(parentElement);
+                        ReleaseElement(anchorElement);
+                    }
                 }
             }
 
-            // END Mosaic 2.0.2 compat
+
+            // Mark patient info as done for this accession once key fields are found
+            if (LastPatientGender != null && LastMrn != null && !string.IsNullOrEmpty(LastAccession))
+                _lastPatientInfoAccession = LastAccession;
 
             // Use cached document name if available (avoids fallback search on every scrape)
             var reportDocSearchName = _cachedReportDocName ?? "Report";
 
             bool runMetadataSweep = checkDraftedStatus && IsMetadataSweepDue(nowTick64, string.IsNullOrEmpty(LastDescription));
+            // Circuit breaker: skip entire metadata sweep after consecutive E_FAIL errors.
+            // The FindAllDescendants COM call itself fails (not just CacheRequest), so retrying
+            // every tick wastes CPU and COM round-trips. Skip for 1 minute, then retry.
+            if (runMetadataSweep && _metadataSweepFailCount >= MetadataSweepFailThreshold
+                && nowTick64 < _metadataSweepDisabledUntilTick64)
+            {
+                runMetadataSweep = false;
+            }
             if (runMetadataSweep)
             {
                 // Search for DRAFTED, Report doc, and Description in one traversal using OR condition.
                 // This is expensive, so we throttle it and reuse the last values between sweeps.
-                var draftedCondition = _cachedSlimHubWindow.ConditionFactory
-                    .ByControlType(FlaUI.Core.Definitions.ControlType.Text)
-                    .And(_cachedSlimHubWindow.ConditionFactory.ByName("DRAFTED"));
-                var reportCondition = _cachedSlimHubWindow.ConditionFactory
-                    .ByControlType(FlaUI.Core.Definitions.ControlType.Document)
-                    .And(_cachedSlimHubWindow.ConditionFactory.ByName(reportDocSearchName, FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
-                var descriptionTextCondition = _cachedSlimHubWindow.ConditionFactory
-                    .ByControlType(FlaUI.Core.Definitions.ControlType.Text)
-                    .And(_cachedSlimHubWindow.ConditionFactory.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
-                var descriptionButtonCondition = _cachedSlimHubWindow.ConditionFactory
-                    .ByControlType(FlaUI.Core.Definitions.ControlType.Button)
-                    .And(_cachedSlimHubWindow.ConditionFactory.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
-                var combinedCondition = draftedCondition.Or(reportCondition).Or(descriptionTextCondition).Or(descriptionButtonCondition);
-
-                var elements = _cachedSlimHubWindow.FindAllDescendants(combinedCondition);
-                _lastMetadataSweepTick64 = nowTick64;
-
-                LastDraftedState = false;
-                foreach (var el in elements)
+                AutomationElement[]? metadataElements = null;
+                try
                 {
-                    if (el.ControlType == FlaUI.Core.Definitions.ControlType.Text && el.Name == "DRAFTED")
+                    var draftedCondition = _cachedSlimHubWindow.ConditionFactory
+                        .ByControlType(FlaUI.Core.Definitions.ControlType.Text)
+                        .And(_cachedSlimHubWindow.ConditionFactory.ByName("DRAFTED"));
+                    var reportCondition = _cachedSlimHubWindow.ConditionFactory
+                        .ByControlType(FlaUI.Core.Definitions.ControlType.Document)
+                        .And(_cachedSlimHubWindow.ConditionFactory.ByName(reportDocSearchName, FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+                    var descriptionTextCondition = _cachedSlimHubWindow.ConditionFactory
+                        .ByControlType(FlaUI.Core.Definitions.ControlType.Text)
+                        .And(_cachedSlimHubWindow.ConditionFactory.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+                    var descriptionButtonCondition = _cachedSlimHubWindow.ConditionFactory
+                        .ByControlType(FlaUI.Core.Definitions.ControlType.Button)
+                        .And(_cachedSlimHubWindow.ConditionFactory.ByName("Description:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+                    var combinedCondition = draftedCondition.Or(reportCondition).Or(descriptionTextCondition).Or(descriptionButtonCondition);
+
+                    // CacheRequest: pre-fetch Name+ControlType for matched descendants.
+                    // Turns ~100 cross-process COM calls into ~1.
+                    // Scoped narrowly — Chrome only supports BuildCache on window-level FindAll.
+                    // Circuit breaker: skip CacheRequest after consecutive failures.
+                    if (IsCacheRequestEnabled(nowTick64))
                     {
-                        LastDraftedState = true;
-                    }
-                    else if (el.ControlType == FlaUI.Core.Definitions.ControlType.Document &&
-                             el.Name?.Contains(reportDocSearchName) == true && reportDoc == null)
-                    {
-                        reportDoc = el;
-                    }
-                    else if ((el.ControlType == FlaUI.Core.Definitions.ControlType.Text ||
-                              el.ControlType == FlaUI.Core.Definitions.ControlType.Button) &&
-                             el.Name?.StartsWith("Description:", StringComparison.OrdinalIgnoreCase) == true)
-                    {
-                        var descVal = el.Name.Substring("Description:".Length).Trim();
-                        if (!string.IsNullOrEmpty(descVal))
+                        try
                         {
-                            LastDescription = descVal;
-                            Logger.Trace($"Found Description: {LastDescription}");
+                            using (CreatePropertyCacheRequest().Activate())
+                            metadataElements = _cachedSlimHubWindow.FindAllDescendants(combinedCondition);
+                            OnCacheRequestSuccess();
+                        }
+                        catch
+                        {
+                            OnCacheRequestFailure(nowTick64);
+                            // Fallback: retry without CacheRequest
+                            metadataElements = _cachedSlimHubWindow.FindAllDescendants(combinedCondition);
                         }
                     }
-                }
+                    else
+                    {
+                        metadataElements = _cachedSlimHubWindow.FindAllDescendants(combinedCondition);
+                    }
+                    _lastMetadataSweepTick64 = nowTick64;
 
-                foreach (var el in elements)
-                    if (el != reportDoc) ReleaseElement(el);
+                    LastDraftedState = false;
+                    foreach (var el in metadataElements)
+                    {
+                        var elType = el.ControlType;
+                        var elName = (el.Name ?? "");
+                        if (elType == FlaUI.Core.Definitions.ControlType.Text && elName == "DRAFTED")
+                        {
+                            LastDraftedState = true;
+                        }
+                        else if (elType == FlaUI.Core.Definitions.ControlType.Document &&
+                                 elName.Contains(reportDocSearchName) && reportDoc == null)
+                        {
+                            reportDoc = el;
+                        }
+                        else if ((elType == FlaUI.Core.Definitions.ControlType.Text ||
+                                  elType == FlaUI.Core.Definitions.ControlType.Button) &&
+                                 elName.StartsWith("Description:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var descVal = elName.Substring("Description:".Length).Trim();
+                            if (!string.IsNullOrEmpty(descVal))
+                            {
+                                LastDescription = descVal;
+                                Logger.Trace($"Found Description: {LastDescription}");
+                            }
+                        }
+                    }
+                    _metadataSweepFailCount = 0; // Full success (find + property reads) — reset circuit breaker
+                }
+                catch (Exception ex)
+                {
+                    _metadataSweepFailCount++;
+                    if (_metadataSweepFailCount >= MetadataSweepFailThreshold)
+                    {
+                        _metadataSweepDisabledUntilTick64 = nowTick64 + MetadataSweepCooldownMs;
+                        Logger.Trace($"Metadata sweep circuit breaker: disabled for {MetadataSweepCooldownMs / 1000}s after {_metadataSweepFailCount} consecutive failures");
+                    }
+                    else
+                    {
+                        Logger.Trace($"Metadata sweep error ({_metadataSweepFailCount}/{MetadataSweepFailThreshold}): {ex.Message}");
+                    }
+                }
+                finally
+                {
+                    if (metadataElements != null)
+                        foreach (var el in metadataElements)
+                            if (el != reportDoc) ReleaseElement(el);
+                }
             }
             else
             {
                 reportDoc = _cachedReportDocument;
-                if (reportDoc != null)
-                {
-                    try
-                    {
-                        _ = reportDoc.ControlType; // Validate cached wrapper
-                    }
-                    catch
-                    {
-                        InvalidateReportDocumentCache();
-                        reportDoc = null;
-                    }
-                }
+                // Skip ControlType validation — it's an extra COM cross-process call per tick.
+                // If the cached document is stale, the FindFirstDescendant below will get a fresh one.
             }
 
             if (reportDoc == null)
@@ -2051,17 +2258,14 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             {
                 try
                 {
-                    var win = _cachedSlimHubWindow;
-                    var documents = RunWithTimeout(
-                        () => win.FindAllDescendants(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Document)),
-                        2000, "FallbackDocSearch");
-                    if (documents == null) throw new TimeoutException("FallbackDocSearch timed out");
+                    var documents = _cachedSlimHubWindow.FindAllDescendants(cf =>
+                        cf.ByControlType(FlaUI.Core.Definitions.ControlType.Document));
 
                     foreach (var doc in documents)
                     {
                         try
                         {
-                            var docName = doc.Name ?? "";
+                            var docName = (doc.Name ?? "");
                             if (!docName.Equals("SlimHub", StringComparison.OrdinalIgnoreCase) &&
                                 !string.IsNullOrWhiteSpace(docName))
                             {
@@ -2113,9 +2317,27 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                 LogSlowScrape("cached-editor", sw.ElapsedMilliseconds);
                 return cachedReportText;
             }
-            
+
+            // Rate-limit ProseMirror FindAllDescendants — each call expands Chrome's accessibility
+            // tree which NEVER shrinks, causing progressive system-wide degradation.
+            long nowTick = Environment.TickCount64;
+            int throttleMs = IsBurstModeActive ? ProsemirrorSearchBurstIntervalMs : ProsemirrorSearchMinIntervalMs;
+            if (nowTick - _lastProsemirrorSearchTick64 < throttleMs)
+            {
+                // Too soon since last search — return stale data to avoid Chrome tree bloat
+                LogSlowScrape("prosemirror-throttled", sw.ElapsedMilliseconds);
+                return LastFinalReport;
+            }
+            _lastProsemirrorSearchTick64 = nowTick;
+
+            // Wrapped in try/catch so E_FAIL from document enumeration doesn't propagate
+            // to the outer catch and invalidate window/document caches. The window and document
+            // are valid — only the report content search failed (e.g., no study loaded).
+            AutomationElement[]? candidates = null;
+            try
+            {
             // Find all potential editors
-            var candidates = flowDoc.FindAllDescendants(cf => 
+            candidates = flowDoc.FindAllDescendants(cf =>
                 cf.ByClassName("ProseMirror", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
 
             if (candidates.Length > 0)
@@ -2167,12 +2389,16 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
                 if (!string.IsNullOrEmpty(bestText) && maxScore > 0)
                 {
-                    // Mosaic 2.0.3 has multiple ProseMirrors (report + transcript).
-                    // If the winner lacks U+FFFC, it's the transcript (the real report editor
-                    // is temporarily empty, e.g. right after Process Report). Keep previous report.
-                    if (candidates.Length > 1 && maxScore < 100 && LastFinalReport != null)
+                    // Mosaic 2.0.3+ has multiple ProseMirrors (report + transcript).
+                    // During editor rebuild after Process Report, the new editor temporarily
+                    // lacks U+FFFC and may contain partial/transitional content (just EXAM:
+                    // header, no FINDINGS or IMPRESSION yet). Reject partial content to avoid
+                    // flashing incomplete reports. Accept without U+FFFC only when the text
+                    // contains IMPRESSION (report is fully rendered).
+                    if (maxScore < 100 && LastFinalReport != null
+                        && !bestText.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase))
                     {
-                        Logger.Trace("GetFinalReportFast: Primary candidate lacks U+FFFC, keeping previous report");
+                        Logger.Trace("GetFinalReportFast: Candidate lacks U+FFFC and IMPRESSION, keeping previous report");
                         ReleaseElements(candidates);
                         return LastFinalReport;
                     }
@@ -2225,11 +2451,12 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
                     if (!string.IsNullOrEmpty(bestFallback) && bestFallbackScore > 0)
                     {
-                        // Mosaic 2.0.3: if the winner lacks U+FFFC, it's the transcript.
-                        // Keep previous report to avoid flashing transcript content.
-                        if (candidates.Length > 1 && bestFallbackScore < 100 && LastFinalReport != null)
+                        // Same partial-content guard as primary path: reject without U+FFFC
+                        // unless the text contains IMPRESSION (report fully rendered).
+                        if (bestFallbackScore < 100 && LastFinalReport != null
+                            && !bestFallback.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase))
                         {
-                            Logger.Trace("GetFinalReportFast: Fallback candidate lacks U+FFFC, keeping previous report");
+                            Logger.Trace("GetFinalReportFast: Fallback candidate lacks U+FFFC and IMPRESSION, keeping previous report");
                             ReleaseElements(candidates);
                             return LastFinalReport;
                         }
@@ -2247,7 +2474,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                     }
                 }
             }
-            
+
             if (candidates.Length > 0)
             {
                 try
@@ -2260,62 +2487,79 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             }
             Logger.Trace($"GetFinalReportFast: ProseMirror search failed (Candidates={candidates.Length}). Proceeding to fallback...");
             ReleaseElements(candidates);
+            candidates = null;
 
             // FALLBACK: Sibling/Fragment search
             // This runs if ProseMirror elements weren't found OR didn't contain the report
-            var examElement = reportDoc.FindFirstDescendant(cf => 
-                    cf.ByName("EXAM:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
-
-            if (examElement != null)
+            AutomationElement? examElement = null;
+            AutomationElement? examContainer = null;
+            try
             {
-                // The report text is fragmented across siblings.
-                var container = examElement.Parent;
-                if (container != null)
+                examElement = reportDoc.FindFirstDescendant(cf =>
+                        cf.ByName("EXAM:", FlaUI.Core.Definitions.PropertyConditionFlags.MatchSubstring));
+
+                if (examElement != null)
                 {
-                    var sb = new System.Text.StringBuilder();
-                    var allDescendants = container.FindAllDescendants();
-
-                    try
+                    // The report text is fragmented across siblings.
+                    examContainer = examElement.Parent;
+                    if (examContainer != null)
                     {
-                        foreach (var desc in allDescendants)
+                        var sb = new System.Text.StringBuilder();
+                        var allDescendants = examContainer.FindAllDescendants();
+
+                        try
                         {
-                            var t = desc.Name;
-                            if (!string.IsNullOrWhiteSpace(t)) sb.AppendLine(t);
+                            foreach (var desc in allDescendants)
+                            {
+                                var t = (desc.Name ?? "");
+                                if (!string.IsNullOrWhiteSpace(t)) sb.AppendLine(t);
+                            }
                         }
-                    }
-                    finally
-                    {
-                        ReleaseElements(allDescendants);
-                    }
+                        finally
+                        {
+                            ReleaseElements(allDescendants);
+                        }
 
-                    var fullText = sb.ToString();
-                    Logger.Trace($"GetFinalReportFast: Fallback Reconstruction found {fullText.Length} chars");
+                        var fullText = sb.ToString();
+                        Logger.Trace($"GetFinalReportFast: Fallback Reconstruction found {fullText.Length} chars");
 
-                    if (fullText.Length > 50)
-                    {
-                        sw.Stop();
-                        int lineCount = fullText.Split('\n').Length;
-                        Logger.Trace($"GetFinalReportFast: Fallback SUCCESS in {sw.ElapsedMilliseconds}ms, {lineCount} lines");
-                        LastFinalReport = fullText;
-                        LastTemplateName = ExtractTemplateName(fullText);
-                        InvalidateReportEditorCache(); // ProseMirror cache may be stale if we needed fragment fallback
-                        LogSlowScrape("fragment-fallback", sw.ElapsedMilliseconds);
-                        return fullText;
+                        if (fullText.Length > 50)
+                        {
+                            sw.Stop();
+                            int lineCount = fullText.Split('\n').Length;
+                            Logger.Trace($"GetFinalReportFast: Fallback SUCCESS in {sw.ElapsedMilliseconds}ms, {lineCount} lines");
+                            LastFinalReport = fullText;
+                            LastTemplateName = ExtractTemplateName(fullText);
+                            InvalidateReportEditorCache(); // ProseMirror cache may be stale if we needed fragment fallback
+                            LogSlowScrape("fragment-fallback", sw.ElapsedMilliseconds);
+                            return fullText;
+                        }
                     }
                 }
             }
-            
-            InvalidateReportEditorCache();
-            Logger.Trace($"GetFinalReportFast: Failed to find report content ({sw.ElapsedMilliseconds}ms)");
+            finally
+            {
+                ReleaseElement(examContainer);
+                ReleaseElement(examElement);
+            }
 
-        }
-        catch (Exception ex)
-        {
-            Logger.Trace($"GetFinalReportFast error: {ex.Message} ({sw.ElapsedMilliseconds}ms)");
-            InvalidateMosaicWindowCache();
-        }
-        
-        return null;
+            } // end ProseMirror + fallback try
+            catch (Exception ex)
+            {
+                Logger.Trace($"GetFinalReportFast: Report content search error: {ex.Message} ({sw.ElapsedMilliseconds}ms)");
+            }
+            finally
+            {
+                ReleaseElements(candidates);
+            }
+
+            InvalidateReportEditorCache();
+            // Reset ProseMirror throttle so next scrape retries immediately.
+            // Without this, a failed search (e.g., COM error during editor rebuild)
+            // burns the full 10s cooldown, delaying report pickup after Process Report.
+            _lastProsemirrorSearchTick64 = 0;
+            Logger.Trace($"GetFinalReportFast: Failed to find report content ({sw.ElapsedMilliseconds}ms)");
+            return null;
     }
     
     /// <summary>
@@ -2326,7 +2570,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         AutomationElement[]? windows = null;
         try
         {
-            var desktop = _automation.GetDesktop();
+            var desktop = GetCachedDesktop();
             windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
 
             foreach (var window in windows)
@@ -2485,6 +2729,8 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     /// </summary>
     public bool IsDiscardDialogVisible()
     {
+        AutomationElement? discardDialog = null;
+        AutomationElement? discardButton = null;
         try
         {
             // Use cached window if available, otherwise find it
@@ -2492,7 +2738,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             if (window == null) return false;
 
             // Look for the dialog window with name "Confirm Discard Action?"
-            var discardDialog = window.FindFirstDescendant(cf =>
+            discardDialog = window.FindFirstDescendant(cf =>
                 cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window)
                   .And(cf.ByName("Confirm Discard Action?")));
 
@@ -2503,7 +2749,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             }
 
             // Fallback: look for the "YES, DISCARD" button
-            var discardButton = window.FindFirstDescendant(cf =>
+            discardButton = window.FindFirstDescendant(cf =>
                 cf.ByControlType(FlaUI.Core.Definitions.ControlType.Button)
                   .And(cf.ByName("YES, DISCARD")));
 
@@ -2519,6 +2765,11 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         {
             Logger.Trace($"IsDiscardDialogVisible error: {ex.Message}");
             return false;
+        }
+        finally
+        {
+            ReleaseElement(discardDialog);
+            ReleaseElement(discardButton);
         }
     }
 
@@ -2849,7 +3100,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         AutomationElement? found = null;
         try
         {
-            var desktop = _automation.GetDesktop();
+            var desktop = GetCachedDesktop();
             windows = desktop.FindAllChildren(cf => cf.ByControlType(FlaUI.Core.Definitions.ControlType.Window));
 
             foreach (var window in windows)
@@ -2912,7 +3163,14 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             sb.AppendLine();
 
             int count = 0;
-            DumpElementRecursive(window, sb, method, 0, 20, ref count);
+            try
+            {
+                DumpElementRecursive(window, sb, method, 0, 20, ref count);
+            }
+            finally
+            {
+                ReleaseElement(window);
+            }
 
             sb.AppendLine();
             sb.AppendLine(new string('=', 80));
@@ -3027,23 +3285,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
     #endregion
 
-    #region UIA Timeout Wrapper
-
-    /// <summary>
-    /// Run a FlaUI/UIA operation with a timeout. Returns null if the operation exceeds the timeout.
-    /// Prevents single hung COM calls from blocking the scrape thread indefinitely.
-    /// </summary>
-    private T? RunWithTimeout<T>(Func<T> op, int timeoutMs, string name) where T : class
-    {
-        var task = Task.Run(op);
-        if (task.Wait(timeoutMs)) return task.Result;
-        Logger.Trace($"UIA timeout ({name}): abandoned after {timeoutMs}ms");
-        return null;
-    }
-
-    #endregion
-
-    #region COM Cleanup Helpers
+#region COM Cleanup Helpers
 
     /// <summary>
     /// Release COM wrappers for an array of FlaUI AutomationElements.
@@ -3074,9 +3316,74 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
     #endregion
 
+    /// <summary>
+    /// Full UIA reset: release all cached elements, dispose the UIA automation, recreate it.
+    /// Call on study change to prevent Chrome's accessibility tree from bloating indefinitely.
+    /// Chrome tracks accessibility nodes per-client — disposing resets the connection.
+    /// </summary>
+    /// <summary>
+    /// Get a cached desktop element. Avoids creating a new COM wrapper per GetDesktop() call.
+    /// Falls back to fresh call if cache is stale.
+    /// </summary>
+    public AutomationElement GetCachedDesktop()
+    {
+        var desktop = _cachedDesktop;
+        if (desktop != null)
+        {
+            try
+            {
+                _ = desktop.Properties.ProcessId.ValueOrDefault; // Validate
+                return desktop;
+            }
+            catch
+            {
+                _cachedDesktop = null;
+            }
+        }
+        desktop = _automation.GetDesktop();
+        _cachedDesktop = desktop;
+        return desktop;
+    }
+
+    public void ResetUiaConnection()
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // Release all cached element references
+        InvalidateMosaicWindowCache();
+        ReleaseElement(_cachedDesktop);
+        _cachedDesktop = null;
+        // Don't reset _lastPatientInfoAccession — fast extraction checks
+        // LastPatientGender == null etc. and will re-extract on subsequent ticks.
+        LastPatientGender = null;
+        LastPatientAge = null;
+        LastPatientName = null;
+        LastSiteCode = null;
+        LastMrn = null;
+        LastClarioPriority = null;
+        LastClarioClass = null;
+        IsStrokeStudy = false;
+
+        // Force GC to release all remaining COM wrappers before disposing automation
+        GC.Collect(2, GCCollectionMode.Forced);
+        GC.WaitForPendingFinalizers();
+
+        var callsSinceReset = Interlocked.Exchange(ref _uiaCallCount, 0);
+
+        // Dispose old UIA automation (releases IUIAutomation COM object)
+        try { _automation.Dispose(); } catch { }
+
+        // Create fresh automation
+        _automation = new UIA3Automation();
+
+        Logger.Trace($"UIA connection reset ({sw.ElapsedMilliseconds}ms, {callsSinceReset} calls since last reset)");
+    }
+
     public void Dispose()
     {
         InvalidateMosaicWindowCache();
+        ReleaseElement(_cachedDesktop);
+        _cachedDesktop = null;
         _automation.Dispose();
     }
 }

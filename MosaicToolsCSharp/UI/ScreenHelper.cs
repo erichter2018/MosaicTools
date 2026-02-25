@@ -27,8 +27,9 @@ internal static class ScreenHelper
         // Off-screen — clamp to the nearest screen's working area
         var nearest = Screen.FromPoint(point);
         var area = nearest.WorkingArea;
-        int clampedX = Math.Clamp(x, area.Left, area.Right - Math.Max(width, 1));
-        int clampedY = Math.Clamp(y, area.Top, area.Bottom - Math.Max(height, 1));
+        // Math.Max ensures min<=max when form is wider/taller than the screen
+        int clampedX = Math.Clamp(x, area.Left, Math.Max(area.Left, area.Right - Math.Max(width, 1)));
+        int clampedY = Math.Clamp(y, area.Top, Math.Max(area.Top, area.Bottom - Math.Max(height, 1)));
         return new Point(clampedX, clampedY);
     }
 

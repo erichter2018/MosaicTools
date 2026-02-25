@@ -26,4 +26,10 @@ public interface IMosaicReader
     bool IsDiscardDialogVisible();
     bool IsDictationActiveUIA();
     void ClearLastReport();
+
+    /// <summary>
+    /// Invalidate the cached ProseMirror editor element, forcing the next scrape
+    /// to do a fresh search. Call after Process Report when Mosaic rebuilds the editor.
+    /// </summary>
+    void InvalidateEditorCache();
 }

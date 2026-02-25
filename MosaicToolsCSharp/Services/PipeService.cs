@@ -247,7 +247,10 @@ public class PipeService : IDisposable
     public void SendStudyData(StudyDataMessage msg)
     {
         if (!_isConnected) return;
-        if (msg == _lastSentStudyData) return; // Record equality check
+
+        // Compare all fields except Timestamp for dedup (Timestamp changes every tick)
+        if (_lastSentStudyData != null && msg with { Timestamp = "" } == _lastSentStudyData with { Timestamp = "" })
+            return;
 
         _lastSentStudyData = msg;
         WriteMessage(msg);

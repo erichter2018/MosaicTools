@@ -821,10 +821,14 @@ public static class CorrelationService
         @"|\bunremarkable\b|\bwithin\s+normal\b" +
         @"|\b(?:was|has\s+been)\s+performed\b" +               // surgical history
         @"|\bdemonstrates?\s+no\s" +                            // mid-sentence negative
-        @"|\b(?:is|are)\s+normal\b" +                            // "is normal", "is normal in size/caliber"
+        @"|\b(?:is|are)\s+normal\b" +                           // "is normal", "is normal in size/caliber"
         @"|\bnot\s+clearly\s+(?:seen|visualized|identified)\b" + // non-visualization
         @"|\b(?:is|are)\s+clear\b" +                            // "airways are clear"
-        @"|\bno\s+evidence\b",                                  // "no evidence of acute..."
+        @"|\bno\s+evidence\b" +                                 // "no evidence of acute..."
+        @"|\bwithout\s+(?:acute|significant|evidence|definite|discrete|suspicious|focal|abnormal)" + // "without acute fracture"
+        @"|\b(?:is|are)\s+(?:intact|preserved|patent|maintained|unremarkable|symmetric|midline)" + // "bones are intact"
+        @"|\b(?:is|are)\s+(?:grossly|essentially)\s+" +         // "is grossly normal"
+        @"|\bno\s+(?:acute|significant|definite|discrete|suspicious|focal|abnormal)\b", // "no acute finding"
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     /// <summary>
@@ -879,10 +883,7 @@ public static class CorrelationService
         foreach (var sentence in filteredFindings)
         {
             if (NegativeSentencePattern.IsMatch(sentence))
-            {
                 negativeFindings.Add(sentence);
-                Logger.Trace($"CorrelateReversed: Negative finding{(hasDictatedFilter ? " (dictated, will highlight+orphan)" : " (template, won't orphan)")}: {sentence.Substring(0, Math.Min(60, sentence.Length))}");
-            }
         }
         int significantCount = filteredFindings.Count - negativeFindings.Count;
         Logger.Trace($"CorrelateReversed: {significantCount} significant + {negativeFindings.Count} negative findings (dictatedFilter={hasDictatedFilter})");
@@ -919,11 +920,11 @@ public static class CorrelationService
         var matchedGroups = new Dictionary<int, (string impressionText, List<string> findings)>();
         var orphanFindings = new List<string>();
 
+        int matchCount = 0, orphanCount = 0, negSkipCount = 0;
         foreach (var finding in filteredFindings)
         {
             bool isNegative = negativeFindings.Contains(finding);
             var findingTerms = ExtractTerms(finding, contextTerms);
-            Logger.Trace($"CorrelateReversed: Finding terms=[{string.Join(", ", findingTerms)}] neg={isNegative} for: {finding.Substring(0, Math.Min(60, finding.Length))}");
             if (findingTerms.Count == 0)
             {
                 if (!isNegative) orphanFindings.Add(finding);
@@ -944,7 +945,6 @@ public static class CorrelationService
                 var impressionTerms = ExtractTerms(text, contextTerms);
                 var shared = findingTerms.Intersect(impressionTerms, StringComparer.OrdinalIgnoreCase).ToList();
                 int substantiveCount = shared.Count(t => !LateralityTerms.Contains(t));
-                Logger.Trace($"CorrelateReversed:   vs Impression #{index} terms=[{string.Join(", ", impressionTerms)}] shared=[{string.Join(", ", shared)}] score={shared.Count} substantive={substantiveCount}");
                 if (shared.Count > bestScore)
                 {
                     bestScore = shared.Count;
@@ -957,7 +957,7 @@ public static class CorrelationService
             // Require at least one non-laterality shared term to count as a match
             if (bestSubstantiveScore >= 1 && bestImpressionIdx >= 0)
             {
-                Logger.Trace($"CorrelateReversed: MATCHED finding to Impression #{bestImpressionIdx} (score={bestScore}, substantive={bestSubstantiveScore}, neg={isNegative})");
+                matchCount++;
                 // When we have a dictated filter, negative findings are confirmed dictated content
                 // and should be highlighted. Without a filter, exclude negatives to avoid
                 // highlighting boilerplate template content.
@@ -971,14 +971,15 @@ public static class CorrelationService
             else if (!isNegative || hasDictatedFilter)
             {
                 // Orphan: positive finding, or dictated pertinent negative with no impression match
-                Logger.Trace($"CorrelateReversed: ORPHAN finding (bestScore={bestScore}, substantive={bestSubstantiveScore}, neg={isNegative}, dictated={hasDictatedFilter})");
+                orphanCount++;
                 orphanFindings.Add(finding);
             }
             else
             {
-                Logger.Trace($"CorrelateReversed: Negative template finding unmatched, not orphaned");
+                negSkipCount++;
             }
         }
+        Logger.Trace($"CorrelateReversed: matching done: {matchCount} matched, {orphanCount} orphans, {negSkipCount} negative-template skipped");
 
         // Build result: matched groups get a color based on body-part category
         int colorIndex = 0;
@@ -1315,23 +1316,24 @@ public static class CorrelationService
     private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
     {
         "about", "above", "after", "again", "along", "also", "appears", "are",
-        "been", "before", "being", "below", "between", "both", "cannot",
-        "change", "changes", "compatible", "compared", "could",
+        "based", "been", "before", "being", "below", "between", "both", "cannot",
+        "change", "changes", "clear", "compatible", "compared", "could",
         "demonstrate", "demonstrates", "demonstrated", "does",
         "each", "either", "evaluate", "evaluation", "evidence",
-        "findings", "following", "from", "given", "have", "having",
-        "identified", "impression", "including", "interval",
-        "large", "likely", "limited", "measure", "measures", "measuring",
+        "findings", "following", "from", "given", "grossly", "have", "having",
+        "identified", "image", "impression", "including", "intact", "interval",
+        "large", "level", "likely", "limited", "lower",
+        "measure", "measures", "measuring",
         "mild", "mildly", "minimal", "moderate", "moderately",
-        "neither", "normal", "noted", "number",
+        "negative", "neither", "normal", "noted", "number",
         "other", "otherwise", "overall",
-        "partially", "patient", "please", "possible", "possibly",
-        "prior", "probably",
-        "redemonstrated", "related", "remain", "remains",
-        "seen", "series", "severe", "severely", "several", "should",
+        "partially", "patent", "patient", "performed", "please",
+        "possible", "possibly", "preserved", "prior", "probably",
+        "redemonstrated", "related", "remain", "remains", "reveal", "reveals",
+        "seen", "series", "severe", "severely", "several", "should", "shown", "shows",
         "since", "small", "stable", "status", "study", "suggest", "suggests",
         "there", "these", "those", "through", "total",
-        "unchanged", "under", "unremarkable",
+        "unchanged", "under", "unremarkable", "upper",
         "visualized", "well", "where", "which", "within", "without"
     };
 

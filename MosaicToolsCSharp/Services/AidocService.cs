@@ -31,11 +31,11 @@ public class AidocService
     [DllImport("gdi32.dll")]
     private static extern uint GetPixel(IntPtr hdc, int x, int y);
 
-    private readonly UIA3Automation _automation;
+    private readonly AutomationService _automationService;
 
-    public AidocService(UIA3Automation automation)
+    public AidocService(AutomationService automationService)
     {
-        _automation = automation;
+        _automationService = automationService;
     }
 
     // Track last logged state to avoid spamming logs every scrape cycle
@@ -113,8 +113,9 @@ public class AidocService
         AutomationElement? widget = null, renderHost = null, group = null;
         try
         {
-            var desktop = _automation.GetDesktop();
-            var cf = _automation.ConditionFactory;
+            var automation = _automationService.Automation;
+            var desktop = _automationService.GetCachedDesktop();
+            var cf = automation.ConditionFactory;
 
             widget = desktop.FindFirstChild(
                 cf.ByName("aidoc-shortcut").And(cf.ByClassName("Chrome_WidgetWin_1")));

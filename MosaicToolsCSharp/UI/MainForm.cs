@@ -1827,6 +1827,7 @@ public class MainForm : Form
     public void EnsureWindowsOnTop()
     {
         if (_settingsOpen) return; // Don't fight with settings dialog for Z-order
+        if (ContextMenuStrip != null && ContextMenuStrip.Visible) return; // Don't dismiss context menu
 
         if (InvokeRequired)
         {
@@ -2091,6 +2092,7 @@ public class MainForm : Form
         }
 
         Logger.Trace("App shutdown complete");
+        Logger.Shutdown(); // Flush pending log writes before exit
         base.OnFormClosed(e);
     }
     

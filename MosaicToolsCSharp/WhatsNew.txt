@@ -1,3 +1,15 @@
+3.8.6
+- Fix: Report popup briefly showing transcript text during editor rebuild after Process Report
+- Fix: Report popup not clearing immediately on sign or accession change
+- Fix: Patient name not sent via pipe to RVUCounter (extraction wiped by ordering bug)
+- Fix: RadAI overlay stuck open after paste (verification retry + proceed on failure)
+- Fix: Partial/transitional reports shown during Mosaic editor rebuild (restored U+FFFC filter with IMPRESSION fallback)
+- Fix: Report popup "Updating..." indicator clearing before report actually updates (30s timeout)
+- Performance: Instant report popup update after RadAI insert (bypass BatchUI deferral)
+- Performance: Editor cache invalidation after Process Report (prevents 10-15s stale reads)
+- Performance: ProseMirror search throttle relaxed to 3s during burst mode (was 10s)
+- Performance: Reduced verbose correlation logging (CorrelateReversed inner-loop removed)
+
 3.8.5
 - Fix: COM wrapper memory leak in Clario recursive traversal (leaked 100K+ COM objects over a shift)
 - Fix: COM wrapper leak in Aidoc widget scraping

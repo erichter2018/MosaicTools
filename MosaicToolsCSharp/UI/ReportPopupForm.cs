@@ -2246,7 +2246,21 @@ public class ReportPopupForm : Form
     private static string NormalizeSentence(string sentence)
     {
         if (string.IsNullOrEmpty(sentence)) return "";
-        return Regex.Replace(sentence.ToLowerInvariant().Trim(), @"\s+", " ");
+
+        // Strip invisible Unicode characters (zero-width spaces, format chars, etc.)
+        // that Mosaic's ProseMirror editor inserts. Without this, baseline template
+        // text with/without invisible chars won't match, causing false diff highlights.
+        var sb = new StringBuilder(sentence.Length);
+        foreach (char c in sentence)
+        {
+            var cat = char.GetUnicodeCategory(c);
+            if (cat == System.Globalization.UnicodeCategory.Format) continue;
+            if (char.IsControl(c) && c != '\n' && c != '\r' && c != '\t') continue;
+            if (c == '\uFFFC' || c == '\uFFFD') continue;
+            sb.Append(c == '\u00A0' ? ' ' : c); // Non-breaking space → space
+        }
+
+        return Regex.Replace(sb.ToString().ToLowerInvariant().Trim(), @"\s+", " ");
     }
 
     private static bool IsSectionHeading(string text)
