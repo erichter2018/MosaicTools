@@ -563,7 +563,7 @@ public class ActionController : IDisposable
         {
             if (isDown)
             {
-                ThreadPool.QueueUserWorkItem(_ => PerformToggleRecord(null, sendKey: true));
+                ThreadPool.QueueUserWorkItem(_ => PerformToggleRecord(null, sendKey: true, restoreFocus: true));
             }
             return;
         }
@@ -577,7 +577,7 @@ public class ActionController : IDisposable
                 {
                     ThreadPool.QueueUserWorkItem(_ =>
                     {
-                        try { PerformToggleRecord(true, sendKey: true); }
+                        try { PerformToggleRecord(true, sendKey: true, restoreFocus: true); }
                         finally { Interlocked.Exchange(ref _pttBusy, 0); }
                     });
                 }
@@ -594,7 +594,7 @@ public class ActionController : IDisposable
                     {
                         try {
                             Thread.Sleep(50);
-                            PerformToggleRecord(false, sendKey: true);
+                            PerformToggleRecord(false, sendKey: true, restoreFocus: true);
                         }
                         finally { Interlocked.Exchange(ref _pttBusy, 0); }
                     });
@@ -661,7 +661,11 @@ public class ActionController : IDisposable
                 PerformCaptureSeries();
                 break;
             case Actions.ToggleRecord:
-                PerformToggleRecord(null, sendKey: true);
+                // Record Button (PowerMic) and Record (SpeechMike) are hardcoded in Mosaic to toggle dictation.
+                // Only send Alt+R if triggered by other sources (hotkey, non-Record mic button).
+                // Sending Alt+R when Mosaic already handled it causes a double-toggle and visible focus bounce.
+                bool isNativeRecordButton = req.Source == "Record Button" || req.Source == "Record";
+                PerformToggleRecord(null, sendKey: !isNativeRecordButton);
                 break;
             case Actions.ProcessReport:
                 PerformProcessReport(req.Source);
@@ -883,7 +887,7 @@ public class ActionController : IDisposable
         }
     }
 
-    private void PerformToggleRecord(bool? desiredState = null, bool sendKey = true)
+    private void PerformToggleRecord(bool? desiredState = null, bool sendKey = true, bool restoreFocus = false)
     {
         Logger.Trace($"PerformToggleRecord (desired={desiredState}, sendKey={sendKey})");
 
@@ -933,9 +937,21 @@ public class ActionController : IDisposable
         // 2. Perform Toggle (Alt+R) matching Python's activation rules
         if (sendKey)
         {
+            if (restoreFocus)
+                NativeWindows.SavePreviousFocus();
+
             NativeWindows.ActivateMosaicForcefully();
             Thread.Sleep(100);
             NativeWindows.SendAltKey('R');
+
+            // Restore focus immediately so dictation toggle doesn't steal focus
+            // from InteleViewer. Only needed for PTT/Record button path which
+            // bypasses ActionLoop's own save/restore.
+            if (restoreFocus)
+            {
+                Thread.Sleep(50);
+                NativeWindows.RestorePreviousFocus(0);
+            }
         }
         
         // 3. Update internal state (Syncing with Python's predictive model)
@@ -3146,7 +3162,7 @@ public class ActionController : IDisposable
             // Two tiers: 10s after 3 idle scrapes, 30s after 10 idle scrapes.
             // Heavy FlaUI/UIA calls every few seconds cause system-wide input lag
             // (mouse jumpiness, keyboard hook death) even when finding nothing.
-            bool suppressIdleBackoff = IsReportBurstModeActive(nowTick64);
+            bool suppressIdleBackoff = IsReportBurstModeActive(nowTick64) || _pendingCloseAccession != null;
             if (string.IsNullOrEmpty(reportText))
             {
                 _consecutiveIdleScrapes++;
@@ -3498,12 +3514,9 @@ public class ActionController : IDisposable
         _lastPopupReportText = null;
         _mosaicReader.ClearLastReport();
 
-        // Full UIA reset: dispose and recreate the UIA automation connection.
-        // Chrome's accessibility tree grows from repeated FindAllDescendants calls and never
-        // shrinks. Resetting the connection forces Chrome to rebuild from scratch. Study change
-        // is the ideal time — user can't dictate for a few seconds anyway.
-        _automationService.ResetUiaConnection();
-        _scrapesSinceLastGc = 0; // GC already ran inside ResetUiaConnection
+        // UIA reset moved to periodic timer (CheckPeriodicUiaReset, every 10 min).
+        // Per-study reset was adding 3-6s cold ProseMirror search delay on every study
+        // transition, blocking clinical history and report popup from updating.
 
         // Close stale report popup from prior study (immediate — don't defer via BatchUI)
         if (_currentReportPopup != null && !_currentReportPopup.IsDisposed)
@@ -3546,6 +3559,7 @@ public class ActionController : IDisposable
         if (!studyClosed)
         {
             _lastNonEmptyAccession = currentAccession;
+            _consecutiveIdleScrapes = 0; // New study opened — prevent idle backoff
 
             _needsBaselineCapture = _config.ShowReportChanges || _config.CorrelationEnabled;
             // Speed up scraping to catch template flash before auto-processing
@@ -3623,9 +3637,11 @@ public class ActionController : IDisposable
             _needsBaselineCapture = false;
             Logger.Trace("Study closed, no new study opened");
 
-            // Revert to idle scrape interval — no study open, no reason to scrape fast
+            // Keep normal scrape rate after study close — a new study typically opens within
+            // seconds. The idle backoff (3 empty scrapes → 10s, 10 → 30s) will kick in
+            // naturally if nothing opens. Don't force 10s immediately.
             if (!_searchingForImpression)
-                RestartScrapeTimer(IdleScrapeIntervalMs);
+                RestartScrapeTimer(NormalScrapeIntervalMs);
 
             // Hide clinical history window if configured to hide when no study
             // (or always hide in alerts-only mode when no alerts)
