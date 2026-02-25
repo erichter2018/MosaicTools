@@ -154,6 +154,7 @@ public class ActionController : IDisposable
     private bool _templateRecordedForStudy = false; // Only record template once per study, before Process Report
     private string? _lastPopupReportText; // Track what's currently displayed in popup for change detection
     private DateTime _staleSetTime; // When SetStaleState(true) was last triggered
+    private DateTime _staleTextStableTime; // When text first matched _lastPopupReportText after going stale
 
     // RVUCounter integration - track if discard dialog was shown for current accession
     // If dialog was shown while on accession X, and then X changes, X was discarded
@@ -1197,6 +1198,8 @@ public class ActionController : IDisposable
             if (popupAlreadyOpen)
             {
                 Logger.Trace("Process Report: Skipping auto-show (popup already open), marking as stale");
+                _staleSetTime = DateTime.UtcNow;
+                _staleTextStableTime = default;
                 InvokeUI(() => { if (popupRef != null && !popupRef.IsDisposed) popupRef.SetStaleState(true); });
             }
             else
@@ -1212,6 +1215,8 @@ public class ActionController : IDisposable
             {
                 // Popup is open but auto-show is disabled or already done - still mark as stale during processing
                 Logger.Trace("Process Report: Marking popup as stale during processing");
+                _staleSetTime = DateTime.UtcNow;
+                _staleTextStableTime = default;
                 InvokeUI(() => { if (popupRef2 != null && !popupRef2.IsDisposed) popupRef2.SetStaleState(true); });
             }
         }
@@ -2235,6 +2240,7 @@ public class ActionController : IDisposable
                 if (_processReportPressedForCurrentAccession)
                 {
                     _staleSetTime = DateTime.UtcNow;
+                    _staleTextStableTime = default;
                     _currentReportPopup.SetStaleState(true);
                 }
             });
@@ -3856,6 +3862,7 @@ public class ActionController : IDisposable
             {
                 Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
                 _lastPopupReportText = reportText;
+                _staleTextStableTime = default; // Text changed — reset stability timer
                 // immediate=true bypasses BatchUI for instant update (used by RadAI insert)
                 if (immediate)
                     InvokeUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
@@ -3867,16 +3874,21 @@ public class ActionController : IDisposable
                 // Report text is gone (being updated in Mosaic) but popup is visible with cached content
                 Logger.Trace("Popup showing stale content - report being updated");
                 _staleSetTime = DateTime.UtcNow;
+                _staleTextStableTime = default; // Reset — text is unstable (null)
                 BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
             }
-            else if (!string.IsNullOrEmpty(reportText) &&
-                (!_processReportPressedForCurrentAccession || (DateTime.UtcNow - _staleSetTime).TotalSeconds > 30))
+            else if (!string.IsNullOrEmpty(reportText))
             {
-                // Report text is available and matches last text - clear stale indicator if showing.
-                // Don't clear if Process Report was just pressed (still waiting for report to regenerate),
-                // but force-clear after 30s to prevent stuck stale indicator.
-                // (Mosaic editor rebuild takes 15-18s; 10s was clearing prematurely.)
-                BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
+                // Report text matches what's displayed. Clear stale indicator when safe.
+                // Track how long text has been stable (matching popup) after going stale.
+                if (_staleTextStableTime == default)
+                    _staleTextStableTime = DateTime.UtcNow;
+
+                bool canClear = !_processReportPressedForCurrentAccession
+                    || (DateTime.UtcNow - _staleTextStableTime).TotalSeconds > 5  // Text stable for 5s — report didn't change
+                    || (DateTime.UtcNow - _staleSetTime).TotalSeconds > 30;        // Hard timeout fallback
+                if (canClear)
+                    BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
             }
         }
     }
