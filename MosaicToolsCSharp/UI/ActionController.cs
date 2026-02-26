@@ -102,23 +102,42 @@ public class ActionController : IDisposable
     private string? _pendingImpressionReplaceText;
     private volatile bool _impressionDeletePending;
     private int NormalScrapeIntervalMs => Math.Max(_config.ScrapeIntervalSeconds * 1000, 3000); // Floor at 3s — heavy UIA calls cause system lag
-    private int _fastScrapeIntervalMs = 1000; // Burst-mode interval for responsive UI after actions
-    private int _studyLoadScrapeIntervalMs = 500;
+    private const int ScrapeTimerIntervalMs = 1000; // Timer always 1s; fast/slow path gating handles throttling
     private const int IdleScrapeIntervalMs = 10_000; // Slow polling when no study is open
     private const int DeepIdleScrapeIntervalMs = 30_000; // Very slow polling after extended idle (reduces UIA load)
     private const int SteadyStateReportScrapeMinIntervalMs = 3000; // Throttle unchanged report polling while study is stable
     private const int DictationStopBurstMs = 3000; // Brief burst for final transcript/render updates
     private const int ProcessReportBurstMs = 20000; // Mosaic editor rebuild takes 15-18s
     private const int ShowReportBurstMs = 5000; // Brief burst after opening report popup
+    private const int PopupChangeBurstMs = 5000; // Re-arm burst when report changes while popup visible
     private int _consecutiveIdleScrapes = 0; // Counts scrapes with no report content
     private int _scrapesSinceLastGc = 0; // Counter for periodic GC to release FlaUI COM wrappers
     private int _scrapeHeartbeatCount = 0; // Heartbeat counter for diagnostic logging
     private long _lastFullReportScrapeTick64; // Tick64 timestamp of last full GetFinalReportFast call
     private long _reportBurstUntilTick64; // Burst mode deadline for temporary rapid report scraping
-    private int _scrapeThrottleSkipCount; // Sampled logging for adaptive throttle skips
 
-    // PTT (Push-to-talk) state (int for Interlocked atomicity)
-    private int _pttBusy = 0;
+    // Fast/slow path split: fast path (cached reads ~0ms) runs every tick,
+    // slow path (full UIA scrape) runs on its own throttle schedule.
+    private int _fastReadFailCount; // Consecutive TryFastRead failures; auto-disable after threshold
+    private const int FastReadFailThreshold = 3;
+    private long _lastSlowPathTick64; // Tick64 timestamp of last slow path execution
+    private volatile bool _forceSlowPathOnNextTick; // Set by fast path when accession mismatch detected
+
+    // Slow path dormancy: once all study metadata is populated and fast path is healthy,
+    // the slow path goes dormant — zero UIA tree walks. Only wakes on:
+    //   - Fast path failure (caches cold/stale)
+    //   - Accession change detected by fast path
+    //   - Burst mode (Process Report, impression search, etc.)
+    //   - Aidoc schedule (if Aidoc enabled, lazy 10s ticks for finding updates)
+    //   - Discard dialog window (bounded 10s after Process/Sign)
+    private bool _slowPathDormant; // True when all metadata populated and fast path is healthy
+    private volatile bool _slowPathEverCompleted; // Gate: fast path waits until first slow path builds caches
+    private const int AidocDormantIntervalMs = 10_000; // Aidoc-only slow path during dormancy
+
+    // PTT desired-state model — never drops button events
+    private volatile bool _pttButtonDown;     // Physical button state (always updated)
+    private volatile bool _pttProcessing;     // Whether a start/stop operation is in flight
+    private readonly object _pttLock = new(); // Lightweight lock for state transitions
     private DateTime _lastSyncTime = DateTime.Now;
     private readonly System.Threading.Timer? _syncTimer;
     // Dedicated scrape thread (replaces System.Threading.Timer to avoid ThreadPool saturation)
@@ -568,42 +587,12 @@ public class ActionController : IDisposable
             return;
         }
 
-        // 1. Dead Man's Switch (Push-to-Talk) Active Logic
+        // 1. Dead Man's Switch (Push-to-Talk) — desired-state model
         if (_config.DeadManSwitch)
         {
-            if (isDown)
-            {
-                if (Interlocked.CompareExchange(ref _pttBusy, 1, 0) == 0 && !_dictationActive)
-                {
-                    ThreadPool.QueueUserWorkItem(_ =>
-                    {
-                        try { PerformToggleRecord(true, sendKey: true, restoreFocus: true); }
-                        finally { Interlocked.Exchange(ref _pttBusy, 0); }
-                    });
-                }
-                else
-                {
-                    Interlocked.CompareExchange(ref _pttBusy, 0, 1); // Reset if condition not met
-                }
-            }
-            else
-            {
-                if (Interlocked.CompareExchange(ref _pttBusy, 1, 0) == 0 && _dictationActive)
-                {
-                    ThreadPool.QueueUserWorkItem(_ =>
-                    {
-                        try {
-                            Thread.Sleep(50);
-                            PerformToggleRecord(false, sendKey: true, restoreFocus: true);
-                        }
-                        finally { Interlocked.Exchange(ref _pttBusy, 0); }
-                    });
-                }
-                else
-                {
-                    Interlocked.CompareExchange(ref _pttBusy, 0, 1); // Reset if condition not met
-                }
-            }
+            _pttButtonDown = isDown;
+            _lastManualToggleTime = DateTime.Now; // Lock out sync timer immediately
+            PttReconcile();
             return;
         }
         
@@ -611,17 +600,59 @@ public class ActionController : IDisposable
         // State sync is handled by manual actions or the background reality check.
     }
 
-    
+    /// <summary>
+    /// Reconciles physical button state with dictation state.
+    /// If an operation is already in flight, the finally block will re-check
+    /// so no button event is ever lost.
+    /// </summary>
+    private void PttReconcile()
+    {
+        bool shouldRecord;
+        lock (_pttLock)
+        {
+            shouldRecord = _pttButtonDown;
+
+            // Already in correct state? Nothing to do.
+            if (shouldRecord == _dictationActive) return;
+
+            // Already processing? The finally block will re-check.
+            if (_pttProcessing) return;
+
+            _pttProcessing = true;
+        }
+
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                if (!shouldRecord)
+                    Thread.Sleep(50); // Brief delay on release to absorb accidental bounces
+                PerformToggleRecord(shouldRecord, sendKey: true, restoreFocus: true);
+            }
+            finally
+            {
+                lock (_pttLock)
+                {
+                    _pttProcessing = false;
+                }
+                // Re-check: if button state changed while we were busy, reconcile again
+                PttReconcile();
+            }
+        });
+    }
+
+
     public void TriggerAction(string action, string source = "Manual")
     {
         Logger.Trace($"TriggerAction Queued: {action} (Source: {source})");
 
-        // Wake up scrape timer if it's in deep idle — user activity means a study may be open soon
-        if (_consecutiveIdleScrapes >= 10)
+        // Wake up scrape from idle/dormancy — user activity means state may change
+        if (_consecutiveIdleScrapes >= 3 || _slowPathDormant)
         {
             _consecutiveIdleScrapes = 0;
-            RestartScrapeTimer(NormalScrapeIntervalMs);
-            Logger.Trace("Scrape wake-up: user action, resuming normal interval");
+            _slowPathDormant = false;
+            _forceSlowPathOnNextTick = true;
+            Logger.Trace("Scrape wake-up: user action, forcing slow path on next tick");
         }
 
         _actionQueue.Enqueue(new ActionRequest { Action = action, Source = source });
@@ -1302,8 +1333,8 @@ public class ActionController : IDisposable
         // Show the impression window with waiting message
         InvokeUI(() => _mainForm.ShowImpressionWindow());
 
-        // Switch to fast scrape rate (1 second)
-        RestartScrapeTimer(_fastScrapeIntervalMs);
+        // Force slow path on next tick for responsive impression detection
+        _forceSlowPathOnNextTick = true;
     }
 
     private void OnImpressionFound(string impression)
@@ -1320,13 +1351,16 @@ public class ActionController : IDisposable
 
     private void RestartScrapeTimer(int intervalMs)
     {
-        _scrapeTimer?.Change(intervalMs, intervalMs);
-        Logger.Trace($"Scrape timer interval changed to {intervalMs}ms");
+        // No-op: timer always runs at 1s. Fast/slow path gating handles all throttling.
+        // Kept as a method to avoid changing dozens of call sites. The slow path throttle
+        // and burst mechanism (RequestReportScrapeBurst) replace dynamic timer intervals.
     }
 
     private void RequestReportScrapeBurst(int durationMs, string reason)
     {
         if (durationMs <= 0) return;
+
+        _slowPathDormant = false; // Wake slow path — burst means something important happened
 
         long nowTick64 = Environment.TickCount64;
         long requestedUntil = nowTick64 + durationMs;
@@ -1337,8 +1371,6 @@ public class ActionController : IDisposable
             if (Interlocked.CompareExchange(ref _reportBurstUntilTick64, requestedUntil, current) == current)
             {
                 Logger.Trace($"Report scrape burst requested: {reason} ({durationMs}ms)");
-                if (!_searchingForImpression && _scrapeTimer != null)
-                    RestartScrapeTimer(_fastScrapeIntervalMs);
                 return;
             }
         }
@@ -1362,31 +1394,8 @@ public class ActionController : IDisposable
         return nowTick64 < Interlocked.Read(ref _reportBurstUntilTick64);
     }
 
-    private bool ShouldThrottleFullReportScrape(long nowTick64)
-    {
-        if (string.IsNullOrEmpty(_lastNonEmptyAccession) && string.IsNullOrEmpty(_mosaicReader.LastAccession))
-            return false;
-
-        if (IsReportBurstModeActive(nowTick64))
-            return false;
-
-        int minIntervalMs = Math.Max(NormalScrapeIntervalMs, SteadyStateReportScrapeMinIntervalMs);
-        if (minIntervalMs <= 0)
-            return false;
-
-        long last = Interlocked.Read(ref _lastFullReportScrapeTick64);
-        if (last > 0 && nowTick64 - last < minIntervalMs)
-        {
-            _scrapeThrottleSkipCount++;
-            if (_scrapeThrottleSkipCount <= 3 || _scrapeThrottleSkipCount % 20 == 0)
-            {
-                Logger.Trace($"Adaptive scrape throttle: skipped full report scrape #{_scrapeThrottleSkipCount} (elapsed={nowTick64 - last}ms, min={minIntervalMs}ms)");
-            }
-            return true;
-        }
-
-        return false;
-    }
+    // ShouldThrottleFullReportScrape removed — replaced by inline slow path throttle
+    // in ScrapeTimerCallback with _lastSlowPathTick64 and idle-aware intervals.
 
     private void PerformSignReport(string source = "Manual")
     {
@@ -2777,6 +2786,7 @@ public class ActionController : IDisposable
         }
 
         Logger.Trace("RecoMD: Pasted recommendations into Mosaic impression");
+        RequestReportScrapeBurst(5000, "RecoMD Paste");
         InvokeUI(() => _mainForm.ShowStatusToast("RecoMD recommendations pasted", 2000));
     }
 
@@ -2907,7 +2917,8 @@ public class ActionController : IDisposable
             for (int attempt = 0; attempt < 3 && !verified; attempt++)
             {
                 Thread.Sleep(attempt == 0 ? 500 : 1000);
-                _mosaicReader.InvalidateEditorCache(); // Force fresh read
+                // REVISIT: Removed editor cache invalidation — paste doesn't rebuild DOM,
+                // the cached ProseMirror element reads updated text content directly.
                 _mosaicReader.GetFinalReportFast();
                 updatedReport = _mosaicReader.LastFinalReport ?? "";
                 if (!string.IsNullOrEmpty(checkText) && !string.IsNullOrEmpty(updatedReport))
@@ -2958,7 +2969,8 @@ public class ActionController : IDisposable
         {
             // Classic popup mode: scrape and push to popup immediately
             Thread.Sleep(500);
-            _mosaicReader.InvalidateEditorCache(); // Force fresh read after paste
+            // REVISIT: Removed editor cache invalidation — paste doesn't rebuild DOM,
+            // the cached ProseMirror element reads updated text content directly.
             _mosaicReader.GetFinalReportFast();
             var updatedReport = _mosaicReader.LastFinalReport;
             if (!string.IsNullOrEmpty(updatedReport))
@@ -3094,9 +3106,8 @@ public class ActionController : IDisposable
     {
         if (_scrapeTimer != null) return;
 
-        int intervalMs = NormalScrapeIntervalMs;
-        Logger.Trace($"Starting Mosaic scrape timer ({_config.ScrapeIntervalSeconds}s interval)...");
-        _scrapeTimer = new System.Threading.Timer(ScrapeTimerCallback, null, intervalMs, intervalMs);
+        Logger.Trace($"Starting Mosaic scrape timer (1s fast path, {_config.ScrapeIntervalSeconds}s slow path)...");
+        _scrapeTimer = new System.Threading.Timer(ScrapeTimerCallback, null, ScrapeTimerIntervalMs, ScrapeTimerIntervalMs);
     }
 
     private void ScrapeTimerCallback(object? state)
@@ -3105,7 +3116,6 @@ public class ActionController : IDisposable
         if (Interlocked.CompareExchange(ref _scrapeRunning, 1, 0) != 0)
         {
             // Watchdog: if a scrape has been running for >30s, it's probably hung in a COM call.
-            // Force-release the guard so future scrapes aren't permanently blocked.
             var startTicks = Interlocked.Read(ref _scrapeStartedTicks);
             if (startTicks > 0)
             {
@@ -3115,7 +3125,6 @@ public class ActionController : IDisposable
                     Logger.Trace($"Scrape watchdog: force-releasing hung scrape after {elapsed:F0}s");
                     Interlocked.Exchange(ref _scrapeRunning, 0);
                     Interlocked.Exchange(ref _scrapeStartedTicks, 0);
-                    // Don't proceed on this tick — let the next timer fire start fresh
                 }
             }
             return;
@@ -3132,61 +3141,53 @@ public class ActionController : IDisposable
 
         try
         {
-            // Periodic UIA reset: UIAutomationCore.dll accumulates native state
-            // from cross-process calls. Reset every 10 minutes to prevent unbounded growth.
-            _automationService.CheckPeriodicUiaReset();
-
             long nowTick64 = Environment.TickCount64;
-            if (ShouldThrottleFullReportScrape(nowTick64))
-                return;
-            Interlocked.Exchange(ref _lastFullReportScrapeTick64, nowTick64);
+            string? fastReportText = null;
 
-            // Tell AutomationService whether burst mode is active so it can relax the
-            // ProseMirror search throttle (3s instead of 10s) for faster report pickup.
-            _automationService.IsBurstModeActive = IsReportBurstModeActive(nowTick64);
-
-            // Scrape Mosaic for report data
-            var reportText = _mosaicReader.GetFinalReportFast();
-
-            // Bail out if user action started during the scrape
-            if (_isUserActive) return;
-
-            // Idle backoff: slow down scraping when no report content is found
-            // (either no study open, or study visible but ProseMirror not accessible)
-            // Two tiers: 10s after 3 idle scrapes, 30s after 10 idle scrapes.
-            // Heavy FlaUI/UIA calls every few seconds cause system-wide input lag
-            // (mouse jumpiness, keyboard hook death) even when finding nothing.
-            bool suppressIdleBackoff = IsReportBurstModeActive(nowTick64) || _pendingCloseAccession != null;
-            if (string.IsNullOrEmpty(reportText))
+            // ═══════ FAST PATH (every tick, ~0ms) ═══════
+            // Reads cached report editor + cached accession element. No tree walks.
+            // Gated on: first slow path has completed (caches built) AND not too many consecutive failures.
+            if (_slowPathEverCompleted && _fastReadFailCount < FastReadFailThreshold)
             {
-                _consecutiveIdleScrapes++;
-                if (!suppressIdleBackoff)
+                if (_mosaicReader.TryFastRead(out fastReportText, out var fastAccession))
                 {
-                    if (_consecutiveIdleScrapes >= 10)
+                    _fastReadFailCount = 0;
+
+                    // If report changed → update popup immediately (~0ms on UI thread)
+                    if (!string.IsNullOrEmpty(fastReportText))
                     {
-                        RestartScrapeTimer(DeepIdleScrapeIntervalMs);
-                        if (_consecutiveIdleScrapes == 10)
-                            Logger.Trace("Scrape deep idle: slowing to 30s (extended no report content)");
+                        UpdateReportPopup(fastReportText);
+                        UpdateRecoMd(_lastNonEmptyAccession, fastReportText);
                     }
-                    else if (_consecutiveIdleScrapes >= 3)
+                    // Editor cache cold is OK — dormant slow path still runs report reads
+                    // every 3s and will rebuild the cache via ProseMirror search.
+
+                    // If accession differs from last known → wake slow path
+                    if (fastAccession != null && fastAccession != _lastNonEmptyAccession
+                        && !string.IsNullOrEmpty(_lastNonEmptyAccession))
                     {
-                        RestartScrapeTimer(IdleScrapeIntervalMs);
-                        if (_consecutiveIdleScrapes == 3)
-                            Logger.Trace("Scrape idle backoff: slowing to 10s (no report content)");
+                        _forceSlowPathOnNextTick = true;
+                        _slowPathDormant = false;
+                    }
+                }
+                else
+                {
+                    _fastReadFailCount++;
+                    if (_fastReadFailCount >= FastReadFailThreshold)
+                    {
+                        // Caches cold — wake slow path to rebuild them
+                        _slowPathDormant = false;
+                        Logger.Trace("Fast path: disabled after consecutive failures (caches cold), waking slow path");
                     }
                 }
             }
-            else if (_consecutiveIdleScrapes > 0)
-            {
-                _consecutiveIdleScrapes = 0;
-                // Restore normal rate (unless fast/study-load mode is active)
-                if (!_searchingForImpression && !_needsBaselineCapture && !IsReportBurstModeActive(nowTick64))
-                    RestartScrapeTimer(NormalScrapeIntervalMs);
-            }
 
-            // Scrape heartbeat: log every ~120 ticks (~4 min at 2s) to confirm timer is alive
+            // Re-assert topmost on all tool windows periodically (cheap, every tick)
+            BatchUI(() => _mainForm.EnsureWindowsOnTop());
+
+            // Heartbeat: log every ~240 ticks (~4 min at 1s) to confirm timer is alive
             _scrapeHeartbeatCount++;
-            if (_scrapeHeartbeatCount >= 120)
+            if (_scrapeHeartbeatCount >= 240)
             {
                 _scrapeHeartbeatCount = 0;
                 var acc = _mosaicReader.LastAccession ?? "(none)";
@@ -3199,27 +3200,109 @@ public class ActionController : IDisposable
                 int gen0 = GC.CollectionCount(0);
                 int gen1 = GC.CollectionCount(1);
                 int gen2 = GC.CollectionCount(2);
-                Logger.Trace($"Scrape heartbeat: acc={acc}, idle={_consecutiveIdleScrapes}, clinHist={_clinicalHistoryVisible}");
+                Logger.Trace($"Scrape heartbeat: acc={acc}, idle={_consecutiveIdleScrapes}, fastFail={_fastReadFailCount}, dormant={_slowPathDormant}, clinHist={_clinicalHistoryVisible}");
                 long uiaCalls = _automationService.UiaCallCount;
                 Logger.Trace($"  Memory: managed={managedMb}MB, workingSet={workingSetMb}MB, private={privateMb}MB, handles={handles}, threads={threads}, GC={gen0}/{gen1}/{gen2}, uiaCalls={uiaCalls}");
             }
 
-            // Periodic GC: safety net for COM wrappers that escape deterministic release
-            // (e.g., cached elements, elements accessed via indexed properties).
-            // Most COM objects are released immediately via ReleaseElement/ReleaseElements.
-            // Every 120 ticks (~6 min at 3s) as a backstop.
+            // Periodic UIA reset (time-gated, runs in slow path guard to avoid duplicate work)
+            _automationService.CheckPeriodicUiaReset();
+
+            // Periodic GC: time-based safety net for COM wrappers that escape deterministic release.
             _scrapesSinceLastGc++;
-            if (_scrapesSinceLastGc >= 120)
+            if (_scrapesSinceLastGc >= 240) // ~4 min at 1s tick
             {
                 _scrapesSinceLastGc = 0;
                 GC.Collect(2, GCCollectionMode.Forced);
                 GC.WaitForPendingFinalizers();
             }
 
+            // ═══════ SLOW PATH THROTTLE ═══════
+            bool shouldRunSlowPath = _forceSlowPathOnNextTick;
+            _forceSlowPathOnNextTick = false;
+
+            if (!shouldRunSlowPath)
+            {
+                long elapsed = nowTick64 - _lastSlowPathTick64;
+
+                if (IsReportBurstModeActive(nowTick64))
+                {
+                    // Burst: slow path every 1s (every tick)
+                    shouldRunSlowPath = elapsed >= ScrapeTimerIntervalMs;
+                }
+                else if (nowTick64 < _discardDialogCheckUntilTick64)
+                {
+                    // Brief discard dialog detection window — keep slow path active at normal rate
+                    shouldRunSlowPath = elapsed >= SteadyStateReportScrapeMinIntervalMs;
+                }
+                else if (_slowPathDormant)
+                {
+                    // Dormant: still read report for popup updates, skip expensive Clario/metadata.
+                    // Report read is 0ms (cache hit) or 300ms (ProseMirror search when cache cold).
+                    // Run every tick (1s) since it's lightweight without Clario work.
+                    shouldRunSlowPath = elapsed >= ScrapeTimerIntervalMs;
+                }
+                else if (_consecutiveIdleScrapes >= 10)
+                {
+                    shouldRunSlowPath = elapsed >= DeepIdleScrapeIntervalMs;
+                }
+                else if (_consecutiveIdleScrapes >= 3)
+                {
+                    shouldRunSlowPath = elapsed >= IdleScrapeIntervalMs;
+                }
+                else
+                {
+                    int minInterval = Math.Max(NormalScrapeIntervalMs, SteadyStateReportScrapeMinIntervalMs);
+                    shouldRunSlowPath = elapsed >= minInterval;
+                }
+            }
+
+            if (!shouldRunSlowPath)
+            {
+                // Fast path only this tick
+                return;
+            }
+
+            // ═══════ SLOW PATH (full UIA scrape) ═══════
+            _lastSlowPathTick64 = nowTick64;
+            Interlocked.Exchange(ref _lastFullReportScrapeTick64, nowTick64);
+
+            // Tell AutomationService whether burst mode is active so it can relax the
+            // ProseMirror search throttle (3s instead of 10s) for faster report pickup.
+            _automationService.IsBurstModeActive = IsReportBurstModeActive(nowTick64);
+
+            // Scrape Mosaic for report data
+            var reportText = _mosaicReader.GetFinalReportFast();
+
+            // Bail out if user action started during the scrape
+            if (_isUserActive) return;
+
+            // Idle tracking: count consecutive scrapes with no report content.
+            bool suppressIdleBackoff = IsReportBurstModeActive(nowTick64) || _pendingCloseAccession != null;
+            if (string.IsNullOrEmpty(reportText))
+            {
+                if (!suppressIdleBackoff)
+                {
+                    _consecutiveIdleScrapes++;
+                    if (_consecutiveIdleScrapes == 3)
+                        Logger.Trace("Scrape idle backoff: slowing slow path to 10s (no report content)");
+                    else if (_consecutiveIdleScrapes == 10)
+                        Logger.Trace("Scrape deep idle: slowing slow path to 30s (extended no report content)");
+                }
+            }
+            else if (_consecutiveIdleScrapes > 0)
+            {
+                _consecutiveIdleScrapes = 0;
+            }
+
+            // Slow path rebuilt the caches — re-enable fast path
+            if (!string.IsNullOrEmpty(reportText))
+            {
+                _fastReadFailCount = 0;
+                _slowPathEverCompleted = true;
+            }
+
             // [RadAI] Auto-insert: trigger when scrape succeeds after Process Report.
-            // After Alt+P, Mosaic rebuilds the editor (15-25s). During rebuild, GetFinalReportFast
-            // returns stale cached text (U+FFFC filter). Once the editor stabilizes, the scrape
-            // returns fresh text that differs from the pre-process snapshot — that's our signal.
             if (_radAiAutoInsertPending && !string.IsNullOrEmpty(reportText))
             {
                 if ((DateTime.Now - _radAiAutoInsertRequestTime).TotalSeconds > 60)
@@ -3268,8 +3351,6 @@ public class ActionController : IDisposable
             ));
 
             // Check for discard dialog (RVUCounter integration)
-            // Must check BEFORE accession change detection - dialog disappears when user clicks YES
-            // Only check during a brief window after Process/Sign Report to avoid unnecessary FlaUI tree search every tick
             if (!string.IsNullOrEmpty(currentAccession)
                 && nowTick64 < _discardDialogCheckUntilTick64
                 && _mosaicReader.IsDiscardDialogVisible())
@@ -3282,38 +3363,55 @@ public class ActionController : IDisposable
             var (accessionChanged, studyClosed) = DetectAccessionChange(currentAccession);
 
             if (accessionChanged)
+            {
+                _slowPathDormant = false; // Wake slow path for new study metadata
+                _slowPathEverCompleted = false; // Fast path waits until slow path rebuilds caches
                 OnStudyChanged(currentAccession, reportText, studyClosed);
+            }
 
-            // Close report popup immediately when accession goes empty (don't wait for debounce).
-            // The debounce protects state reset / RVU notifications from false flaps, but there's
-            // no reason to keep showing stale report content during the 3-tick confirmation window.
+            // Mark popup as stale when accession goes empty (study may be transitioning).
+            // Don't close yet — accession flaps (brief empty during transitions) would kill
+            // the popup unnecessarily. OnStudyChanged closes it after debounce confirms.
             if (_pendingCloseAccession != null && _pendingCloseTickCount == 1
                 && _currentReportPopup != null && !_currentReportPopup.IsDisposed)
             {
-                var stalePopup = _currentReportPopup;
-                _currentReportPopup = null;
-                _lastPopupReportText = null;
-                InvokeUI(() => { try { stalePopup.Close(); } catch { } });
+                var popup = _currentReportPopup;
+                BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
             }
 
+            // These always run (cheap, needed for popup updates):
             UpdateRecoMd(currentAccession, reportText);
-
-            RecordTemplateIfNeeded(reportText);
-
             CaptureBaselineReport(reportText);
+            // Skip popup update if fast path already pushed the same text this tick
+            if (fastReportText == null || reportText != fastReportText)
+                UpdateReportPopup(reportText);
+            // Flush popup update to UI now, before expensive Clario/metadata work below
+            FlushUI();
 
-            UpdateReportPopup(reportText);
+            if (_slowPathDormant)
+            {
+                // Dormant: report read + popup update done above. Only run Aidoc if enabled.
+                if (_config.AidocScrapeEnabled)
+                    UpdateClinicalHistoryAndAlerts(currentAccession, reportText, tickStartTick64);
+                return;
+            }
 
+            // Full slow path: expensive metadata/Clario work
+            RecordTemplateIfNeeded(reportText);
             InsertPendingMacros(currentAccession, reportText);
-
             UpdateClinicalHistoryAndAlerts(currentAccession, reportText, tickStartTick64);
-
             UpdateImpressionDisplay(reportText);
 
-            // Re-assert topmost on all tool windows periodically.
-            // Other apps (Chrome, InteleViewer) can steal topmost status;
-            // without this, our windows stay behind until an action is triggered.
-            BatchUI(() => _mainForm.EnsureWindowsOnTop());
+            // Check if all study metadata is populated — if so, go dormant.
+            // Dormant slow path still reads the report + updates popup, just skips Clario/metadata.
+            if (!string.IsNullOrEmpty(currentAccession) && !string.IsNullOrEmpty(reportText)
+                && !_needsBaselineCapture && !_searchingForImpression
+                && !_pendingClarioPriorityRetry
+                && !IsReportBurstModeActive(nowTick64))
+            {
+                _slowPathDormant = true;
+                Logger.Trace("Slow path: entering dormancy (skipping Clario/metadata, report read continues)");
+            }
         }
         catch (Exception ex)
         {
@@ -3326,8 +3424,6 @@ public class ActionController : IDisposable
                 try { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END); } catch { }
 
             // Flush all batched UI updates in a single BeginInvoke call.
-            // This reduces WM_USER message spam that can cause Windows to
-            // silently remove the low-level keyboard hook.
             FlushUI();
             Interlocked.Exchange(ref _scrapeStartedTicks, 0);
 
@@ -3556,9 +3652,9 @@ public class ActionController : IDisposable
             _consecutiveIdleScrapes = 0; // New study opened — prevent idle backoff
 
             _needsBaselineCapture = _config.ShowReportChanges || _config.CorrelationEnabled;
-            // Speed up scraping to catch template flash before auto-processing
+            // Force slow path on next tick to catch template flash before auto-processing
             if (_needsBaselineCapture && !_searchingForImpression)
-                RestartScrapeTimer(_studyLoadScrapeIntervalMs);
+                _forceSlowPathOnNextTick = true;
 
             // Baseline capture deferred to scrape timer to catch template flash
             // (removing immediate capture fixes issue where dictated content like "appendix is normal"
@@ -3868,10 +3964,21 @@ public class ActionController : IDisposable
         var popup = _currentReportPopup;
         if (popup != null && !popup.IsDisposed && popup.Visible)
         {
-            if (!string.IsNullOrEmpty(reportText) && reportText != _lastPopupReportText)
+            // During impression search, suppress popup updates until the impression section
+            // appears. Mosaic rebuilds the editor after Process Report — the intermediate
+            // text (without impression) shouldn't flash in the popup. Keep stale indicator.
+            bool suppressForImpression = _searchingForImpression
+                && !string.IsNullOrEmpty(reportText) && reportText != _lastPopupReportText
+                && !reportText.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase);
+
+            if (!suppressForImpression && !string.IsNullOrEmpty(reportText) && reportText != _lastPopupReportText)
             {
                 Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
                 _lastPopupReportText = reportText;
+                // Re-arm burst so subsequent edits are picked up quickly.
+                // Self-limiting: only fires when content actually changed, falls back
+                // to normal interval once edits stop.
+                RequestReportScrapeBurst(PopupChangeBurstMs, "Report changed while popup visible");
                 _staleTextStableTime = default; // Text changed — reset stability timer
                 // immediate=true bypasses BatchUI for instant update (used by RadAI insert)
                 if (immediate)
@@ -3898,7 +4005,12 @@ public class ActionController : IDisposable
                     || (DateTime.UtcNow - _staleTextStableTime).TotalSeconds > 5  // Text stable for 5s — report didn't change
                     || (DateTime.UtcNow - _staleSetTime).TotalSeconds > 30;        // Hard timeout fallback
                 if (canClear)
+                {
+                    // Report is stable — clear the process-report flag so reopening the popup
+                    // later doesn't trigger a phantom "Updating..." state.
+                    _processReportPressedForCurrentAccession = false;
                     BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
+                }
             }
         }
     }
@@ -4712,6 +4824,10 @@ public class ActionController : IDisposable
                     return $"{month}/{day}/{year}";
                 return m.Value;
             }, IC);
+
+        // ── STT misrecognition corrections ──
+        result = System.Text.RegularExpressions.Regex.Replace(result, @"\bbipasal\b", "bibasilar", IC);
+        result = System.Text.RegularExpressions.Regex.Replace(result, @"\bpericeal\b", "pericecal", IC);
 
         return result;
     }

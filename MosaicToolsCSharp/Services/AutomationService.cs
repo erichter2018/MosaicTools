@@ -33,12 +33,18 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     // on accession checks. Validated each use; invalidated on window cache reset.
     private volatile AutomationElement? _cachedCurrentStudyParent;
 
+    // Cached accession element — the specific child whose .Name is the accession number.
+    // Used by TryFastRead() for ~0ms accession checks (single COM property read).
+    // Set during full metadata extraction; invalidated with report/window caches.
+    private volatile AutomationElement? _cachedAccessionElement;
+
     // Cached report document name (detected once, reused for fast lookups)
     // e.g., "RADPAIR" on Mosaic 2.0.3+, or contains "Report" on older versions
     private volatile string? _cachedReportDocName;
     // Cached report document/editor for cheap repeated report reads between metadata sweeps.
     private volatile AutomationElement? _cachedReportDocument;
     private volatile AutomationElement? _cachedReportEditor;
+    private volatile AutomationElement? _cachedEditorParent; // Parent of ProseMirror — survives editor COM proxy death
     private int _cachedEditorHitCount;
     private const int SlowScrapeLogThresholdMs = 250;
     // CacheRequest circuit breaker: disable after consecutive failures to avoid wasting time
@@ -60,9 +66,6 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     /// Set by ActionController during burst scraping after Process Report.
     /// </summary>
     public volatile bool IsBurstModeActive;
-    // Tolerate transient editor cache failures before falling back to expensive search
-    private int _editorCacheFailCount;
-    private const int EditorCacheFailTolerance = 3;
     // Throttle accession extraction: the tree walk (FindFirstDescendant + Parent + FindAllChildren)
     // does ~10 COM calls per tick. Only re-check every 10 seconds during steady state.
     // Study changes will be detected with up to 10s delay (acceptable — Mosaic itself takes seconds to load).
@@ -82,6 +85,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         LastFinalReport = null;
         LastTemplateName = null;
         InvalidateReportDocumentCache();
+        InvalidateAccessionElementCache();
         _lastProsemirrorSearchTick64 = 0; // Allow immediate search for new study
         _lastAccessionCheckTick64 = 0; // Force immediate accession re-check
     }
@@ -1564,13 +1568,75 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     {
         var editor = _cachedReportEditor;
         _cachedReportEditor = null;
-        _editorCacheFailCount = 0;
         ReleaseElement(editor);
+    }
+
+    /// <summary>
+    /// Fast narrow re-search: find ProseMirror editor by scanning direct children of the
+    /// cached parent container. ~10ms vs ~300ms for full FindAllDescendants.
+    /// The parent is NOT a ProseMirror-managed node, so its COM proxy survives editor death.
+    /// </summary>
+    private bool TryFindEditorFromCachedParent(out string? text)
+    {
+        text = null;
+        var parent = _cachedEditorParent;
+        if (parent == null) return false;
+
+        AutomationElement[]? children = null;
+        try
+        {
+            children = parent.FindAllChildren();
+            foreach (var child in children)
+            {
+                try
+                {
+                    var className = child.ClassName ?? "";
+                    if (!className.Contains("ProseMirror", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    var candidateText = ReadProseMirrorCandidateText(child, out _);
+                    if (string.IsNullOrWhiteSpace(candidateText)) continue;
+
+                    var trimmed = candidateText.TrimStart();
+                    if (trimmed.StartsWith("EXAM:", StringComparison.OrdinalIgnoreCase)
+                        || trimmed.StartsWith("Addendum", StringComparison.OrdinalIgnoreCase))
+                    {
+                        text = candidateText;
+                        CacheReportEditor(child); // Re-cache the fresh element
+                        LastFinalReport = candidateText;
+                        LastTemplateName = ExtractTemplateName(candidateText);
+                        IsAddendumDetected = trimmed.StartsWith("Addendum", StringComparison.OrdinalIgnoreCase);
+                        return true;
+                    }
+                }
+                catch { /* skip this child */ }
+            }
+        }
+        catch
+        {
+            // Parent COM proxy is also dead — invalidate it
+            var old = _cachedEditorParent;
+            _cachedEditorParent = null;
+            ReleaseElement(old);
+            Logger.Trace("CachedEditorParent: COM proxy dead, invalidated");
+        }
+        finally
+        {
+            // Release children except the one we cached as the new editor
+            var cachedEditor = _cachedReportEditor;
+            if (children != null)
+                foreach (var el in children)
+                    if (!ReferenceEquals(el, cachedEditor)) ReleaseElement(el);
+        }
+        return false;
     }
 
     private void InvalidateReportDocumentCache()
     {
         InvalidateReportEditorCache();
+        // Also invalidate editor parent — it lives inside the document
+        var editorParent = _cachedEditorParent;
+        _cachedEditorParent = null;
+        ReleaseElement(editorParent);
         var doc = _cachedReportDocument;
         _cachedReportDocument = null;
         ReleaseElement(doc);
@@ -1579,6 +1645,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     private void InvalidateMosaicWindowCache()
     {
         InvalidateReportDocumentCache();
+        InvalidateAccessionElementCache();
         var win = _cachedSlimHubWindow;
         var csParent = _cachedCurrentStudyParent;
         _cachedSlimHubWindow = null;
@@ -1596,7 +1663,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
         // FlaUI often returns a fresh wrapper for the same underlying Report Document on each scrape.
         // Invalidating the cached ProseMirror editor on wrapper churn defeats the fast path and forces
-        // a full ProseMirror search every tick. Let TryReadCachedReportEditor() prove staleness instead.
+        // a full ProseMirror search every tick. Let TryFindEditorFromCachedParent() prove staleness instead.
         bool shouldInvalidateEditor = false;
         try
         {
@@ -1631,6 +1698,18 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         if (ReferenceEquals(old, editor)) return;
         _cachedReportEditor = editor;
         ReleaseElement(old);
+        // Only populate parent cache if empty — the parent is stable (not a ProseMirror-managed
+        // node) and doesn't need refreshing every tick. If it goes stale,
+        // TryFindEditorFromCachedParent will detect and invalidate it. Invalidation calls
+        // (InvalidateReportDocumentCache, study change) clear it so it gets repopulated fresh.
+        if (_cachedEditorParent == null)
+        {
+            try
+            {
+                _cachedEditorParent = editor.Parent;
+            }
+            catch { /* parent access failed — leave null, full search will populate it */ }
+        }
     }
 
     private static string ReadProseMirrorCandidateText(AutomationElement candidate, out bool hasReplChar)
@@ -1690,56 +1769,52 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         return text;
     }
 
-    private bool TryReadCachedReportEditor(out string? text)
+    /// <summary>
+    /// Fast cached read: report text via parent's direct children (~4-9ms) + accession from cached element (~0ms).
+    /// Uses TryFindEditorFromCachedParent instead of the cached editor COM proxy, which Chrome
+    /// destroys every few seconds as ProseMirror reconstructs DOM nodes. The parent container is stable.
+    /// Returns true if at least one cache produced a value.
+    /// </summary>
+    public bool TryFastRead(out string? reportText, out string? accession)
     {
-        text = null;
-        var editor = _cachedReportEditor;
-        if (editor == null) return false;
+        reportText = null;
+        accession = null;
 
-        try
+        // Read report via cached parent's children (stable even when editor COM proxy dies)
+        bool gotReport = TryFindEditorFromCachedParent(out reportText);
+
+        // Read cached accession element
+        var accEl = _cachedAccessionElement;
+        if (accEl != null)
         {
-            // Skip ControlType validation — it's an extra COM cross-process call per tick.
-            // If the wrapper is stale, ReadProseMirrorCandidateText will throw, handled below.
-            var candidateText = ReadProseMirrorCandidateText(editor, out _);
-            if (string.IsNullOrWhiteSpace(candidateText))
+            try
             {
-                // Tolerate transient empty reads (Chrome briefly returns empty during DOM updates).
-                // Only invalidate after multiple consecutive failures to avoid expensive ProseMirror search.
-                _editorCacheFailCount++;
-                if (_editorCacheFailCount >= EditorCacheFailTolerance)
+                var name = accEl.Name;
+                if (!string.IsNullOrWhiteSpace(name))
                 {
-                    InvalidateReportEditorCache();
-                    return false;
+                    accession = name;
                 }
-                // Return stale data while tolerating transient failure
-                text = LastFinalReport;
-                return text != null;
+                else
+                {
+                    // Element went blank (study closing) — invalidate
+                    InvalidateAccessionElementCache();
+                }
             }
-
-            var trimmed = candidateText.TrimStart();
-            if (!trimmed.StartsWith("EXAM:", StringComparison.OrdinalIgnoreCase) &&
-                !trimmed.StartsWith("Addendum", StringComparison.OrdinalIgnoreCase))
+            catch
             {
-                // DOM likely rebuilt and our cached element now resolves to transcript/other content.
-                InvalidateReportEditorCache();
-                return false;
+                // Stale COM wrapper — invalidate
+                InvalidateAccessionElementCache();
             }
+        }
 
-            _editorCacheFailCount = 0; // Reset on successful read
-            text = candidateText;
-            return true;
-        }
-        catch
-        {
-            _editorCacheFailCount++;
-            if (_editorCacheFailCount >= EditorCacheFailTolerance)
-            {
-                InvalidateReportEditorCache();
-                return false;
-            }
-            text = LastFinalReport;
-            return text != null;
-        }
+        return gotReport || accession != null;
+    }
+
+    private void InvalidateAccessionElementCache()
+    {
+        var el = _cachedAccessionElement;
+        _cachedAccessionElement = null;
+        ReleaseElement(el);
     }
 
     private static void LogSlowScrape(string stage, long elapsedMs)
@@ -1747,7 +1822,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         if (elapsedMs >= SlowScrapeLogThresholdMs)
             Logger.Trace($"GetFinalReportFast: slow scrape ({stage}) {elapsedMs}ms");
     }
-    
+
     /// <summary>
     /// Fast scrape of the Final Report from Mosaic/SlimHub.
     /// Uses caching and targeted search for speed.
@@ -1947,6 +2022,10 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                                                      name != "UNDRAFTED" && name != "SIGNED")
                                             {
                                                 LastAccession = name;
+                                                // Cache this element for fast accession reads
+                                                var oldAccEl = _cachedAccessionElement;
+                                                _cachedAccessionElement = child; // kept alive; excluded from ReleaseElements below
+                                                ReleaseElement(oldAccEl);
                                             }
                                             continue;
                                         }
@@ -2039,7 +2118,13 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                             }
                             finally
                             {
-                                ReleaseElements(allChildren);
+                                // Release all children except the cached accession element
+                                var cachedAccEl = _cachedAccessionElement;
+                                if (allChildren != null)
+                                {
+                                    foreach (var el in allChildren)
+                                        if (!ReferenceEquals(el, cachedAccEl)) ReleaseElement(el);
+                                }
                             }
                         }
                 }
@@ -2062,6 +2147,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                 LastDescription = null;
                 LastDraftedState = false;
                 InvalidateReportDocumentCache();
+                InvalidateAccessionElementCache();
             }
 
             // Use cached document name if available (avoids fallback search on every scrape)
@@ -2135,16 +2221,17 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
             // This is robust for Tiptap editors used in Mosaic
             var flowDoc = reportDoc; // Start search from the document
 
-            if (TryReadCachedReportEditor(out var cachedReportText) && !string.IsNullOrEmpty(cachedReportText))
+            // Fast path: scan direct children of cached parent container (~4-9ms).
+            // Chrome destroys the editor's COM proxy every few seconds as ProseMirror
+            // reconstructs DOM nodes, but the parent container is stable. This avoids
+            // the expensive FindAllDescendants (~300ms) on most ticks.
+            if (TryFindEditorFromCachedParent(out var parentSearchText))
             {
                 _cachedEditorHitCount++;
                 if (_cachedEditorHitCount <= 3 || _cachedEditorHitCount % 20 == 0)
-                    Logger.Trace($"GetFinalReportFast: cached-editor hit #{_cachedEditorHitCount} ({sw.ElapsedMilliseconds}ms)");
-                IsAddendumDetected = cachedReportText.TrimStart().StartsWith("Addendum", StringComparison.OrdinalIgnoreCase);
-                LastFinalReport = cachedReportText;
-                LastTemplateName = ExtractTemplateName(cachedReportText);
-                LogSlowScrape("cached-editor", sw.ElapsedMilliseconds);
-                return cachedReportText;
+                    Logger.Trace($"GetFinalReportFast: parent-search hit #{_cachedEditorHitCount} ({sw.ElapsedMilliseconds}ms)");
+                LogSlowScrape("parent-search", sw.ElapsedMilliseconds);
+                return parentSearchText;
             }
 
             // Rate-limit ProseMirror FindAllDescendants — each call expands Chrome's accessibility
@@ -2220,12 +2307,12 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                 {
                     // Mosaic 2.0.3+ has multiple ProseMirrors (report + transcript).
                     // During editor rebuild after Process Report, the new editor temporarily
-                    // lacks U+FFFC and may contain partial/transitional content (just EXAM:
-                    // header, no FINDINGS or IMPRESSION yet). Reject partial content to avoid
-                    // flashing incomplete reports. Accept without U+FFFC only when the text
-                    // contains IMPRESSION (report is fully rendered).
+                    // lacks U+FFFC and may contain partial/transitional content. Reject when:
+                    //  - Previous report had U+FFFC (downgrade = always transitional), OR
+                    //  - Candidate doesn't even contain IMPRESSION (clearly not final report)
                     if (maxScore < 100 && LastFinalReport != null
-                        && !bestText.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase))
+                        && (LastFinalReport.Contains('\uFFFC')
+                            || !bestText.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase)))
                     {
                         Logger.Trace("GetFinalReportFast: Candidate lacks U+FFFC and IMPRESSION, keeping previous report");
                         ReleaseElements(candidates);
@@ -2281,9 +2368,10 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                     if (!string.IsNullOrEmpty(bestFallback) && bestFallbackScore > 0)
                     {
                         // Same partial-content guard as primary path: reject without U+FFFC
-                        // unless the text contains IMPRESSION (report fully rendered).
+                        // when previous report had U+FFFC (downgrade) or candidate lacks IMPRESSION.
                         if (bestFallbackScore < 100 && LastFinalReport != null
-                            && !bestFallback.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase))
+                            && (LastFinalReport.Contains('\uFFFC')
+                                || !bestFallback.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase)))
                         {
                             Logger.Trace("GetFinalReportFast: Fallback candidate lacks U+FFFC and IMPRESSION, keeping previous report");
                             ReleaseElements(candidates);

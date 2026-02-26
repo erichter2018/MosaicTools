@@ -1,3 +1,13 @@
+3.8.8
+- Fix: Report popup showing intermediate text without impression after Process Report (now waits for IMPRESSION section)
+- Fix: "Updating..." indicator appearing on popup re-opens long after Process Report (stale flag cleared when report stabilizes)
+- Fix: Report popup closing prematurely during brief accession flaps (now waits for debounce before closing)
+- Performance: Fast parent-search for ProseMirror editor (~10ms vs ~300ms full search) — Chrome destroys editor COM proxy every few seconds, parent container stays stable
+- Performance: Correlation throttled during rapid edits (recomputes at most every 2s instead of every 1s)
+- Performance: Eliminated redundant popup update when fast path and slow path return same text
+- Performance: Eliminated unnecessary COM parent-wrapper churn (parent cached once, not re-fetched every tick)
+- Cleanup: Removed dead TryReadCachedReportEditor code and tolerance/retry machinery
+
 3.8.7
 - Fix: Patient name from previous study sent to RVUCounter on study change (stale data for first accession check)
 - Fix: DRAFTED status not detected when it appears before accession in Mosaic sibling order

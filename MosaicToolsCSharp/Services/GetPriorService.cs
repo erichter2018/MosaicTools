@@ -150,6 +150,8 @@ public class GetPriorService
         // Remove leading US modality indicator(s) - handle cases where description also starts with "US"
         desc = Regex.Replace(desc, @"^(US\s+)+", "", RegexOptions.IgnoreCase);
         desc = desc.Replace(" SIGNXED", "").Replace(" abd.", " abdomen.").Trim();
+        // Strip InteleViewer order code prefixes (e.g., "ICUS-", "ICUs-")
+        desc = Regex.Replace(desc, @"^[A-Z]{2,5}\s*-\s*", "", RegexOptions.IgnoreCase);
         desc = ReorderLaterality(desc.ToLower());
         
         if (desc.Contains(" with and without"))
@@ -234,7 +236,10 @@ public class GetPriorService
         var desc = match.Value;
         // Remove leading NM modality indicator(s) - handle cases where description also starts with "NM"
         desc = Regex.Replace(desc, @"^(NM\s+)+", "", RegexOptions.IgnoreCase);
-        desc = desc.Replace(" SIGNXED", "").Trim().ToLower();
+        desc = desc.Replace(" SIGNXED", "").Trim();
+        // Strip InteleViewer order code prefixes (e.g., "ICNM-")
+        desc = Regex.Replace(desc, @"^[A-Z]{2,5}\s*-\s*", "", RegexOptions.IgnoreCase);
+        desc = desc.ToLower();
         desc += " nuclear medicine";
         return ReorderLaterality(desc);
     }
@@ -265,8 +270,8 @@ public class GetPriorService
         // Remove leading modality indicator(s) - handle cases where description also starts with modality
         desc = Regex.Replace(desc, modalityPattern, "", RegexOptions.IgnoreCase);
         desc = desc.Replace(" SIGNXED", "").Trim();
-        // Strip InteleViewer prefixes like "RAD - ", "DX - ", "DR - "
-        desc = Regex.Replace(desc, @"^(RAD|DX|DR)\s*-\s*", "", RegexOptions.IgnoreCase);
+        // Strip InteleViewer order code prefixes (e.g., "RAD - ", "DX - ", "ICRad-")
+        desc = Regex.Replace(desc, @"^[A-Z]{2,5}\s*-\s*", "", RegexOptions.IgnoreCase);
 
         desc = ProcessRadiographDescription(desc.ToLower());
         return desc;

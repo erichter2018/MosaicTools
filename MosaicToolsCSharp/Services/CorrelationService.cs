@@ -79,7 +79,7 @@ public static class CorrelationService
         { BodyPartCategory.Spleen,              Color.FromArgb(200, 80, 150) },  // Magenta-pink
         { BodyPartCategory.Pancreas,            Color.FromArgb(220, 180, 80) },  // Gold
         { BodyPartCategory.KidneysAdrenals,     Color.FromArgb(255, 180, 0) },   // Orange
-        { BodyPartCategory.GIBowel,             Color.FromArgb(200, 200, 100) }, // Yellow-olive
+        { BodyPartCategory.GIBowel,             Color.FromArgb(140, 210, 80) },  // Green (distinct from kidney orange)
         { BodyPartCategory.PelvisReproductive,  Color.FromArgb(255, 130, 180) }, // Pink
         { BodyPartCategory.Peritoneum,          Color.FromArgb(160, 180, 140) }, // Sage green
         { BodyPartCategory.SpineDiscs,          Color.FromArgb(100, 220, 100) }, // Green
@@ -600,7 +600,7 @@ public static class CorrelationService
         { "cholelithiasis", "gallstone" }, { "gallbladder stone", "gallstone" },
         { "calculus", "stone" }, { "calculi", "stone" }, { "calcified", "calcification" },
         { "thrombus", "clot" }, { "thrombosis", "clot" }, { "thrombotic", "clot" },
-        { "embolus", "clot" }, { "embolism", "clot" }, { "embolic", "clot" }, { "filling defect", "clot" },
+        { "embolus", "clot" }, { "embolism", "clot" }, { "embolic", "clot" },
         { "hemorrhage", "bleeding" }, { "hemorrhagic", "bleeding" },
         { "hematoma", "bleeding" },
         { "edema", "swelling" }, { "edematous", "swelling" },
@@ -611,13 +611,15 @@ public static class CorrelationService
         { "consolidation", "consolidation" }, { "consolidated", "consolidation" },
         { "atelectasis", "atelectasis" }, { "atelectatic", "atelectasis" },
         { "pneumothorax", "pneumothorax" },
-        { "pneumonia", "pneumonia" },
+        { "pneumonia", "consolidation" }, // pneumonia presents as consolidation/airspace disease
+        { "airspace", "consolidation" }, // "airspace disease" = consolidation pattern
+        { "bibasilar", "base" }, { "basilar", "base" }, // bibasilar = both bases
         { "abscess", "abscess" },
         { "mass", "mass" }, { "lesion", "lesion" }, { "nodule", "nodule" }, { "nodular", "nodule" },
         { "tumor", "tumor" }, { "neoplasm", "tumor" }, { "neoplastic", "tumor" },
         { "malignant", "malignancy" }, { "malignancy", "malignancy" },
         { "metastasis", "metastatic disease" }, { "metastatic", "metastatic disease" }, { "metastases", "metastatic disease" },
-        { "lymphadenopathy", "lymph node enlargement" }, { "lymph node", "lymph node" },
+        { "lymphadenopathy", "lymph node" }, { "lymph node", "lymph node" },
         { "aneurysm", "aneurysm" }, { "aneurysmal", "aneurysm" },
         { "dissection", "dissection" },
         { "obstruction", "obstruction" }, { "obstructing", "obstruction" }, { "obstructive", "obstruction" },
@@ -672,6 +674,33 @@ public static class CorrelationService
         // Missing anatomical adjective → noun
         { "abdominal", "abdomen" },
         { "sacral", "sacrum" },
+
+        // Condition → anatomy (so "appendicitis" matches findings mentioning "appendix")
+        { "appendicitis", "appendix" },
+        { "cholecystitis", "gallbladder" }, { "cholangitis", "bile duct" },
+        { "pancreatitis", "pancreas" },
+        { "colitis", "colon" }, { "enterocolitis", "colon" },
+        { "diverticulitis", "diverticulum" },
+        { "pyelonephritis", "kidney" }, { "nephritis", "kidney" },
+        { "cystitis", "bladder" },
+        { "hepatitis", "liver" },
+        { "gastritis", "stomach" },
+        { "esophagitis", "esophagus" },
+        { "enteritis", "bowel" },
+        { "pericarditis", "pericardium" }, { "myocarditis", "heart" },
+        { "thyroiditis", "thyroid" },
+        { "sinusitis", "sinus" }, { "mastoiditis", "mastoid" },
+        { "osteomyelitis", "bone" },
+        { "meningitis", "meninges" },
+        { "encephalitis", "brain" },
+        { "pneumonitis", "lung" },
+        { "pleuritis", "pleura" },
+
+        // GI clinical conditions → finding terms
+        { "constipation", "stool" },
+        { "fecal", "stool" }, { "feces", "stool" }, { "feculent", "stool" },
+        { "stercoral", "stool" },
+        { "ileus", "bowel" },
     };
 
     /// <summary>
@@ -858,8 +887,9 @@ public static class CorrelationService
 
         // Filter findings to only dictated sentences (if baseline was available)
         List<string> filteredFindings;
-        if (dictatedSentences != null && dictatedSentences.Count > 0)
+        if (dictatedSentences != null)
         {
+            // Empty set = baseline exists, nothing dictated → zero filtered findings (no highlights)
             filteredFindings = new List<string>();
             foreach (var sentence in findingsSentences)
             {
@@ -879,7 +909,7 @@ public static class CorrelationService
         // findings that were confirmed dictated should still be highlighted (user said them),
         // they just shouldn't become orphan warnings.
         var negativeFindings = new HashSet<string>(StringComparer.Ordinal);
-        bool hasDictatedFilter = dictatedSentences != null && dictatedSentences.Count > 0;
+        bool hasDictatedFilter = dictatedSentences != null;
         foreach (var sentence in filteredFindings)
         {
             if (NegativeSentencePattern.IsMatch(sentence))
@@ -938,13 +968,16 @@ public static class CorrelationService
 
             foreach (var (index, text) in impressionItems)
             {
-                // Skip negative/normal impression statements — these match too broadly
-                if (NegativeSentencePattern.IsMatch(text))
-                    continue;
-
                 var impressionTerms = ExtractTerms(text, contextTerms);
                 var shared = findingTerms.Intersect(impressionTerms, StringComparer.OrdinalIgnoreCase).ToList();
                 int substantiveCount = shared.Count(t => !LateralityTerms.Contains(t));
+
+                // Negative impressions without dictated filter need 2+ substantive shared
+                // terms to avoid broad matching against template negatives. With a dictated
+                // filter, findings are already scoped to dictated content so threshold stays 1.
+                if (!hasDictatedFilter && NegativeSentencePattern.IsMatch(text) && substantiveCount < 2)
+                    continue;
+
                 if (shared.Count > bestScore)
                 {
                     bestScore = shared.Count;
@@ -1374,13 +1407,16 @@ public static class CorrelationService
         {
             // Check synonym dictionary (try both raw word and depluralized form)
             var singular = Depluralize(word);
+            bool hasSynonym = false;
             if (Synonyms.TryGetValue(word, out var canonical))
             {
                 terms.Add(canonical);
+                hasSynonym = true;
             }
             else if (singular != word && Synonyms.TryGetValue(singular, out var canonical2))
             {
                 terms.Add(canonical2);
+                hasSynonym = true;
             }
 
             // Check if word itself is an anatomical term
@@ -1394,9 +1430,10 @@ public static class CorrelationService
             }
 
             // Include significant content words (5+ chars, not stopwords)
-            // This catches medical terms not in our dictionaries
-            // Use depluralized form so "tissues" and "tissue" match
-            if (word.Length >= 5 && !StopWords.Contains(word))
+            // Skip words that already mapped via synonym — canonical form is sufficient;
+            // keeping both inflates shared-organ scores (e.g., "renal" + "kidney" = 2 votes
+            // for the same organ, letting organ match outweigh pathology-specific terms)
+            if (!hasSynonym && word.Length >= 5 && !StopWords.Contains(word))
             {
                 terms.Add(singular);
             }

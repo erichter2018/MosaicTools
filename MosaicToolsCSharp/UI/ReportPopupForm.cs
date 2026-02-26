@@ -103,6 +103,8 @@ public class ReportPopupForm : Form
     private bool _baselineIsSectionOnly; // True when baseline is from template DB (diff only FINDINGS+IMPRESSION)
     private CorrelationResult? _correlationResult;
     private CorrelationResult? _previousCorrelation; // Retained to prevent regression on noisy scrapes
+    private bool _correlationDeferred; // True when correlation recompute is deferred (throttled)
+    private System.Windows.Forms.Timer? _correlationDeferTimer; // Fires after throttle to recompute
     private bool _showingStaleContent; // True when showing cached report while live report is being updated
     private bool _radAiImpressionActive; // True when RadAI impression was successfully inserted
     private System.Windows.Forms.Timer? _stalePulseTimer;
@@ -414,17 +416,52 @@ public class ReportPopupForm : Form
 
         if (contentChanged)
         {
-            // Content changed - preserve previous correlation for anti-regression
-            // (scraping during Process Report can catch transitional states with fewer matches)
-            _previousCorrelation = _correlationResult;
-            _correlationResult = null;
-            Logger.Trace($"UpdateReport: Content changed, forcing fresh correlation (anti-regression preserved)");
+            // Content genuinely changed — need fresh correlation.
+            // But throttle during rapid edits: keep old highlights for up to 2s to avoid
+            // running expensive CorrelateReversed on the UI thread every second.
+            _previousCorrelation = null;
+            if (_correlationResult != null && _correlationEnabled)
+            {
+                // Keep existing correlation for rendering, defer recompute
+                _correlationDeferred = true;
+                if (_correlationDeferTimer == null)
+                {
+                    _correlationDeferTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+                    _correlationDeferTimer.Tick += (s, e) =>
+                    {
+                        _correlationDeferTimer!.Stop();
+                        if (_correlationDeferred)
+                        {
+                            _correlationDeferred = false;
+                            _correlationResult = null;
+                            if (_useLayeredWindow)
+                            {
+                                ComputeHighlights();
+                                RenderAndUpdate();
+                            }
+                            else
+                            {
+                                ApplyCurrentModeFormatting();
+                            }
+                            Logger.Trace("Correlation: deferred recompute fired");
+                        }
+                    };
+                }
+                _correlationDeferTimer.Stop();
+                _correlationDeferTimer.Start(); // Reset the 2s window
+            }
+            else
+            {
+                _correlationResult = null;
+                _correlationDeferred = false;
+            }
         }
         else
         {
             // Same content (e.g., baseline update) - allow anti-regression
             _previousCorrelation = _correlationResult;
             _correlationResult = null;
+            _correlationDeferred = false;
         }
         _formattedText = SanitizeText(FormatReportText(newReportText)).Replace("\r\n", "\n");
         if (_radAiImpressionActive)
@@ -1050,7 +1087,11 @@ public class ReportPopupForm : Form
             }
 
             Logger.Trace($"GetDictatedSentences: {dictated.Count} dictated sentences from {currentSentences.Count} total");
-            return dictated.Count > 0 ? dictated : null;
+            // Return the set even when empty — an empty set means "baseline exists,
+            // nothing was dictated" which produces zero filtered findings (no highlights).
+            // Returning null would mean "no baseline available" and fall back to
+            // unfiltered mode, incorrectly highlighting template text.
+            return dictated;
         }
         catch (Exception ex)
         {
@@ -1070,12 +1111,16 @@ public class ReportPopupForm : Form
             // (scrape noise / transitional states during Process Report can cause transient correlation failures)
             if (_previousCorrelation != null)
             {
-                // Validate previous correlation still applies to current text
+                // Validate previous correlation still applies to current text.
+                // Use NormalizeSentence for comparison — exact Ordinal matching fails because
+                // SanitizeText/FormatReportText can produce slightly different whitespace or
+                // invisible-char stripping across scrapes.
+                var normalizedText = NormalizeSentence(_formattedText);
                 int prevMatched = 0;
                 foreach (var item in _previousCorrelation.Items)
                 {
                     if (string.IsNullOrEmpty(item.ImpressionText)) continue;
-                    if (_formattedText.Contains(item.ImpressionText, StringComparison.Ordinal))
+                    if (normalizedText.Contains(NormalizeSentence(item.ImpressionText), StringComparison.Ordinal))
                         prevMatched++;
                 }
                 int curMatched = _correlationResult.Items.Count(i => !string.IsNullOrEmpty(i.ImpressionText));
@@ -1093,6 +1138,12 @@ public class ReportPopupForm : Form
                 return;
             }
 
+            // Find section boundaries for highlight placement
+            int findingsSectionIdx = _formattedText.IndexOf("FINDINGS:", StringComparison.OrdinalIgnoreCase);
+            int impressionSectionIdx = _formattedText.IndexOf("IMPRESSION:", StringComparison.OrdinalIgnoreCase);
+            if (impressionSectionIdx < 0)
+                impressionSectionIdx = _formattedText.IndexOf("RadAI IMPRESSION:", StringComparison.OrdinalIgnoreCase);
+
             var bgColor = Color.FromArgb(20, 20, 20);
             int count = 0;
 
@@ -1103,19 +1154,32 @@ public class ReportPopupForm : Form
                 var hlColor = Color.FromArgb(160, blended.R, blended.G, blended.B);
 
                 // Only highlight impression for matched groups (not orphans)
+                // Search only within IMPRESSION section
                 if (!string.IsNullOrWhiteSpace(item.ImpressionText))
                 {
-                    _highlights.Add(new HighlightEntry(item.ImpressionText, hlColor));
-                    count++;
+                    int searchFrom = impressionSectionIdx >= 0 ? impressionSectionIdx : 0;
+                    int idx = _formattedText.IndexOf(item.ImpressionText, searchFrom, StringComparison.Ordinal);
+                    if (idx >= 0)
+                    {
+                        _highlights.Add(new HighlightEntry(item.ImpressionText, hlColor));
+                        count++;
+                    }
                 }
 
+                // Search only within FINDINGS section (before IMPRESSION)
                 foreach (var finding in item.MatchedFindings)
                 {
                     if (IsSectionHeading(finding)) continue;
                     if (!string.IsNullOrWhiteSpace(finding))
                     {
-                        _highlights.Add(new HighlightEntry(finding, hlColor));
-                        count++;
+                        int searchFrom = findingsSectionIdx >= 0 ? findingsSectionIdx : 0;
+                        int searchEnd = impressionSectionIdx >= 0 ? impressionSectionIdx : _formattedText.Length;
+                        int idx = _formattedText.IndexOf(finding, searchFrom, searchEnd - searchFrom, StringComparison.Ordinal);
+                        if (idx >= 0)
+                        {
+                            _highlights.Add(new HighlightEntry(finding, hlColor));
+                            count++;
+                        }
                     }
                 }
             }
@@ -1395,12 +1459,15 @@ public class ReportPopupForm : Form
             // (scrape noise / transitional states during Process Report can cause transient correlation failures)
             if (_previousCorrelation != null)
             {
-                var rtbTextForValidation = _richTextBox.Text;
+                // Use NormalizeSentence for comparison — exact Ordinal matching fails because
+                // SanitizeText/FormatReportText can produce slightly different whitespace or
+                // invisible-char stripping across scrapes.
+                var normalizedRtb = NormalizeSentence(_richTextBox.Text);
                 int prevMatched = 0;
                 foreach (var item in _previousCorrelation.Items)
                 {
                     if (string.IsNullOrEmpty(item.ImpressionText)) continue;
-                    if (rtbTextForValidation.Contains(item.ImpressionText, StringComparison.Ordinal))
+                    if (normalizedRtb.Contains(NormalizeSentence(item.ImpressionText), StringComparison.Ordinal))
                         prevMatched++;
                 }
                 int curMatched = _correlationResult.Items.Count(i => !string.IsNullOrEmpty(i.ImpressionText));
@@ -1422,8 +1489,11 @@ public class ReportPopupForm : Form
             var bg = BackColor;
             int highlightCount = 0;
 
-            // Find section boundaries so impression/finding highlights don't overlap
+            // Find section boundaries so highlights stay in their respective sections
+            int findingsSectionStart = rtbText.IndexOf("FINDINGS:", StringComparison.OrdinalIgnoreCase);
             int impressionSectionStart = rtbText.IndexOf("IMPRESSION:", StringComparison.OrdinalIgnoreCase);
+            if (impressionSectionStart < 0)
+                impressionSectionStart = rtbText.IndexOf("RadAI IMPRESSION:", StringComparison.OrdinalIgnoreCase);
 
             foreach (var item in _correlationResult.Items)
             {
@@ -1445,12 +1515,20 @@ public class ReportPopupForm : Form
                     }
                 }
 
+                // Search only within FINDINGS section (before IMPRESSION) to avoid
+                // highlighting identical text that appears in clinical history or impression
                 foreach (var finding in item.MatchedFindings)
                 {
                     var content = finding;
                     if (IsSectionHeading(content)) continue;
 
-                    int findingIdx = rtbText.IndexOf(content, StringComparison.Ordinal);
+                    int searchFrom = findingsSectionStart >= 0 ? findingsSectionStart : 0;
+                    int searchLen = impressionSectionStart >= 0
+                        ? impressionSectionStart - searchFrom
+                        : rtbText.Length - searchFrom;
+                    if (searchLen <= 0) searchLen = rtbText.Length - searchFrom;
+
+                    int findingIdx = rtbText.IndexOf(content, searchFrom, searchLen, StringComparison.Ordinal);
                     if (findingIdx >= 0)
                     {
                         _richTextBox.Select(findingIdx, content.Length);
@@ -1489,6 +1567,12 @@ public class ReportPopupForm : Form
             var bg = BackColor;
             int highlightCount = 0;
 
+            // Section boundaries for finding highlights
+            int findingsSectionStart = rtbText.IndexOf("FINDINGS:", StringComparison.OrdinalIgnoreCase);
+            int impressionSectionStart = rtbText.IndexOf("IMPRESSION:", StringComparison.OrdinalIgnoreCase);
+            if (impressionSectionStart < 0)
+                impressionSectionStart = rtbText.IndexOf("RadAI IMPRESSION:", StringComparison.OrdinalIgnoreCase);
+
             foreach (var item in _correlationResult.Items)
             {
                 // Only show orphan findings (items with no impression match)
@@ -1501,7 +1585,13 @@ public class ReportPopupForm : Form
                 {
                     if (IsSectionHeading(finding)) continue;
 
-                    int findingIdx = rtbText.IndexOf(finding, StringComparison.Ordinal);
+                    int searchFrom = findingsSectionStart >= 0 ? findingsSectionStart : 0;
+                    int searchLen = impressionSectionStart >= 0
+                        ? impressionSectionStart - searchFrom
+                        : rtbText.Length - searchFrom;
+                    if (searchLen <= 0) searchLen = rtbText.Length - searchFrom;
+
+                    int findingIdx = rtbText.IndexOf(finding, searchFrom, searchLen, StringComparison.Ordinal);
                     if (findingIdx >= 0)
                     {
                         _richTextBox.Select(findingIdx, finding.Length);
@@ -2075,6 +2165,11 @@ public class ReportPopupForm : Form
                 _stalePulseTimer.Stop();
                 _stalePulseTimer.Dispose();
             }
+            if (_correlationDeferTimer != null)
+            {
+                _correlationDeferTimer.Stop();
+                _correlationDeferTimer.Dispose();
+            }
         }
         base.Dispose(disposing);
     }
@@ -2164,6 +2259,12 @@ public class ReportPopupForm : Form
                 {
                     FlushContent();
                     outputLines.Add(line);
+                }
+                else if (outputLines.Count > 0 && Regex.IsMatch(outputLines[^1], @"^\d+\."))
+                {
+                    // Continuation of previous numbered item — join so the impression
+                    // stays on one logical line for correlation highlight matching
+                    outputLines[^1] += " " + line;
                 }
                 else
                 {

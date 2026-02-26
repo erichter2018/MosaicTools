@@ -45,6 +45,7 @@ public class MainForm : Form
     // Pace car alternation
     private System.Windows.Forms.Timer? _paceCarTimer;
     private bool _showingPaceCar;
+    private ToolTip? _rvuTooltip;
 
     // Connectivity Monitor
     private readonly ConnectivityService _connectivityService;
@@ -919,13 +920,13 @@ public class MainForm : Form
         int startX = Math.Max(2, (_rvuPanel.Width - totalWidth) / 2);
         int centerY = (_rvuPanel.Height - (labels.Count > 0 ? labels[0].PreferredHeight : 16)) / 2;
         int x = startX;
+        _rvuTooltip ??= new ToolTip { InitialDelay = 200 };
+        _rvuTooltip.RemoveAll();
         foreach (var lbl in labels)
         {
             lbl.Location = new Point(x, centerY);
             x += lbl.PreferredWidth;
-            // Apply tooltip to each label segment
-            var tt = new ToolTip { InitialDelay = 200 };
-            tt.SetToolTip(lbl, ttText);
+            _rvuTooltip.SetToolTip(lbl, ttText);
         }
     }
 
@@ -1608,6 +1609,14 @@ public class MainForm : Form
                 _clinicalHistoryWindow.SetAddendumCheckCallback(
                     _controller.IsAddendumOpen);
                 _clinicalHistoryWindow.Show();
+                // Re-assert topmost after a short delay — other apps (InteleViewer, Chrome)
+                // can steal focus during startup before the first scrape tick runs EnsureWindowsOnTop.
+                var win = _clinicalHistoryWindow;
+                Task.Delay(500).ContinueWith(_ =>
+                {
+                    if (win != null && !win.IsDisposed)
+                        win.EnsureOnTop();
+                }, TaskScheduler.Default);
             }
         }
         else

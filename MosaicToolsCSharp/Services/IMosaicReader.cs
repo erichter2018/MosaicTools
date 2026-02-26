@@ -28,6 +28,12 @@ public interface IMosaicReader
     void ClearLastReport();
 
     /// <summary>
+    /// Fast cached read: report text via parent's direct children (~4-9ms) + accession from cached element (~0ms).
+    /// Returns true if at least one cache produced a value.
+    /// </summary>
+    bool TryFastRead(out string? reportText, out string? accession);
+
+    /// <summary>
     /// Invalidate the cached ProseMirror editor element, forcing the next scrape
     /// to do a fresh search. Call after Process Report when Mosaic rebuilds the editor.
     /// </summary>
