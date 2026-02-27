@@ -254,6 +254,13 @@ public class Configuration
     [JsonPropertyName("macros")]
     public List<MacroConfig> Macros { get; set; } = new();
 
+    // Impression Fixer
+    [JsonPropertyName("impression_fixer_enabled")]
+    public bool ImpressionFixerEnabled { get; set; } = true;
+
+    [JsonPropertyName("impression_fixers")]
+    public List<ImpressionFixerEntry> ImpressionFixers { get; set; } = new();
+
     // RVUCounter Integration
     [JsonPropertyName("rvucounter_enabled")]
     public bool RvuCounterEnabled { get; set; } = true;
@@ -671,6 +678,25 @@ public class Configuration
         MigrateRecoMdAction(ActionMappings);
         MigrateRecoMdAction(SpeechMikeActionMappings);
 
+        // Ensure impression fixer entries have IDs (migration for pre-ID entries)
+        foreach (var entry in ImpressionFixers)
+        {
+            if (string.IsNullOrEmpty(entry.Id))
+                entry.Id = Guid.NewGuid().ToString("N")[..8];
+        }
+
+        // Default impression fixers (pre-populated on first run)
+        if (ImpressionFixers.Count == 0)
+        {
+            ImpressionFixers = new List<ImpressionFixerEntry>
+            {
+                new() { Blurb = "no change", Text = "No change.", ReplaceMode = false, RequireComparison = true },
+                new() { Blurb = "no change", Text = "No change.", ReplaceMode = true, RequireComparison = true },
+                new() { Blurb = "improved", Text = "Improved aeration of the lungs.", ReplaceMode = true, RequireComparison = true, CriteriaRequired = "chest, xr" },
+                new() { Blurb = "worsening", Text = "Worsening aeration of the lungs.", ReplaceMode = true, RequireComparison = true, CriteriaRequired = "chest, xr" }
+            };
+        }
+
     }
 
     /// <summary>
@@ -844,6 +870,121 @@ public class MacroConfig
         if (Voice)
             return "Voice triggered";
 
+        if (string.IsNullOrWhiteSpace(CriteriaRequired) &&
+            string.IsNullOrWhiteSpace(CriteriaAnyOf) &&
+            string.IsNullOrWhiteSpace(CriteriaExclude))
+            return "All studies";
+
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(CriteriaRequired))
+            parts.Add(CriteriaRequired.Trim());
+        if (!string.IsNullOrWhiteSpace(CriteriaAnyOf))
+            parts.Add($"({CriteriaAnyOf.Trim()})");
+        if (!string.IsNullOrWhiteSpace(CriteriaExclude))
+            parts.Add($"-{CriteriaExclude.Trim()}");
+
+        return string.Join(" + ", parts);
+    }
+}
+
+/// <summary>
+/// Configuration for an impression fixer entry — quick-insert or replace impression text from the report popup.
+/// </summary>
+public class ImpressionFixerEntry
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = Guid.NewGuid().ToString("N")[..8];
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>Short label shown on the IMPRESSION line (e.g. "NC", "Imp aer").</summary>
+    [JsonPropertyName("blurb")]
+    public string Blurb { get; set; } = "";
+
+    /// <summary>Full text to insert or replace.</summary>
+    [JsonPropertyName("text")]
+    public string Text { get; set; } = "";
+
+    /// <summary>false = insert (append), true = replace all impression text.</summary>
+    [JsonPropertyName("replace_mode")]
+    public bool ReplaceMode { get; set; } = false;
+
+    /// <summary>Only show when COMPARISON section has an actual date.</summary>
+    [JsonPropertyName("require_comparison")]
+    public bool RequireComparison { get; set; } = false;
+
+    [JsonPropertyName("criteria_required")]
+    public string CriteriaRequired { get; set; } = "";
+
+    [JsonPropertyName("criteria_any_of")]
+    public string CriteriaAnyOf { get; set; } = "";
+
+    [JsonPropertyName("criteria_exclude")]
+    public string CriteriaExclude { get; set; } = "";
+
+    /// <summary>
+    /// Check if this entry matches the given study description.
+    /// Same logic as MacroConfig.MatchesStudy().
+    /// </summary>
+    public bool MatchesStudy(string? studyDescription)
+    {
+        bool hasRequired = !string.IsNullOrWhiteSpace(CriteriaRequired);
+        bool hasAnyOf = !string.IsNullOrWhiteSpace(CriteriaAnyOf);
+        bool hasExclude = !string.IsNullOrWhiteSpace(CriteriaExclude);
+
+        if (!hasRequired && !hasAnyOf && !hasExclude)
+            return true;
+
+        if (string.IsNullOrWhiteSpace(studyDescription))
+            return false;
+
+        var description = studyDescription.ToUpperInvariant();
+
+        if (hasExclude)
+        {
+            var excludeTerms = CriteriaExclude.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var term in excludeTerms)
+            {
+                if (description.Contains(term.ToUpperInvariant()))
+                    return false;
+            }
+        }
+
+        if (hasRequired)
+        {
+            var requiredTerms = CriteriaRequired.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var term in requiredTerms)
+            {
+                if (!description.Contains(term.ToUpperInvariant()))
+                    return false;
+            }
+        }
+
+        if (hasAnyOf)
+        {
+            var anyOfTerms = CriteriaAnyOf.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            bool anyMatch = false;
+            foreach (var term in anyOfTerms)
+            {
+                if (description.Contains(term.ToUpperInvariant()))
+                {
+                    anyMatch = true;
+                    break;
+                }
+            }
+            if (!anyMatch)
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Returns a display string for the criteria (for list preview).
+    /// </summary>
+    public string GetCriteriaDisplayString()
+    {
         if (string.IsNullOrWhiteSpace(CriteriaRequired) &&
             string.IsNullOrWhiteSpace(CriteriaAnyOf) &&
             string.IsNullOrWhiteSpace(CriteriaExclude))

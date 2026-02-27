@@ -131,9 +131,8 @@ public class ReportPopupForm : Form
     private readonly bool _deletableEnabled;
     private List<Label> _trashIcons = new();
     private List<(int charIndex, string itemText)>? _impressionItems;
-    private Label? _noChangeInsertLabel;
-    private Label? _noChangeReplaceLabel;
-    private Label? _noChangeTextLabel;
+    private List<Label> _impressionFixerLabels = new();
+    private List<ImpressionFixerEntry> _impressionFixerEntries = new();
     private System.Windows.Forms.Timer? _debounceTimer;
     private bool _deletePending;
 
@@ -318,56 +317,6 @@ public class ReportPopupForm : Form
         {
             _debounceTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             _debounceTimer.Tick += OnDebounceTimerTick;
-
-            var noChangeBg = Color.FromArgb(30, 30, 30);
-            var noChangeDim = Color.FromArgb(160, 160, 160);
-            var noChangeHover = Color.FromArgb(220, 220, 220);
-            var noChangeFont = new Font("Segoe UI", 9.5f);
-
-            _noChangeTextLabel = new Label
-            {
-                Text = "No change.",
-                AutoSize = true,
-                Font = noChangeFont,
-                ForeColor = noChangeDim,
-                BackColor = noChangeBg,
-                Visible = false
-            };
-            Controls.Add(_noChangeTextLabel);
-
-            _noChangeReplaceLabel = new Label
-            {
-                Text = "replace",
-                AutoSize = true,
-                Font = new Font("Segoe UI", 9.5f, FontStyle.Underline),
-                ForeColor = noChangeDim,
-                BackColor = noChangeBg,
-                Cursor = Cursors.Hand,
-                Visible = false
-            };
-            _noChangeReplaceLabel.MouseEnter += (_, _) => _noChangeReplaceLabel!.ForeColor = noChangeHover;
-            _noChangeReplaceLabel.MouseLeave += (_, _) => _noChangeReplaceLabel!.ForeColor = noChangeDim;
-            _noChangeReplaceLabel.Click += OnReplaceNoChangeClick;
-            Controls.Add(_noChangeReplaceLabel);
-
-            _noChangeInsertLabel = new Label
-            {
-                Text = "insert",
-                AutoSize = true,
-                Font = new Font("Segoe UI", 9.5f, FontStyle.Underline),
-                ForeColor = noChangeDim,
-                BackColor = noChangeBg,
-                Cursor = Cursors.Hand,
-                Visible = false
-            };
-            _noChangeInsertLabel.MouseEnter += (_, _) => _noChangeInsertLabel!.ForeColor = noChangeHover;
-            _noChangeInsertLabel.MouseLeave += (_, _) => _noChangeInsertLabel!.ForeColor = noChangeDim;
-            _noChangeInsertLabel.Click += OnInsertNoChangeClick;
-            Controls.Add(_noChangeInsertLabel);
-
-            _noChangeTextLabel.BringToFront();
-            _noChangeReplaceLabel.BringToFront();
-            _noChangeInsertLabel.BringToFront();
         }
 
         this.Load += (s, e) =>
@@ -591,6 +540,64 @@ public class ReportPopupForm : Form
                 Invalidate();
             }
         }
+    }
+
+    /// <summary>
+    /// Set the impression fixer entries to show on the IMPRESSION header line.
+    /// Called by ActionController with entries filtered by study description.
+    /// </summary>
+    public void SetImpressionFixers(List<ImpressionFixerEntry> entries)
+    {
+        if (_useLayeredWindow) return; // Only opaque mode supports interactive labels
+        if (!_deletableEnabled) return;
+
+        _impressionFixerEntries = entries;
+
+        // Remove old labels
+        foreach (var lbl in _impressionFixerLabels)
+        {
+            Controls.Remove(lbl);
+            lbl.Dispose();
+        }
+        _impressionFixerLabels.Clear();
+
+        var bg = Color.FromArgb(30, 30, 30);
+        var font = new Font("Segoe UI", 9.5f);
+
+        foreach (var entry in entries)
+        {
+            var prefix = entry.ReplaceMode ? "=" : "+";
+            var normalColor = entry.ReplaceMode
+                ? Color.FromArgb(255, 180, 0)   // amber for replace
+                : Color.FromArgb(0, 200, 200);  // cyan for insert
+            var hoverColor = entry.ReplaceMode
+                ? Color.FromArgb(255, 220, 80)
+                : Color.FromArgb(100, 255, 255);
+
+            var lbl = new Label
+            {
+                Text = $"{prefix}{entry.Blurb}",
+                AutoSize = true,
+                Font = font,
+                ForeColor = normalColor,
+                BackColor = bg,
+                Cursor = Cursors.Hand,
+                Tag = entry,
+                Visible = false
+            };
+
+            var normalCopy = normalColor;
+            var hoverCopy = hoverColor;
+            lbl.MouseEnter += (_, _) => lbl.ForeColor = hoverCopy;
+            lbl.MouseLeave += (_, _) => lbl.ForeColor = normalCopy;
+            lbl.Click += OnFixerLabelClick;
+
+            Controls.Add(lbl);
+            lbl.BringToFront();
+            _impressionFixerLabels.Add(lbl);
+        }
+
+        PositionTrashIcons();
     }
 
     #endregion
@@ -1961,24 +1968,22 @@ public class ReportPopupForm : Form
         if (impressionStart < 0)
         {
             ClearTrashIcons();
-            if (_noChangeInsertLabel != null) _noChangeInsertLabel.Visible = false;
-            if (_noChangeReplaceLabel != null) _noChangeReplaceLabel.Visible = false;
-            if (_noChangeTextLabel != null) _noChangeTextLabel.Visible = false;
+            foreach (var lbl in _impressionFixerLabels) lbl.Visible = false;
             return;
         }
 
-        // Position "insert | replace No change." labels on the IMPRESSION header line, right-aligned
-        // Only show when COMPARISON has an actual date (not "None available.")
-        if (_noChangeTextLabel != null && _noChangeInsertLabel != null && _noChangeReplaceLabel != null)
+        // Position impression fixer labels on the IMPRESSION header line, right-aligned
+        if (_impressionFixerLabels.Count > 0)
         {
             var headerPos = _richTextBox.GetPositionFromCharIndex(impressionStart);
             int labelY = _richTextBox.Top + headerPos.Y;
             bool inView = (labelY >= _richTextBox.Top && labelY + 10 < _richTextBox.Bottom);
+
+            // Check if COMPARISON has an actual date
             bool hasComparison = false;
             int compIdx = rtbText.IndexOf("COMPARISON:", StringComparison.OrdinalIgnoreCase);
             if (compIdx >= 0)
             {
-                // Grab COMPARISON section (header + content until next header or 200 chars)
                 int compEnd = rtbText.Length;
                 var nextHeader = Regex.Match(rtbText.Substring(compIdx + 11), @"^[A-Z ]{2,}:", RegexOptions.Multiline);
                 if (nextHeader.Success) compEnd = compIdx + 11 + nextHeader.Index;
@@ -1986,20 +1991,21 @@ public class ReportPopupForm : Form
                 hasComparison = !compSection.Contains("None available", StringComparison.OrdinalIgnoreCase)
                     && Regex.IsMatch(compSection, @"\d{1,2}/\d{1,2}/\d{2,4}");
             }
-            bool visible = inView && hasComparison;
 
-            // Layout right-to-left: "No change." then "replace" then "insert"
-            int x = _richTextBox.Right - _noChangeTextLabel.Width - 2;
-            _noChangeTextLabel.Location = new Point(x, labelY);
-            _noChangeTextLabel.Visible = visible;
-
-            x -= _noChangeReplaceLabel.Width + 2;
-            _noChangeReplaceLabel.Location = new Point(x, labelY);
-            _noChangeReplaceLabel.Visible = visible;
-
-            x -= _noChangeInsertLabel.Width + 6;
-            _noChangeInsertLabel.Location = new Point(x, labelY);
-            _noChangeInsertLabel.Visible = visible;
+            // Layout right-to-left
+            int x = _richTextBox.Right - 2;
+            for (int i = _impressionFixerLabels.Count - 1; i >= 0; i--)
+            {
+                var lbl = _impressionFixerLabels[i];
+                var entry = _impressionFixerEntries[i];
+                bool entryVisible = inView && (!entry.RequireComparison || hasComparison);
+                if (entryVisible)
+                {
+                    x -= lbl.Width + 4;
+                    lbl.Location = new Point(x, labelY);
+                }
+                lbl.Visible = entryVisible;
+            }
         }
 
         // Find numbered items after IMPRESSION:
@@ -2113,55 +2119,42 @@ public class ReportPopupForm : Form
         _debounceTimer?.Start();
     }
 
-    private void OnInsertNoChangeClick(object? sender, EventArgs e)
+    private void OnFixerLabelClick(object? sender, EventArgs e)
     {
-        if (_richTextBox == null) return;
+        if (_richTextBox == null || sender is not Label lbl || lbl.Tag is not ImpressionFixerEntry entry) return;
 
         var rtbText = _richTextBox.Text;
         int impressionStart = rtbText.IndexOf("IMPRESSION:", StringComparison.OrdinalIgnoreCase);
         if (impressionStart < 0) return;
 
-        // Count existing numbered items for the next number (display only — debounce strips numbers)
-        int searchFrom = impressionStart + "IMPRESSION:".Length;
-        var regex = new Regex(@"^\d+\.\s", RegexOptions.Multiline);
-        int count = regex.Matches(rtbText, searchFrom).Count;
-        int nextNum = count + 1;
+        if (entry.ReplaceMode)
+        {
+            // Replace all text after IMPRESSION: header
+            int lineEnd = rtbText.IndexOf('\n', impressionStart);
+            int replaceFrom = lineEnd >= 0 ? lineEnd + 1 : rtbText.Length;
+            int replaceLen = rtbText.Length - replaceFrom;
 
-        // Append at end, ensuring a newline before so it's a separate impression line
-        int insertPos = rtbText.Length;
-        var prefix = insertPos > 0 && rtbText[insertPos - 1] != '\n' ? "\n" : "";
-        var newLine = $"{prefix}{nextNum}. No change.\n";
-        _richTextBox.ReadOnly = false;
-        _richTextBox.Select(insertPos, 0);
-        _richTextBox.SelectedText = newLine;
-        _richTextBox.ReadOnly = true;
+            _richTextBox.ReadOnly = false;
+            _richTextBox.Select(replaceFrom, replaceLen);
+            _richTextBox.SelectedText = $"1. {entry.Text}\n";
+            _richTextBox.ReadOnly = true;
+        }
+        else
+        {
+            // Insert: append at end with next number
+            int searchFrom = impressionStart + "IMPRESSION:".Length;
+            var regex = new Regex(@"^\d+\.\s", RegexOptions.Multiline);
+            int count = regex.Matches(rtbText, searchFrom).Count;
+            int nextNum = count + 1;
 
-        _formattedText = _richTextBox.Text;
-        ApplyCurrentModeFormatting();
-        _deletePending = true;
-        PositionTrashIcons();
-
-        _debounceTimer?.Stop();
-        _debounceTimer?.Start();
-    }
-
-    private void OnReplaceNoChangeClick(object? sender, EventArgs e)
-    {
-        if (_richTextBox == null) return;
-
-        var rtbText = _richTextBox.Text;
-        int impressionStart = rtbText.IndexOf("IMPRESSION:", StringComparison.OrdinalIgnoreCase);
-        if (impressionStart < 0) return;
-
-        // Find the range from after IMPRESSION: header to end of text
-        int lineEnd = rtbText.IndexOf('\n', impressionStart);
-        int replaceFrom = lineEnd >= 0 ? lineEnd + 1 : rtbText.Length;
-        int replaceLen = rtbText.Length - replaceFrom;
-
-        _richTextBox.ReadOnly = false;
-        _richTextBox.Select(replaceFrom, replaceLen);
-        _richTextBox.SelectedText = "1. No change.\n";
-        _richTextBox.ReadOnly = true;
+            int insertPos = rtbText.Length;
+            var prefix = insertPos > 0 && rtbText[insertPos - 1] != '\n' ? "\n" : "";
+            var newLine = $"{prefix}{nextNum}. {entry.Text}\n";
+            _richTextBox.ReadOnly = false;
+            _richTextBox.Select(insertPos, 0);
+            _richTextBox.SelectedText = newLine;
+            _richTextBox.ReadOnly = true;
+        }
 
         _formattedText = _richTextBox.Text;
         ApplyCurrentModeFormatting();

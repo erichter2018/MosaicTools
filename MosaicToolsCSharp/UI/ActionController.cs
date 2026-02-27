@@ -2234,6 +2234,7 @@ public class ActionController : IDisposable
                         };
 
                         _currentReportPopup.Show();
+                        ApplyImpressionFixersToPopup(_currentReportPopup);
                     });
                 }
                 else
@@ -2272,6 +2273,7 @@ public class ActionController : IDisposable
                 };
 
                 _currentReportPopup.Show();
+                ApplyImpressionFixersToPopup(_currentReportPopup);
 
                 // If Process Report was just pressed, show "Updating..." indicator immediately
                 // (report is being processed, so current content may be stale)
@@ -2289,7 +2291,22 @@ public class ActionController : IDisposable
              InvokeUI(() => _mainForm.ShowStatusToast("Error showing report"));
         }
     }
-    
+
+    private void ApplyImpressionFixersToPopup(ReportPopupForm popup)
+    {
+        if (!_config.ImpressionFixerEnabled)
+        {
+            popup.SetImpressionFixers(new List<ImpressionFixerEntry>());
+            return;
+        }
+
+        var studyDesc = _mosaicReader.LastDescription;
+        var matching = _config.ImpressionFixers
+            .Where(f => f.Enabled && f.MatchesStudy(studyDesc))
+            .ToList();
+        popup.SetImpressionFixers(matching);
+    }
+
     private void PerformCaptureSeries()
     {
         if (IsAddendumOpen())

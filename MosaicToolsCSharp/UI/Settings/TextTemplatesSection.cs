@@ -21,6 +21,8 @@ public class TextTemplatesSection : SettingsSection
     private readonly CheckBox _macrosEnabledCheck;
     private readonly CheckBox _macrosBlankLinesCheck;
     private readonly Label _macrosCountLabel;
+    private readonly CheckBox _impressionFixerEnabledCheck;
+    private readonly Label _impressionFixerCountLabel;
     private readonly CheckBox _pickListsEnabledCheck;
     private readonly CheckBox _pickListSkipSingleMatchCheck;
     private readonly CheckBox _pickListKeepOpenCheck;
@@ -30,6 +32,7 @@ public class TextTemplatesSection : SettingsSection
 
     // Track open non-modal dialogs to prevent duplicates
     private MacroEditorForm? _openMacroEditor;
+    private ImpressionFixerEditorForm? _openFixerEditor;
     private PickListEditorForm? _openPickListEditor;
 
     public TextTemplatesSection(ToolTip toolTip, Configuration config) : base("Text & Templates", toolTip)
@@ -105,6 +108,23 @@ public class TextTemplatesSection : SettingsSection
         _macrosEnabledCheck.CheckedChanged += (s, e) => UpdateMacroStates();
         _nextY += RowHeight + 5;
 
+        // Impression Fixer
+        AddSectionDivider("Impression Fixer");
+
+        _impressionFixerEnabledCheck = AddCheckBox("Enable Impression Fixer", LeftMargin, _nextY,
+            "Show quick-insert/replace buttons on the report popup IMPRESSION line.");
+
+        var editFixerBtn = AddButton("Edit...", LeftMargin + 160, _nextY - 2, 60, 22, OnEditFixerClick,
+            "Edit impression fixer entries.");
+
+        _impressionFixerCountLabel = AddLabel(GetFixerCountText(), LeftMargin + 230, _nextY + 2);
+        _impressionFixerCountLabel.ForeColor = Color.Gray;
+        _impressionFixerCountLabel.Font = new Font("Segoe UI", 8);
+        _nextY += SubRowHeight;
+
+        AddHintLabel("Quick-insert or replace impression text from the report popup.", LeftMargin);
+        _nextY += 5;
+
         // Pick Lists
         AddSectionDivider("Pick Lists");
 
@@ -149,6 +169,12 @@ public class TextTemplatesSection : SettingsSection
         _pickListKeepOpenCheck.ForeColor = enabled ? Color.FromArgb(180, 180, 180) : Color.FromArgb(100, 100, 100);
     }
 
+    private string GetFixerCountText()
+    {
+        var count = _config.ImpressionFixers.Count;
+        return $"({count} entr{(count == 1 ? "y" : "ies")})";
+    }
+
     private string GetMacrosCountText()
     {
         var count = _config.Macros.Count;
@@ -159,6 +185,22 @@ public class TextTemplatesSection : SettingsSection
     {
         var count = _config.PickLists.Count;
         return $"({count} list{(count == 1 ? "" : "s")})";
+    }
+
+    private void OnEditFixerClick(object? sender, EventArgs e)
+    {
+        if (_openFixerEditor != null && !_openFixerEditor.IsDisposed)
+        {
+            _openFixerEditor.Activate();
+            return;
+        }
+        _openFixerEditor = new ImpressionFixerEditorForm(_config);
+        _openFixerEditor.FormClosed += (_, _) =>
+        {
+            _openFixerEditor = null;
+            _impressionFixerCountLabel.Text = GetFixerCountText();
+        };
+        _openFixerEditor.Show();
     }
 
     private void OnEditMacrosClick(object? sender, EventArgs e)
@@ -208,6 +250,8 @@ public class TextTemplatesSection : SettingsSection
         _macrosEnabledCheck.Checked = config.MacrosEnabled;
         _macrosBlankLinesCheck.Checked = config.MacrosBlankLinesBefore;
 
+        _impressionFixerEnabledCheck.Checked = config.ImpressionFixerEnabled;
+
         _pickListsEnabledCheck.Checked = config.PickListsEnabled;
         _pickListSkipSingleMatchCheck.Checked = config.PickListSkipSingleMatch;
         _pickListKeepOpenCheck.Checked = config.PickListKeepOpen;
@@ -228,6 +272,8 @@ public class TextTemplatesSection : SettingsSection
 
         config.MacrosEnabled = _macrosEnabledCheck.Checked;
         config.MacrosBlankLinesBefore = _macrosBlankLinesCheck.Checked;
+
+        config.ImpressionFixerEnabled = _impressionFixerEnabledCheck.Checked;
 
         config.PickListsEnabled = _pickListsEnabledCheck.Checked;
         config.PickListSkipSingleMatch = _pickListSkipSingleMatchCheck.Checked;

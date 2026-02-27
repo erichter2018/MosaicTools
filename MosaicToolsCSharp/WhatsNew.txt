@@ -1,3 +1,10 @@
+3.9.0
+- Impression Fixer: configurable quick-insert/replace buttons on report popup IMPRESSION line
+- Impression Fixer editor: add, edit, clone entries with blurb, mode (insert/replace), study criteria, and comparison requirement
+- Impression Fixer: cyan (+) for insert, amber (=) for replace, with hover highlighting
+- Impression Fixer: 4 default entries pre-populated (no change insert/replace, improved/worsening aeration for chest XR)
+- Settings: new Impression Fixer section in Text & Templates with enable toggle and editor
+
 3.8.9
 - Report popup: "insert / replace No change." buttons on IMPRESSION header (visible when comparison has a prior date)
 - Fix: Clinical history dedup missing medical abbreviations (PE, PUD, HX, DVT, CHF, COPD, etc.)
