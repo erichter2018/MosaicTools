@@ -14,6 +14,7 @@ public class DeepgramProvider : ISttProvider
     private readonly string _apiKey;
     private readonly string _model;
     private readonly bool _autoPunctuate;
+    private readonly string _keyterms;
     private ClientWebSocket? _ws;
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveTask;
@@ -30,11 +31,12 @@ public class DeepgramProvider : ISttProvider
     public event Action<string>? ErrorOccurred;
     public event Action<bool>? ConnectionStateChanged;
 
-    public DeepgramProvider(string apiKey, string model = "nova-3-medical", bool autoPunctuate = false)
+    public DeepgramProvider(string apiKey, string model = "nova-3-medical", bool autoPunctuate = false, string keyterms = "")
     {
         _apiKey = apiKey;
         _model = model;
         _autoPunctuate = autoPunctuate;
+        _keyterms = keyterms;
     }
 
     public async Task<bool> StartSessionAsync(CancellationToken ct = default)
@@ -58,12 +60,26 @@ public class DeepgramProvider : ISttProvider
                 ? "&punctuate=true&smart_format=true"
                 : "&punctuate=false";
 
+            // Build keyterm params: comma/newline-separated string → individual &keyterm=X params
+            var keytermParams = "";
+            if (!string.IsNullOrWhiteSpace(_keyterms))
+            {
+                var terms = _keyterms.Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var term in terms)
+                {
+                    var trimmed = term.Trim();
+                    if (trimmed.Length > 0)
+                        keytermParams += $"&keyterm={Uri.EscapeDataString(trimmed)}";
+                }
+            }
+
             var uri = new Uri(
                 $"wss://api.deepgram.com/v1/listen" +
                 $"?model={_model}" +
                 $"&encoding=linear16&sample_rate={AudioFormat.SampleRate}&channels={AudioFormat.Channels}" +
                 punctParams +
-                $"&interim_results=true&endpointing=300");
+                $"&interim_results=true&endpointing=300" +
+                keytermParams);
 
             await _ws.ConnectAsync(uri, ct);
             _connected = true;
@@ -72,7 +88,7 @@ public class DeepgramProvider : ISttProvider
             _receiveCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _receiveTask = Task.Run(() => ReceiveLoop(_receiveCts.Token));
 
-            Logger.Trace($"DeepgramProvider: Connected ({_model})");
+            Logger.Trace($"DeepgramProvider: Connected ({_model}) uri={uri}");
             return true;
         }
         catch (WebSocketException ex) when (ex.Message.Contains("401") || ex.Message.Contains("Unauthorized"))

@@ -2,6 +2,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Linq;
 using System.Windows.Forms;
 using MosaicTools.Services;
 
@@ -26,6 +27,12 @@ public class SttSection : SettingsSection
     // Speechmatics region selector
     private readonly Label _regionLabel;
     private readonly ComboBox _regionCombo;
+
+    // Deepgram keyterms
+    private readonly Label _deepgramKeytermsLabel;
+    private readonly TextBox _deepgramKeytermsBox;
+    private readonly Label _deepgramKeytermsCount;
+    private readonly Button _deepgramKeytermsSortButton;
 
     private readonly ComboBox _audioDeviceCombo;
     private readonly CheckBox _autoPunctuateCheck;
@@ -129,6 +136,36 @@ public class SttSection : SettingsSection
 
         AddHintLabel("Off = dictate punctuation (say \"period\", \"comma\"). On = auto-inserted.", LeftMargin + 25);
 
+        // Deepgram keyterms (shown only for Deepgram provider)
+        _deepgramKeytermsLabel = AddLabel("Keyterms:", LeftMargin + 25, _nextY + 3);
+        _deepgramKeytermsBox = new TextBox
+        {
+            Location = new Point(LeftMargin + 110, _nextY),
+            Width = 300,
+            Height = 60,
+            Multiline = true,
+            ScrollBars = ScrollBars.Vertical,
+            Font = new Font("Segoe UI", 9f),
+            PlaceholderText = "One per line. Boosts recognition of specific words (e.g. periportal, echogenicity)"
+        };
+        _deepgramKeytermsBox.TextChanged += (_, _) => UpdateKeytermCount();
+        Controls.Add(_deepgramKeytermsBox);
+
+        _deepgramKeytermsSortButton = AddButton("Sort A\u2013Z", LeftMargin + 25, _nextY + 18, 55, 22, OnSortKeytermsClick,
+            "Sort keyterms alphabetically");
+        _deepgramKeytermsSortButton.Font = new Font("Segoe UI", 7.5f);
+
+        _deepgramKeytermsCount = new Label
+        {
+            Location = new Point(LeftMargin + 110, _nextY + 62),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(150, 150, 150),
+            Font = new Font("Segoe UI", 7.5f),
+            Text = "0 / 100 terms"
+        };
+        Controls.Add(_deepgramKeytermsCount);
+        _nextY += 80;
+
         // Beep Settings
         AddSectionDivider("Beeps");
 
@@ -182,6 +219,13 @@ public class SttSection : SettingsSection
         bool isSpeechmatics = newIdx == ProviderSpeechmatics;
         _regionLabel.Visible = isSpeechmatics;
         _regionCombo.Visible = isSpeechmatics;
+
+        // Update keyterms visibility (Deepgram only)
+        bool isDeepgram = newIdx == ProviderDeepgramMedical;
+        _deepgramKeytermsLabel.Visible = isDeepgram;
+        _deepgramKeytermsBox.Visible = isDeepgram;
+        _deepgramKeytermsCount.Visible = isDeepgram;
+        _deepgramKeytermsSortButton.Visible = isDeepgram;
 
         // Update pricing hint
         _pricingHint.Text = newIdx switch
@@ -237,11 +281,37 @@ public class SttSection : SettingsSection
         _regionCombo.Enabled = enabled;
         _audioDeviceCombo.Enabled = enabled;
         _autoPunctuateCheck.Enabled = enabled;
+        _deepgramKeytermsBox.Enabled = enabled;
+        _deepgramKeytermsSortButton.Enabled = enabled;
         _startBeepCheck.Enabled = enabled;
         _stopBeepCheck.Enabled = enabled;
         _startBeepVolume.Enabled = enabled;
         _stopBeepVolume.Enabled = enabled;
         _showIndicatorCheck.Enabled = enabled;
+    }
+
+    private void UpdateKeytermCount()
+    {
+        var count = 0;
+        if (!string.IsNullOrWhiteSpace(_deepgramKeytermsBox.Text))
+        {
+            var terms = _deepgramKeytermsBox.Text.Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var t in terms)
+                if (t.Trim().Length > 0) count++;
+        }
+        _deepgramKeytermsCount.Text = $"{count} / 100 terms";
+        _deepgramKeytermsCount.ForeColor = count > 100 ? Color.IndianRed : Color.FromArgb(150, 150, 150);
+    }
+
+    private void OnSortKeytermsClick(object? sender, EventArgs e)
+    {
+        var terms = _deepgramKeytermsBox.Text
+            .Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => t.Trim())
+            .Where(t => t.Length > 0)
+            .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        _deepgramKeytermsBox.Text = string.Join("\r\n", terms);
     }
 
     private void OnGetKeyClick(object? sender, EventArgs e)
@@ -339,6 +409,11 @@ public class SttSection : SettingsSection
         bool isSpeechmatics = idx == ProviderSpeechmatics;
         _regionLabel.Visible = isSpeechmatics;
         _regionCombo.Visible = isSpeechmatics;
+        bool isDeepgram = idx == ProviderDeepgramMedical;
+        _deepgramKeytermsLabel.Visible = isDeepgram;
+        _deepgramKeytermsBox.Visible = isDeepgram;
+        _deepgramKeytermsCount.Visible = isDeepgram;
+        _deepgramKeytermsSortButton.Visible = isDeepgram;
         _pricingHint.Text = idx switch
         {
             ProviderDeepgramMedical => "Free tier: $200 credit. Nova-3 Medical: $0.0077/min streaming",
@@ -362,6 +437,7 @@ public class SttSection : SettingsSection
         }
 
         _autoPunctuateCheck.Checked = config.SttAutoPunctuate;
+        _deepgramKeytermsBox.Text = config.SttDeepgramKeyterms.Replace(",", "\r\n");
         _startBeepCheck.Checked = config.SttStartBeepEnabled;
         _stopBeepCheck.Checked = config.SttStopBeepEnabled;
         _startBeepVolume.Value = Math.Clamp((int)(config.SttStartBeepVolume * 100), 0, 100);
@@ -405,6 +481,7 @@ public class SttSection : SettingsSection
         }
 
         config.SttAutoPunctuate = _autoPunctuateCheck.Checked;
+        config.SttDeepgramKeyterms = _deepgramKeytermsBox.Text.Trim();
         config.SttStartBeepEnabled = _startBeepCheck.Checked;
         config.SttStopBeepEnabled = _stopBeepCheck.Checked;
         config.SttStartBeepVolume = _startBeepVolume.Value / 100.0;

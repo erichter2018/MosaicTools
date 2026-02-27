@@ -1,3 +1,13 @@
+3.8.9
+- Report popup: "insert / replace No change." buttons on IMPRESSION header (visible when comparison has a prior date)
+- Fix: Clinical history dedup missing medical abbreviations (PE, PUD, HX, DVT, CHF, COPD, etc.)
+- Fix: Aidoc notification cleared on throttled scrape ticks (now scrapes once per study, preserves state between ticks)
+- Fix: Rainbow mode "central" causing false correlation (e.g. "central mediastinal lymph nodes" matching "central PE")
+- Fix: Rainbow mode negative sentences matching on single shared term (e.g. "No pulmonary edema" matching "pulmonary emboli") — now requires 2+ substantive terms
+- Fix: Rainbow mode continuation sentences ("This is best seen on...") split from parent finding — now merged for correlation
+- Fix: Get Prior stripping body part from "CHEST-2 VIEWS" (order code prefix regex required letter after dash)
+- STT: Deepgram keyterm prompting — boost recognition of specific medical terms (Settings > STT)
+
 3.8.8
 - Fix: Report popup showing intermediate text without impression after Process Report (now waits for IMPRESSION section)
 - Fix: "Updating..." indicator appearing on popup re-opens long after Process Report (stale flag cleared when report stabilizes)

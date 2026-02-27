@@ -1369,7 +1369,59 @@ public class ClinicalHistoryForm : Form
         }
         cleaned = string.Join(" ", dedupedWords);
 
-        return RemoveRepeatingPhrases(cleaned);
+        cleaned = RemoveRepeatingPhrases(cleaned);
+        return RemoveSubsetPhrases(cleaned);
+    }
+
+    /// <summary>
+    /// Remove semicolon-separated phrases whose words are a proper subset of another phrase.
+    /// e.g. "Generalized abdominal pain; abdominal pain; nausea" → "Generalized abdominal pain; nausea"
+    /// </summary>
+    private static string RemoveSubsetPhrases(string text)
+    {
+        if (!text.Contains(';')) return text;
+
+        var phrases = text.Split(';', StringSplitOptions.RemoveEmptyEntries)
+                          .Select(p => p.Trim())
+                          .Where(p => !string.IsNullOrWhiteSpace(p))
+                          .ToList();
+
+        if (phrases.Count <= 1) return text;
+
+        var phraseWords = phrases.Select(p =>
+            new HashSet<string>(
+                ExtractContentWords(p)
+                    .Where(w => w.Length >= 2)
+                    .Select(w => w.ToLowerInvariant()),
+                StringComparer.OrdinalIgnoreCase)
+        ).ToList();
+
+        var keep = new List<int>();
+        for (int i = 0; i < phrases.Count; i++)
+        {
+            bool isSubset = false;
+            for (int j = 0; j < phrases.Count; j++)
+            {
+                if (i == j) continue;
+                if (phraseWords[i].Count > 0
+                    && phraseWords[i].Count < phraseWords[j].Count
+                    && phraseWords[i].IsSubsetOf(phraseWords[j]))
+                {
+                    isSubset = true;
+                    break;
+                }
+            }
+            if (!isSubset)
+                keep.Add(i);
+        }
+
+        if (keep.Count == phrases.Count) return text;
+
+        var result = string.Join("; ", keep.Select(i => phrases[i]));
+        // Restore trailing period if original had one
+        if (text.TrimEnd().EndsWith('.') && !result.EndsWith('.'))
+            result += ".";
+        return result;
     }
 
     private static string RemoveRepeatingPhrases(string text)
@@ -1525,6 +1577,10 @@ public class ClinicalHistoryForm : Form
         if (allTrimmedLines.Count == 0)
             return (string.Empty, string.Empty);
 
+        // Strip order-category prefixes (e.g. "Other (Please Specify); CHEST PAIN" → "CHEST PAIN")
+        for (int i = 0; i < allTrimmedLines.Count; i++)
+            allTrimmedLines[i] = StripCategoryPrefix(allTrimmedLines[i]);
+
         var preCleanedRaw = string.Join(" ", allTrimmedLines);
         var sb = new System.Text.StringBuilder();
         foreach (char c in preCleanedRaw)
@@ -1553,6 +1609,12 @@ public class ClinicalHistoryForm : Form
                 // Check if the new line is an abbreviated version of an existing line → skip new
                 if (IsAbbreviatedDuplicate(line, uniqueLines[i]))
                 {
+                    // Bidirectional match (equivalent content) → prefer the longer version
+                    if (IsAbbreviatedDuplicate(uniqueLines[i], line) && line.Length > uniqueLines[i].Length)
+                    {
+                        replaceIndex = i;
+                        break;
+                    }
                     isDuplicate = true;
                     break;
                 }
@@ -1560,6 +1622,16 @@ public class ClinicalHistoryForm : Form
                 if (IsAbbreviatedDuplicate(uniqueLines[i], line))
                 {
                     replaceIndex = i;
+                    break;
+                }
+                // Fallback: word-pool overlap with abbreviation expansion
+                // Catches different phrase boundaries (e.g. "ABD PAIN, N/V" vs "abdominal pain; nausea/vomiting")
+                if (IsWordPoolDuplicate(line, uniqueLines[i]))
+                {
+                    if (line.Length > uniqueLines[i].Length)
+                        replaceIndex = i;
+                    else
+                        isDuplicate = true;
                     break;
                 }
             }
@@ -1645,6 +1717,23 @@ public class ClinicalHistoryForm : Form
         return true;
     }
 
+    /// <summary>
+    /// Strip order-category prefixes from clinical history lines.
+    /// e.g. "Other (Please Specify); CHEST PAIN" → "CHEST PAIN"
+    /// These are Clario ordering system labels, not clinical content.
+    /// </summary>
+    private static string StripCategoryPrefix(string line)
+    {
+        var semiIdx = line.IndexOf(';');
+        if (semiIdx > 0 && semiIdx < line.Length - 1)
+        {
+            var prefix = line.Substring(0, semiIdx).Trim();
+            if (prefix.Contains('(') || prefix.Equals("Other", StringComparison.OrdinalIgnoreCase))
+                return line.Substring(semiIdx + 1).Trim();
+        }
+        return line;
+    }
+
     private static List<string> SplitIntoPhrases(string text)
     {
         return text.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
@@ -1654,13 +1743,38 @@ public class ClinicalHistoryForm : Form
     }
 
     /// <summary>
+    /// Expand common medical abbreviations so phrase/word matching can recognize them.
+    /// Applied before comparison in both phrase-level and word-pool matching.
+    /// </summary>
+    private static string ExpandMedicalAbbreviations(string text)
+    {
+        text = Regex.Replace(text, @"\bN\s*/\s*V\b", "nausea vomiting", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bABD\b", "abdominal", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bSOB\b", "shortness breath", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bHTN\b", "hypertension", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bHX\b", "history", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bPE\b", "pulmonary embolism", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bPUD\b", "peptic ulcer disease", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bDVT\b", "deep vein thrombosis", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bCHF\b", "congestive heart failure", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bCOPD\b", "chronic obstructive pulmonary disease", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bCVA\b", "cerebrovascular accident", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bTIA\b", "transient ischemic attack", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bUTI\b", "urinary tract infection", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bSBO\b", "small bowel obstruction", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bCAD\b", "coronary artery disease", RegexOptions.IgnoreCase);
+        return text;
+    }
+
+    /// <summary>
     /// Check if two phrases are semantically equivalent, accounting for initialisms.
     /// e.g. "AMS" matches "Altered mental status", "upper abdominal pain" matches "upper abdominal pain".
     /// </summary>
     private static bool PhrasesMatchWithAbbreviations(string phraseA, string phraseB)
     {
-        var wordsA = ExtractContentWords(phraseA);
-        var wordsB = ExtractContentWords(phraseB);
+        // Expand abbreviations before comparison (PE→pulmonary embolism, HX→history, etc.)
+        var wordsA = ExtractContentWords(ExpandMedicalAbbreviations(phraseA));
+        var wordsB = ExtractContentWords(ExpandMedicalAbbreviations(phraseB));
 
         if (wordsA.Count == 0 || wordsB.Count == 0) return false;
 
@@ -1668,12 +1782,16 @@ public class ClinicalHistoryForm : Form
         if (wordsA.All(w => wordsB.Any(wb => wb.Equals(w, StringComparison.OrdinalIgnoreCase))))
             return true;
 
-        // With abbreviation expansion: each word in A must be found in B or be an initialism of words in B
+        // With abbreviation expansion: each word in A must be found in B or be an initialism/truncation of words in B
         foreach (var wordA in wordsA)
         {
             bool found = wordsB.Any(w => w.Equals(wordA, StringComparison.OrdinalIgnoreCase));
             if (!found && IsInitialism(wordA))
                 found = InitialismMatchesConsecutiveWords(wordA, wordsB);
+            // Truncation match: "DIFF" ↔ "difficulty", "EVAL" ↔ "evaluate"
+            if (!found && wordA.Length >= 3)
+                found = wordsB.Any(w => w.StartsWith(wordA, StringComparison.OrdinalIgnoreCase)
+                                     || (w.Length >= 3 && wordA.StartsWith(w, StringComparison.OrdinalIgnoreCase)));
             if (!found) return false;
         }
         return true;
@@ -1712,6 +1830,58 @@ public class ClinicalHistoryForm : Form
         }
         return false;
     }
+
+    /// <summary>
+    /// Fallback duplicate check using word-pool overlap with medical abbreviation expansion.
+    /// Catches cases where phrase boundaries differ between coded and free-text lines
+    /// (e.g. "ABD PAIN, N/V, CONSTIPATION" vs "abdominal pain; nausea/vomiting; constipation").
+    /// </summary>
+    private static bool IsWordPoolDuplicate(string line1, string line2)
+    {
+        var words1 = GetExpandedContentWords(line1);
+        var words2 = GetExpandedContentWords(line2);
+
+        if (words1.Count < 2 || words2.Count < 2) return false;
+
+        // Conflicting laterality = different clinical info (left vs right)
+        var lat1 = words1.Where(w => ClinHistLateralityWords.Contains(w)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var lat2 = words2.Where(w => ClinHistLateralityWords.Contains(w)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (lat1.Count > 0 && lat2.Count > 0 && !lat1.Overlaps(lat2))
+            return false;
+
+        // Exclude laterality from overlap calculation
+        words1.ExceptWith(ClinHistLateralityWords);
+        words2.ExceptWith(ClinHistLateralityWords);
+
+        if (words1.Count < 2 || words2.Count < 2) return false;
+
+        var smaller = words1.Count <= words2.Count ? words1 : words2;
+        var larger = words1.Count <= words2.Count ? words2 : words1;
+
+        int matched = 0;
+        foreach (var word in smaller)
+        {
+            if (larger.Any(w => w == word
+                             || (w.Length >= 3 && word.Length >= 3
+                                 && (w.StartsWith(word, StringComparison.OrdinalIgnoreCase)
+                                     || word.StartsWith(w, StringComparison.OrdinalIgnoreCase)))))
+                matched++;
+        }
+
+        return matched >= 3 && (double)matched / smaller.Count >= 0.6;
+    }
+
+    private static HashSet<string> GetExpandedContentWords(string text)
+    {
+        return new HashSet<string>(
+            ExtractContentWords(ExpandMedicalAbbreviations(text))
+                .Where(w => w.Length >= 3)
+                .Select(w => w.ToLowerInvariant()),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static readonly HashSet<string> ClinHistLateralityWords = new(StringComparer.OrdinalIgnoreCase)
+        { "left", "right", "bilateral", "unilateral" };
 
     #endregion
 

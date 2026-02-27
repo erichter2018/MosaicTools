@@ -151,7 +151,8 @@ public class GetPriorService
         desc = Regex.Replace(desc, @"^(US\s+)+", "", RegexOptions.IgnoreCase);
         desc = desc.Replace(" SIGNXED", "").Replace(" abd.", " abdomen.").Trim();
         // Strip InteleViewer order code prefixes (e.g., "ICUS-", "ICUs-")
-        desc = Regex.Replace(desc, @"^[A-Z]{2,5}\s*-\s*", "", RegexOptions.IgnoreCase);
+        // Require letter after dash — prevents stripping body parts like "CHEST-2 VIEWS"
+        desc = Regex.Replace(desc, @"^[A-Z]{2,5}\s*-\s*(?=[A-Za-z])", "", RegexOptions.IgnoreCase);
         desc = ReorderLaterality(desc.ToLower());
         
         if (desc.Contains(" with and without"))
@@ -177,7 +178,7 @@ public class GetPriorService
         desc = desc.Replace(" SIGNXED", "").Trim();
         // Strip leading "- " and InteleViewer order code prefixes
         desc = Regex.Replace(desc, @"^-\s+", "");
-        desc = Regex.Replace(desc, @"^[A-Z]{2,5}-\s*", "", RegexOptions.IgnoreCase);
+        desc = Regex.Replace(desc, @"^[A-Z]{2,5}-\s*(?=[A-Za-z])", "", RegexOptions.IgnoreCase);
         desc = desc.Replace(" + ", " and ");
         desc = Regex.Replace(desc, @"\bw/o\b", "without", RegexOptions.IgnoreCase);
         desc = desc.Replace(" W/O", " without").Replace(" W/", " with");
@@ -238,7 +239,8 @@ public class GetPriorService
         desc = Regex.Replace(desc, @"^(NM\s+)+", "", RegexOptions.IgnoreCase);
         desc = desc.Replace(" SIGNXED", "").Trim();
         // Strip InteleViewer order code prefixes (e.g., "ICNM-")
-        desc = Regex.Replace(desc, @"^[A-Z]{2,5}\s*-\s*", "", RegexOptions.IgnoreCase);
+        // Require letter after dash — prevents stripping body parts like "CHEST-2 VIEWS"
+        desc = Regex.Replace(desc, @"^[A-Z]{2,5}\s*-\s*(?=[A-Za-z])", "", RegexOptions.IgnoreCase);
         desc = desc.ToLower();
         desc += " nuclear medicine";
         return ReorderLaterality(desc);
@@ -271,7 +273,8 @@ public class GetPriorService
         desc = Regex.Replace(desc, modalityPattern, "", RegexOptions.IgnoreCase);
         desc = desc.Replace(" SIGNXED", "").Trim();
         // Strip InteleViewer order code prefixes (e.g., "RAD - ", "DX - ", "ICRad-")
-        desc = Regex.Replace(desc, @"^[A-Z]{2,5}\s*-\s*", "", RegexOptions.IgnoreCase);
+        // Require letter after dash — prevents stripping body parts like "CHEST-2 VIEWS"
+        desc = Regex.Replace(desc, @"^[A-Z]{2,5}\s*-\s*(?=[A-Za-z])", "", RegexOptions.IgnoreCase);
 
         desc = ProcessRadiographDescription(desc.ToLower());
         return desc;
@@ -279,6 +282,8 @@ public class GetPriorService
     
     private string ProcessRadiographDescription(string text)
     {
+        // Normalize "CHEST-2 VIEWS" → "chest 2 views" (dash is InteleViewer separator, not meaningful)
+        text = Regex.Replace(text, @"-(\d)", " $1");
         text = text.Replace(" vw", " view(s)").Replace(" 2v", " PA and lateral");
         text = text.Replace(" pa lat", " PA and lateral").Replace(" (kub)", "").Trim();
         // "Single Portable" = single view portable; "single" is redundant with "portable"
@@ -332,7 +337,8 @@ public class GetPriorService
         desc = Regex.Replace(desc, @"^-\s+", "");
 
         // Strip InteleViewer order code prefixes (e.g., "ICCT-", "ICT-", "NCCT-")
-        desc = Regex.Replace(desc, @"^[A-Z]{2,5}-\s*", "", RegexOptions.IgnoreCase);
+        // Require letter after dash — prevents stripping body parts like "CHEST-2 VIEWS"
+        desc = Regex.Replace(desc, @"^[A-Z]{2,5}-\s*(?=[A-Za-z])", "", RegexOptions.IgnoreCase);
 
         // Substitutions
         desc = desc.Replace(" + ", " and ").Replace("+", " and ").Replace(" imags", "").Replace("Head Or Brain", "brain");

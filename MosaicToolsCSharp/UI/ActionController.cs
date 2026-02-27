@@ -165,6 +165,8 @@ public class ActionController : IDisposable
     // Report changes tracking - baseline report for diff highlighting
     private string? _baselineReport;
     private bool _processReportPressedForCurrentAccession = false;
+    private string? _processReportLastSeenText; // Last report text seen during hold (for stability detection)
+    private DateTime _processReportTextStableSince; // When the held text last changed
     private bool _draftedAutoProcessDetected = false; // Set true when drafted study's report changes from baseline
     private bool _autoShowReportDoneForAccession = false; // Only auto-show report overlay once per accession
     private bool _needsBaselineCapture = false; // Set true on new study, cleared when baseline captured
@@ -196,8 +198,9 @@ public class ActionController : IDisposable
 
     // Aidoc state tracking
     private string? _lastAidocFindings; // comma-joined relevant finding types
+    private List<string>? _lastAidocRelevantList; // preserved for verification on subsequent ticks
     private bool _lastAidocRelevant = false;
-    private readonly HashSet<string> _aidocConfirmedNegative = new(StringComparer.OrdinalIgnoreCase); // "once negative, stay negative" per study
+    private bool _aidocDoneForStudy = false; // Once scraped successfully, don't re-scrape (status doesn't change mid-study)
     private long _lastAidocScrapeTick64; // Throttle: minimum 5s between Aidoc scrapes
 
     // RecoMD state tracking — continuous send on every scrape tick
@@ -1093,6 +1096,8 @@ public class ActionController : IDisposable
 
         // Mark that Process Report was pressed for this accession (for diff highlighting)
         _processReportPressedForCurrentAccession = true;
+        _processReportLastSeenText = null;
+        _processReportTextStableSince = DateTime.UtcNow;
 
         // Safety: Release all modifiers before starting automated sequence
         NativeWindows.KeyUpModifiers();
@@ -1490,6 +1495,14 @@ public class ActionController : IDisposable
 
             // Restore normal scrape rate
             RestartScrapeTimer(NormalScrapeIntervalMs);
+        }
+
+        // Hide clinical history immediately — stale data from the signed study
+        // shouldn't linger while waiting for the next study's slow path scrape.
+        if (_config.ShowClinicalHistory)
+        {
+            InvokeUI(() => _mainForm.ToggleClinicalHistory(false));
+            _clinicalHistoryVisible = false;
         }
 
         // RecoMD: close report on sign
@@ -3393,6 +3406,9 @@ public class ActionController : IDisposable
                 // Dormant: report read + popup update done above. Only run Aidoc if enabled.
                 if (_config.AidocScrapeEnabled)
                     UpdateClinicalHistoryAndAlerts(currentAccession, reportText, tickStartTick64);
+                // Flush batched UI updates and re-assert z-order after Aidoc FlaUI interactions
+                BatchUI(() => _mainForm.EnsureWindowsOnTop());
+                FlushUI();
                 return;
             }
 
@@ -3401,6 +3417,9 @@ public class ActionController : IDisposable
             InsertPendingMacros(currentAccession, reportText);
             UpdateClinicalHistoryAndAlerts(currentAccession, reportText, tickStartTick64);
             UpdateImpressionDisplay(reportText);
+            // Flush batched UI updates and re-assert z-order after Aidoc FlaUI interactions
+            BatchUI(() => _mainForm.EnsureWindowsOnTop());
+            FlushUI();
 
             // Check if all study metadata is populated — if so, go dormant.
             // Dormant slow path still reads the report + updates popup, just skips Clario/metadata.
@@ -3637,8 +3656,9 @@ public class ActionController : IDisposable
         _strokeDetectedActive = false;
         _pendingClarioPriorityRetry = false;
         _lastAidocFindings = null;
+        _lastAidocRelevantList = null;
         _lastAidocRelevant = false;
-        _aidocConfirmedNegative.Clear();
+        _aidocDoneForStudy = false;
 
         // Reset Ignore Inpatient Drafted state
         _macrosCompleteForCurrentAccession = false;
@@ -3964,23 +3984,48 @@ public class ActionController : IDisposable
         var popup = _currentReportPopup;
         if (popup != null && !popup.IsDisposed && popup.Visible)
         {
-            // During impression search, suppress popup updates until the impression section
-            // appears. Mosaic rebuilds the editor after Process Report — the intermediate
-            // text (without impression) shouldn't flash in the popup. Keep stale indicator.
-            bool suppressForImpression = _searchingForImpression
-                && !string.IsNullOrEmpty(reportText) && reportText != _lastPopupReportText
-                && !reportText.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase);
+            // After Process Report, Mosaic rebuilds the editor over several seconds.
+            // Suppress ALL popup updates until the report text stops changing (stable
+            // for 2s), so intermediate/partial renders don't flash in the popup.
+            if (_processReportPressedForCurrentAccession)
+            {
+                if (!string.IsNullOrEmpty(reportText) && reportText != _processReportLastSeenText)
+                {
+                    // Text changed — reset stability timer
+                    _processReportLastSeenText = reportText;
+                    _processReportTextStableSince = DateTime.UtcNow;
+                }
 
-            if (!suppressForImpression && !string.IsNullOrEmpty(reportText) && reportText != _lastPopupReportText)
+                bool stable = _processReportLastSeenText != null
+                    && _processReportLastSeenText != _lastPopupReportText
+                    && (DateTime.UtcNow - _processReportTextStableSince).TotalSeconds >= 1;
+
+                bool timedOut = _staleSetTime != default
+                    && (DateTime.UtcNow - _staleSetTime).TotalSeconds > 15;
+
+                if (stable || timedOut)
+                {
+                    _processReportPressedForCurrentAccession = false;
+                    Logger.Trace($"Process Report popup hold released: stable={stable}, timedOut={timedOut}, len={reportText?.Length ?? 0}");
+                }
+                else
+                {
+                    if (string.IsNullOrEmpty(reportText) && !string.IsNullOrEmpty(_lastPopupReportText))
+                    {
+                        _staleSetTime = DateTime.UtcNow;
+                        _staleTextStableTime = default;
+                        BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
+                    }
+                    return;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(reportText) && reportText != _lastPopupReportText)
             {
                 Logger.Trace($"Auto-updating popup: report changed ({reportText.Length} chars vs {_lastPopupReportText?.Length ?? 0} chars), baseline={_baselineReport?.Length ?? 0} chars");
                 _lastPopupReportText = reportText;
-                // Re-arm burst so subsequent edits are picked up quickly.
-                // Self-limiting: only fires when content actually changed, falls back
-                // to normal interval once edits stop.
                 RequestReportScrapeBurst(PopupChangeBurstMs, "Report changed while popup visible");
-                _staleTextStableTime = default; // Text changed — reset stability timer
-                // immediate=true bypasses BatchUI for instant update (used by RadAI insert)
+                _staleTextStableTime = default;
                 if (immediate)
                     InvokeUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
                 else
@@ -3988,27 +4033,21 @@ public class ActionController : IDisposable
             }
             else if (string.IsNullOrEmpty(reportText) && !string.IsNullOrEmpty(_lastPopupReportText))
             {
-                // Report text is gone (being updated in Mosaic) but popup is visible with cached content
                 Logger.Trace("Popup showing stale content - report being updated");
                 _staleSetTime = DateTime.UtcNow;
-                _staleTextStableTime = default; // Reset — text is unstable (null)
+                _staleTextStableTime = default;
                 BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
             }
             else if (!string.IsNullOrEmpty(reportText))
             {
-                // Report text matches what's displayed. Clear stale indicator when safe.
-                // Track how long text has been stable (matching popup) after going stale.
+                // Report text matches what's displayed — clear stale indicator
                 if (_staleTextStableTime == default)
                     _staleTextStableTime = DateTime.UtcNow;
 
-                bool canClear = !_processReportPressedForCurrentAccession
-                    || (DateTime.UtcNow - _staleTextStableTime).TotalSeconds > 5  // Text stable for 5s — report didn't change
-                    || (DateTime.UtcNow - _staleSetTime).TotalSeconds > 30;        // Hard timeout fallback
+                bool canClear = (DateTime.UtcNow - _staleTextStableTime).TotalSeconds > 5
+                    || (DateTime.UtcNow - _staleSetTime).TotalSeconds > 30;
                 if (canClear)
                 {
-                    // Report is stable — clear the process-report flag so reopening the popup
-                    // later doesn't trigger a phantom "Updating..." state.
-                    _processReportPressedForCurrentAccession = false;
                     BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
                 }
             }
@@ -4082,35 +4121,30 @@ public class ActionController : IDisposable
         }
 
         // Aidoc scraping - check for AI-detected findings
+        // Scrape once per study (status doesn't change mid-study), with 5s delay after study
+        // change to let the widget update. No continuous re-scraping — saves ~3s/tick of FlaUI work.
         bool aidocAlertActive = false;
+        bool aidocScrapedThisTick = false;
         string? aidocFindingText = null;
         List<string>? relevantFindings = null;
         bool prevAidocRelevant = _lastAidocRelevant;
         long aidocNow = Environment.TickCount64;
-        if (!tickBudgetExceeded && _config.AidocScrapeEnabled && !string.IsNullOrEmpty(currentAccession)
+        if (!tickBudgetExceeded && _config.AidocScrapeEnabled && !_aidocDoneForStudy
+            && !string.IsNullOrEmpty(currentAccession)
             && (aidocNow - _lastAidocScrapeTick64) >= 5000)
         {
             _lastAidocScrapeTick64 = aidocNow;
+            aidocScrapedThisTick = true;
             try
             {
                 var aidocResult = _aidocService.ScrapeShortcutWidget();
                 if (aidocResult != null && aidocResult.Findings.Count > 0)
                 {
+                    _aidocDoneForStudy = true; // Got findings — don't re-scrape
                     var studyDescription = _mosaicReader.LastDescription;
 
-                    // "Once negative, stay negative" — latch findings that sample as negative.
-                    // The Aidoc widget has a red/orange flashing animation when ANY positive
-                    // finding exists, which can cause false positives on individual icon pixels.
-                    // Real positive icons consistently show orange; false positives flicker.
-                    foreach (var f in aidocResult.Findings)
-                    {
-                        if (!f.IsPositive)
-                            _aidocConfirmedNegative.Add(f.FindingType);
-                    }
-
-                    // Only show findings that are relevant, sampled positive, AND not latched negative
                     relevantFindings = aidocResult.Findings
-                        .Where(f => f.IsPositive && !_aidocConfirmedNegative.Contains(f.FindingType)
+                        .Where(f => f.IsPositive
                             && AidocService.IsRelevantFinding(f.FindingType, studyDescription))
                         .Select(f => f.FindingType)
                         .ToList();
@@ -4120,22 +4154,23 @@ public class ActionController : IDisposable
                         aidocAlertActive = true;
                         aidocFindingText = string.Join(", ", relevantFindings);
 
-                        // Toast on first detection or change
-                        if (!_lastAidocRelevant || _lastAidocFindings != aidocFindingText)
-                        {
-                            Logger.Trace($"Aidoc: Relevant findings '{aidocFindingText}' for study '{studyDescription}'");
-                            BatchUI(() => _mainForm.ShowStatusToast($"Aidoc: {aidocFindingText} detected", 5000));
-                        }
+                        Logger.Trace($"Aidoc: Relevant findings '{aidocFindingText}' for study '{studyDescription}'");
+                        BatchUI(() => _mainForm.ShowStatusToast($"Aidoc: {aidocFindingText} detected", 5000));
                     }
 
                     _lastAidocFindings = aidocAlertActive ? aidocFindingText : null;
+                    _lastAidocRelevantList = aidocAlertActive ? relevantFindings : null;
                     _lastAidocRelevant = aidocAlertActive;
                 }
-                else
+                else if (aidocResult != null)
                 {
+                    // Widget found but no findings listed — done for this study
+                    _aidocDoneForStudy = true;
                     _lastAidocFindings = null;
+                    _lastAidocRelevantList = null;
                     _lastAidocRelevant = false;
                 }
+                // If aidocResult is null (widget not found), don't set _aidocDoneForStudy — retry next tick
             }
             catch (Exception ex)
             {
@@ -4143,17 +4178,20 @@ public class ActionController : IDisposable
             }
         }
 
-        // Verify Aidoc findings against report text
+        // Verify Aidoc findings against report text (runs every tick using persisted list,
+        // so checkmarks update as the user addresses findings in the report)
         // Only verify against text with U+FFFC (real report editor), not the transcript
         List<FindingVerification>? aidocVerifications = null;
-        if (aidocAlertActive && relevantFindings != null && !string.IsNullOrEmpty(reportText)
+        var findingsToVerify = relevantFindings ?? _lastAidocRelevantList;
+        bool effectiveAidocRelevant = aidocScrapedThisTick ? aidocAlertActive : _lastAidocRelevant;
+        if (effectiveAidocRelevant && findingsToVerify != null && !string.IsNullOrEmpty(reportText)
             && reportText.Contains('\uFFFC'))
         {
-            aidocVerifications = AidocFindingVerifier.VerifyFindings(relevantFindings, reportText);
+            aidocVerifications = AidocFindingVerifier.VerifyFindings(findingsToVerify, reportText);
         }
 
         // Determine if any alerts are active
-        bool anyAlertActive = newTemplateMismatch || newGenderMismatch || _strokeDetectedActive || aidocAlertActive;
+        bool anyAlertActive = newTemplateMismatch || newGenderMismatch || _strokeDetectedActive || effectiveAidocRelevant;
 
         // Handle visibility based on always-show vs alerts-only mode
         if (_config.AlwaysShowClinicalHistory)
@@ -4189,14 +4227,15 @@ public class ActionController : IDisposable
             }
 
             // Show Aidoc finding appended to clinical history in orange (not replacing it)
-            if (aidocAlertActive && aidocFindingText != null)
+            // Update every tick so verification checkmarks reflect current report text
+            if (effectiveAidocRelevant && aidocVerifications != null)
             {
                 var captured = aidocVerifications;
                 BatchUI(() => _mainForm.SetAidocAppend(captured));
             }
-            else if (!aidocAlertActive && prevAidocRelevant)
+            else if (aidocScrapedThisTick && !aidocAlertActive && prevAidocRelevant)
             {
-                // Aidoc finding cleared - remove orange append
+                // Aidoc scrape ran and found nothing — clear
                 BatchUI(() => _mainForm.SetAidocAppend(null));
             }
         }
@@ -4231,10 +4270,10 @@ public class ActionController : IDisposable
                 alertToShow = AlertType.StrokeDetected;
                 alertDetails = "Study flagged as stroke protocol";
             }
-            else if (aidocAlertActive && aidocFindingText != null)
+            else if (effectiveAidocRelevant && (_lastAidocFindings ?? aidocFindingText) != null)
             {
                 alertToShow = AlertType.AidocFinding;
-                alertDetails = aidocFindingText;
+                alertDetails = _lastAidocFindings ?? aidocFindingText ?? "";
             }
 
             if (anyAlertActive)

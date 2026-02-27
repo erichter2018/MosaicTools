@@ -380,6 +380,9 @@ public class Configuration
     [JsonPropertyName("stt_auto_punctuate")]
     public bool SttAutoPunctuate { get; set; } = false;
 
+    [JsonPropertyName("stt_deepgram_keyterms")]
+    public string SttDeepgramKeyterms { get; set; } = "";
+
     [JsonPropertyName("stt_start_beep_enabled")]
     public bool SttStartBeepEnabled { get; set; } = true;
 

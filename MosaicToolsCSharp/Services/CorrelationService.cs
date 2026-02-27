@@ -806,13 +806,16 @@ public static class CorrelationService
             // Require at least 1 non-laterality shared term with the best block
             if (bestSubstantiveScore >= 1 && bestBlock != null)
             {
-                // Only include sentences from the best block that actually share substantive terms
+                // Only include sentences from the best block that actually share substantive terms.
+                // Negative sentences need 2+ to avoid broad matches (e.g. "No pulmonary edema" on "pulmonary").
                 var matchedSentences = new List<string>();
                 foreach (var sentence in bestBlock.Value.Sentences)
                 {
                     var sentenceTerms = ExtractTerms(sentence, contextTerms);
                     var sentenceShared = impressionTerms.Intersect(sentenceTerms, StringComparer.OrdinalIgnoreCase).ToList();
-                    if (sentenceShared.Any(t => !LateralityTerms.Contains(t)))
+                    int substantive = sentenceShared.Count(t => !LateralityTerms.Contains(t));
+                    int minRequired = NegativeSentencePattern.IsMatch(sentence) ? 2 : 1;
+                    if (substantive >= minRequired)
                     {
                         matchedSentences.Add(sentence);
                     }
@@ -987,8 +990,11 @@ public static class CorrelationService
                 }
             }
 
-            // Require at least one non-laterality shared term to count as a match
-            if (bestSubstantiveScore >= 1 && bestImpressionIdx >= 0)
+            // Require non-laterality shared terms to count as a match.
+            // Negative findings need 2+ to avoid broad single-term matches
+            // (e.g. "No pulmonary edema" matching "pulmonary emboli" on just "pulmonary").
+            int minSubstantive = isNegative ? 2 : 1;
+            if (bestSubstantiveScore >= minSubstantive && bestImpressionIdx >= 0)
             {
                 matchCount++;
                 // When we have a dictated filter, negative findings are confirmed dictated content
@@ -1231,7 +1237,13 @@ public static class CorrelationService
             {
                 var trimmed = part.Trim();
                 if (!string.IsNullOrWhiteSpace(trimmed) && trimmed.Length >= 3)
-                    sentences.Add(trimmed);
+                {
+                    // Merge continuation sentences with previous (anaphoric "This/It/These/They")
+                    if (sentences.Count > 0 && IsContinuationSentence(trimmed))
+                        sentences[sentences.Count - 1] += " " + trimmed;
+                    else
+                        sentences.Add(trimmed);
+                }
             }
         }
 
@@ -1295,7 +1307,13 @@ public static class CorrelationService
             {
                 var trimmed = part.Trim();
                 if (!string.IsNullOrWhiteSpace(trimmed) && trimmed.Length >= 3)
-                    currentBlock.Add(trimmed);
+                {
+                    // Merge continuation sentences with previous (anaphoric "This/It/These/They")
+                    if (currentBlock.Count > 0 && IsContinuationSentence(trimmed))
+                        currentBlock[currentBlock.Count - 1] += " " + trimmed;
+                    else
+                        currentBlock.Add(trimmed);
+                }
             }
         }
 
@@ -1311,6 +1329,16 @@ public static class CorrelationService
         }
 
         return blocks;
+    }
+
+    /// <summary>
+    /// Sentences starting with anaphoric pronouns (This/It/These/They) reference
+    /// the previous finding and should be merged with it for correlation purposes.
+    /// e.g. "This is best seen on axial image 63 of 183."
+    /// </summary>
+    private static bool IsContinuationSentence(string sentence)
+    {
+        return Regex.IsMatch(sentence, @"^(This|These|They|Its|It)\b", RegexOptions.IgnoreCase);
     }
 
     private static string StripSubsectionHeader(string line)
@@ -1350,6 +1378,7 @@ public static class CorrelationService
     {
         "about", "above", "after", "again", "along", "also", "appears", "are",
         "based", "been", "before", "being", "below", "between", "both", "cannot",
+        "central", // spatial modifier — appears in unrelated contexts (e.g. "central mediastinal" vs "central PE")
         "change", "changes", "clear", "compatible", "compared", "could",
         "demonstrate", "demonstrates", "demonstrated", "does",
         "each", "either", "evaluate", "evaluation", "evidence",

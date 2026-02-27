@@ -2315,6 +2315,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                             || !bestText.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase)))
                     {
                         Logger.Trace("GetFinalReportFast: Candidate lacks U+FFFC and IMPRESSION, keeping previous report");
+                        _lastProsemirrorSearchTick64 = 0; // Reset throttle — transitional content, retry next tick
                         ReleaseElements(candidates);
                         return LastFinalReport;
                     }
@@ -2374,6 +2375,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                                 || !bestFallback.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase)))
                         {
                             Logger.Trace("GetFinalReportFast: Fallback candidate lacks U+FFFC and IMPRESSION, keeping previous report");
+                            _lastProsemirrorSearchTick64 = 0; // Reset throttle — transitional content, retry next tick
                             ReleaseElements(candidates);
                             return LastFinalReport;
                         }

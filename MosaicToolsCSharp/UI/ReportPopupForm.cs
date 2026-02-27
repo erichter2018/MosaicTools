@@ -103,8 +103,6 @@ public class ReportPopupForm : Form
     private bool _baselineIsSectionOnly; // True when baseline is from template DB (diff only FINDINGS+IMPRESSION)
     private CorrelationResult? _correlationResult;
     private CorrelationResult? _previousCorrelation; // Retained to prevent regression on noisy scrapes
-    private bool _correlationDeferred; // True when correlation recompute is deferred (throttled)
-    private System.Windows.Forms.Timer? _correlationDeferTimer; // Fires after throttle to recompute
     private bool _showingStaleContent; // True when showing cached report while live report is being updated
     private bool _radAiImpressionActive; // True when RadAI impression was successfully inserted
     private System.Windows.Forms.Timer? _stalePulseTimer;
@@ -133,6 +131,9 @@ public class ReportPopupForm : Form
     private readonly bool _deletableEnabled;
     private List<Label> _trashIcons = new();
     private List<(int charIndex, string itemText)>? _impressionItems;
+    private Label? _noChangeInsertLabel;
+    private Label? _noChangeReplaceLabel;
+    private Label? _noChangeTextLabel;
     private System.Windows.Forms.Timer? _debounceTimer;
     private bool _deletePending;
 
@@ -317,6 +318,56 @@ public class ReportPopupForm : Form
         {
             _debounceTimer = new System.Windows.Forms.Timer { Interval = 1000 };
             _debounceTimer.Tick += OnDebounceTimerTick;
+
+            var noChangeBg = Color.FromArgb(30, 30, 30);
+            var noChangeDim = Color.FromArgb(160, 160, 160);
+            var noChangeHover = Color.FromArgb(220, 220, 220);
+            var noChangeFont = new Font("Segoe UI", 9.5f);
+
+            _noChangeTextLabel = new Label
+            {
+                Text = "No change.",
+                AutoSize = true,
+                Font = noChangeFont,
+                ForeColor = noChangeDim,
+                BackColor = noChangeBg,
+                Visible = false
+            };
+            Controls.Add(_noChangeTextLabel);
+
+            _noChangeReplaceLabel = new Label
+            {
+                Text = "replace",
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Underline),
+                ForeColor = noChangeDim,
+                BackColor = noChangeBg,
+                Cursor = Cursors.Hand,
+                Visible = false
+            };
+            _noChangeReplaceLabel.MouseEnter += (_, _) => _noChangeReplaceLabel!.ForeColor = noChangeHover;
+            _noChangeReplaceLabel.MouseLeave += (_, _) => _noChangeReplaceLabel!.ForeColor = noChangeDim;
+            _noChangeReplaceLabel.Click += OnReplaceNoChangeClick;
+            Controls.Add(_noChangeReplaceLabel);
+
+            _noChangeInsertLabel = new Label
+            {
+                Text = "insert",
+                AutoSize = true,
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Underline),
+                ForeColor = noChangeDim,
+                BackColor = noChangeBg,
+                Cursor = Cursors.Hand,
+                Visible = false
+            };
+            _noChangeInsertLabel.MouseEnter += (_, _) => _noChangeInsertLabel!.ForeColor = noChangeHover;
+            _noChangeInsertLabel.MouseLeave += (_, _) => _noChangeInsertLabel!.ForeColor = noChangeDim;
+            _noChangeInsertLabel.Click += OnInsertNoChangeClick;
+            Controls.Add(_noChangeInsertLabel);
+
+            _noChangeTextLabel.BringToFront();
+            _noChangeReplaceLabel.BringToFront();
+            _noChangeInsertLabel.BringToFront();
         }
 
         this.Load += (s, e) =>
@@ -416,52 +467,14 @@ public class ReportPopupForm : Form
 
         if (contentChanged)
         {
-            // Content genuinely changed — need fresh correlation.
-            // But throttle during rapid edits: keep old highlights for up to 2s to avoid
-            // running expensive CorrelateReversed on the UI thread every second.
             _previousCorrelation = null;
-            if (_correlationResult != null && _correlationEnabled)
-            {
-                // Keep existing correlation for rendering, defer recompute
-                _correlationDeferred = true;
-                if (_correlationDeferTimer == null)
-                {
-                    _correlationDeferTimer = new System.Windows.Forms.Timer { Interval = 2000 };
-                    _correlationDeferTimer.Tick += (s, e) =>
-                    {
-                        _correlationDeferTimer!.Stop();
-                        if (_correlationDeferred)
-                        {
-                            _correlationDeferred = false;
-                            _correlationResult = null;
-                            if (_useLayeredWindow)
-                            {
-                                ComputeHighlights();
-                                RenderAndUpdate();
-                            }
-                            else
-                            {
-                                ApplyCurrentModeFormatting();
-                            }
-                            Logger.Trace("Correlation: deferred recompute fired");
-                        }
-                    };
-                }
-                _correlationDeferTimer.Stop();
-                _correlationDeferTimer.Start(); // Reset the 2s window
-            }
-            else
-            {
-                _correlationResult = null;
-                _correlationDeferred = false;
-            }
+            _correlationResult = null;
         }
         else
         {
             // Same content (e.g., baseline update) - allow anti-regression
             _previousCorrelation = _correlationResult;
             _correlationResult = null;
-            _correlationDeferred = false;
         }
         _formattedText = SanitizeText(FormatReportText(newReportText)).Replace("\r\n", "\n");
         if (_radAiImpressionActive)
@@ -1948,7 +1961,45 @@ public class ReportPopupForm : Form
         if (impressionStart < 0)
         {
             ClearTrashIcons();
+            if (_noChangeInsertLabel != null) _noChangeInsertLabel.Visible = false;
+            if (_noChangeReplaceLabel != null) _noChangeReplaceLabel.Visible = false;
+            if (_noChangeTextLabel != null) _noChangeTextLabel.Visible = false;
             return;
+        }
+
+        // Position "insert | replace No change." labels on the IMPRESSION header line, right-aligned
+        // Only show when COMPARISON has an actual date (not "None available.")
+        if (_noChangeTextLabel != null && _noChangeInsertLabel != null && _noChangeReplaceLabel != null)
+        {
+            var headerPos = _richTextBox.GetPositionFromCharIndex(impressionStart);
+            int labelY = _richTextBox.Top + headerPos.Y;
+            bool inView = (labelY >= _richTextBox.Top && labelY + 10 < _richTextBox.Bottom);
+            bool hasComparison = false;
+            int compIdx = rtbText.IndexOf("COMPARISON:", StringComparison.OrdinalIgnoreCase);
+            if (compIdx >= 0)
+            {
+                // Grab COMPARISON section (header + content until next header or 200 chars)
+                int compEnd = rtbText.Length;
+                var nextHeader = Regex.Match(rtbText.Substring(compIdx + 11), @"^[A-Z ]{2,}:", RegexOptions.Multiline);
+                if (nextHeader.Success) compEnd = compIdx + 11 + nextHeader.Index;
+                var compSection = rtbText.Substring(compIdx, Math.Min(compEnd - compIdx, 200));
+                hasComparison = !compSection.Contains("None available", StringComparison.OrdinalIgnoreCase)
+                    && Regex.IsMatch(compSection, @"\d{1,2}/\d{1,2}/\d{2,4}");
+            }
+            bool visible = inView && hasComparison;
+
+            // Layout right-to-left: "No change." then "replace" then "insert"
+            int x = _richTextBox.Right - _noChangeTextLabel.Width - 2;
+            _noChangeTextLabel.Location = new Point(x, labelY);
+            _noChangeTextLabel.Visible = visible;
+
+            x -= _noChangeReplaceLabel.Width + 2;
+            _noChangeReplaceLabel.Location = new Point(x, labelY);
+            _noChangeReplaceLabel.Visible = visible;
+
+            x -= _noChangeInsertLabel.Width + 6;
+            _noChangeInsertLabel.Location = new Point(x, labelY);
+            _noChangeInsertLabel.Visible = visible;
         }
 
         // Find numbered items after IMPRESSION:
@@ -2062,6 +2113,65 @@ public class ReportPopupForm : Form
         _debounceTimer?.Start();
     }
 
+    private void OnInsertNoChangeClick(object? sender, EventArgs e)
+    {
+        if (_richTextBox == null) return;
+
+        var rtbText = _richTextBox.Text;
+        int impressionStart = rtbText.IndexOf("IMPRESSION:", StringComparison.OrdinalIgnoreCase);
+        if (impressionStart < 0) return;
+
+        // Count existing numbered items for the next number (display only — debounce strips numbers)
+        int searchFrom = impressionStart + "IMPRESSION:".Length;
+        var regex = new Regex(@"^\d+\.\s", RegexOptions.Multiline);
+        int count = regex.Matches(rtbText, searchFrom).Count;
+        int nextNum = count + 1;
+
+        // Append at end, ensuring a newline before so it's a separate impression line
+        int insertPos = rtbText.Length;
+        var prefix = insertPos > 0 && rtbText[insertPos - 1] != '\n' ? "\n" : "";
+        var newLine = $"{prefix}{nextNum}. No change.\n";
+        _richTextBox.ReadOnly = false;
+        _richTextBox.Select(insertPos, 0);
+        _richTextBox.SelectedText = newLine;
+        _richTextBox.ReadOnly = true;
+
+        _formattedText = _richTextBox.Text;
+        ApplyCurrentModeFormatting();
+        _deletePending = true;
+        PositionTrashIcons();
+
+        _debounceTimer?.Stop();
+        _debounceTimer?.Start();
+    }
+
+    private void OnReplaceNoChangeClick(object? sender, EventArgs e)
+    {
+        if (_richTextBox == null) return;
+
+        var rtbText = _richTextBox.Text;
+        int impressionStart = rtbText.IndexOf("IMPRESSION:", StringComparison.OrdinalIgnoreCase);
+        if (impressionStart < 0) return;
+
+        // Find the range from after IMPRESSION: header to end of text
+        int lineEnd = rtbText.IndexOf('\n', impressionStart);
+        int replaceFrom = lineEnd >= 0 ? lineEnd + 1 : rtbText.Length;
+        int replaceLen = rtbText.Length - replaceFrom;
+
+        _richTextBox.ReadOnly = false;
+        _richTextBox.Select(replaceFrom, replaceLen);
+        _richTextBox.SelectedText = "1. No change.\n";
+        _richTextBox.ReadOnly = true;
+
+        _formattedText = _richTextBox.Text;
+        ApplyCurrentModeFormatting();
+        _deletePending = true;
+        PositionTrashIcons();
+
+        _debounceTimer?.Stop();
+        _debounceTimer?.Start();
+    }
+
     private void RenumberImpressionItems()
     {
         if (_richTextBox == null) return;
@@ -2164,11 +2274,6 @@ public class ReportPopupForm : Form
             {
                 _stalePulseTimer.Stop();
                 _stalePulseTimer.Dispose();
-            }
-            if (_correlationDeferTimer != null)
-            {
-                _correlationDeferTimer.Stop();
-                _correlationDeferTimer.Dispose();
             }
         }
         base.Dispose(disposing);
