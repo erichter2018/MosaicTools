@@ -50,6 +50,7 @@ public class ActionController : IDisposable
     private readonly RadAiService? _radAiService;  // [RadAI] — null if RadAI not installed
     private readonly RecoMdService _recoMdService;
     private SttService? _sttService;  // [CustomSTT] — null if Custom STT not enabled
+    private KeytermLearningService? _keytermLearning; // [KeytermLearning] — null if not enabled
     private bool _sttDirectPasteActive; // [CustomSTT] Track whether direct paste is active
     private IntPtr _sttPasteTargetWindow; // [CustomSTT] Window that had focus when recording started
     private readonly object _directPasteLock = new(); // [CustomSTT] Serialize direct paste operations
@@ -200,7 +201,7 @@ public class ActionController : IDisposable
     private string? _lastAidocFindings; // comma-joined relevant finding types
     private List<string>? _lastAidocRelevantList; // preserved for verification on subsequent ticks
     private bool _lastAidocRelevant = false;
-    private bool _aidocDoneForStudy = false; // Once scraped successfully, don't re-scrape (status doesn't change mid-study)
+    private bool _aidocDoneForStudy = false; // Once scraped successfully, don't re-scrape
     private long _lastAidocScrapeTick64; // Throttle: minimum 5s between Aidoc scrapes
 
     // RecoMD state tracking — continuous send on every scrape tick
@@ -350,6 +351,14 @@ public class ActionController : IDisposable
             _templateDatabase.Cleanup();
         }
 
+        // [KeytermLearning] Initialize keyterm auto-learning
+        if (_config.SttKeytermLearningEnabled && _config.CustomSttEnabled
+            && _config.SttProvider == "deepgram")
+        {
+            _keytermLearning = new KeytermLearningService();
+            _keytermLearning.Load();
+        }
+
         // [CustomSTT] Initialize custom STT service
         if (_config.CustomSttEnabled)
         {
@@ -378,6 +387,21 @@ public class ActionController : IDisposable
         // Restart scraper to pick up any interval changes
         ToggleMosaicScraper(true);
 
+        // [KeytermLearning] Re-initialize on settings change
+        if (_config.SttKeytermLearningEnabled && _config.CustomSttEnabled
+            && _config.SttProvider == "deepgram")
+        {
+            if (_keytermLearning == null)
+            {
+                _keytermLearning = new KeytermLearningService();
+                _keytermLearning.Load();
+            }
+        }
+        else
+        {
+            _keytermLearning = null;
+        }
+
         // [CustomSTT] Re-initialize STT service on settings change
         // Always reinitialize when enabled — provider, model, or key may have changed
         if (_config.CustomSttEnabled)
@@ -401,7 +425,12 @@ public class ActionController : IDisposable
     // [CustomSTT] Initialize the custom STT service
     private void InitializeSttService()
     {
-        _sttService = new SttService(_config);
+        // [KeytermLearning] Merge manual + auto-learned keyterms
+        string? mergedKeyterms = null;
+        if (_keytermLearning != null)
+            mergedKeyterms = MergeKeyterms(_config.SttDeepgramKeyterms, _keytermLearning);
+
+        _sttService = new SttService(_config, mergedKeyterms);
         var error = _sttService.Initialize();
         if (error != null)
         {
@@ -416,6 +445,11 @@ public class ActionController : IDisposable
         {
             // Always update TranscriptionForm
             InvokeUI(() => _mainForm.OnSttTranscriptionReceived(result));
+
+            // [KeytermLearning] Collect low-confidence words from final results
+            if (result.IsFinal && result.Words?.Length > 0)
+                _keytermLearning?.CollectLowConfidenceWords(result.Words,
+                    (float)_config.SttKeytermLearningConfidenceThreshold);
 
             // [CustomSTT] Direct paste: final results go straight into Mosaic's transcript box.
             // Must run on STA thread (clipboard requires it). Use a dedicated STA thread that
@@ -501,6 +535,20 @@ public class ActionController : IDisposable
             InvokeUI(() => _mainForm.ShowStatusToast(error));
 
         Logger.Trace("SttService: Initialized successfully");
+    }
+
+    // [KeytermLearning] Merge manual keyterms with auto-learned ones (manual takes priority)
+    private static string MergeKeyterms(string manual, KeytermLearningService learning)
+    {
+        var manualTerms = manual.Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => t.Trim()).Where(t => t.Length > 0).ToList();
+        var manualSet = new HashSet<string>(manualTerms, StringComparer.OrdinalIgnoreCase);
+        var autoSlots = Math.Max(0, 100 - manualTerms.Count);
+        var autoTerms = learning.GetTopKeyterms(autoSlots)
+            .Where(t => !manualSet.Contains(t)).Take(autoSlots).ToList();
+        if (autoTerms.Count > 0)
+            Logger.Trace($"KeytermLearning: Merged {manualTerms.Count} manual + {autoTerms.Count} auto keyterms");
+        return string.Join("\n", manualTerms.Concat(autoTerms));
     }
 
     public void RefreshFloatingToolbar() =>
@@ -1053,6 +1101,10 @@ public class ActionController : IDisposable
 
         if (newState)
         {
+            // Immediate audio feedback — beep confirms the button press was registered
+            if (_config.SttStartBeepEnabled)
+                AudioService.PlayBeepAsync(1000, 200, _config.SttStartBeepVolume);
+
             // Start recording
             _sttPasteTargetWindow = NativeWindows.GetForegroundWindow(); // [CustomSTT] Save target window before showing TranscriptionForm
             _sttDirectPasteActive = true; // [CustomSTT] Enable direct paste to foreground window
@@ -1060,25 +1112,19 @@ public class ActionController : IDisposable
                 InvokeUI(() => _mainForm.ShowTranscriptionForm());
             Task.Run(async () => await _sttService!.StartRecordingAsync()).Wait(2000);
             _dictationActive = true;
-
-            if (_config.SttStartBeepEnabled)
-            {
-                AudioService.PlayBeepAsync(1000, 200, _config.SttStartBeepVolume);
-            }
         }
         else
         {
-            // Stop recording — StopRecordingAsync now waits for finalize + disconnects
-            Task.Run(async () => await _sttService!.StopRecordingAsync()).Wait(4000);
+            // Immediate audio feedback — beep confirms stop was registered
+            if (_config.SttStopBeepEnabled)
+                AudioService.PlayBeepAsync(500, 200, _config.SttStopBeepVolume);
+
+            // Stop recording — StopRecordingAsync waits for finalize + disconnects
+            Task.Run(async () => await _sttService!.StopRecordingAsync()).Wait(2000);
             _dictationActive = false;
 
-            if (_config.SttStopBeepEnabled)
-            {
-                AudioService.PlayBeepAsync(500, 200, _config.SttStopBeepVolume);
-            }
-
-            // Small delay for any final paste to complete, then clean up UI
-            Thread.Sleep(500);
+            // Brief pause for any final paste still in flight, then clean up UI
+            Thread.Sleep(100);
             _sttDirectPasteActive = false;
             InvokeUI(() => _mainForm.HideTranscriptionForm());
         }
@@ -2304,7 +2350,38 @@ public class ActionController : IDisposable
         var matching = _config.ImpressionFixers
             .Where(f => f.Enabled && f.MatchesStudy(studyDesc))
             .ToList();
-        popup.SetImpressionFixers(matching);
+
+        // Specificity dedup: if two entries share the same blurb+mode and one has
+        // study criteria while the other doesn't, the specific one wins.
+        var deduped = new List<ImpressionFixerEntry>();
+        var seen = new Dictionary<(string, bool), ImpressionFixerEntry>(
+            EqualityComparer<(string, bool)>.Default);
+        foreach (var entry in matching)
+        {
+            var key = (entry.Blurb.ToUpperInvariant(), entry.ReplaceMode);
+            bool hasSpecificCriteria = !string.IsNullOrWhiteSpace(entry.CriteriaRequired)
+                || !string.IsNullOrWhiteSpace(entry.CriteriaAnyOf)
+                || !string.IsNullOrWhiteSpace(entry.CriteriaExclude);
+            if (seen.TryGetValue(key, out var existing))
+            {
+                bool existingIsSpecific = !string.IsNullOrWhiteSpace(existing.CriteriaRequired)
+                    || !string.IsNullOrWhiteSpace(existing.CriteriaAnyOf)
+                    || !string.IsNullOrWhiteSpace(existing.CriteriaExclude);
+                if (hasSpecificCriteria && !existingIsSpecific)
+                {
+                    // Replace generic with specific
+                    deduped[deduped.IndexOf(existing)] = entry;
+                    seen[key] = entry;
+                }
+                // else: keep existing (first specific wins, or both generic keeps first)
+            }
+            else
+            {
+                deduped.Add(entry);
+                seen[key] = entry;
+            }
+        }
+        popup.SetImpressionFixers(deduped);
     }
 
     private void PerformCaptureSeries()
@@ -3638,6 +3715,16 @@ public class ActionController : IDisposable
         _baselineCaptureAttempts = 0;
         _templateRecordedForStudy = false;
         _lastPopupReportText = null;
+
+        // [KeytermLearning] Verify collected words against final report before clearing
+        if (_keytermLearning != null && !_discardDialogShownForCurrentAccession)
+        {
+            var reportForVerify = _mosaicReader.LastFinalReport;
+            if (!string.IsNullOrEmpty(reportForVerify))
+                _keytermLearning.VerifyAgainstReport(reportForVerify);
+        }
+        _keytermLearning?.ClearSessionBuffer();
+
         _mosaicReader.ClearLastReport();
 
         // UIA reset moved to periodic timer (CheckPeriodicUiaReset, every 10 min).
@@ -4138,8 +4225,8 @@ public class ActionController : IDisposable
         }
 
         // Aidoc scraping - check for AI-detected findings
-        // Scrape once per study (status doesn't change mid-study), with 5s delay after study
-        // change to let the widget update. No continuous re-scraping — saves ~3s/tick of FlaUI work.
+        // Aidoc: single scrape per study. User must disable pulse animation in Aidoc settings
+        // (Contextual summary display → No animation) to avoid false positives from color bleed.
         bool aidocAlertActive = false;
         bool aidocScrapedThisTick = false;
         string? aidocFindingText = null;
@@ -4157,7 +4244,7 @@ public class ActionController : IDisposable
                 var aidocResult = _aidocService.ScrapeShortcutWidget();
                 if (aidocResult != null && aidocResult.Findings.Count > 0)
                 {
-                    _aidocDoneForStudy = true; // Got findings — don't re-scrape
+                    _aidocDoneForStudy = true;
                     var studyDescription = _mosaicReader.LastDescription;
 
                     relevantFindings = aidocResult.Findings
@@ -4170,7 +4257,6 @@ public class ActionController : IDisposable
                     {
                         aidocAlertActive = true;
                         aidocFindingText = string.Join(", ", relevantFindings);
-
                         Logger.Trace($"Aidoc: Relevant findings '{aidocFindingText}' for study '{studyDescription}'");
                         BatchUI(() => _mainForm.ShowStatusToast($"Aidoc: {aidocFindingText} detected", 5000));
                     }

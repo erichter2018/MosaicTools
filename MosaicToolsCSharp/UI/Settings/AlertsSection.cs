@@ -122,6 +122,28 @@ public class AlertsSection : SettingsSection
         orangeLabel.Font = new Font("Segoe UI", 8);
         _nextY += SubRowHeight;
 
+        var aidocHint = AddLabel("Requires Aidoc animation disabled:", LeftMargin + 25, _nextY);
+        aidocHint.ForeColor = Color.FromArgb(130, 130, 130);
+        aidocHint.Font = new Font("Segoe UI", 7.5f, FontStyle.Italic);
+        var aidocHintPath = AddLabel("Contextual summary display \u2192 No animation", LeftMargin + 225, _nextY);
+        aidocHintPath.ForeColor = Color.FromArgb(170, 140, 80);
+        aidocHintPath.Font = new Font("Segoe UI", 7.5f);
+        var aidocHelpBtn = new Button
+        {
+            Text = "?",
+            Size = new Size(20, 18),
+            Location = new Point(aidocHintPath.Right + 4, _nextY - 1),
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Cursor = Cursors.Hand,
+            Font = new Font("Segoe UI", 7.5f, FontStyle.Bold)
+        };
+        aidocHelpBtn.FlatAppearance.BorderSize = 0;
+        aidocHelpBtn.Click += (_, _) => ShowAidocAnimationHelp();
+        Controls.Add(aidocHelpBtn);
+        _nextY += SubRowHeight;
+
         // RecoMD Integration
         _recoMdEnabledCheck = AddCheckBox("RecoMD integration", LeftMargin, _nextY,
             "Send report data to RecoMD for best practice recommendations.");
@@ -277,5 +299,48 @@ public class AlertsSection : SettingsSection
 
         if (_pendingStrokeKeywords != null)
             config.StrokeClinicalHistoryKeywords = _pendingStrokeKeywords;
+    }
+
+    private void ShowAidocAnimationHelp()
+    {
+        try
+        {
+            using var stream = typeof(AlertsSection).Assembly
+                .GetManifestResourceStream("MosaicTools.AidocNoAnimation.png");
+            if (stream == null) return;
+            var img = Image.FromStream(stream);
+
+            var form = new Form
+            {
+                Text = "Aidoc: Disable Animation",
+                ClientSize = new Size(img.Width + 20, img.Height + 50),
+                StartPosition = FormStartPosition.CenterParent,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                ShowIcon = false,
+                BackColor = Color.FromArgb(30, 30, 30),
+                FormBorderStyle = FormBorderStyle.FixedDialog
+            };
+
+            var label = new Label
+            {
+                Text = "In Aidoc, set Contextual summary display to \"No animation\":",
+                Location = new Point(10, 8),
+                AutoSize = true,
+                ForeColor = Color.FromArgb(200, 200, 200),
+                Font = new Font("Segoe UI", 9)
+            };
+            form.Controls.Add(label);
+
+            var pic = new PictureBox
+            {
+                Image = img,
+                SizeMode = PictureBoxSizeMode.AutoSize,
+                Location = new Point(10, 32)
+            };
+            form.Controls.Add(pic);
+            form.ShowDialog(FindForm());
+        }
+        catch { }
     }
 }

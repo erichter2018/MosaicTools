@@ -1,3 +1,17 @@
+3.9.1
+- Impression Fixer: per-entry max comparison age (weeks) — hide buttons when comparison is too old
+- Impression Fixer: specificity dedup — entry with study criteria wins over generic when blurb matches
+- Impression Fixer: taller editor dialog with more room for entries list
+- Aidoc: strict orange-only pixel detection (eliminates false positives from pulse animation bleed)
+- Aidoc: IPE/iptx findings limited to chest and abdomen studies (no longer shown for head CT)
+- Aidoc: rib fracture verification now matches separated phrases (e.g., "fractures of the ... ribs")
+- Aidoc: settings hint to disable pulse animation with help screenshot
+- STT: instant beep feedback on start/stop — beep plays immediately, not after connection/cleanup
+- STT: faster stop-to-restart — reduced EndSession waits from 650ms to 330ms
+- STT: transcription text stays visible 500ms after paste for readability
+- STT: keyterm learning scores shown to 2 decimal places, sent/not-sent separator in View dialog
+- Fix: focus stealing while editing settings (ForceTopMost no longer activates windows)
+
 3.9.0
 - Impression Fixer: configurable quick-insert/replace buttons on report popup IMPRESSION line
 - Impression Fixer editor: add, edit, clone entries with blurb, mode (insert/replace), study criteria, and comparison requirement

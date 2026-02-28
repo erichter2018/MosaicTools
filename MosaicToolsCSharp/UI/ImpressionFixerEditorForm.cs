@@ -50,6 +50,8 @@ public class ImpressionFixerEditorForm : Form
     private RadioButton _insertRadio = null!;
     private RadioButton _replaceRadio = null!;
     private CheckBox _requireComparisonCheck = null!;
+    private Label _maxCompWeeksLabel = null!;
+    private NumericUpDown _maxCompWeeksBox = null!;
     private TextBox _criteriaRequiredBox = null!;
     private TextBox _criteriaAnyOfBox = null!;
     private TextBox _criteriaExcludeBox = null!;
@@ -73,6 +75,7 @@ public class ImpressionFixerEditorForm : Form
             Text = e.Text,
             ReplaceMode = e.ReplaceMode,
             RequireComparison = e.RequireComparison,
+            MaxComparisonWeeks = e.MaxComparisonWeeks,
             CriteriaRequired = e.CriteriaRequired,
             CriteriaAnyOf = e.CriteriaAnyOf,
             CriteriaExclude = e.CriteriaExclude
@@ -82,8 +85,8 @@ public class ImpressionFixerEditorForm : Form
     private void InitializeUI()
     {
         Text = "Impression Fixer Editor";
-        Size = new Size(750, 550);
-        MinimumSize = new Size(650, 450);
+        Size = new Size(750, 680);
+        MinimumSize = new Size(650, 580);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(30, 30, 30);
         ForeColor = Color.White;
@@ -195,7 +198,7 @@ public class ImpressionFixerEditorForm : Form
         _listBox = new ListBox
         {
             Location = new Point(x, y),
-            Size = new Size(200, 350),
+            Size = new Size(230, 480),
             BackColor = Color.FromArgb(45, 45, 45),
             ForeColor = Color.White,
             BorderStyle = BorderStyle.FixedSingle,
@@ -210,8 +213,8 @@ public class ImpressionFixerEditorForm : Form
 
     private void CreateRightPanel()
     {
-        int x = 270, y = 15;
-        int rightWidth = 445;
+        int x = 300, y = 15;
+        int rightWidth = 415;
 
         var header = CreateLabel("ENTRY PROPERTIES", x, y, true);
         Controls.Add(header);
@@ -291,8 +294,37 @@ public class ImpressionFixerEditorForm : Form
         {
             if (_suppressEvents || _selectedEntry == null) return;
             _selectedEntry.RequireComparison = _requireComparisonCheck.Checked;
+            _maxCompWeeksLabel.Enabled = _requireComparisonCheck.Checked && _selectedEntry != null;
+            _maxCompWeeksBox.Enabled = _requireComparisonCheck.Checked && _selectedEntry != null;
         };
         Controls.Add(_requireComparisonCheck);
+        y += 26;
+
+        // Max comparison age
+        _maxCompWeeksLabel = CreateLabel("Max age (weeks):", x + 25, y + 2);
+        _maxCompWeeksLabel.ForeColor = Color.FromArgb(140, 140, 140);
+        Controls.Add(_maxCompWeeksLabel);
+        _maxCompWeeksBox = new NumericUpDown
+        {
+            Location = new Point(x + 145, y),
+            Width = 60,
+            Minimum = 0,
+            Maximum = 520,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+        _maxCompWeeksBox.ValueChanged += (s, e) =>
+        {
+            if (_suppressEvents || _selectedEntry == null) return;
+            _selectedEntry.MaxComparisonWeeks = (int)_maxCompWeeksBox.Value;
+        };
+        Controls.Add(_maxCompWeeksBox);
+
+        var maxCompHint = CreateLabel("0 = no limit", x + 210, y + 2);
+        maxCompHint.ForeColor = Color.FromArgb(100, 100, 100);
+        maxCompHint.Font = new Font("Segoe UI", 8, FontStyle.Italic);
+        Controls.Add(maxCompHint);
         y += 30;
 
         // Study Criteria section
@@ -350,7 +382,7 @@ public class ImpressionFixerEditorForm : Form
         _textBox = new TextBox
         {
             Location = new Point(x, y),
-            Size = new Size(rightWidth, 100),
+            Size = new Size(rightWidth, 130),
             BackColor = Color.FromArgb(50, 50, 50),
             ForeColor = Color.White,
             BorderStyle = BorderStyle.FixedSingle,
@@ -489,6 +521,9 @@ public class ImpressionFixerEditorForm : Form
         else
             _insertRadio.Checked = true;
         _requireComparisonCheck.Checked = _selectedEntry.RequireComparison;
+        _maxCompWeeksBox.Value = Math.Clamp(_selectedEntry.MaxComparisonWeeks, 0, 520);
+        _maxCompWeeksLabel.Enabled = _selectedEntry.RequireComparison;
+        _maxCompWeeksBox.Enabled = _selectedEntry.RequireComparison;
         _criteriaRequiredBox.Text = _selectedEntry.CriteriaRequired;
         _criteriaAnyOfBox.Text = _selectedEntry.CriteriaAnyOf;
         _criteriaExcludeBox.Text = _selectedEntry.CriteriaExclude;
@@ -503,6 +538,9 @@ public class ImpressionFixerEditorForm : Form
         _blurbBox.Text = "";
         _insertRadio.Checked = true;
         _requireComparisonCheck.Checked = false;
+        _maxCompWeeksBox.Value = 0;
+        _maxCompWeeksLabel.Enabled = false;
+        _maxCompWeeksBox.Enabled = false;
         _criteriaRequiredBox.Text = "";
         _criteriaAnyOfBox.Text = "";
         _criteriaExcludeBox.Text = "";
@@ -518,6 +556,8 @@ public class ImpressionFixerEditorForm : Form
         _insertRadio.Enabled = hasEntry;
         _replaceRadio.Enabled = hasEntry;
         _requireComparisonCheck.Enabled = hasEntry;
+        _maxCompWeeksLabel.Enabled = hasEntry && (_selectedEntry?.RequireComparison ?? false);
+        _maxCompWeeksBox.Enabled = hasEntry && (_selectedEntry?.RequireComparison ?? false);
         _criteriaRequiredBox.Enabled = hasEntry;
         _criteriaAnyOfBox.Enabled = hasEntry;
         _criteriaExcludeBox.Enabled = hasEntry;

@@ -128,12 +128,12 @@ public class DeepgramProvider : ISttProvider
     {
         // Tail buffer: audio keeps flowing from SttService while we wait,
         // capturing the last spoken word that may still be in the mic buffer.
-        await Task.Delay(300);
+        // Deepgram's own endpointing is 300ms, so 150ms here is sufficient.
+        await Task.Delay(150);
 
         // Stop accepting new audio and let any in-flight fire-and-forget send drain.
-        // ClientWebSocket only allows one outstanding SendAsync at a time.
         _connected = false;
-        await Task.Delay(50);
+        await Task.Delay(30);
 
         if (_ws?.State != WebSocketState.Open) return;
         try
@@ -143,8 +143,8 @@ public class DeepgramProvider : ISttProvider
             await _ws.SendAsync(new ArraySegment<byte>(msg), WebSocketMessageType.Text, true, CancellationToken.None);
             Logger.Trace("DeepgramProvider: Sent Finalize");
 
-            // Brief wait for Deepgram to flush finals (~50-100ms typical)
-            await Task.Delay(300);
+            // Wait for Deepgram to flush finals (~50-100ms typical)
+            await Task.Delay(150);
 
             // Disconnect — Deepgram sessions are cheap to reconnect
             await ShutdownAsync();

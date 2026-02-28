@@ -32,6 +32,10 @@ public class TranscriptionForm : Form
     // Position save debounce
     private System.Threading.Timer? _saveTimer;
 
+    // Delayed clear — keeps final text visible briefly after paste
+    private System.Threading.Timer? _clearTimer;
+    private const int ClearDelayMs = 500;
+
     // Don't steal focus from Mosaic when the form is shown
     protected override bool ShowWithoutActivation => true;
 
@@ -88,6 +92,11 @@ public class TranscriptionForm : Form
             try { BeginInvoke(SavePositionToConfig); } catch { }
         }, null, Timeout.Infinite, Timeout.Infinite);
 
+        _clearTimer = new System.Threading.Timer(_ =>
+        {
+            try { BeginInvoke(DoClearTranscript); } catch { }
+        }, null, Timeout.Infinite, Timeout.Infinite);
+
         LocationChanged += (_, _) => _saveTimer?.Change(500, Timeout.Infinite);
         SizeChanged += (_, _) => _saveTimer?.Change(500, Timeout.Infinite);
     }
@@ -130,6 +139,9 @@ public class TranscriptionForm : Form
     {
         if (InvokeRequired) { BeginInvoke(() => AppendResult(result)); return; }
 
+        // Cancel any pending delayed clear — new text takes priority
+        _clearTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+
         // Temporarily allow edits — ReadOnly RichTextBox produces system beeps on modification
         _textBox.ReadOnly = false;
 
@@ -140,10 +152,25 @@ public class TranscriptionForm : Form
             _insertionPoint = 0;
             _interimText = "";
 
-            _textBox.SelectionStart = 0;
-            _textBox.SelectionColor = Color.White;
-            _textBox.SelectionFont = new Font(_textBox.Font, FontStyle.Regular);
-            _textBox.SelectedText = result.Transcript;
+            // Color-code words by confidence if word-level data is available
+            if (result.Words is { Length: > 0 })
+            {
+                _textBox.SelectionStart = 0;
+                foreach (var word in result.Words)
+                {
+                    var display = (word.PunctuatedText ?? word.Text) + " ";
+                    _textBox.SelectionColor = ConfidenceColor(word.Confidence);
+                    _textBox.SelectionFont = new Font(_textBox.Font, FontStyle.Regular);
+                    _textBox.SelectedText = display;
+                }
+            }
+            else
+            {
+                _textBox.SelectionStart = 0;
+                _textBox.SelectionColor = Color.White;
+                _textBox.SelectionFont = new Font(_textBox.Font, FontStyle.Regular);
+                _textBox.SelectedText = result.Transcript;
+            }
             _insertionPoint = _textBox.TextLength;
 
             _textBox.SelectionStart = _textBox.TextLength;
@@ -187,6 +214,12 @@ public class TranscriptionForm : Form
     public void ClearTranscript()
     {
         if (InvokeRequired) { BeginInvoke(ClearTranscript); return; }
+        // Schedule clear after delay so final text stays visible briefly
+        _clearTimer?.Change(ClearDelayMs, Timeout.Infinite);
+    }
+
+    private void DoClearTranscript()
+    {
         _textBox.ReadOnly = false;
         _textBox.Clear();
         _insertionPoint = 0;
@@ -222,6 +255,7 @@ public class TranscriptionForm : Form
     {
         _config.TranscriptionFormHeight = _maxHeight;
         SavePositionToConfig();
+        _clearTimer?.Dispose();
         _saveTimer?.Dispose();
         base.OnFormClosing(e);
     }
@@ -251,6 +285,18 @@ public class TranscriptionForm : Form
 
         base.WndProc(ref m);
     }
+
+    /// <summary>
+    /// Maps word confidence to a subtle color gradient.
+    /// High confidence = white, medium = soft amber, low = muted orange.
+    /// </summary>
+    private static Color ConfidenceColor(float confidence) => confidence switch
+    {
+        >= 0.95f => Color.FromArgb(220, 220, 220),     // white — high confidence
+        >= 0.80f => Color.FromArgb(220, 200, 150),     // soft amber — medium
+        >= 0.60f => Color.FromArgb(220, 170, 100),     // muted orange — low
+        _        => Color.FromArgb(210, 130, 80)        // deeper orange — very low
+    };
 
     #region Drag Support
 

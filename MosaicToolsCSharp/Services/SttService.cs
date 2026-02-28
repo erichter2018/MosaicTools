@@ -10,6 +10,7 @@ namespace MosaicTools.Services;
 public class SttService : IDisposable
 {
     private readonly Configuration _config;
+    private readonly string? _keytermOverride;
     private ISttProvider? _provider;
     private WaveInEvent? _waveIn;
     private int _selectedDeviceIndex = -1;
@@ -25,9 +26,10 @@ public class SttService : IDisposable
     public event Action<bool>? RecordingStateChanged;
     public event Action<string>? ErrorOccurred;
 
-    public SttService(Configuration config)
+    public SttService(Configuration config, string? keytermOverride = null)
     {
         _config = config;
+        _keytermOverride = keytermOverride;
     }
 
     /// <summary>
@@ -342,13 +344,14 @@ public class SttService : IDisposable
             return null;
         }
 
+        var keyterms = _keytermOverride ?? _config.SttDeepgramKeyterms;
         return _config.SttProvider switch
         {
-            "deepgram" => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate, _config.SttDeepgramKeyterms),
+            "deepgram" => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate, keyterms),
             "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, _config.SttAutoPunctuate),
             "corti" => new CortiProvider(_config.SttCortiClientId, _config.SttCortiClientSecret, _config.SttCortiEnvironment, _config.SttAutoPunctuate),
             "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, _config.SttAutoPunctuate),
-            _ => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate, _config.SttDeepgramKeyterms)
+            _ => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate, keyterms)
         };
     }
 

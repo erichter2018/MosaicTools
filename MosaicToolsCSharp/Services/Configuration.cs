@@ -390,6 +390,12 @@ public class Configuration
     [JsonPropertyName("stt_deepgram_keyterms")]
     public string SttDeepgramKeyterms { get; set; } = "";
 
+    [JsonPropertyName("stt_keyterm_learning_enabled")]
+    public bool SttKeytermLearningEnabled { get; set; } = false;
+
+    [JsonPropertyName("stt_keyterm_learning_confidence_threshold")]
+    public double SttKeytermLearningConfidenceThreshold { get; set; } = 0.85;
+
     [JsonPropertyName("stt_start_beep_enabled")]
     public bool SttStartBeepEnabled { get; set; } = true;
 
@@ -913,6 +919,10 @@ public class ImpressionFixerEntry
     /// <summary>Only show when COMPARISON section has an actual date.</summary>
     [JsonPropertyName("require_comparison")]
     public bool RequireComparison { get; set; } = false;
+
+    /// <summary>Max age of comparison in weeks for this button to appear. 0 = no limit.</summary>
+    [JsonPropertyName("max_comparison_weeks")]
+    public int MaxComparisonWeeks { get; set; } = 0;
 
     [JsonPropertyName("criteria_required")]
     public string CriteriaRequired { get; set; } = "";

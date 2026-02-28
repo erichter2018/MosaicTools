@@ -115,6 +115,9 @@ public class ClinicalHistoryForm : Form
     private string? _genderWarningText;
     private string? _savedClinicalHistoryText;
 
+    // Periodic topmost reassertion — some apps (InteleViewer, Chrome) steal Z-order
+    private System.Windows.Forms.Timer? _topMostTimer;
+
     // Stroke detection state
     private bool _strokeDetected = false;
     private System.Windows.Forms.Timer? _blinkTimer;
@@ -156,6 +159,7 @@ public class ClinicalHistoryForm : Form
         get
         {
             var cp = base.CreateParams;
+            cp.ExStyle |= 0x8; // WS_EX_TOPMOST — ensures topmost at creation time
             if (_useLayeredWindow)
                 cp.ExStyle |= LayeredWindowHelper.WS_EX_LAYERED;
             return cp;
@@ -214,6 +218,19 @@ public class ClinicalHistoryForm : Form
             ReshowDelay = 200
         };
         UpdateBorderTooltip();
+
+        // Periodic topmost reassertion — runs every 2s to combat other topmost windows
+        _topMostTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        _topMostTimer.Tick += (_, _) =>
+        {
+            try
+            {
+                if (!IsDisposed && IsHandleCreated && Visible)
+                    NativeWindows.ForceTopMost(Handle);
+            }
+            catch { }
+        };
+        _topMostTimer.Start();
     }
 
     #region Setup
@@ -2079,6 +2096,8 @@ public class ClinicalHistoryForm : Form
             DetachChildContextMenus(this);
 
             _contentFont?.Dispose();
+            _topMostTimer?.Stop();
+            _topMostTimer?.Dispose();
             _blinkTimer?.Stop();
             _blinkTimer?.Dispose();
             _transparentDragMenu?.Dispose();

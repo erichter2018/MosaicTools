@@ -34,6 +34,12 @@ public class SttSection : SettingsSection
     private readonly Label _deepgramKeytermsCount;
     private readonly Button _deepgramKeytermsSortButton;
 
+    // Keyterm auto-learning
+    private readonly CheckBox _keytermLearningCheck;
+    private readonly Label _keytermLearningStats;
+    private readonly Button _keytermLearningViewButton;
+    private readonly Label _keytermLearningHint;
+
     private readonly ComboBox _audioDeviceCombo;
     private readonly CheckBox _autoPunctuateCheck;
     private readonly CheckBox _startBeepCheck;
@@ -166,6 +172,37 @@ public class SttSection : SettingsSection
         Controls.Add(_deepgramKeytermsCount);
         _nextY += 80;
 
+        // Keyterm auto-learning (Deepgram only)
+        _keytermLearningCheck = AddCheckBox("Auto-learn keyterms from reports", LeftMargin + 25, _nextY,
+            "Tracks low-confidence words during dictation and verifies them against the final signed report.");
+        _nextY += SubRowHeight;
+
+        _keytermLearningHint = new Label
+        {
+            Text = "Compares dictation to final report. Fills remaining keyterm slots automatically.",
+            Location = new Point(LeftMargin + 45, _nextY),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(150, 150, 150),
+            Font = new Font("Segoe UI", 7.5f)
+        };
+        Controls.Add(_keytermLearningHint);
+        _nextY += SubRowHeight;
+
+        _keytermLearningStats = new Label
+        {
+            Text = "No auto-learned terms yet",
+            Location = new Point(LeftMargin + 45, _nextY + 2),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(170, 170, 170),
+            Font = new Font("Segoe UI", 8f)
+        };
+        Controls.Add(_keytermLearningStats);
+
+        _keytermLearningViewButton = AddButton("View", LeftMargin + 300, _nextY - 1, 50, 24, OnViewKeytermLearningClick,
+            "View auto-learned keyterms with details");
+        _keytermLearningViewButton.Font = new Font("Segoe UI", 8f);
+        _nextY += RowHeight;
+
         // Beep Settings
         AddSectionDivider("Beeps");
 
@@ -226,6 +263,10 @@ public class SttSection : SettingsSection
         _deepgramKeytermsBox.Visible = isDeepgram;
         _deepgramKeytermsCount.Visible = isDeepgram;
         _deepgramKeytermsSortButton.Visible = isDeepgram;
+        _keytermLearningCheck.Visible = isDeepgram;
+        _keytermLearningStats.Visible = isDeepgram;
+        _keytermLearningViewButton.Visible = isDeepgram;
+        _keytermLearningHint.Visible = isDeepgram;
 
         // Update pricing hint
         _pricingHint.Text = newIdx switch
@@ -283,11 +324,30 @@ public class SttSection : SettingsSection
         _autoPunctuateCheck.Enabled = enabled;
         _deepgramKeytermsBox.Enabled = enabled;
         _deepgramKeytermsSortButton.Enabled = enabled;
+        _keytermLearningCheck.Enabled = enabled;
+        _keytermLearningViewButton.Enabled = enabled;
         _startBeepCheck.Enabled = enabled;
         _stopBeepCheck.Enabled = enabled;
         _startBeepVolume.Enabled = enabled;
         _stopBeepVolume.Enabled = enabled;
         _showIndicatorCheck.Enabled = enabled;
+    }
+
+    private void RefreshKeytermLearningStats()
+    {
+        try
+        {
+            var svc = new KeytermLearningService();
+            svc.Load();
+            var count = svc.EntryCount;
+            _keytermLearningStats.Text = count == 0
+                ? "No auto-learned terms yet"
+                : $"{count} auto-learned term{(count == 1 ? "" : "s")}";
+        }
+        catch
+        {
+            _keytermLearningStats.Text = "No auto-learned terms yet";
+        }
     }
 
     private void UpdateKeytermCount()
@@ -313,6 +373,92 @@ public class SttSection : SettingsSection
             .ToArray();
         _deepgramKeytermsBox.Text = string.Join("\r\n", terms);
     }
+
+    private void OnViewKeytermLearningClick(object? sender, EventArgs e)
+    {
+        var svc = new KeytermLearningService();
+        svc.Load();
+        var entries = svc.GetAllEntries();
+
+        if (entries.Count == 0)
+        {
+            MessageBox.Show("No auto-learned keyterms yet.\n\nDictate reports with Custom STT enabled, " +
+                "then sign/advance studies. Terms will appear after the first verification cycle.",
+                "Auto-Learned Keyterms", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        // Determine how many auto-learned terms are actually sent to Deepgram
+        var manualTerms = _deepgramKeytermsBox.Text
+            .Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => t.Trim()).Where(t => t.Length > 0).ToList();
+        var manualSet = new HashSet<string>(manualTerms, StringComparer.OrdinalIgnoreCase);
+        var autoSlots = Math.Max(0, 100 - manualTerms.Count);
+
+        // Build a detailed view with columns
+        var lines = new System.Text.StringBuilder();
+        lines.AppendLine($"{"Term",-24} {"Score",7} {"Conf",6} {"Seen",5}  {"Source",-10}");
+        lines.AppendLine(new string('\u2500', 59));
+
+        int sentCount = 0;
+        bool separatorPlaced = false;
+        foreach (var (word, score, avgConf, source, occurrences) in entries)
+        {
+            bool isDuplicate = manualSet.Contains(word);
+            bool isSent = !isDuplicate && sentCount < autoSlots;
+
+            if (isSent)
+                sentCount++;
+            else if (!separatorPlaced && sentCount > 0)
+            {
+                // Place separator between sent and not-sent terms
+                separatorPlaced = true;
+                lines.AppendLine($"{"--- not sent " + new string('-', 46)}");
+            }
+
+            var confStr = $"{avgConf:P0}";
+            var sourceLabel = source == "corrected" ? "corrected" : "survived";
+            lines.AppendLine($"{Truncate(word, 23),-24} {score,7:F2} {confStr,6} {occurrences,5}  {sourceLabel,-10}");
+        }
+
+        lines.AppendLine();
+        lines.AppendLine($"Total: {entries.Count} auto-learned terms ({sentCount} sent to Deepgram, {manualTerms.Count} manual)");
+        lines.AppendLine();
+        lines.AppendLine("Conf  = average Deepgram confidence when the word was heard");
+        lines.AppendLine("Score = log(1 + occurrences) \u00d7 (1 \u2212 conf)\u00b2 \u00d7 weight");
+        lines.AppendLine("  survived=1.0x, corrected=2.0x (corrections are more valuable)");
+        lines.AppendLine("  Log dampens volume; squared gap prioritizes truly problematic words.");
+        lines.AppendLine();
+        lines.AppendLine("Top-scoring terms are sent to Deepgram as keyterms.");
+
+        var form = new Form
+        {
+            Text = "Auto-Learned Keyterms",
+            Size = new Size(520, 420),
+            StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ShowIcon = false
+        };
+
+        var textBox = new TextBox
+        {
+            Multiline = true,
+            ReadOnly = true,
+            ScrollBars = ScrollBars.Vertical,
+            Font = new Font("Consolas", 9f),
+            Dock = DockStyle.Fill,
+            Text = lines.ToString(),
+            BackColor = Color.FromArgb(30, 30, 30),
+            ForeColor = Color.FromArgb(220, 220, 220)
+        };
+        form.Controls.Add(textBox);
+        form.Shown += (_, _) => { textBox.SelectionStart = 0; textBox.SelectionLength = 0; };
+        form.ShowDialog(FindForm());
+    }
+
+    private static string Truncate(string s, int max) =>
+        s.Length <= max ? s : s[..(max - 1)] + "\u2026";
 
     private void OnGetKeyClick(object? sender, EventArgs e)
     {
@@ -414,6 +560,10 @@ public class SttSection : SettingsSection
         _deepgramKeytermsBox.Visible = isDeepgram;
         _deepgramKeytermsCount.Visible = isDeepgram;
         _deepgramKeytermsSortButton.Visible = isDeepgram;
+        _keytermLearningCheck.Visible = isDeepgram;
+        _keytermLearningStats.Visible = isDeepgram;
+        _keytermLearningViewButton.Visible = isDeepgram;
+        _keytermLearningHint.Visible = isDeepgram;
         _pricingHint.Text = idx switch
         {
             ProviderDeepgramMedical => "Free tier: $200 credit. Nova-3 Medical: $0.0077/min streaming",
@@ -444,6 +594,10 @@ public class SttSection : SettingsSection
         _stopBeepVolume.Value = Math.Clamp((int)(config.SttStopBeepVolume * 100), 0, 100);
         _showIndicatorCheck.Checked = config.SttShowIndicator;
         _autoStartCheck.Checked = config.SttAutoStartOnCase;
+
+        // Keyterm learning
+        _keytermLearningCheck.Checked = config.SttKeytermLearningEnabled;
+        RefreshKeytermLearningStats();
 
         UpdateControlStates();
     }
@@ -488,5 +642,6 @@ public class SttSection : SettingsSection
         config.SttStopBeepVolume = _stopBeepVolume.Value / 100.0;
         config.SttShowIndicator = _showIndicatorCheck.Checked;
         config.SttAutoStartOnCase = _autoStartCheck.Checked;
+        config.SttKeytermLearningEnabled = _keytermLearningCheck.Checked;
     }
 }

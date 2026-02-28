@@ -30,7 +30,8 @@ public static class AidocFindingVerifier
         ["FreeAir"] = new[] { "pneumoperitoneum", "free air", "free gas", "extraluminal air" },
         ["GIB"] = new[] { "extravasation", "GI bleed", "gastrointestinal hemorrhage", "active bleeding" },
         ["CAC"] = new[] { "coronary calcification", "coronary atherosclerosis", "CAC" },
-        ["RibFx"] = new[] { "rib fracture", "fractured rib", "rib fx", "costal fracture" },
+        ["RibFx"] = new[] { "rib fracture", "fractured rib", "rib fx", "costal fracture",
+            @"regex:\bfractur\w*\b.{1,80}\bribs?\b", @"regex:\bribs?\b.{1,80}\bfractur\w*\b" },
         ["MalETT"] = new[] { "endotracheal", "ETT", "ET tube" },
         ["RV/LV"] = new[] { "RV/LV", "right ventricular enlargement", "right ventricular strain", "RV dilation", "right heart strain" },
     };
@@ -176,11 +177,20 @@ public static class AidocFindingVerifier
 
     private static bool IsTermPositivelyMentioned(string text, string term)
     {
-        // Find all occurrences of the term (case-insensitive, word-boundary, optional plural 's')
-        var pattern = @"\b" + Regex.Escape(term) + @"s?\b";
-        // Handle terms with "/" which don't play nice with \b
-        if (term.Contains('/'))
-            pattern = Regex.Escape(term);
+        string pattern;
+        if (term.StartsWith("regex:"))
+        {
+            // Raw regex pattern — use directly without escaping
+            pattern = term.Substring(6);
+        }
+        else
+        {
+            // Find all occurrences of the term (case-insensitive, word-boundary, optional plural 's')
+            pattern = @"\b" + Regex.Escape(term) + @"s?\b";
+            // Handle terms with "/" which don't play nice with \b
+            if (term.Contains('/'))
+                pattern = Regex.Escape(term);
+        }
 
         var matches = Regex.Matches(text, pattern, RegexOptions.IgnoreCase);
 

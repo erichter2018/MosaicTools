@@ -50,11 +50,12 @@ public class AidocService
         IntPtr hdc = GetDC(IntPtr.Zero);
         try
         {
-            // Sample a grid of points across the icon
+            // Sample a grid of points across the icon.
+            // Requires Aidoc pulse animation to be disabled (No animation) to avoid
+            // false positives from color bleed between adjacent finding icons.
             int w = iconRect.Width;
             int h = iconRect.Height;
             int orangeCount = 0;
-            int warmCount = 0;  // broader warm-color detection
             var sampledColors = new List<string>();
 
             for (int dy = 0; dy < h; dy += Math.Max(1, h / 6))
@@ -70,13 +71,9 @@ public class AidocService
                     int g = (int)((pixel >> 8) & 0xFF);
                     int b = (int)((pixel >> 16) & 0xFF);
 
-                    // Strict orange: R≈253, G≈92, B≈20
+                    // Strict orange: R>200, G<130, B<80 (Aidoc positive dot is ~253,92,20)
                     if (r > 200 && g < 130 && b < 80)
                         orangeCount++;
-
-                    // Broader warm detection: red-dominant and clearly not gray/white/black
-                    if (r > 150 && r > g + 30 && r > b + 30)
-                        warmCount++;
 
                     // Collect non-background colors for diagnostic logging
                     if (r > 50 || g > 50 || b > 50) // skip near-black
@@ -85,13 +82,14 @@ public class AidocService
                 }
             }
 
-            bool isPositive = orangeCount >= 2 || warmCount >= 3;
+            bool isPositive = orangeCount >= 2;
 
-            // Log diagnostic pixel info when detection is negative (potential false negative)
-            if (!isPositive && sampledColors.Count > 0)
+            // Log diagnostic pixel info
+            if (sampledColors.Count > 0)
             {
                 var uniqueColors = sampledColors.Distinct().Take(10);
-                Logger.Trace($"Aidoc HasRedDot({findingType}): NEGATIVE at [{iconRect.X},{iconRect.Y} {iconRect.Width}x{iconRect.Height}] orange={orangeCount} warm={warmCount} colors=[{string.Join(" ", uniqueColors)}]");
+                var tag = isPositive ? "POSITIVE" : "NEGATIVE";
+                Logger.Trace($"Aidoc HasRedDot({findingType}): {tag} at [{iconRect.X},{iconRect.Y} {w}x{h}] orange={orangeCount} colors=[{string.Join(" ", uniqueColors)}]");
             }
 
             return isPositive;
@@ -244,8 +242,8 @@ public class AidocService
         ["SPINE"] = new[] { "VCFx" }
     };
 
-    // Incidental findings that are always relevant regardless of study type
-    private static readonly HashSet<string> IncidentalFindings = new(StringComparer.OrdinalIgnoreCase)
+    // Incidental findings relevant to chest/abdomen studies only
+    private static readonly HashSet<string> ChestAbdIncidentalFindings = new(StringComparer.OrdinalIgnoreCase)
     {
         "IPE", "iptx"
     };
@@ -259,10 +257,6 @@ public class AidocService
         if (string.IsNullOrWhiteSpace(findingType))
             return false;
 
-        // Incidental findings are always relevant
-        if (IncidentalFindings.Contains(findingType))
-            return true;
-
         if (string.IsNullOrWhiteSpace(studyDescription))
             return false;
 
@@ -272,6 +266,10 @@ public class AidocService
         string? studyType = ClassifyStudy(desc);
         if (studyType == null)
             return false;
+
+        // Incidental findings (IPE, iptx) only relevant for chest/abdomen
+        if (ChestAbdIncidentalFindings.Contains(findingType))
+            return studyType is "CHEST" or "ABDPELV";
 
         if (StudyTypeFindings.TryGetValue(studyType, out var relevantFindings))
         {

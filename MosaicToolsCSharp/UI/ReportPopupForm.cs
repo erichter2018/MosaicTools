@@ -1979,8 +1979,9 @@ public class ReportPopupForm : Form
             int labelY = _richTextBox.Top + headerPos.Y;
             bool inView = (labelY >= _richTextBox.Top && labelY + 10 < _richTextBox.Bottom);
 
-            // Check if COMPARISON has an actual date
+            // Check if COMPARISON has an actual date and parse it
             bool hasComparison = false;
+            DateTime? comparisonDate = null;
             int compIdx = rtbText.IndexOf("COMPARISON:", StringComparison.OrdinalIgnoreCase);
             if (compIdx >= 0)
             {
@@ -1988,8 +1989,11 @@ public class ReportPopupForm : Form
                 var nextHeader = Regex.Match(rtbText.Substring(compIdx + 11), @"^[A-Z ]{2,}:", RegexOptions.Multiline);
                 if (nextHeader.Success) compEnd = compIdx + 11 + nextHeader.Index;
                 var compSection = rtbText.Substring(compIdx, Math.Min(compEnd - compIdx, 200));
+                var dateMatch = Regex.Match(compSection, @"\d{1,2}/\d{1,2}/\d{2,4}");
                 hasComparison = !compSection.Contains("None available", StringComparison.OrdinalIgnoreCase)
-                    && Regex.IsMatch(compSection, @"\d{1,2}/\d{1,2}/\d{2,4}");
+                    && dateMatch.Success;
+                if (hasComparison && DateTime.TryParse(dateMatch.Value, out var parsed))
+                    comparisonDate = parsed;
             }
 
             // Layout right-to-left
@@ -1998,7 +2002,14 @@ public class ReportPopupForm : Form
             {
                 var lbl = _impressionFixerLabels[i];
                 var entry = _impressionFixerEntries[i];
-                bool entryVisible = inView && (!entry.RequireComparison || hasComparison);
+                bool entryVisible = inView;
+                if (entry.RequireComparison)
+                {
+                    if (!hasComparison)
+                        entryVisible = false;
+                    else if (entry.MaxComparisonWeeks > 0 && comparisonDate.HasValue)
+                        entryVisible = entryVisible && (DateTime.Now - comparisonDate.Value).TotalDays <= entry.MaxComparisonWeeks * 7;
+                }
                 if (entryVisible)
                 {
                     x -= lbl.Width + 4;
