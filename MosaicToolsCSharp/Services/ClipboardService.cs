@@ -19,14 +19,30 @@ public static class ClipboardService
             {
                 if (Clipboard.ContainsText())
                     return Clipboard.GetText();
-                else
-                    Thread.Sleep(50);
+                else if (i < retries - 1)
+                    Thread.Sleep(delayMs);
             }
             catch
             {
-                Thread.Sleep(delayMs);
+                if (i < retries - 1)
+                    Thread.Sleep(delayMs);
             }
         }
+        return null;
+    }
+
+    /// <summary>
+    /// Quick single-try clipboard read. No sleep, no retry.
+    /// Use in polling loops that handle their own timing.
+    /// </summary>
+    public static string? TryGetText()
+    {
+        try
+        {
+            if (Clipboard.ContainsText())
+                return Clipboard.GetText();
+        }
+        catch { }
         return null;
     }
     

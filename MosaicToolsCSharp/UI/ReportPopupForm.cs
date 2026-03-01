@@ -2008,7 +2008,7 @@ public class ReportPopupForm : Form
                     if (!hasComparison)
                         entryVisible = false;
                     else if (entry.MaxComparisonWeeks > 0 && comparisonDate.HasValue)
-                        entryVisible = entryVisible && (DateTime.Now - comparisonDate.Value).TotalDays <= entry.MaxComparisonWeeks * 7;
+                        entryVisible = entryVisible && (DateTime.Today - comparisonDate.Value.Date).TotalDays <= entry.MaxComparisonWeeks * 7;
                 }
                 if (entryVisible)
                 {

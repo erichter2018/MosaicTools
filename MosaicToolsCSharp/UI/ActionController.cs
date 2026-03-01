@@ -466,12 +466,22 @@ public class ActionController : IDisposable
                     ? voiceTrigger.PrefixText
                     : result.Transcript;
 
-                // Client-side spoken punctuation → symbols (replaces Deepgram dictation mode
-                // so we can keep "colon" as a word for medical context).
-                var transcript = ApplySpokenPunctuation(rawText).Trim();
-                transcript = ApplyRadiologyCleanup(transcript);
-                if (transcript.Length > 0 && !(transcript.Length > 1 && char.IsDigit(transcript[1])))
-                    transcript = char.ToLower(transcript[0]) + transcript[1..];
+                // When auto-punctuation is off, apply client-side spoken punctuation
+                // (replaces Deepgram dictation mode so "colon" stays a word for medical context).
+                // When auto-punctuation is on, Deepgram handles punctuation and capitalization
+                // server-side — skip client-side processing to preserve its output.
+                string transcript;
+                if (_config.SttAutoPunctuate)
+                {
+                    transcript = ApplyRadiologyCleanup(rawText).Trim();
+                }
+                else
+                {
+                    transcript = ApplySpokenPunctuation(rawText).Trim();
+                    transcript = ApplyRadiologyCleanup(transcript);
+                    if (transcript.Length > 0 && !(transcript.Length > 1 && char.IsDigit(transcript[1])))
+                        transcript = char.ToLower(transcript[0]) + transcript[1..];
+                }
 
                 var hasTextToPaste = transcript.Length > 0;
                 var textToPaste = " " + transcript + " ";
@@ -511,12 +521,18 @@ public class ActionController : IDisposable
                             Thread.Sleep(50);
                         }
 
-                        // Restore focus to the app the user was in before paste
-                        var restoreHwnd = _sttPasteTargetWindow;
-                        if (restoreHwnd != IntPtr.Zero && NativeWindows.IsWindow(restoreHwnd))
+                        // Restore focus to the app the user was in before paste.
+                        // Skip restoration while still recording — avoids focus ping-pong
+                        // (Mosaic→IV→Mosaic→IV) on every endpointing final, which creates
+                        // windows for paste failure. Focus restores after recording stops.
+                        if (!_sttDirectPasteActive)
                         {
-                            Thread.Sleep(50);
-                            NativeWindows.ActivateWindow(restoreHwnd, 500);
+                            var restoreHwnd = _sttPasteTargetWindow;
+                            if (restoreHwnd != IntPtr.Zero && NativeWindows.IsWindow(restoreHwnd))
+                            {
+                                Thread.Sleep(50);
+                                NativeWindows.ActivateWindow(restoreHwnd, 500);
+                            }
                         }
                     }
                 });
@@ -816,7 +832,23 @@ public class ActionController : IDisposable
             return;
         }
 
-        ClipboardService.SetText(text);
+        // Set clipboard with verification — if the clipboard is locked by another app,
+        // SetText fails silently and Ctrl+V pastes stale/wrong content.
+        bool clipOk = ClipboardService.SetText(text);
+        if (!clipOk)
+        {
+            Logger.Trace($"InsertTextToFocusedEditor: Clipboard.SetText FAILED after retries ({text.Length} chars). Skipping paste.");
+            return;
+        }
+
+        // Verify Mosaic is still foreground before sending keystrokes
+        if (!NativeWindows.IsMosaicForeground())
+        {
+            Logger.Trace("InsertTextToFocusedEditor: Mosaic lost foreground before Ctrl+V. Re-activating...");
+            NativeWindows.ActivateMosaicForcefully();
+            Thread.Sleep(50);
+        }
+
         Thread.Sleep(50);
         NativeWindows.SendHotkey("ctrl+v");
     }
@@ -947,7 +979,9 @@ public class ActionController : IDisposable
             }
 
             // 3. Update internal logical state (with 500ms lockout for manual toggles)
-            if ((DateTime.Now - _lastManualToggleTime).TotalMilliseconds > 500)
+            // Skip when Custom STT is active — registry reflects Mosaic's native dictation,
+            // which is independent of Custom STT. _dictationActive is managed by PerformToggleRecordStt.
+            if (!_config.CustomSttEnabled && (DateTime.Now - _lastManualToggleTime).TotalMilliseconds > 500)
             {
                 if (active != _dictationActive)
                 {
@@ -1080,17 +1114,11 @@ public class ActionController : IDisposable
     {
         bool isRecording = _sttService!.IsRecording;
 
-        // If we have a desired state and are already there, just beep
+        // If we have a desired state and are already there, correct _dictationActive and skip
         if (desiredState.HasValue && desiredState.Value == isRecording)
         {
-            Logger.Trace($"CustomSTT: Already in desired state ({desiredState}). Playing beep.");
-            bool shouldBeep = desiredState.Value ? _config.SttStartBeepEnabled : _config.SttStopBeepEnabled;
-            if (shouldBeep)
-            {
-                int freq = desiredState.Value ? 1000 : 500;
-                double vol = desiredState.Value ? _config.SttStartBeepVolume : _config.SttStopBeepVolume;
-                AudioService.PlayBeepAsync(freq, 200, vol);
-            }
+            Logger.Trace($"CustomSTT: Already in desired state ({desiredState}). Skipping.");
+            _dictationActive = isRecording; // Correct any stale state from registry sync
             return;
         }
 
@@ -1124,6 +1152,16 @@ public class ActionController : IDisposable
             Thread.Sleep(100);
             _sttDirectPasteActive = false;
             InvokeUI(() => _mainForm.HideTranscriptionForm());
+
+            // Restore focus to the app the user was in before recording.
+            // Mid-session pastes skip focus restoration to avoid ping-pong,
+            // so we do it here after recording stops.
+            var restoreHwnd = _sttPasteTargetWindow;
+            if (restoreHwnd != IntPtr.Zero && NativeWindows.IsWindow(restoreHwnd))
+            {
+                Thread.Sleep(50);
+                NativeWindows.ActivateWindow(restoreHwnd, 200);
+            }
         }
 
         Logger.Trace($"CustomSTT: Recording toggled to {newState}");
@@ -1988,41 +2026,42 @@ public class ActionController : IDisposable
             
             // Release modifier keys (Python Parity)
             NativeWindows.KeyUpModifiers();
-            Thread.Sleep(300);
-            
+            Thread.Sleep(100);
+
             // Send configured hotkey (e.g., "v" or "ctrl+shift+r")
             var hotkey = _config.IvReportHotkey;
             if (string.IsNullOrEmpty(hotkey)) hotkey = "v";
-            
+
             Logger.Trace($"GetPrior: Sending hotkey '{hotkey}'");
             NativeWindows.SendHotkey(hotkey);
-            
-            // Wait for window to appear/load - reduced for speed
+
+            // Wait for InteleViewer to start loading the prior report
             Thread.Sleep(150);
-            
-            // Copy Attempt Loop
+
+            // Copy Attempt Loop — send Ctrl+C and poll clipboard.
+            // Attempt 1: generous wait (report may still be loading).
+            // Attempt 2: shorter (report should be loaded by now).
+            // TryGetText() is a single no-sleep clipboard check for tight polling.
             string? rawText = null;
-            for (int attempt = 1; attempt <= 3; attempt++)
+            int[] pollCounts = { 30, 15 }; // ~1.5s, ~0.75s at 50ms intervals
+            for (int attempt = 0; attempt < pollCounts.Length; attempt++)
             {
-                Logger.Trace($"GetPrior: Copy Attempt {attempt}...");
+                Logger.Trace($"GetPrior: Copy Attempt {attempt + 1}...");
                 ClipboardService.Clear();
-                Thread.Sleep(50); // Snappy delay before copy
-                
+                Thread.Sleep(30);
+
                 NativeWindows.SendHotkey("ctrl+c");
-                
-                // Wait for clipboard (Snappy 50ms polling)
-                for (int i = 0; i < 15; i++)
+
+                for (int i = 0; i < pollCounts[attempt]; i++)
                 {
-                    rawText = ClipboardService.GetText();
+                    Thread.Sleep(50);
+                    rawText = ClipboardService.TryGetText();
                     if (!string.IsNullOrEmpty(rawText) && rawText.Length >= 5)
                         break;
-                    Thread.Sleep(50);
                 }
 
                 if (!string.IsNullOrEmpty(rawText) && rawText.Length >= 5)
                     break;
-                
-                Thread.Sleep(200); // reduced wait between attempts
             }
             
             if (string.IsNullOrEmpty(rawText) || rawText.Length < 5)
@@ -5008,14 +5047,13 @@ public class ActionController : IDisposable
         }
 
         // Parse InteleViewer DICOM name: "LASTNAME^FIRSTNAME^MID" → extract last name
+        // Last name may be multi-word (e.g. "SOTO PENA^ALEXANDER^MARTIN")
         var ivParts = ivDicomName.Split('^');
         var ivLastName = ivParts[0].Trim();
 
-        // Parse Mosaic name: "Collins Patrick" → first token is last name
-        var mosaicParts = mosaicName.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
-        var mosaicLastName = mosaicParts[0].Trim();
-
-        bool isMatch = ivLastName.Equals(mosaicLastName, StringComparison.OrdinalIgnoreCase);
+        // Mosaic name is space-delimited: "Soto Pena Alexander Martin"
+        // Check if Mosaic name starts with the IV last name (handles multi-word last names)
+        bool isMatch = mosaicName.StartsWith(ivLastName, StringComparison.OrdinalIgnoreCase);
 
         if (!isMatch && !_patientMismatchActive)
         {

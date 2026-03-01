@@ -1743,6 +1743,11 @@ public class ClinicalHistoryForm : Form
         if (allTrimmedLines.Count == 0)
             return (string.Empty, string.Empty);
 
+        // Strip system codes (e.g. "MVA//WI//2252" → "MVA", "work injury//2252" → "work injury")
+        // These are ordering system metadata, never clinical content.
+        for (int i = 0; i < allTrimmedLines.Count; i++)
+            allTrimmedLines[i] = StripSystemCodes(allTrimmedLines[i]);
+
         // Strip order-category prefixes (e.g. "Other (Please Specify); CHEST PAIN" → "CHEST PAIN")
         for (int i = 0; i < allTrimmedLines.Count; i++)
             allTrimmedLines[i] = StripCategoryPrefix(allTrimmedLines[i]);
@@ -1886,7 +1891,8 @@ public class ClinicalHistoryForm : Form
     /// <summary>
     /// Strip order-category prefixes from clinical history lines.
     /// e.g. "Other (Please Specify); CHEST PAIN" → "CHEST PAIN"
-    /// These are Clario ordering system labels, not clinical content.
+    /// Only strips when the prefix is a genuine ordering system label,
+    /// not clinical content that happens to contain parentheses.
     /// </summary>
     private static string StripCategoryPrefix(string line)
     {
@@ -1894,10 +1900,37 @@ public class ClinicalHistoryForm : Form
         if (semiIdx > 0 && semiIdx < line.Length - 1)
         {
             var prefix = line.Substring(0, semiIdx).Trim();
-            if (prefix.Contains('(') || prefix.Equals("Other", StringComparison.OrdinalIgnoreCase))
+            // Only strip if prefix is "Other" or the parenthesized part contains
+            // ordering system keywords like "specify", "please", "select"
+            if (prefix.Equals("Other", StringComparison.OrdinalIgnoreCase))
                 return line.Substring(semiIdx + 1).Trim();
+            if (prefix.Contains('('))
+            {
+                var parenContent = Regex.Match(prefix, @"\(([^)]+)\)");
+                if (parenContent.Success)
+                {
+                    var inner = parenContent.Groups[1].Value;
+                    if (inner.Contains("specify", StringComparison.OrdinalIgnoreCase)
+                        || inner.Contains("please", StringComparison.OrdinalIgnoreCase)
+                        || inner.Contains("select", StringComparison.OrdinalIgnoreCase))
+                        return line.Substring(semiIdx + 1).Trim();
+                }
+            }
         }
         return line;
+    }
+
+    /// <summary>
+    /// Strip system/ordering codes delimited by "//".
+    /// e.g. "MVA//WI//2252" → "MVA", "work injury//2252" → "work injury"
+    /// </summary>
+    private static string StripSystemCodes(string line)
+    {
+        // Remove //CODE patterns (system metadata like //WI, //2252)
+        var cleaned = Regex.Replace(line, @"//\w+", "");
+        // Clean up orphaned whitespace and trailing/leading punctuation artifacts
+        cleaned = Regex.Replace(cleaned, @"\s+", " ").Trim();
+        return cleaned;
     }
 
     private static List<string> SplitIntoPhrases(string text)
@@ -1924,6 +1957,7 @@ public class ClinicalHistoryForm : Form
         text = Regex.Replace(text, @"\bDVT\b", "deep vein thrombosis", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"\bCHF\b", "congestive heart failure", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"\bCOPD\b", "chronic obstructive pulmonary disease", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\bMVA\b", "motor vehicle accident", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"\bCVA\b", "cerebrovascular accident", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"\bTIA\b", "transient ischemic attack", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"\bUTI\b", "urinary tract infection", RegexOptions.IgnoreCase);

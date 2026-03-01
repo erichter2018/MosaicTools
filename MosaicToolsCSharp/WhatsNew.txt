@@ -1,3 +1,12 @@
+3.9.3
+- Fix: STT auto-punctuation setting not working (capitalization and periods stripped by post-processing)
+- Fix: repeated beep bursts when Custom STT stops (registry sync overwriting dictation state)
+- Fix: patient mismatch false positive for multi-word last names (e.g. "Soto Pena")
+- Fix: Impression Fixer comparison age off-by-one (buttons not shown when comparison is exactly max weeks old)
+- Fix: clinical history dedup stripping legitimate parenthesized content and not cleaning //CODE system junk
+- STT: more reliable paste — clipboard verification, foreground check before Ctrl+V, no focus ping-pong during recording
+- Get Prior: faster clipboard polling (fail-fast in ~2.5s instead of ~15s when InteleViewer dialog not ready)
+
 3.9.2
 - Patient mismatch detection: pulsing yellow border when InteleViewer shows a different patient than Mosaic
 - STT: transcription overlay lingers 2 seconds after recording stops for verification
