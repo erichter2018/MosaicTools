@@ -1,3 +1,8 @@
+3.9.2
+- Patient mismatch detection: pulsing yellow border when InteleViewer shows a different patient than Mosaic
+- STT: transcription overlay lingers 2 seconds after recording stops for verification
+- STT: slightly larger transcription overlay font
+
 3.9.1
 - Impression Fixer: per-entry max comparison age (weeks) — hide buttons when comparison is too old
 - Impression Fixer: specificity dedup — entry with study criteria wins over generic when blurb matches

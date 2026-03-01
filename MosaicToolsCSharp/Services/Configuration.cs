@@ -127,6 +127,9 @@ public class Configuration
     [JsonPropertyName("show_drafted_indicator")]
     public bool ShowDraftedIndicator { get; set; } = false;
 
+    [JsonPropertyName("patient_mismatch_enabled")]
+    public bool PatientMismatchEnabled { get; set; } = false;
+
     [JsonPropertyName("show_template_mismatch")]
     public bool ShowTemplateMismatch { get; set; } = false;
 
@@ -391,7 +394,7 @@ public class Configuration
     public string SttDeepgramKeyterms { get; set; } = "";
 
     [JsonPropertyName("stt_keyterm_learning_enabled")]
-    public bool SttKeytermLearningEnabled { get; set; } = false;
+    public bool SttKeytermLearningEnabled { get; set; } = true;
 
     [JsonPropertyName("stt_keyterm_learning_confidence_threshold")]
     public double SttKeytermLearningConfidenceThreshold { get; set; } = 0.85;

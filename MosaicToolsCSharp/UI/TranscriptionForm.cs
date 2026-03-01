@@ -26,8 +26,8 @@ public class TranscriptionForm : Form
     // Auto-grow
     private int _maxHeight;
     private bool _isAutoGrowing;
-    private const int InitialHeight = 40;
-    private const int TextPadding = 6;
+    private const int InitialHeight = 34;
+    private const int TextPadding = 4;
 
     // Position save debounce
     private System.Threading.Timer? _saveTimer;
@@ -35,6 +35,10 @@ public class TranscriptionForm : Form
     // Delayed clear — keeps final text visible briefly after paste
     private System.Threading.Timer? _clearTimer;
     private const int ClearDelayMs = 500;
+
+    // Delayed hide — keeps form visible briefly after recording stops so user can verify
+    private System.Threading.Timer? _hideTimer;
+    private const int LingerDelayMs = 2000;
 
     // Don't steal focus from Mosaic when the form is shown
     protected override bool ShowWithoutActivation => true;
@@ -64,7 +68,7 @@ public class TranscriptionForm : Form
         {
             BackColor = Color.FromArgb(30, 30, 30),
             ForeColor = Color.FromArgb(200, 200, 200),
-            Font = new Font("Segoe UI", 11),
+            Font = new Font("Segoe UI", 12.5f),
             BorderStyle = BorderStyle.None,
             Dock = DockStyle.Fill,
             ReadOnly = true,
@@ -95,6 +99,11 @@ public class TranscriptionForm : Form
         _clearTimer = new System.Threading.Timer(_ =>
         {
             try { BeginInvoke(DoClearTranscript); } catch { }
+        }, null, Timeout.Infinite, Timeout.Infinite);
+
+        _hideTimer = new System.Threading.Timer(_ =>
+        {
+            try { BeginInvoke(DoDelayedHide); } catch { }
         }, null, Timeout.Infinite, Timeout.Infinite);
 
         LocationChanged += (_, _) => _saveTimer?.Change(500, Timeout.Infinite);
@@ -139,8 +148,9 @@ public class TranscriptionForm : Form
     {
         if (InvokeRequired) { BeginInvoke(() => AppendResult(result)); return; }
 
-        // Cancel any pending delayed clear — new text takes priority
+        // Cancel any pending delayed clear/hide — new text takes priority
         _clearTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+        _hideTimer?.Change(Timeout.Infinite, Timeout.Infinite);
 
         // Temporarily allow edits — ReadOnly RichTextBox produces system beeps on modification
         _textBox.ReadOnly = false;
@@ -228,6 +238,28 @@ public class TranscriptionForm : Form
         AutoGrowHeight();
     }
 
+    /// <summary>
+    /// Hide the form after a delay, keeping final text visible so user can verify.
+    /// Cancelled automatically if new text arrives or a new recording starts.
+    /// </summary>
+    public void DelayedHide()
+    {
+        if (InvokeRequired) { BeginInvoke(DelayedHide); return; }
+        _hideTimer?.Change(LingerDelayMs, Timeout.Infinite);
+    }
+
+    /// <summary>Cancel any pending delayed hide (e.g. new recording starting).</summary>
+    public void CancelDelayedHide()
+    {
+        _hideTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+    }
+
+    private void DoDelayedHide()
+    {
+        Hide();
+        DoClearTranscript();
+    }
+
     public void SetRecordingState(bool recording)
     {
         if (InvokeRequired) { BeginInvoke(() => SetRecordingState(recording)); return; }
@@ -255,6 +287,7 @@ public class TranscriptionForm : Form
     {
         _config.TranscriptionFormHeight = _maxHeight;
         SavePositionToConfig();
+        _hideTimer?.Dispose();
         _clearTimer?.Dispose();
         _saveTimer?.Dispose();
         base.OnFormClosing(e);

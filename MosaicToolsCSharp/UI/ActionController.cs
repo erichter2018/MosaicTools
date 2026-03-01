@@ -189,6 +189,7 @@ public class ActionController : IDisposable
     private string? _pendingMacroDescription;
 
     // Alert state tracking for alerts-only mode
+    private bool _patientMismatchActive = false;
     private bool _templateMismatchActive = false;
     private bool _genderMismatchActive = false;
     private bool _strokeDetectedActive = false;
@@ -500,7 +501,6 @@ public class ActionController : IDisposable
                         if (triggerKind == VoiceTriggerKind.Command)
                         {
                             Logger.Trace($"CustomSTT: Voice command detected: \"{triggerAction}\"");
-                            InvokeUI(() => _mainForm.ClearTranscriptionForm());
                             TriggerAction(triggerAction!, "Voice");
                             return; // Command takes over — don't restore focus
                         }
@@ -510,9 +510,6 @@ public class ActionController : IDisposable
                             InsertTextToFocusedEditor(PrepareTextForPaste(triggerMacro.Text));
                             Thread.Sleep(50);
                         }
-
-                        // Clear the indicator immediately after successful paste
-                        InvokeUI(() => _mainForm.ClearTranscriptionForm());
 
                         // Restore focus to the app the user was in before paste
                         var restoreHwnd = _sttPasteTargetWindow;
@@ -3292,6 +3289,11 @@ public class ActionController : IDisposable
             // Re-assert topmost on all tool windows periodically (cheap, every tick)
             BatchUI(() => _mainForm.EnsureWindowsOnTop());
 
+            // Patient mismatch check: compare Mosaic patient name vs topmost InteleViewer window
+            // Cheap Win32 calls only (EnumWindows + GetWindowText), safe to run every tick
+            if (_config.PatientMismatchEnabled && _config.ShowClinicalHistory)
+                CheckPatientMismatch();
+
             // Heartbeat: log every ~240 ticks (~4 min at 1s) to confirm timer is alive
             _scrapeHeartbeatCount++;
             if (_scrapeHeartbeatCount >= 240)
@@ -4972,6 +4974,63 @@ public class ActionController : IDisposable
         result = System.Text.RegularExpressions.Regex.Replace(result, @"\bpericeal\b", "pericecal", IC);
 
         return result;
+    }
+
+    /// <summary>
+    /// Compare the patient name in Mosaic with the topmost InteleViewer window.
+    /// InteleViewer title: "LASTNAME^FIRSTNAME^MID - RP Cloud ..."
+    /// Mosaic: LastPatientName is title-cased like "Collins Patrick".
+    /// Match by comparing last name (first token) case-insensitively.
+    /// </summary>
+    private void CheckPatientMismatch()
+    {
+        var mosaicName = _mosaicReader.LastPatientName;
+        if (string.IsNullOrWhiteSpace(mosaicName))
+        {
+            if (_patientMismatchActive)
+            {
+                _patientMismatchActive = false;
+                BatchUI(() => _mainForm.SetPatientMismatchState(false, null, null));
+            }
+            return;
+        }
+
+        var ivDicomName = NativeWindows.GetTopmostInteleViewerPatientName();
+        if (ivDicomName == null)
+        {
+            // No InteleViewer window open — clear mismatch
+            if (_patientMismatchActive)
+            {
+                _patientMismatchActive = false;
+                BatchUI(() => _mainForm.SetPatientMismatchState(false, null, null));
+            }
+            return;
+        }
+
+        // Parse InteleViewer DICOM name: "LASTNAME^FIRSTNAME^MID" → extract last name
+        var ivParts = ivDicomName.Split('^');
+        var ivLastName = ivParts[0].Trim();
+
+        // Parse Mosaic name: "Collins Patrick" → first token is last name
+        var mosaicParts = mosaicName.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+        var mosaicLastName = mosaicParts[0].Trim();
+
+        bool isMatch = ivLastName.Equals(mosaicLastName, StringComparison.OrdinalIgnoreCase);
+
+        if (!isMatch && !_patientMismatchActive)
+        {
+            _patientMismatchActive = true;
+            // Format display names
+            var ivDisplay = ivDicomName.Replace('^', ' ').Trim();
+            BatchUI(() => _mainForm.SetPatientMismatchState(true, mosaicName, ivDisplay));
+            Logger.Trace($"Patient mismatch detected: Mosaic='{mosaicName}', InteleViewer='{ivDicomName}'");
+        }
+        else if (isMatch && _patientMismatchActive)
+        {
+            _patientMismatchActive = false;
+            BatchUI(() => _mainForm.SetPatientMismatchState(false, null, null));
+            Logger.Trace("Patient mismatch resolved");
+        }
     }
 
     private void PerformStrokeDetection(string? accession, string? reportText)

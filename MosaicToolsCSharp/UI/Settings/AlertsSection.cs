@@ -23,6 +23,7 @@ public class AlertsSection : SettingsSection
     private readonly CheckBox _autoAddAgeCheck;
     private readonly CheckBox _autoAddGenderCheck;
     private readonly CheckBox _showDraftedIndicatorCheck;
+    private readonly CheckBox _patientMismatchEnabledCheck;
     private readonly CheckBox _showTemplateMismatchCheck;
     private readonly CheckBox _genderCheckEnabledCheck;
     private readonly CheckBox _strokeDetectionEnabledCheck;
@@ -96,6 +97,16 @@ public class AlertsSection : SettingsSection
         // Alert Triggers
         AddSectionDivider("Alert Triggers");
         AddHintLabel("These alerts appear even in alerts-only mode:", LeftMargin);
+        _nextY += 3;
+
+        // Patient Mismatch (highest priority)
+        _patientMismatchEnabledCheck = AddCheckBox("Patient mismatch", LeftMargin, _nextY,
+            "Pulsing yellow border when InteleViewer shows a different patient than Mosaic.");
+        var yellowLabel = AddLabel("(pulsing yellow)", LeftMargin + 160, _nextY + 2);
+        yellowLabel.ForeColor = Color.FromArgb(230, 200, 0);
+        yellowLabel.Font = new Font("Segoe UI", 8);
+        _nextY += SubRowHeight;
+        AddHintLabel("Compares patient name in Mosaic with topmost InteleViewer window", LeftMargin + 25);
         _nextY += 3;
 
         // Template Mismatch
@@ -260,6 +271,7 @@ public class AlertsSection : SettingsSection
         _autoAddAgeCheck.Checked = config.AutoAddAgeToClinicalHistory;
         _autoAddGenderCheck.Checked = config.AutoAddGenderToClinicalHistory;
         _showDraftedIndicatorCheck.Checked = config.ShowDraftedIndicator;
+        _patientMismatchEnabledCheck.Checked = config.PatientMismatchEnabled;
         _showTemplateMismatchCheck.Checked = config.ShowTemplateMismatch;
         _genderCheckEnabledCheck.Checked = config.GenderCheckEnabled;
         _aidocScrapeEnabledCheck.Checked = config.AidocScrapeEnabled;
@@ -286,6 +298,7 @@ public class AlertsSection : SettingsSection
         config.AutoAddAgeToClinicalHistory = _autoAddAgeCheck.Checked;
         config.AutoAddGenderToClinicalHistory = _autoAddGenderCheck.Checked;
         config.ShowDraftedIndicator = _showDraftedIndicatorCheck.Checked;
+        config.PatientMismatchEnabled = _patientMismatchEnabledCheck.Checked;
         config.ShowTemplateMismatch = _showTemplateMismatchCheck.Checked;
         config.GenderCheckEnabled = _genderCheckEnabledCheck.Checked;
         config.AidocScrapeEnabled = _aidocScrapeEnabledCheck.Checked;

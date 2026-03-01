@@ -1011,6 +1011,56 @@ public static class NativeWindows
         return found;
     }
 
+    /// <summary>
+    /// Get the patient name from the topmost (highest Z-order) visible InteleViewer window.
+    /// Title format: "LASTNAME^FIRSTNAME^MIDDLE - RP Cloud Enterprise ..."
+    /// Returns null if no InteleViewer window is found or no patient name can be extracted.
+    /// EnumWindows returns windows in Z-order, so the first match is the topmost.
+    /// </summary>
+    public static string? GetTopmostInteleViewerPatientName()
+    {
+        // Step 1: Find InteleViewer process IDs by looking for windows with "InteleViewer" in title
+        var inteleViewerPids = new HashSet<uint>();
+        EnumWindows((hWnd, _) =>
+        {
+            if (!IsWindowVisible(hWnd)) return true;
+            var title = GetWindowTitle(hWnd);
+            if (title.Contains("InteleViewer", StringComparison.OrdinalIgnoreCase))
+            {
+                GetWindowThreadProcessId(hWnd, out uint pid);
+                inteleViewerPids.Add(pid);
+            }
+            return true; // Continue — collect all PIDs
+        }, IntPtr.Zero);
+
+        if (inteleViewerPids.Count == 0) return null;
+
+        // Step 2: Find the topmost visible window from those PIDs that has a patient name
+        string? patientName = null;
+        EnumWindows((hWnd, _) =>
+        {
+            if (!IsWindowVisible(hWnd)) return true;
+            GetWindowThreadProcessId(hWnd, out uint pid);
+            if (!inteleViewerPids.Contains(pid)) return true;
+
+            var title = GetWindowTitle(hWnd);
+            // Patient name is before the first " - " and contains ^ (DICOM name format)
+            int dashIdx = title.IndexOf(" - ", StringComparison.Ordinal);
+            if (dashIdx > 0)
+            {
+                var namePart = title[..dashIdx].Trim();
+                if (namePart.Contains('^'))
+                {
+                    patientName = namePart;
+                    return false; // First match = topmost (Z-order)
+                }
+            }
+            return true;
+        }, IntPtr.Zero);
+
+        return patientName;
+    }
+
     #endregion
 
     #region Windows Startup

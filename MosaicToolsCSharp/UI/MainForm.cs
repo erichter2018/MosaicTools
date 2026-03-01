@@ -1745,6 +1745,14 @@ public class MainForm : Form
         _clinicalHistoryWindow.SetGenderWarning(mismatches.Count > 0, patientGender, mismatches);
     }
 
+    public void SetPatientMismatchState(bool active, string? mosaicName, string? ivName)
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        _clinicalHistoryWindow.SetPatientMismatch(active, mosaicName, ivName);
+    }
+
     public void SetStrokeState(bool isStroke)
     {
         if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
@@ -1879,6 +1887,8 @@ public class MainForm : Form
         {
             _transcriptionWindow = new TranscriptionForm(_config);
         }
+        // Cancel any pending linger-hide from a previous recording session
+        _transcriptionWindow.CancelDelayedHide();
         if (!_transcriptionWindow.Visible)
         {
             _transcriptionWindow.Show();
@@ -1920,7 +1930,8 @@ public class MainForm : Form
     public void HideTranscriptionForm()
     {
         if (InvokeRequired) { BeginInvoke(HideTranscriptionForm); return; }
-        _transcriptionWindow?.Hide();
+        // Linger with final text visible so user can verify what was pasted
+        _transcriptionWindow?.DelayedHide();
     }
 
     #endregion
