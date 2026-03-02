@@ -40,6 +40,13 @@ public class SttSection : SettingsSection
     private readonly Button _keytermLearningViewButton;
     private readonly Label _keytermLearningHint;
 
+    // Text processing
+    private readonly CheckBox _expandContractionsCheck;
+    private readonly CheckBox _radiologyCleanupCheck;
+    private readonly DataGridView _replacementsGrid;
+    private readonly Button _addReplacementButton;
+    private readonly Button _removeReplacementButton;
+
     private readonly ComboBox _audioDeviceCombo;
     private readonly CheckBox _autoPunctuateCheck;
     private readonly CheckBox _startBeepCheck;
@@ -66,7 +73,7 @@ public class SttSection : SettingsSection
 
     public SttSection(ToolTip toolTip) : base("Speech-to-Text", toolTip)
     {
-        _searchTerms.AddRange(new[] { "stt", "speech", "transcription", "deepgram", "speechmatics", "assemblyai", "dictation", "custom stt", "beep", "punctuation" });
+        _searchTerms.AddRange(new[] { "stt", "speech", "transcription", "deepgram", "speechmatics", "assemblyai", "dictation", "custom stt", "beep", "punctuation", "contraction", "replacement", "correction", "radiology cleanup" });
 
         _enabledCheck = AddCheckBox("Enable Custom STT Mode", LeftMargin, _nextY,
             "Use cloud STT instead of Mosaic's built-in speech recognition. Cancel Mosaic's WebHID prompt when enabled.");
@@ -203,6 +210,100 @@ public class SttSection : SettingsSection
         _keytermLearningViewButton.Font = new Font("Segoe UI", 8f);
         _nextY += RowHeight;
 
+        // Text Processing
+        AddSectionDivider("Text Processing");
+
+        _expandContractionsCheck = AddCheckBox("Expand contractions", LeftMargin + 25, _nextY,
+            "Convert contractions to full words (e.g. \"there's\" → \"there is\").");
+        _nextY += SubRowHeight;
+
+        _radiologyCleanupCheck = AddCheckBox("Radiology cleanup", LeftMargin + 25, _nextY,
+            "Convert spoken spine levels, units, dimensions, and dates to standard notation.");
+        _nextY += RowHeight;
+
+        // Custom replacements label
+        AddLabel("Custom word replacements:", LeftMargin + 25, _nextY + 2);
+        _nextY += SubRowHeight;
+
+        // DataGridView for custom replacements
+        _replacementsGrid = new DataGridView
+        {
+            Location = new Point(LeftMargin + 25, _nextY),
+            Width = 390,
+            Height = 120,
+            AllowUserToAddRows = false,
+            AllowUserToDeleteRows = false,
+            AllowUserToResizeRows = false,
+            RowHeadersVisible = false,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            MultiSelect = false,
+            ScrollBars = ScrollBars.Vertical,
+            BorderStyle = BorderStyle.FixedSingle,
+            BackgroundColor = Color.FromArgb(30, 30, 30),
+            GridColor = Color.FromArgb(60, 60, 60),
+            Font = new Font("Segoe UI", 9f),
+            DefaultCellStyle = new DataGridViewCellStyle
+            {
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.FromArgb(220, 220, 220),
+                SelectionBackColor = Color.FromArgb(60, 80, 110),
+                SelectionForeColor = Color.FromArgb(220, 220, 220),
+            },
+            ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle
+            {
+                BackColor = Color.FromArgb(45, 45, 45),
+                ForeColor = Color.FromArgb(200, 200, 200),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
+                Alignment = DataGridViewContentAlignment.MiddleLeft,
+            },
+            EnableHeadersVisualStyles = false,
+            ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
+            ColumnHeadersHeight = 26,
+        };
+
+        var enabledCol = new DataGridViewCheckBoxColumn
+        {
+            Name = "Enabled",
+            HeaderText = "",
+            Width = 30,
+            FlatStyle = FlatStyle.Flat,
+        };
+        var findCol = new DataGridViewTextBoxColumn
+        {
+            Name = "Find",
+            HeaderText = "Find",
+            Width = 160,
+        };
+        var replaceCol = new DataGridViewTextBoxColumn
+        {
+            Name = "Replace",
+            HeaderText = "Replace",
+            Width = 160,
+        };
+        _replacementsGrid.Columns.AddRange(enabledCol, findCol, replaceCol);
+        Controls.Add(_replacementsGrid);
+        _nextY += 124;
+
+        // +/- buttons
+        _addReplacementButton = AddButton("+", LeftMargin + 25, _nextY, 30, 24, OnAddReplacementClick,
+            "Add a new replacement entry");
+        _addReplacementButton.Font = new Font("Segoe UI", 10f, FontStyle.Bold);
+
+        _removeReplacementButton = AddButton("\u2212", LeftMargin + 58, _nextY, 30, 24, OnRemoveReplacementClick,
+            "Remove the selected replacement entry");
+        _removeReplacementButton.Font = new Font("Segoe UI", 10f, FontStyle.Bold);
+
+        var replacementHint = new Label
+        {
+            Text = "Word-for-word replacements. Case is preserved automatically.",
+            Location = new Point(LeftMargin + 95, _nextY + 5),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(150, 150, 150),
+            Font = new Font("Segoe UI", 7.5f)
+        };
+        Controls.Add(replacementHint);
+        _nextY += RowHeight;
+
         // Beep Settings
         AddSectionDivider("Beeps");
 
@@ -326,6 +427,11 @@ public class SttSection : SettingsSection
         _deepgramKeytermsSortButton.Enabled = enabled;
         _keytermLearningCheck.Enabled = enabled;
         _keytermLearningViewButton.Enabled = enabled;
+        _expandContractionsCheck.Enabled = enabled;
+        _radiologyCleanupCheck.Enabled = enabled;
+        _replacementsGrid.Enabled = enabled;
+        _addReplacementButton.Enabled = enabled;
+        _removeReplacementButton.Enabled = enabled;
         _startBeepCheck.Enabled = enabled;
         _stopBeepCheck.Enabled = enabled;
         _startBeepVolume.Enabled = enabled;
@@ -459,6 +565,23 @@ public class SttSection : SettingsSection
 
     private static string Truncate(string s, int max) =>
         s.Length <= max ? s : s[..(max - 1)] + "\u2026";
+
+    private void OnAddReplacementClick(object? sender, EventArgs e)
+    {
+        _replacementsGrid.Rows.Add(true, "", "");
+        // Select the new row's Find cell for immediate editing
+        var newRow = _replacementsGrid.Rows[_replacementsGrid.Rows.Count - 1];
+        _replacementsGrid.CurrentCell = newRow.Cells["Find"];
+        _replacementsGrid.BeginEdit(true);
+    }
+
+    private void OnRemoveReplacementClick(object? sender, EventArgs e)
+    {
+        if (_replacementsGrid.CurrentRow != null)
+        {
+            _replacementsGrid.Rows.Remove(_replacementsGrid.CurrentRow);
+        }
+    }
 
     private void OnGetKeyClick(object? sender, EventArgs e)
     {
@@ -599,6 +722,15 @@ public class SttSection : SettingsSection
         _keytermLearningCheck.Checked = config.SttKeytermLearningEnabled;
         RefreshKeytermLearningStats();
 
+        // Text processing
+        _expandContractionsCheck.Checked = config.SttExpandContractions;
+        _radiologyCleanupCheck.Checked = config.SttRadiologyCleanup;
+        _replacementsGrid.Rows.Clear();
+        foreach (var entry in config.SttCustomReplacements)
+        {
+            _replacementsGrid.Rows.Add(entry.Enabled, entry.Find, entry.Replace);
+        }
+
         UpdateControlStates();
     }
 
@@ -643,5 +775,22 @@ public class SttSection : SettingsSection
         config.SttShowIndicator = _showIndicatorCheck.Checked;
         config.SttAutoStartOnCase = _autoStartCheck.Checked;
         config.SttKeytermLearningEnabled = _keytermLearningCheck.Checked;
+
+        // Text processing
+        config.SttExpandContractions = _expandContractionsCheck.Checked;
+        config.SttRadiologyCleanup = _radiologyCleanupCheck.Checked;
+        config.SttCustomReplacements.Clear();
+        foreach (DataGridViewRow row in _replacementsGrid.Rows)
+        {
+            var find = row.Cells["Find"].Value?.ToString()?.Trim() ?? "";
+            var replace = row.Cells["Replace"].Value?.ToString()?.Trim() ?? "";
+            if (find.Length == 0) continue; // Skip empty entries
+            config.SttCustomReplacements.Add(new SttReplacementEntry
+            {
+                Enabled = row.Cells["Enabled"].Value is true,
+                Find = find,
+                Replace = replace
+            });
+        }
     }
 }

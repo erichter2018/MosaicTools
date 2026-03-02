@@ -486,6 +486,7 @@ public class MainForm : Form
 
         var metrics = _config.RvuMetrics;
         int count = CountSetFlags(metrics);
+        int metricSlotWidth = metrics.HasFlag(RvuMetric.PaceDelta) ? 95 : 80;
 
         if (count == 0 && !_config.PaceCarEnabled)
             return 75; // Fallback
@@ -496,18 +497,18 @@ public class MainForm : Form
         else if (count <= 2)
         {
             // Horizontal layout: ~80px per metric + right padding
-            baseWidth = count * 80 + 8;
+            baseWidth = count * metricSlotWidth + 8;
         }
         else
         {
             // 3+ metrics: depends on layout
             baseWidth = _config.RvuOverflowLayout switch
             {
-                RvuOverflowLayout.Horizontal => count * 80 + 8,
+                RvuOverflowLayout.Horizontal => count * metricSlotWidth + 8,
                 RvuOverflowLayout.VerticalStack => 0, // All metrics in drawer
                 RvuOverflowLayout.HoverPopup => 80,    // First metric inline, rest on hover
                 RvuOverflowLayout.Carousel => 85,      // Single metric slot
-                _ => count * 80
+                _ => count * metricSlotWidth
             };
         }
 
@@ -528,6 +529,7 @@ public class MainForm : Form
         if (m.HasFlag(RvuMetric.EstimatedTotal)) count++;
         if (m.HasFlag(RvuMetric.RvuPerStudy)) count++;
         if (m.HasFlag(RvuMetric.AvgPerHour)) count++;
+        if (m.HasFlag(RvuMetric.PaceDelta)) count++;
         return count;
     }
 
@@ -587,8 +589,7 @@ public class MainForm : Form
 
         // Build metric entries
         var allMetrics = BuildMetricEntries(shiftInfo, pipeShift);
-        var metrics = _config.RvuMetrics;
-        int count = CountSetFlags(metrics);
+        int count = allMetrics.Count;
 
         if (count == 0 || allMetrics.Count == 0)
         {
@@ -710,6 +711,19 @@ public class MainForm : Form
             var raw = pipeShift?.AvgPerHour;
             var val = raw.HasValue ? $"{raw.Value:F1}/h avg" : "--";
             result.Add((val, "Avg/h:", val, carolinaBlue));
+        }
+
+        if (metrics.HasFlag(RvuMetric.PaceDelta))
+        {
+            var raw = pipeShift?.PaceDiff;
+            var aheadBehind = (raw ?? 0) >= 0 ? "ahead" : "behind";
+            var abs = raw.HasValue ? Math.Abs(raw.Value).ToString("F1") : "--";
+            var sign = raw.HasValue && raw.Value >= 0 ? "+" : "";
+            var text = raw.HasValue ? $"{sign}{abs} {aheadBehind}" : "--";
+            var paceColor = !raw.HasValue
+                ? dimGray
+                : raw.Value >= 0 ? Color.FromArgb(100, 200, 100) : lightRed;
+            result.Add((text, "Pace:", text, paceColor));
         }
 
         return result;

@@ -17,10 +17,11 @@ internal static class ScreenHelper
     {
         var point = new Point(x, y);
 
-        // Check if the top-left corner is within any screen's working area
+        // Check if the entire form rectangle fits within any single screen's working area
+        var formRect = new Rectangle(x, y, Math.Max(width, 1), Math.Max(height, 1));
         foreach (var screen in Screen.AllScreens)
         {
-            if (screen.WorkingArea.Contains(point))
+            if (screen.WorkingArea.Contains(formRect))
                 return point;
         }
 

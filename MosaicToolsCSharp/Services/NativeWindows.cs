@@ -642,20 +642,51 @@ public static class NativeWindows
 
     /// <summary>
     /// Restore focus to the previously saved window.
+    /// Uses Alt-key trick to bypass the foreground lock that ActivateMosaicForcefully
+    /// likely set moments ago, then verifies activation actually worked.
     /// </summary>
     public static void RestorePreviousFocus(int delayMs = 50)
     {
         if (_previousFocusHwnd == IntPtr.Zero) return;
-        if (!IsWindow(_previousFocusHwnd))
+        var hWnd = _previousFocusHwnd;
+        _previousFocusHwnd = IntPtr.Zero;
+
+        if (!IsWindow(hWnd)) return;
+
+        Thread.Sleep(delayMs);
+
+        // Alt-key trick to release the foreground lock, then claim it
+        keybd_event(VK_MENU, 0, 0, UIntPtr.Zero);
+        keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        SetForegroundWindow(hWnd);
+
+        // Quick check — if it worked, we're done
+        Thread.Sleep(30);
+        if (GetForegroundWindow() == hWnd)
         {
-            _previousFocusHwnd = IntPtr.Zero;
+            Logger.Trace($"Focus restored: {GetWindowTitle(hWnd)}");
             return;
         }
-        
-        Thread.Sleep(delayMs);
-        SetForegroundWindow(_previousFocusHwnd);
-        Logger.Trace($"Focus restored: {GetWindowTitle(_previousFocusHwnd)}");
-        _previousFocusHwnd = IntPtr.Zero;
+
+        // Fallback: AttachThreadInput
+        uint currentThread = GetCurrentThreadId();
+        uint targetThread = GetWindowThreadProcessId(hWnd, out _);
+        bool attached = currentThread != targetThread && AttachThreadInput(currentThread, targetThread, true);
+        try
+        {
+            BringWindowToTop(hWnd);
+            SetForegroundWindow(hWnd);
+        }
+        finally
+        {
+            if (attached) AttachThreadInput(currentThread, targetThread, false);
+        }
+
+        Thread.Sleep(30);
+        var ok = GetForegroundWindow() == hWnd;
+        Logger.Trace(ok
+            ? $"Focus restored (fallback): {GetWindowTitle(hWnd)}"
+            : $"Focus restore FAILED: {GetWindowTitle(hWnd)}");
     }
     
     #endregion

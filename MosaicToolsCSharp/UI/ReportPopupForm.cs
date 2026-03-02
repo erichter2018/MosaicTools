@@ -245,8 +245,9 @@ public class ReportPopupForm : Form
         int contentHeight = MeasureContentHeight(width);
         _totalContentHeight = contentHeight;
 
-        var screen = Screen.FromPoint(new Point(_config.ReportPopupX, _config.ReportPopupY));
-        int maxHeight = screen.WorkingArea.Bottom - _config.ReportPopupY - 10;
+        var clampedPos = ScreenHelper.EnsureOnScreen(_config.ReportPopupX, _config.ReportPopupY, width, contentHeight);
+        var screen = Screen.FromPoint(clampedPos);
+        int maxHeight = Math.Max(100, screen.WorkingArea.Bottom - clampedPos.Y - 10);
         int formHeight = Math.Clamp(contentHeight, 100, maxHeight);
 
         this.Size = new Size(width, formHeight);

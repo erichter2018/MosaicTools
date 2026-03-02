@@ -21,6 +21,7 @@ public class RvuMetricsSection : SettingsSection
     private readonly CheckBox _rvuMetricEstTotalCheck;
     private readonly CheckBox _rvuMetricRvuPerStudyCheck;
     private readonly CheckBox _rvuMetricAvgPerHourCheck;
+    private readonly CheckBox _rvuMetricPaceDeltaCheck;
     private readonly ComboBox _rvuOverflowLayoutCombo;
     private readonly Label _rvuOverflowLayoutLabel;
     private readonly CheckBox _rvuGoalEnabledCheck;
@@ -44,6 +45,8 @@ public class RvuMetricsSection : SettingsSection
 
         _rvuMetricRvuPerStudyCheck = AddCheckBox("RVU/Study", LeftMargin, _nextY);
         _rvuMetricAvgPerHourCheck = AddCheckBox("Avg/h", LeftMargin + 100, _nextY);
+        _rvuMetricPaceDeltaCheck = AddCheckBox("Pace +/-", LeftMargin + 170, _nextY,
+            "Shows only current pace delta in metrics (for example, +2.1 ahead).");
 
         // Wire up checkbox changes to enable/disable layout combo
         EventHandler updateLayoutState = (s, e) => UpdateOverflowLayoutState();
@@ -54,6 +57,7 @@ public class RvuMetricsSection : SettingsSection
         _rvuMetricEstTotalCheck.CheckedChanged += updateLayoutState;
         _rvuMetricRvuPerStudyCheck.CheckedChanged += updateLayoutState;
         _rvuMetricAvgPerHourCheck.CheckedChanged += updateLayoutState;
+        _rvuMetricPaceDeltaCheck.CheckedChanged += updateLayoutState;
         _nextY += RowHeight;
 
         // Layout combo (for 3+ metrics)
@@ -80,7 +84,7 @@ public class RvuMetricsSection : SettingsSection
         // Pace Car
         AddSectionDivider("Pace Car");
 
-        _paceCarEnabledCheck = AddCheckBox("Enable pace car", LeftMargin, _nextY,
+        _paceCarEnabledCheck = AddCheckBox("Show full pace car information", LeftMargin, _nextY,
             "Alternates between RVU metrics and pace comparison display.");
         _nextY += RowHeight;
 
@@ -116,7 +120,7 @@ public class RvuMetricsSection : SettingsSection
     {
         var count = new[] { _rvuMetricTotalCheck, _rvuMetricPerHourCheck, _rvuMetricCurrentHourCheck,
             _rvuMetricPriorHourCheck, _rvuMetricEstTotalCheck, _rvuMetricRvuPerStudyCheck,
-            _rvuMetricAvgPerHourCheck }.Count(c => c.Checked);
+            _rvuMetricAvgPerHourCheck, _rvuMetricPaceDeltaCheck }.Count(c => c.Checked);
         _rvuOverflowLayoutCombo.Enabled = count >= 3;
         _rvuOverflowLayoutLabel.ForeColor = count >= 3 ? Color.Gray : Color.FromArgb(80, 80, 80);
     }
@@ -173,6 +177,7 @@ public class RvuMetricsSection : SettingsSection
         _rvuMetricEstTotalCheck.Checked = config.RvuMetrics.HasFlag(RvuMetric.EstimatedTotal);
         _rvuMetricRvuPerStudyCheck.Checked = config.RvuMetrics.HasFlag(RvuMetric.RvuPerStudy);
         _rvuMetricAvgPerHourCheck.Checked = config.RvuMetrics.HasFlag(RvuMetric.AvgPerHour);
+        _rvuMetricPaceDeltaCheck.Checked = config.RvuMetrics.HasFlag(RvuMetric.PaceDelta);
 
         _rvuOverflowLayoutCombo.SelectedIndex = (int)config.RvuOverflowLayout;
 
@@ -198,6 +203,7 @@ public class RvuMetricsSection : SettingsSection
         if (_rvuMetricEstTotalCheck.Checked) metrics |= RvuMetric.EstimatedTotal;
         if (_rvuMetricRvuPerStudyCheck.Checked) metrics |= RvuMetric.RvuPerStudy;
         if (_rvuMetricAvgPerHourCheck.Checked) metrics |= RvuMetric.AvgPerHour;
+        if (_rvuMetricPaceDeltaCheck.Checked) metrics |= RvuMetric.PaceDelta;
         config.RvuMetrics = metrics;
 
         config.RvuOverflowLayout = (RvuOverflowLayout)_rvuOverflowLayoutCombo.SelectedIndex;

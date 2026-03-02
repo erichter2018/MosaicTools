@@ -414,6 +414,15 @@ public class Configuration
     [JsonPropertyName("stt_show_indicator")]
     public bool SttShowIndicator { get; set; } = true;
 
+    [JsonPropertyName("stt_expand_contractions")]
+    public bool SttExpandContractions { get; set; } = true;
+
+    [JsonPropertyName("stt_radiology_cleanup")]
+    public bool SttRadiologyCleanup { get; set; } = true;
+
+    [JsonPropertyName("stt_custom_replacements")]
+    public List<SttReplacementEntry> SttCustomReplacements { get; set; } = new();
+
     [JsonPropertyName("transcription_form_x")]
     public int TranscriptionFormX { get; set; } = 400;
 
@@ -706,6 +715,16 @@ public class Configuration
             };
         }
 
+        // Seed default STT custom replacements (migrated from hardcoded misrecognitions)
+        if (SttCustomReplacements.Count == 0)
+        {
+            SttCustomReplacements = new List<SttReplacementEntry>
+            {
+                new() { Enabled = true, Find = "bipasal", Replace = "bibasilar" },
+                new() { Enabled = true, Find = "periceal", Replace = "pericecal" }
+            };
+        }
+
     }
 
     /// <summary>
@@ -759,9 +778,24 @@ public class ActionMapping
 {
     [JsonPropertyName("hotkey")]
     public string Hotkey { get; set; } = "";
-    
+
     [JsonPropertyName("mic_button")]
     public string MicButton { get; set; } = "";
+}
+
+/// <summary>
+/// A single find→replace entry for custom STT text corrections.
+/// </summary>
+public class SttReplacementEntry
+{
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; } = true;
+
+    [JsonPropertyName("find")]
+    public string Find { get; set; } = "";
+
+    [JsonPropertyName("replace")]
+    public string Replace { get; set; } = "";
 }
 
 /// <summary>
@@ -1116,7 +1150,8 @@ public enum RvuMetric
     PriorHour = 8,
     EstimatedTotal = 16,
     RvuPerStudy = 32,
-    AvgPerHour = 64
+    AvgPerHour = 64,
+    PaceDelta = 128
 }
 
 /// <summary>

@@ -1,3 +1,7 @@
+3.9.4
+- Fix: report popup not appearing when saved position is off-screen (e.g., disconnected monitor)
+- Fix: off-screen detection now checks full window bounds, not just top-left corner
+
 3.9.3
 - Fix: STT auto-punctuation setting not working (capitalization and periods stripped by post-processing)
 - Fix: repeated beep bursts when Custom STT stops (registry sync overwriting dictation state)

@@ -174,6 +174,7 @@ public class ActionController : IDisposable
     private bool _baselineIsFromTemplateDb = false; // True when baseline came from template DB fallback (section-only diffing)
     private int _baselineCaptureAttempts = 0; // Tick counter for template DB fallback timing
     private bool _templateRecordedForStudy = false; // Only record template once per study, before Process Report
+    private string? _lastSeenTemplateName; // Track template name for rainbow baseline reset on template change
     private string? _lastPopupReportText; // Track what's currently displayed in popup for change detection
     private DateTime _staleSetTime; // When SetStaleState(true) was last triggered
     private DateTime _staleTextStableTime; // When text first matched _lastPopupReportText after going stale
@@ -473,15 +474,17 @@ public class ActionController : IDisposable
                 string transcript;
                 if (_config.SttAutoPunctuate)
                 {
-                    transcript = ApplyRadiologyCleanup(rawText).Trim();
+                    transcript = _config.SttExpandContractions ? ExpandContractions(rawText) : rawText;
+                    transcript = _config.SttRadiologyCleanup ? ApplyRadiologyCleanup(transcript).Trim() : transcript.Trim();
                 }
                 else
                 {
-                    transcript = ApplySpokenPunctuation(rawText).Trim();
-                    transcript = ApplyRadiologyCleanup(transcript);
+                    transcript = ApplySpokenPunctuation(rawText, _config.SttExpandContractions).Trim();
+                    transcript = _config.SttRadiologyCleanup ? ApplyRadiologyCleanup(transcript) : transcript;
                     if (transcript.Length > 0 && !(transcript.Length > 1 && char.IsDigit(transcript[1])))
                         transcript = char.ToLower(transcript[0]) + transcript[1..];
                 }
+                transcript = ApplyCustomReplacements(transcript);
 
                 var hasTextToPaste = transcript.Length > 0;
                 var textToPaste = " " + transcript + " ";
@@ -1148,9 +1151,12 @@ public class ActionController : IDisposable
             Task.Run(async () => await _sttService!.StopRecordingAsync()).Wait(2000);
             _dictationActive = false;
 
-            // Brief pause for any final paste still in flight, then clean up UI
-            Thread.Sleep(100);
+            // Wait for any in-flight paste to complete before cleaning up.
+            // The final Deepgram result (from Finalize) spawns a paste thread that
+            // acquires _directPasteLock. We must wait for it to finish before
+            // restoring focus, otherwise we yank focus from Mosaic mid-paste.
             _sttDirectPasteActive = false;
+            lock (_directPasteLock) { } // drain any in-flight paste
             InvokeUI(() => _mainForm.HideTranscriptionForm());
 
             // Restore focus to the app the user was in before recording.
@@ -3527,6 +3533,24 @@ public class ActionController : IDisposable
                 BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(true); });
             }
 
+            // Detect template change within the same accession (e.g., wrong template → corrected).
+            // Reset rainbow baseline so diff highlights the new template's actual changes, not boilerplate.
+            var currentTemplateName = _mosaicReader.LastTemplateName;
+            if (!string.IsNullOrEmpty(currentTemplateName) && currentTemplateName != _lastSeenTemplateName)
+            {
+                if (_lastSeenTemplateName != null)
+                {
+                    Logger.Trace($"Template changed on same accession: \"{_lastSeenTemplateName}\" → \"{currentTemplateName}\". Resetting rainbow baseline.");
+                    _baselineReport = null;
+                    _baselineIsFromTemplateDb = false;
+                    _baselineCaptureAttempts = 0;
+                    _needsBaselineCapture = _config.ShowReportChanges || _config.CorrelationEnabled;
+                    _processReportPressedForCurrentAccession = false;
+                    _draftedAutoProcessDetected = false;
+                }
+                _lastSeenTemplateName = currentTemplateName;
+            }
+
             // These always run (cheap, needed for popup updates):
             UpdateRecoMd(currentAccession, reportText);
             CaptureBaselineReport(reportText);
@@ -3755,6 +3779,7 @@ public class ActionController : IDisposable
         _baselineIsFromTemplateDb = false;
         _baselineCaptureAttempts = 0;
         _templateRecordedForStudy = false;
+        _lastSeenTemplateName = null;
         _lastPopupReportText = null;
 
         // [KeytermLearning] Verify collected words against final report before clearing
@@ -4142,7 +4167,6 @@ public class ActionController : IDisposable
                 }
 
                 bool stable = _processReportLastSeenText != null
-                    && _processReportLastSeenText != _lastPopupReportText
                     && (DateTime.UtcNow - _processReportTextStableSince).TotalSeconds >= 1;
 
                 bool timedOut = _staleSetTime != default
@@ -4189,8 +4213,8 @@ public class ActionController : IDisposable
                 if (_staleTextStableTime == default)
                     _staleTextStableTime = DateTime.UtcNow;
 
-                bool canClear = (DateTime.UtcNow - _staleTextStableTime).TotalSeconds > 5
-                    || (DateTime.UtcNow - _staleSetTime).TotalSeconds > 30;
+                bool canClear = (DateTime.UtcNow - _staleTextStableTime).TotalSeconds > 1
+                    || (DateTime.UtcNow - _staleSetTime).TotalSeconds > 15;
                 if (canClear)
                 {
                     BatchUI(() => { if (!popup.IsDisposed) popup.SetStaleState(false); });
@@ -4555,7 +4579,7 @@ public class ActionController : IDisposable
     /// [CustomSTT] Convert spoken punctuation words to symbols, except "colon" (medical term).
     /// Replaces Deepgram's dictation mode so we have full control over which words convert.
     /// </summary>
-    private static string ApplySpokenPunctuation(string text)
+    private static string ApplySpokenPunctuation(string text, bool expandContractions = true)
     {
         // Order matters: multi-word phrases first, then single words.
         // Case-insensitive replacements with word boundaries.
@@ -4579,7 +4603,21 @@ public class ActionController : IDisposable
                 result, pattern, replacement, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         }
 
-        // Expand contractions that Deepgram favors over spoken full forms
+        if (expandContractions)
+            result = ExpandContractions(result);
+
+        // Clean up spaces before punctuation marks (e.g., "word . next" → "word. next")
+        result = System.Text.RegularExpressions.Regex.Replace(result, @"\s+([.,;!?])", "$1");
+
+        return result;
+    }
+
+    /// <summary>
+    /// [CustomSTT] Expand contractions that STT providers favor over spoken full forms.
+    /// Used in both auto-punctuation and manual punctuation modes.
+    /// </summary>
+    private static string ExpandContractions(string text)
+    {
         var contractions = new (string pattern, string replacement)[]
         {
             (@"\bthere's\b",   "there is"),
@@ -4603,14 +4641,14 @@ public class ActionController : IDisposable
         };
         foreach (var (pattern, replacement) in contractions)
         {
-            result = System.Text.RegularExpressions.Regex.Replace(
-                result, pattern, replacement, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            text = System.Text.RegularExpressions.Regex.Replace(
+                text, pattern,
+                m => char.IsUpper(m.Value[0])
+                    ? char.ToUpper(replacement[0]) + replacement[1..]
+                    : replacement,
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         }
-
-        // Clean up spaces before punctuation marks (e.g., "word . next" → "word. next")
-        result = System.Text.RegularExpressions.Regex.Replace(result, @"\s+([.,;!?])", "$1");
-
-        return result;
+        return text;
     }
 
     // ── Voice command/macro detection ──────────────────────────────────────
@@ -5008,11 +5046,42 @@ public class ActionController : IDisposable
                 return m.Value;
             }, IC);
 
-        // ── STT misrecognition corrections ──
-        result = System.Text.RegularExpressions.Regex.Replace(result, @"\bbipasal\b", "bibasilar", IC);
-        result = System.Text.RegularExpressions.Regex.Replace(result, @"\bpericeal\b", "pericecal", IC);
-
         return result;
+    }
+
+    /// <summary>
+    /// [CustomSTT] Apply user-defined word replacements from config.
+    /// Uses word-boundary matching with case preservation (same logic as ExpandContractions).
+    /// </summary>
+    private string ApplyCustomReplacements(string text)
+    {
+        if (_config.SttCustomReplacements.Count == 0) return text;
+
+        foreach (var entry in _config.SttCustomReplacements)
+        {
+            if (!entry.Enabled || string.IsNullOrWhiteSpace(entry.Find)) continue;
+            var pattern = @"\b" + System.Text.RegularExpressions.Regex.Escape(entry.Find) + @"\b";
+            var replacement = entry.Replace ?? "";
+            text = System.Text.RegularExpressions.Regex.Replace(
+                text, pattern,
+                m => PreserveCaseReplace(m.Value, replacement),
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        }
+        return text;
+    }
+
+    /// <summary>
+    /// Replace text while preserving the case pattern of the original match.
+    /// ALL CAPS → ALL CAPS, Title Case → Title Case, otherwise use replacement as-is.
+    /// </summary>
+    private static string PreserveCaseReplace(string original, string replacement)
+    {
+        if (replacement.Length == 0) return replacement;
+        if (original.Length > 0 && original == original.ToUpperInvariant())
+            return replacement.ToUpperInvariant();
+        if (original.Length > 0 && char.IsUpper(original[0]))
+            return char.ToUpper(replacement[0]) + replacement[1..];
+        return replacement;
     }
 
     /// <summary>
