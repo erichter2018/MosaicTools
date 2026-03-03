@@ -1612,6 +1612,16 @@ public class MainForm : Form
                 // Wire up critical note click callback (for Ctrl+Click and context menu)
                 _clinicalHistoryWindow.SetCriticalNoteClickCallback(() =>
                     _controller.TriggerAction(Actions.CreateCriticalNote, "CtrlClick"));
+                // Wire up manual template correction (right-click "Fix Template")
+                _clinicalHistoryWindow.SetFixTemplateClickCallback(() =>
+                    _controller.ManualCorrectTemplate());
+                // Wire up CDP insert for clinical history (direct DOM insert into transcript editor)
+                _clinicalHistoryWindow.SetInsertToTranscriptCallback(
+                    _controller.InsertToTranscript);
+                // Wire up debug info callbacks for context menu
+                _clinicalHistoryWindow.SetDebugInfoCallbacks(
+                    _controller.GetPriorDebugInfo,
+                    _controller.GetCriticalFindingsDebugInfo);
                 // Wire up session-wide clinical history fix tracking (prevents duplicate fixes on study reopen)
                 _clinicalHistoryWindow.SetClinicalHistoryFixCallbacks(
                     _controller.HasClinicalHistoryFixedForAccession,
@@ -1708,14 +1718,25 @@ public class MainForm : Form
         }
     }
 
-    public void UpdateClinicalHistory(string? rawClarioText, string? accession = null, int? patientAge = null, string? patientGender = null)
+    public void UpdateClinicalHistory(string? rawReportText, string? accession = null, int? patientAge = null, string? patientGender = null,
+        Services.StructuredReport? structuredReport = null)
     {
         if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
             return;
 
+        // CDP-first: use structured report's CLINICAL HISTORY section as raw source for debug
+        string? cdpRawSource = null;
+        if (structuredReport != null)
+        {
+            var section = structuredReport.GetSection("CLINICAL HISTORY");
+            if (section != null && !string.IsNullOrWhiteSpace(section.FullText))
+                cdpRawSource = section.FullText;
+        }
+
         // Use the version that returns both pre-cleaned and cleaned for auto-fix detection
-        var (preCleaned, cleaned) = ClinicalHistoryForm.ExtractClinicalHistoryWithFixInfo(rawClarioText);
-        _clinicalHistoryWindow.SetClinicalHistoryWithAutoFix(preCleaned, cleaned, accession, patientAge, patientGender);
+        var (preCleaned, cleaned) = ClinicalHistoryForm.ExtractClinicalHistoryWithFixInfo(rawReportText);
+        _clinicalHistoryWindow.SetClinicalHistoryWithAutoFix(preCleaned, cleaned, accession, patientAge, patientGender,
+            rawSource: cdpRawSource ?? preCleaned);
     }
 
     public void UpdateClinicalHistoryDraftedState(bool isDrafted)

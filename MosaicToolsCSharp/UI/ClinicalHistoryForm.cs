@@ -83,6 +83,7 @@ public class ClinicalHistoryForm : Form
 
     // Track displayed text and whether it was "fixed" from original
     private string? _currentDisplayedText;
+    private string? _rawClinicalHistorySource; // Raw text before cleanup (for debug)
     private bool _currentTextWasFixed = false;
 
     // Patient demographics for auto-add to pasted clinical history
@@ -158,6 +159,20 @@ public class ClinicalHistoryForm : Form
 
     // Callback for critical note creation
     private Action? _onCriticalNoteClick;
+
+    // Callback for manual template correction
+    private Action? _onFixTemplateClick;
+
+    // CDP insert callback — inserts text directly into transcript editor via DOM
+    private Func<string, bool>? _insertToTranscript;
+
+    // Debug info callbacks (set by MainForm, fetched from ActionController)
+    private Func<string>? _getPriorDebugInfo;
+    private Func<string>? _getCriticalFindingsDebugInfo;
+    private ToolStripItem? _fixTemplateMenuItem;
+    private ToolStripItem? _fixTemplateSeparator;
+    private ToolStripItem? _fixTemplateMenuItemOpaque;
+    private ToolStripItem? _fixTemplateSeparatorOpaque;
 
     // Transparent mode mouse handling
     private Point _formPosOnMouseDown;
@@ -255,9 +270,18 @@ public class ClinicalHistoryForm : Form
         _transparentDragMenu.Items.Add("Close", null, (_, _) => BeginInvoke(() => Close()));
 
         _transparentContentMenu = new ContextMenuStrip();
+        _fixTemplateMenuItem = _transparentContentMenu.Items.Add("Fix Template", null, (_, _) => _onFixTemplateClick?.Invoke());
+        _fixTemplateSeparator = new ToolStripSeparator();
+        _transparentContentMenu.Items.Add(_fixTemplateSeparator);
+        _fixTemplateMenuItem.Visible = false;
+        _fixTemplateSeparator.Visible = false;
         _transparentContentMenu.Items.Add("Create Critical Note", null, (_, _) => _onCriticalNoteClick?.Invoke());
         _transparentContentMenu.Items.Add(new ToolStripSeparator());
-        _transparentContentMenu.Items.Add("Copy Debug Info", null, (_, _) => CopyDebugInfoToClipboard());
+        _transparentContentMenu.Items.Add("Copy Template Debug", null, (_, _) => CopyTemplateDebugToClipboard());
+        _transparentContentMenu.Items.Add("Copy Clinical History Debug", null, (_, _) => CopyClinicalHistoryDebugToClipboard());
+        _transparentContentMenu.Items.Add("Copy Get Prior Debug", null, (_, _) => CopyCallbackDebug(_getPriorDebugInfo, "Get Prior debug copied!"));
+        _transparentContentMenu.Items.Add("Copy Critical Findings Debug", null, (_, _) => CopyCallbackDebug(_getCriticalFindingsDebugInfo, "Critical Findings debug copied!"));
+        _transparentContentMenu.Items.Add("Copy Alerts Debug", null, (_, _) => CopyAlertsDebugToClipboard());
 
         MouseDown += OnTransparentMouseDown;
 
@@ -365,9 +389,18 @@ public class ClinicalHistoryForm : Form
 
         // Context menu for content label
         var contentMenu = new ContextMenuStrip();
+        _fixTemplateMenuItemOpaque = contentMenu.Items.Add("Fix Template", null, (_, _) => _onFixTemplateClick?.Invoke());
+        _fixTemplateSeparatorOpaque = new ToolStripSeparator();
+        contentMenu.Items.Add(_fixTemplateSeparatorOpaque);
+        _fixTemplateMenuItemOpaque.Visible = false;
+        _fixTemplateSeparatorOpaque.Visible = false;
         contentMenu.Items.Add("Create Critical Note", null, (_, _) => _onCriticalNoteClick?.Invoke());
         contentMenu.Items.Add(new ToolStripSeparator());
-        contentMenu.Items.Add("Copy Debug Info", null, (_, _) => CopyDebugInfoToClipboard());
+        contentMenu.Items.Add("Copy Template Debug", null, (_, _) => CopyTemplateDebugToClipboard());
+        contentMenu.Items.Add("Copy Clinical History Debug", null, (_, _) => CopyClinicalHistoryDebugToClipboard());
+        contentMenu.Items.Add("Copy Get Prior Debug", null, (_, _) => CopyCallbackDebug(_getPriorDebugInfo, "Get Prior debug copied!"));
+        contentMenu.Items.Add("Copy Critical Findings Debug", null, (_, _) => CopyCallbackDebug(_getCriticalFindingsDebugInfo, "Critical Findings debug copied!"));
+        contentMenu.Items.Add("Copy Alerts Debug", null, (_, _) => CopyAlertsDebugToClipboard());
         _contentLabel.ContextMenuStrip = contentMenu;
 
         _contentLabel.MouseDown += OnContentLabelMouseDown;
@@ -675,16 +708,17 @@ public class ClinicalHistoryForm : Form
     /// Set clinical history with auto-fix support.
     /// </summary>
     public void SetClinicalHistoryWithAutoFix(string? preCleaned, string? cleaned, string? accession = null,
-        int? patientAge = null, string? patientGender = null)
+        int? patientAge = null, string? patientGender = null, string? rawSource = null)
     {
         if (InvokeRequired)
         {
-            BeginInvoke(() => SetClinicalHistoryWithAutoFix(preCleaned, cleaned, accession, patientAge, patientGender));
+            BeginInvoke(() => SetClinicalHistoryWithAutoFix(preCleaned, cleaned, accession, patientAge, patientGender, rawSource));
             return;
         }
 
         _patientAge = patientAge;
         _patientGender = patientGender;
+        if (rawSource != null) _rawClinicalHistorySource = rawSource;
 
         bool wasFixed = !string.IsNullOrWhiteSpace(preCleaned) &&
                         !string.IsNullOrWhiteSpace(cleaned) &&
@@ -699,14 +733,12 @@ public class ClinicalHistoryForm : Form
 
         if (!_config.AutoFixClinicalHistory)
         {
-            Logger.Trace("Auto-fix: disabled in config");
             _onAutoFixComplete?.Invoke();
             return;
         }
 
         if (string.IsNullOrWhiteSpace(cleaned))
         {
-            Logger.Trace("Auto-fix: cleaned is empty");
             _onAutoFixComplete?.Invoke();
             return;
         }
@@ -723,7 +755,6 @@ public class ClinicalHistoryForm : Form
         {
             if (_hasClinicalHistoryFixed(accession))
             {
-                Logger.Trace($"Auto-fix: already fixed accession {accession} (session tracking)");
                 _onAutoFixComplete?.Invoke();
                 return;
             }
@@ -732,7 +763,6 @@ public class ClinicalHistoryForm : Form
         {
             if (!string.IsNullOrEmpty(accession) && string.Equals(_lastAutoFixedAccession, accession, StringComparison.Ordinal))
             {
-                Logger.Trace($"Auto-fix: already fixed accession {accession} (local tracking)");
                 _onAutoFixComplete?.Invoke();
                 return;
             }
@@ -740,7 +770,7 @@ public class ClinicalHistoryForm : Form
 
         if (_autoFixInProgress)
         {
-            Logger.Trace($"Auto-fix: already in progress for '{accession}', skipping");
+            // Already in progress — skip silently
             return;
         }
         _autoFixInProgress = true;
@@ -953,6 +983,12 @@ public class ClinicalHistoryForm : Form
         _lastDescription = description;
         _lastTemplateName = templateName;
 
+        // Toggle "Fix Template" context menu item visibility
+        if (_fixTemplateMenuItem != null) _fixTemplateMenuItem.Visible = isMismatch;
+        if (_fixTemplateSeparator != null) _fixTemplateSeparator.Visible = isMismatch;
+        if (_fixTemplateMenuItemOpaque != null) _fixTemplateMenuItemOpaque.Visible = isMismatch;
+        if (_fixTemplateSeparatorOpaque != null) _fixTemplateSeparatorOpaque.Visible = isMismatch;
+
         if (isMismatch && !_patientMismatchActive && !_genderWarningActive)
         {
             BackColor = TemplateMismatchBorderColor;
@@ -1148,6 +1184,22 @@ public class ClinicalHistoryForm : Form
     public void SetCriticalNoteClickCallback(Action callback)
     {
         _onCriticalNoteClick = callback;
+    }
+
+    public void SetFixTemplateClickCallback(Action callback)
+    {
+        _onFixTemplateClick = callback;
+    }
+
+    public void SetInsertToTranscriptCallback(Func<string, bool> callback)
+    {
+        _insertToTranscript = callback;
+    }
+
+    public void SetDebugInfoCallbacks(Func<string> getPriorDebug, Func<string> getCriticalFindingsDebug)
+    {
+        _getPriorDebugInfo = getPriorDebug;
+        _getCriticalFindingsDebugInfo = getCriticalFindingsDebug;
     }
 
     public void SetAddendumCheckCallback(Func<bool> callback)
@@ -1372,34 +1424,44 @@ public class ClinicalHistoryForm : Form
             {
                 try
                 {
-                    NativeWindows.SavePreviousFocus();
-
-                    Logger.Trace($"Clinical history paste: setting clipboard to '{formatted.Substring(0, Math.Min(50, formatted.Length))}...'");
                     var textToPaste = (_config.SeparatePastedItems && !formatted.StartsWith("\n")) ? "\n" + formatted : formatted;
+                    Logger.Trace($"Clinical history insert: '{textToPaste.Substring(0, Math.Min(50, textToPaste.Length))}...'");
 
-                    if (!NativeWindows.ActivateMosaicForcefully())
+                    // [CDP] Direct DOM insertion into transcript editor — no clipboard, no focus issues
+                    if (_insertToTranscript != null && _insertToTranscript(textToPaste))
                     {
-                        if (!IsDisposed && IsHandleCreated)
-                            BeginInvoke(() => ShowToast("Mosaic not found"));
-                        return;
-                    }
-
-                    System.Threading.Thread.Sleep(200);
-                    if (_config.ExperimentalUseSendInputInsert)
-                    {
-                        NativeWindows.SendUnicodeText(textToPaste);
+                        Logger.Trace("Clinical history: inserted via CDP");
+                        ActionController.LastPasteTime = DateTime.Now;
                     }
                     else
                     {
-                        if (IsDisposed || !IsHandleCreated) return;
-                        Invoke(() => Clipboard.SetText(textToPaste));
-                        System.Threading.Thread.Sleep(50);
-                        NativeWindows.SendHotkey("ctrl+v");
-                    }
-                    System.Threading.Thread.Sleep(100);
+                        // Fallback: activate Mosaic and paste via clipboard
+                        NativeWindows.SavePreviousFocus();
 
-                    ActionController.LastPasteTime = DateTime.Now;
-                    NativeWindows.RestorePreviousFocus();
+                        if (!NativeWindows.ActivateMosaicForcefully())
+                        {
+                            if (!IsDisposed && IsHandleCreated)
+                                BeginInvoke(() => ShowToast("Mosaic not found"));
+                            return;
+                        }
+
+                        System.Threading.Thread.Sleep(200);
+                        if (_config.ExperimentalUseSendInputInsert)
+                        {
+                            NativeWindows.SendUnicodeText(textToPaste);
+                        }
+                        else
+                        {
+                            if (IsDisposed || !IsHandleCreated) return;
+                            Invoke(() => Clipboard.SetText(textToPaste));
+                            System.Threading.Thread.Sleep(50);
+                            NativeWindows.SendHotkey("ctrl+v");
+                        }
+                        System.Threading.Thread.Sleep(100);
+
+                        ActionController.LastPasteTime = DateTime.Now;
+                        NativeWindows.RestorePreviousFocus();
+                    }
 
                     if (showYellowCheckmark)
                     {
@@ -1451,18 +1513,63 @@ public class ClinicalHistoryForm : Form
 
     #region Debug & Toast
 
-    private void CopyDebugInfoToClipboard()
+    private void CopyTemplateDebugToClipboard()
     {
         var debugInfo = $"=== Template Matching Debug ===\r\n" +
                         $"Description: {_lastDescription ?? "(none)"}\r\n" +
                         $"Template: {_lastTemplateName ?? "(none)"}\r\n" +
                         $"Mismatch: {_templateMismatch}";
+        CopyToClipboard(debugInfo, "Template debug copied!");
+    }
 
+    private void CopyClinicalHistoryDebugToClipboard()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("=== Clinical History Debug ===");
+        sb.AppendLine();
+        sb.AppendLine("--- Raw Source (from report) ---");
+        sb.AppendLine(_rawClinicalHistorySource ?? "(none)");
+        sb.AppendLine();
+        sb.AppendLine("--- Displayed (cleaned) ---");
+        sb.AppendLine(_currentDisplayedText ?? "(none)");
+        sb.AppendLine();
+        sb.AppendLine("--- State ---");
+        sb.AppendLine($"Text was fixed: {_currentTextWasFixed}");
+        sb.AppendLine($"Auto-fix in progress: {_autoFixInProgress}");
+        sb.AppendLine($"Last auto-fixed accession: {_lastAutoFixedAccession ?? "(none)"}");
+        sb.AppendLine($"History fix inserted: {_historyFixInserted}");
+        sb.AppendLine($"Patient: {_patientGender ?? "?"}, age {_patientAge?.ToString() ?? "?"}");
+        sb.AppendLine($"Gender warning: {_genderWarningActive} ({_genderWarningText ?? ""})");
+        CopyToClipboard(sb.ToString().TrimEnd(), "Clinical history debug copied!");
+    }
+
+    private void CopyAlertsDebugToClipboard()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("=== Alerts Debug ===");
+        sb.AppendLine($"Template mismatch: {_templateMismatch}");
+        sb.AppendLine($"Patient mismatch: {_patientMismatchActive} ({_patientMismatchText ?? ""})");
+        sb.AppendLine($"Gender warning: {_genderWarningActive} ({_genderWarningText ?? ""})");
+        sb.AppendLine($"Stroke detected: {_strokeDetected}, note created: {_noteCreated}");
+        sb.AppendLine($"Aidoc active: {_aidocActive}, all addressed: {_aidocAllAddressed}");
+        sb.AppendLine($"Aidoc text: {_aidocAppendText ?? "(none)"}");
+        sb.AppendLine($"Showing alert: {_showingAlert}, type: {_currentAlertType?.ToString() ?? "(none)"}");
+        CopyToClipboard(sb.ToString().TrimEnd(), "Alerts debug copied!");
+    }
+
+    private void CopyCallbackDebug(Func<string>? callback, string toast)
+    {
+        var text = callback?.Invoke() ?? "(no data captured yet)";
+        CopyToClipboard(text, toast);
+    }
+
+    private void CopyToClipboard(string text, string toast)
+    {
         try
         {
-            Clipboard.SetText(debugInfo);
-            Services.Logger.Trace("Template debug info copied to clipboard");
-            ShowToast("Debug copied!");
+            Clipboard.SetText(text);
+            Services.Logger.Trace($"Debug info copied to clipboard ({text.Length} chars)");
+            ShowToast(toast);
         }
         catch (Exception ex)
         {
@@ -1752,6 +1859,11 @@ public class ClinicalHistoryForm : Form
         for (int i = 0; i < allTrimmedLines.Count; i++)
             allTrimmedLines[i] = StripCategoryPrefix(allTrimmedLines[i]);
 
+        // Normalize standalone laterality abbreviations at start of lines
+        // e.g. "r flank pain" → "Right flank pain", "lt knee" → "Left knee"
+        for (int i = 0; i < allTrimmedLines.Count; i++)
+            allTrimmedLines[i] = NormalizeLaterality(allTrimmedLines[i]);
+
         var preCleanedRaw = string.Join(" ", allTrimmedLines);
         var sb = new System.Text.StringBuilder();
         foreach (char c in preCleanedRaw)
@@ -1777,22 +1889,15 @@ public class ClinicalHistoryForm : Form
                     isDuplicate = true;
                     break;
                 }
-                // Check if the new line is an abbreviated version of an existing line → skip new
-                if (IsAbbreviatedDuplicate(line, uniqueLines[i]))
+                // Check abbreviation/duplicate in either direction — always prefer longer version
+                bool abbrNewOfExisting = IsAbbreviatedDuplicate(line, uniqueLines[i]);
+                bool abbrExistingOfNew = IsAbbreviatedDuplicate(uniqueLines[i], line);
+                if (abbrNewOfExisting || abbrExistingOfNew)
                 {
-                    // Bidirectional match (equivalent content) → prefer the longer version
-                    if (IsAbbreviatedDuplicate(uniqueLines[i], line) && line.Length > uniqueLines[i].Length)
-                    {
+                    if (line.Length > uniqueLines[i].Length)
                         replaceIndex = i;
-                        break;
-                    }
-                    isDuplicate = true;
-                    break;
-                }
-                // Check if an existing line is an abbreviated version of the new line → replace with longer
-                if (IsAbbreviatedDuplicate(uniqueLines[i], line))
-                {
-                    replaceIndex = i;
+                    else
+                        isDuplicate = true;
                     break;
                 }
                 // Fallback: word-pool overlap with abbreviation expansion
@@ -1945,6 +2050,21 @@ public class ClinicalHistoryForm : Form
     /// Expand common medical abbreviations so phrase/word matching can recognize them.
     /// Applied before comparison in both phrase-level and word-pool matching.
     /// </summary>
+    /// <summary>
+    /// Normalize standalone laterality abbreviations at the start of a line.
+    /// Only matches when followed by whitespace then a letter (avoids "L 5" vertebra confusion).
+    /// </summary>
+    private static string NormalizeLaterality(string line)
+    {
+        // "rt flank pain" → "Right flank pain", "RT KNEE" → "Right KNEE"
+        line = Regex.Replace(line, @"^[Rr][Tt](?=\s+[A-Za-z])", "Right");
+        line = Regex.Replace(line, @"^[Ll][Tt](?=\s+[A-Za-z])", "Left");
+        // "r flank pain" → "Right flank pain", "L knee" → "Left knee"
+        line = Regex.Replace(line, @"^[Rr](?=\s+[A-Za-z])", "Right");
+        line = Regex.Replace(line, @"^[Ll](?=\s+[A-Za-z])", "Left");
+        return line;
+    }
+
     private static string ExpandMedicalAbbreviations(string text)
     {
         text = Regex.Replace(text, @"\bN\s*/\s*V\b", "nausea vomiting", RegexOptions.IgnoreCase);
@@ -1963,6 +2083,12 @@ public class ClinicalHistoryForm : Form
         text = Regex.Replace(text, @"\bUTI\b", "urinary tract infection", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"\bSBO\b", "small bowel obstruction", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"\bCAD\b", "coronary artery disease", RegexOptions.IgnoreCase);
+        // Laterality abbreviations (expand r/o first to avoid "r" in "r/o" matching laterality)
+        text = Regex.Replace(text, @"\br/o\b", "rule out", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\brt\b", "right", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\blt\b", "left", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"(?<=^|\s)r(?=\s|$)", "right", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"(?<=^|\s)l(?=\s|$)", "left", RegexOptions.IgnoreCase);
         return text;
     }
 

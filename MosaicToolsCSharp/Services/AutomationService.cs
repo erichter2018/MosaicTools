@@ -135,6 +135,28 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     // Last scraped MRN (Medical Record Number) - required for XML file drop
     public string? LastMrn { get; private set; }
 
+    /// <summary>
+    /// Populate all Last* properties from CDP scrape data, bypassing UIA entirely.
+    /// Called from ActionController when CDP is active.
+    /// </summary>
+    public void PopulateFromCdpData(CdpScrapeResult data)
+    {
+        LastPatientName = data.PatientName;
+        LastPatientGender = data.PatientGender;
+        LastPatientAge = data.PatientAge;
+        LastMrn = data.Mrn;
+        LastSiteCode = data.SiteCode;
+        LastAccession = data.Accession;
+        LastDescription = data.Description;
+        LastTemplateName = data.TemplateName;
+        // Fallback: extract from report text EXAM: line (same as UIA path) if DOM reading failed
+        if (string.IsNullOrWhiteSpace(LastTemplateName) && !string.IsNullOrWhiteSpace(data.ReportText))
+            LastTemplateName = ExtractTemplateName(data.ReportText);
+        LastFinalReport = data.ReportText;
+        LastDraftedState = data.IsDrafted;
+        IsAddendumDetected = data.IsAddendum;
+    }
+
     // Accession for which patient info (gender, MRN, site code, name) was last extracted
     // Used to skip expensive FindAllDescendants when the same study is still open
 
@@ -1074,7 +1096,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         foreach (var m in KnownModalities)
         {
             if (upper.StartsWith(m + " ") || upper == m)
-                return m;
+                return m == "MRI" ? "MR" : m; // Normalize MRI → MR (same modality)
         }
 
         // Also check for "XRAY" → XR
@@ -3026,7 +3048,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     /// Organ-specific keywords that are ignored during template matching.
     /// These often appear as clinical indications (e.g., "RENAL CALCULI") rather than body regions.
     /// </summary>
-    private static readonly HashSet<string> OrganKeywords = new(StringComparer.OrdinalIgnoreCase)
+    public static readonly HashSet<string> OrganKeywords = new(StringComparer.OrdinalIgnoreCase)
     {
         "RENAL", "KIDNEY", "LIVER", "PANCREAS", "ENTEROGRAPHY", "UROGRAM"
     };
@@ -3095,11 +3117,20 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         if (string.IsNullOrWhiteSpace(description) || string.IsNullOrWhiteSpace(templateName))
             return true; // Can't determine, assume OK
 
+        // "Template *" (with optional zero-width space and thin space variants) is Mosaic's generic placeholder
+        var trimmedTemplate = templateName.Trim().TrimStart('\u200B');
+        // Normalize Unicode spaces (thin space U+2009, etc.) to regular space for comparison
+        trimmedTemplate = System.Text.RegularExpressions.Regex.Replace(trimmedTemplate, @"[\u2000-\u200A\u202F\u205F]", " ");
+        if (trimmedTemplate.Equals("Template *", StringComparison.OrdinalIgnoreCase))
+            return false;
+
         var descParts = ExtractBodyParts(description);
         var templateParts = ExtractBodyParts(templateName);
 
+        if (descParts.Count == 0 && templateParts.Count == 0)
+            return true; // Neither has recognizable body parts, can't determine
         if (descParts.Count == 0 || templateParts.Count == 0)
-            return true; // Can't determine, assume OK
+            return false; // One has body parts, the other doesn't — mismatch
 
         // Normalize runoff studies - AORTA + RUNOFF is equivalent to ABDOMEN/PELVIS + LOWER EXTREMITY
         NormalizeRunoffStudy(descParts);
@@ -3112,8 +3143,10 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         var descRegions = new HashSet<string>(descParts.Where(p => !excludeFromBodyParts.Contains(p)), StringComparer.OrdinalIgnoreCase);
         var templateRegions = new HashSet<string>(templateParts.Where(p => !excludeFromBodyParts.Contains(p)), StringComparer.OrdinalIgnoreCase);
 
+        if (descRegions.Count == 0 && templateRegions.Count == 0)
+            return true; // Neither has recognizable regions after filtering, can't determine
         if (descRegions.Count == 0 || templateRegions.Count == 0)
-            return true; // Can't determine after filtering, assume OK
+            return false; // One has regions, the other doesn't — mismatch
 
         bool bodyMatch = descRegions.SetEquals(templateRegions);
 

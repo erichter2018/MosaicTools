@@ -1136,7 +1136,37 @@ public static class CorrelationService
     }
 
     /// <summary>
-    /// Extract FINDINGS and IMPRESSION sections from report text.
+    /// Extract FINDINGS and IMPRESSION sections from structured report (CDP path — instant, no regex).
+    /// </summary>
+    internal static (string findings, string impression) ExtractSections(StructuredReport? report)
+    {
+        if (report == null) return ("", "");
+        var findingsSection = report.GetSection("FINDINGS");
+        var impressionSection = report.GetSection("IMPRESSION");
+        // For findings, include subsection content with headers
+        var findings = "";
+        if (findingsSection != null)
+        {
+            if (findingsSection.Subsections.Count > 0)
+            {
+                var parts = new List<string>();
+                if (!string.IsNullOrWhiteSpace(findingsSection.FullText))
+                    parts.Add(findingsSection.FullText);
+                foreach (var sub in findingsSection.Subsections)
+                    parts.Add(sub.Name + ":\n" + sub.FullText);
+                findings = string.Join("\n\n", parts);
+            }
+            else
+            {
+                findings = findingsSection.FullText;
+            }
+        }
+        var impression = impressionSection?.FullText ?? "";
+        return (findings.Trim(), impression.Trim());
+    }
+
+    /// <summary>
+    /// Extract FINDINGS and IMPRESSION sections from report text (regex fallback).
     /// </summary>
     internal static (string findings, string impression) ExtractSections(string text)
     {

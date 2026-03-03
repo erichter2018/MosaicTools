@@ -16,6 +16,7 @@ public class ExperimentalSection : SettingsSection
     private readonly NumericUpDown _connectivityIntervalUpDown;
     private readonly NumericUpDown _connectivityTimeoutUpDown;
     private readonly CheckBox _useSendInputInsertCheck;
+    private readonly CheckBox _cdpEnabledCheck;
 
     public ExperimentalSection(ToolTip toolTip) : base("Experimental", toolTip)
     {
@@ -50,6 +51,15 @@ public class ExperimentalSection : SettingsSection
 
         AddHintLabel("Shows 4 status dots: Mirth, Mosaic, Clario, InteleViewer", LeftMargin + 25);
 
+        // CDP (Direct DOM Access)
+        AddSectionDivider("Mosaic CDP (Direct DOM Access)");
+
+        _cdpEnabledCheck = AddCheckBox("Use CDP for Mosaic interaction", LeftMargin, _nextY,
+            "Falls back to UI Automation if CDP unavailable. Requires Mosaic restart on first enable.");
+        _nextY += RowHeight;
+
+        AddHintLabel("Reads Mosaic DOM directly via Chrome DevTools Protocol — faster, no COM leaks", LeftMargin + 25);
+
         UpdateHeight();
     }
 
@@ -67,6 +77,7 @@ public class ExperimentalSection : SettingsSection
         // Config stores ms, UI shows seconds
         _connectivityTimeoutUpDown.Value = Math.Max(1, (config.ConnectivityTimeoutMs + 500) / 1000);
         _useSendInputInsertCheck.Checked = config.ExperimentalUseSendInputInsert;
+        _cdpEnabledCheck.Checked = config.CdpEnabled;
 
         UpdateNetworkSettingsStates();
     }
@@ -78,5 +89,6 @@ public class ExperimentalSection : SettingsSection
         // UI shows seconds, config stores ms
         config.ConnectivityTimeoutMs = (int)_connectivityTimeoutUpDown.Value * 1000;
         config.ExperimentalUseSendInputInsert = _useSendInputInsertCheck.Checked;
+        config.CdpEnabled = _cdpEnabledCheck.Checked;
     }
 }

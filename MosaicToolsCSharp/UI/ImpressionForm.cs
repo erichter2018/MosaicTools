@@ -217,7 +217,31 @@ public class ImpressionForm : Form
     }
 
     /// <summary>
-    /// Extract impression from raw report text.
+    /// Extract impression from structured report (CDP path — instant, no regex).
+    /// </summary>
+    public static string? ExtractImpression(StructuredReport? report)
+    {
+        if (report == null) return null;
+        var section = report.GetSection("IMPRESSION");
+        if (section == null || string.IsNullOrWhiteSpace(section.FullText))
+            return null;
+
+        // Items are already parsed — format as numbered list
+        if (section.Items.Count > 0)
+        {
+            var formatted = string.Join("\n", section.Items.Select((item, i) => $"{i + 1}. {item}"));
+            return CleanText(formatted);
+        }
+
+        // Fallback: full text (non-numbered impression)
+        var content = Regex.Replace(section.FullText, @"[\r\n\t ]+", " ").Trim();
+        content = CleanText(content);
+        content = FormatNumberedItems(content);
+        return content;
+    }
+
+    /// <summary>
+    /// Extract impression from raw report text (regex fallback).
     /// </summary>
     public static string? ExtractImpression(string? rawText)
     {

@@ -101,6 +101,7 @@ public class ReportPopupForm : Form
     private readonly bool _changesEnabled;
     private readonly bool _correlationEnabled;
     private bool _baselineIsSectionOnly; // True when baseline is from template DB (diff only FINDINGS+IMPRESSION)
+    private StructuredReport? _structuredReport; // CDP: structured report for instant section parsing
     private CorrelationResult? _correlationResult;
     private CorrelationResult? _previousCorrelation; // Retained to prevent regression on noisy scrapes
     private bool _showingStaleContent; // True when showing cached report while live report is being updated
@@ -169,10 +170,11 @@ public class ReportPopupForm : Form
 
     public ReportPopupForm(Configuration config, string reportText, string? baselineReport = null,
         bool changesEnabled = false, bool correlationEnabled = false, bool baselineIsSectionOnly = false,
-        string? accession = null)
+        string? accession = null, StructuredReport? structuredReport = null)
     {
         _config = config;
         _baselineReport = baselineReport;
+        _structuredReport = structuredReport;
         _currentReportText = reportText;
         _changesEnabled = changesEnabled;
         _correlationEnabled = correlationEnabled;
@@ -397,11 +399,13 @@ public class ReportPopupForm : Form
     /// Update the report text and re-apply highlighting.
     /// Called when Process Report is pressed while popup is open.
     /// </summary>
-    public void UpdateReport(string newReportText, string? baseline = null, bool baselineIsSectionOnly = false)
+    public void UpdateReport(string newReportText, string? baseline = null, bool baselineIsSectionOnly = false,
+        StructuredReport? structuredReport = null)
     {
         // Don't overwrite while user is actively deleting impression points
         if (_deletePending) return;
 
+        _structuredReport = structuredReport;
         _showingStaleContent = false; // Clear stale flag when we get new content
         if (baseline != null)
         {
@@ -1021,7 +1025,10 @@ public class ReportPopupForm : Form
             string currentText = _currentReportText;
             if (_baselineIsSectionOnly)
             {
-                var (curFindings, curImpression) = CorrelationService.ExtractSections(_currentReportText);
+                // CDP-first: structured report gives instant section extraction
+                var (curFindings, curImpression) = _structuredReport != null
+                    ? CorrelationService.ExtractSections(_structuredReport)
+                    : CorrelationService.ExtractSections(_currentReportText);
                 if (!string.IsNullOrWhiteSpace(curFindings) && !string.IsNullOrWhiteSpace(curImpression))
                 {
                     currentText = $"FINDINGS:\n{curFindings}\nIMPRESSION:\n{curImpression}";
@@ -1073,6 +1080,44 @@ public class ReportPopupForm : Form
     /// </summary>
     private HashSet<string>? GetDictatedSentences()
     {
+        // CDP path: use Mosaic's own highlight marks to know what was dictated
+        if (_structuredReport != null)
+        {
+            try
+            {
+                var dictated = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                // Collect dictated text from all sections AND subsections
+                void AddDictatedFromSection(Services.ReportSection section)
+                {
+                    var dictText = section.DictatedText;
+                    if (!string.IsNullOrWhiteSpace(dictText))
+                    {
+                        foreach (var sentence in SplitIntoSentences(dictText))
+                        {
+                            var content = StripSectionHeading(sentence).Trim();
+                            var normalized = NormalizeSentence(content);
+                            if (string.IsNullOrWhiteSpace(normalized)) continue;
+                            if (content.Length < 3) continue;
+                            if (content.EndsWith(":")) continue;
+                            if (IsSectionHeading(content)) continue;
+                            dictated.Add(normalized);
+                        }
+                    }
+                    foreach (var sub in section.Subsections)
+                        AddDictatedFromSection(sub);
+                }
+                foreach (var section in _structuredReport.Sections)
+                    AddDictatedFromSection(section);
+                Logger.Trace($"GetDictatedSentences (CDP): {dictated.Count} dictated sentences from highlights");
+                return dictated;
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"GetDictatedSentences CDP error: {ex.Message}, falling back to baseline diff");
+            }
+        }
+
+        // Fallback: diff current text against saved baseline template
         if (string.IsNullOrEmpty(_baselineReport)) return null;
 
         try
@@ -1108,10 +1153,6 @@ public class ReportPopupForm : Form
             }
 
             Logger.Trace($"GetDictatedSentences: {dictated.Count} dictated sentences from {currentSentences.Count} total");
-            // Return the set even when empty — an empty set means "baseline exists,
-            // nothing was dictated" which produces zero filtered findings (no highlights).
-            // Returning null would mean "no baseline available" and fall back to
-            // unfiltered mode, incorrectly highlighting template text.
             return dictated;
         }
         catch (Exception ex)
@@ -1448,7 +1489,9 @@ public class ReportPopupForm : Form
                 string currentText = _currentReportText;
                 if (_baselineIsSectionOnly)
                 {
-                    var (curFindings, curImpression) = CorrelationService.ExtractSections(_currentReportText);
+                    var (curFindings, curImpression) = _structuredReport != null
+                        ? CorrelationService.ExtractSections(_structuredReport)
+                        : CorrelationService.ExtractSections(_currentReportText);
                     if (!string.IsNullOrWhiteSpace(curFindings) && !string.IsNullOrWhiteSpace(curImpression))
                     {
                         currentText = $"FINDINGS:\n{curFindings}\nIMPRESSION:\n{curImpression}";

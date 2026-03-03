@@ -43,12 +43,17 @@ public class ActionController : IDisposable
     private readonly IMosaicCommander _mosaicCommander;
     private NoteFormatter _noteFormatter;
     private GetPriorService _getPriorService;
+    private string? _lastPriorRawText;           // Debug: raw text from InteleViewer clipboard
+    private string? _lastPriorFormattedText;      // Debug: formatted text after GetPriorService
+    private string? _lastCriticalRawNote;         // Debug: raw Clario note text
+    private string? _lastCriticalFormattedText;   // Debug: formatted critical findings text
     private readonly OcrService _ocrService;
     private readonly PipeService _pipeService;
     private readonly TemplateDatabase _templateDatabase;
     private readonly AidocService _aidocService;
     private readonly RadAiService? _radAiService;  // [RadAI] — null if RadAI not installed
     private readonly RecoMdService _recoMdService;
+    private CdpService? _cdpService;  // [CDP] — null if CDP not enabled
     private SttService? _sttService;  // [CustomSTT] — null if Custom STT not enabled
     private KeytermLearningService? _keytermLearning; // [KeytermLearning] — null if not enabled
     private bool _sttDirectPasteActive; // [CustomSTT] Track whether direct paste is active
@@ -280,6 +285,18 @@ public class ActionController : IDisposable
         _aidocService = new AidocService(_automationService);
         _radAiService = RadAiService.TryCreate();  // [RadAI]
 
+        // [CDP] Initialize Chrome DevTools Protocol service
+        if (_config.CdpEnabled)
+        {
+            _cdpService = new CdpService();
+            if (!_config.CdpEnvVarSet)
+            {
+                CdpService.EnsureEnvVar();
+                _config.CdpEnvVarSet = true;
+                _config.Save();
+            }
+        }
+
         _actionThread = new Thread(ActionLoop) { IsBackground = true };
         _actionThread.SetApartmentState(ApartmentState.STA);
         _actionThread.Start();
@@ -348,6 +365,9 @@ public class ActionController : IDisposable
         // Start Mosaic scrape timer (always on)
         StartMosaicScrapeTimer();
 
+        // [CDP] Toast only on first-time enable (env var just set in constructor above)
+        // Don't nag every startup — the scrape loop will silently connect when Mosaic is ready
+
         // Load template database and prune stale entries
         if (_config.TemplateDatabaseEnabled)
         {
@@ -390,6 +410,28 @@ public class ActionController : IDisposable
 
         // Restart scraper to pick up any interval changes
         ToggleMosaicScraper(true);
+
+        // [CDP] Re-initialize on settings change
+        if (_config.CdpEnabled)
+        {
+            if (_cdpService == null)
+            {
+                _cdpService = new CdpService();
+                if (!_config.CdpEnvVarSet)
+                {
+                    CdpService.EnsureEnvVar();
+                    _config.CdpEnvVarSet = true;
+                    _config.Save();
+                    InvokeUI(() => _mainForm.ShowStatusToast("CDP: Restart Mosaic to enable direct DOM access.", 8000));
+                }
+            }
+        }
+        else if (_cdpService != null)
+        {
+            _cdpService.Dispose();
+            _cdpService = null;
+            Logger.Trace("CDP: Disabled and disposed");
+        }
 
         // [KeytermLearning] Re-initialize on settings change
         if (_config.SttKeytermLearningEnabled && _config.CustomSttEnabled
@@ -492,7 +534,11 @@ public class ActionController : IDisposable
                     transcript = InsertNewlineAfterSentences(transcript);
 
                 var hasTextToPaste = transcript.Length > 0;
-                var textToPaste = " " + transcript + " ";
+                // Smart spacing is handled by ApplyCdpSmartInsert when CDP is active;
+                // space-wrap only needed for standard paste fallback (non-CDP path)
+                var textToPaste = (_cdpService?.IsIframeConnected == true)
+                    ? transcript
+                    : " " + transcript + " ";
 
                 // Capture trigger info for use on STA thread
                 var triggerKind = voiceTrigger.Kind;
@@ -504,8 +550,12 @@ public class ActionController : IDisposable
                 {
                     lock (_directPasteLock)
                     {
-                        NativeWindows.ActivateMosaicForcefully();
-                        Thread.Sleep(100);
+                        // [CDP] Skip window activation — CDP inserts via DOM, no focus needed
+                        if (_cdpService?.IsIframeConnected != true)
+                        {
+                            NativeWindows.ActivateMosaicForcefully();
+                            Thread.Sleep(100);
+                        }
 
                         // Paste prefix text (if any)
                         if (hasTextToPaste)
@@ -525,7 +575,8 @@ public class ActionController : IDisposable
                         else if (triggerKind == VoiceTriggerKind.Macro && triggerMacro != null)
                         {
                             Logger.Trace($"CustomSTT: Voice macro triggered: \"{triggerMacro.Name}\"");
-                            InsertTextToFocusedEditor(PrepareTextForPaste(triggerMacro.Text));
+                            // Macros insert into transcript (editor 0) — same target as STT dictation
+                            InsertTextToFocusedEditor(PrepareTextForPaste(triggerMacro.Text), cdpEditorIndex: 0);
                             Thread.Sleep(50);
                         }
 
@@ -817,6 +868,9 @@ public class ActionController : IDisposable
             case "__ReplaceImpression__":
                 PerformReplaceImpression();
                 break;
+            case "__ManualCorrectTemplate__":
+                PerformManualCorrectTemplate();
+                break;
         }
     }
     
@@ -830,8 +884,97 @@ public class ActionController : IDisposable
         return text;
     }
 
-    private void InsertTextToFocusedEditor(string text)
+    /// <summary>
+    /// Context-aware STT text insertion via CDP. Adjusts capitalization and spacing
+    /// based on characters surrounding the cursor in the ProseMirror editor.
+    /// </summary>
+    private bool ApplyCdpSmartInsert(string text, int editorIndex)
     {
+        if (_cdpService == null) return false;
+        var ctx = _cdpService.GetCursorContext(editorIndex);
+        if (ctx == null)
+            return _cdpService.InsertContent(editorIndex, text); // fallback to plain insert
+
+        var (before, after, selectedText) = ctx.Value;
+        bool hasSelection = selectedText.Length > 0;
+
+        // Smart casing: match the replaced text's casing, or infer from context
+        if (text.Length > 0 && char.IsUpper(text[0]))
+        {
+            if (hasSelection)
+            {
+                // Match the first char's casing of the text being replaced
+                if (char.IsLower(selectedText[0]))
+                    text = char.ToLower(text[0]) + text[1..];
+            }
+            else
+            {
+                // No selection — lowercase if mid-sentence
+                bool startOfSentence = before == '.' || before == '!' || before == '?'
+                                    || before == '\n' || before == '\0';
+                if (!startOfSentence)
+                    text = char.ToLower(text[0]) + text[1..];
+            }
+        }
+
+        // Smart trailing period: Deepgram adds periods to most utterances.
+        // Keep if: at end of content, or replacing text that ended with a period.
+        // Strip if: mid-sentence with more text after cursor.
+        bool atEndOfContent = after == '\0' || after == '\n';
+        bool selectedHadPeriod = hasSelection && selectedText.TrimEnd().EndsWith('.');
+        if (text.TrimEnd().EndsWith('.') && !atEndOfContent && !selectedHadPeriod)
+            text = text.TrimEnd()[..^1];
+
+        // Smart spacing
+        bool beforeIsSpace = before == ' ' || before == '\n' || before == '\0';
+        bool afterIsSpace = after == ' ' || after == '\n' || after == '\0';
+
+        // Trim existing spaces from text edges before re-adding
+        text = text.Trim();
+
+        // Add leading space if needed (char before is a letter/digit, not already a space)
+        if (!beforeIsSpace && (char.IsLetterOrDigit(before) || char.IsPunctuation(before)))
+            text = " " + text;
+
+        // Add trailing space if needed (char after is a letter/digit, not already a space)
+        if (!afterIsSpace && char.IsLetterOrDigit(after))
+            text = text + " ";
+
+        return _cdpService.InsertContent(editorIndex, text);
+    }
+
+    private void InsertTextToFocusedEditor(string text, int cdpEditorIndex = -1)
+    {
+        // [CDP] Direct DOM insertion — no clipboard, no focus management
+        if (_cdpService?.IsIframeConnected == true)
+        {
+            int idx = cdpEditorIndex;
+            bool isSttPaste = cdpEditorIndex < 0; // auto-detect = STT
+            if (idx < 0)
+            {
+                // Auto-detect: live DOM check, falls back to last-known from scrape loop
+                idx = _cdpService.GetFocusedEditorIndex();
+                if (idx < 0)
+                {
+                    Logger.Trace("CDP: No focused editor ever detected, using standard paste");
+                    goto standardPaste;
+                }
+                Logger.Trace($"CDP: Targeting editor {idx} (0=transcript, 1=report)");
+            }
+            if (isSttPaste)
+            {
+                if (ApplyCdpSmartInsert(text, idx))
+                    return;
+            }
+            else
+            {
+                if (_cdpService.InsertContent(idx, text))
+                    return;
+            }
+            Logger.Trace("CDP: InsertContent failed, falling through to standard insert");
+        }
+        standardPaste:
+
         if (_config.ExperimentalUseSendInputInsert)
         {
             var ok = NativeWindows.SendUnicodeText(text);
@@ -859,6 +1002,16 @@ public class ActionController : IDisposable
 
         Thread.Sleep(50);
         NativeWindows.SendHotkey("ctrl+v");
+    }
+
+    /// <summary>
+    /// Insert text directly into the transcript editor (index 0) via CDP.
+    /// Returns true if successful, false if CDP is unavailable.
+    /// </summary>
+    public bool InsertToTranscript(string text)
+    {
+        if (_cdpService?.IsIframeConnected != true) return false;
+        return _cdpService.InsertContent(0, text);
     }
 
     public bool IsAddendumOpen()
@@ -1215,10 +1368,13 @@ public class ActionController : IDisposable
             // Hide the transcription indicator
             InvokeUI(() => _mainForm.HideTranscriptionForm());
 
-            // Send Alt+P — text is already in Mosaic via direct paste
-            NativeWindows.ActivateMosaicForcefully();
-            Thread.Sleep(100);
-            NativeWindows.SendAltKey('P');
+            // Send Process Report — CDP button click or Alt+P
+            if (!(_cdpService?.ClickProcessReport() == true))
+            {
+                NativeWindows.ActivateMosaicForcefully();
+                Thread.Sleep(100);
+                NativeWindows.SendAltKey('P');
+            }
 
             // Auto-restart STT after process report
             if (_config.SttAutoStartOnCase)
@@ -1240,39 +1396,42 @@ public class ActionController : IDisposable
                 Thread.Sleep(200);
             }
 
-            // 2. Conditional Alt+P logic for hardcoded mic buttons
-            // PowerMic: Skip Back is hardcoded to Process Report
-            // SpeechMike: Ins/Ovr is hardcoded to Process Report
-            bool isHardcodedProcessButton = (source == "Skip Back") || (source == "Ins/Ovr");
-            var currentMappings = GetCurrentMicMappings();
-            bool isButtonMappedToProcess =
-                currentMappings.GetValueOrDefault(Actions.ProcessReport)?.MicButton == "Skip Back" ||
-                currentMappings.GetValueOrDefault(Actions.ProcessReport)?.MicButton == "Ins/Ovr";
-
-            if (isHardcodedProcessButton && isButtonMappedToProcess)
+            // 2. Send Process Report — CDP button click bypasses all Alt+P logic
+            if (_cdpService?.ClickProcessReport() == true)
             {
-                // If the hardware button is pressed, and it's mapped to Process Report
-                if (dictationWasActive)
+                Logger.Trace("Process Report: Sent via CDP button click");
+            }
+            else
+            {
+                // Conditional Alt+P logic for hardcoded mic buttons
+                // PowerMic: Skip Back is hardcoded to Process Report
+                // SpeechMike: Ins/Ovr is hardcoded to Process Report
+                bool isHardcodedProcessButton = (source == "Skip Back") || (source == "Ins/Ovr");
+                var currentMappings = GetCurrentMicMappings();
+                bool isButtonMappedToProcess =
+                    currentMappings.GetValueOrDefault(Actions.ProcessReport)?.MicButton == "Skip Back" ||
+                    currentMappings.GetValueOrDefault(Actions.ProcessReport)?.MicButton == "Ins/Ovr";
+
+                if (isHardcodedProcessButton && isButtonMappedToProcess)
                 {
-                    // If dictation was ON, the hardware button might fail to process the report.
-                    // We send it manually AFTER stopping dictation.
-                    Logger.Trace($"Process Report: Dictation was ON + {source}. Sending Alt+P manually.");
+                    if (dictationWasActive)
+                    {
+                        Logger.Trace($"Process Report: Dictation was ON + {source}. Sending Alt+P manually.");
+                        NativeWindows.ActivateMosaicForcefully();
+                        Thread.Sleep(100);
+                        NativeWindows.SendAltKey('P');
+                    }
+                    else
+                    {
+                        Logger.Trace($"Process Report: Dictation was OFF + {source}. Skipping redundant Alt+P.");
+                    }
+                }
+                else
+                {
                     NativeWindows.ActivateMosaicForcefully();
                     Thread.Sleep(100);
                     NativeWindows.SendAltKey('P');
                 }
-                else
-                {
-                    // Hardware handles it when dictation is OFF.
-                    Logger.Trace($"Process Report: Dictation was OFF + {source}. Skipping redundant Alt+P.");
-                }
-            }
-            else
-            {
-                // Standard behavior for Hotkeys, Toolbar, or non-hardcoded buttons
-                NativeWindows.ActivateMosaicForcefully();
-                Thread.Sleep(100);
-                NativeWindows.SendAltKey('P');
             }
         }
 
@@ -1542,8 +1701,13 @@ public class ActionController : IDisposable
             PerformToggleRecordStt(false);
         }
 
+        // [CDP] Sign via button click — bypasses all Alt+F / hardware button logic
+        if (_cdpService?.ClickSignReport() == true)
+        {
+            Logger.Trace("Sign Report: Sent via CDP button click");
+        }
         // [CustomSTT] When Custom STT is enabled, always send Alt+F (Mosaic doesn't have the PowerMic)
-        if (_config.CustomSttEnabled)
+        else if (_config.CustomSttEnabled)
         {
             Logger.Trace("Sign Report (CustomSTT): Always sending Alt+F");
             NativeWindows.KeyUpModifiers();
@@ -1651,8 +1815,12 @@ public class ActionController : IDisposable
         // This ensures CLOSED_UNSIGNED is sent even if the scrape loop handles it
         _discardDialogShownForCurrentAccession = true;
 
-        // Perform the UI automation to discard
-        bool success = _mosaicCommander.ClickDiscardStudy();
+        // [CDP] Discard via button click, fall back to FlaUI
+        bool success = _cdpService?.ClickDiscardStudy() == true;
+        if (success)
+            Logger.Trace("Discard Study: Sent via CDP button click");
+        else
+            success = _mosaicCommander.ClickDiscardStudy();
 
         if (success)
         {
@@ -1710,9 +1878,15 @@ public class ActionController : IDisposable
 
     private void PerformCreateImpression()
     {
-        Logger.Trace("Create Impression (via UI Automation)");
+        Logger.Trace("Create Impression");
 
-        var success = _mosaicCommander.ClickCreateImpression();
+        // [CDP] Try button click first, fall back to FlaUI
+        bool success = _cdpService?.ClickCreateImpression() == true;
+        if (success)
+            Logger.Trace("Create Impression: Sent via CDP button click");
+        else
+            success = _mosaicCommander.ClickCreateImpression();
+
         if (success)
         {
             InvokeUI(() => _mainForm.ShowStatusToast("Create Impression", 1500));
@@ -1831,15 +2005,16 @@ public class ActionController : IDisposable
 
             try
             {
-                // Activate Mosaic and paste
-                NativeWindows.ActivateMosaicForcefully();
-                Thread.Sleep(50);
+                // [CDP] Direct DOM insertion — no window activation or focus needed
+                if (_cdpService?.IsIframeConnected != true)
+                {
+                    NativeWindows.ActivateMosaicForcefully();
+                    Thread.Sleep(50);
+                    _mosaicCommander.FocusTranscriptBox();
+                    Thread.Sleep(50);
+                }
 
-                // Focus Transcript box to ensure paste goes to correct location
-                _mosaicCommander.FocusTranscriptBox();
-                Thread.Sleep(50);
-
-                InsertTextToFocusedEditor(PrepareTextForPaste(text));
+                InsertTextToFocusedEditor(PrepareTextForPaste(text), cdpEditorIndex: 0);
                 Thread.Sleep(100); // Increased for reliability
 
                 // Mark this accession as having had macros inserted (session-wide tracking)
@@ -1975,15 +2150,16 @@ public class ActionController : IDisposable
 
             try
             {
-                // Activate Mosaic and paste
-                NativeWindows.ActivateMosaicForcefully();
-                Thread.Sleep(50);
+                // [CDP] Direct DOM insertion — no window activation or focus needed
+                if (_cdpService?.IsIframeConnected != true)
+                {
+                    NativeWindows.ActivateMosaicForcefully();
+                    Thread.Sleep(50);
+                    _mosaicCommander.FocusTranscriptBox();
+                    Thread.Sleep(50);
+                }
 
-                // Focus Transcript box to ensure paste goes to correct location
-                _mosaicCommander.FocusTranscriptBox();
-                Thread.Sleep(50);
-
-                InsertTextToFocusedEditor(PrepareTextForPaste(text));
+                InsertTextToFocusedEditor(PrepareTextForPaste(text), cdpEditorIndex: 0);
                 Thread.Sleep(100);
 
                 InvokeUI(() => _mainForm.ShowStatusToast("Pick list item inserted", 1500));
@@ -2083,24 +2259,28 @@ public class ActionController : IDisposable
             }
             
             Logger.Trace($"Raw prior text: {rawText.Substring(0, Math.Min(100, rawText.Length))}...");
-            
+            _lastPriorRawText = rawText;
+
             // Process
             var formatted = _getPriorService.ProcessPriorText(rawText);
+            _lastPriorFormattedText = formatted;
             if (string.IsNullOrEmpty(formatted))
             {
                 InvokeUI(() => _mainForm.ShowStatusToast("Could not parse prior"));
                 return;
             }
             
-            // Paste into Mosaic (with leading and trailing newline for cleaner insertion)
-            NativeWindows.ActivateMosaicForcefully();
-            Thread.Sleep(100);
+            // Paste into Mosaic transcript
+            // [CDP] Direct DOM insertion — no window activation or focus needed
+            if (_cdpService?.IsIframeConnected != true)
+            {
+                NativeWindows.ActivateMosaicForcefully();
+                Thread.Sleep(100);
+                _mosaicCommander.FocusTranscriptBox();
+                Thread.Sleep(100);
+            }
 
-            // Focus Transcript box to ensure paste goes to correct location
-            _mosaicCommander.FocusTranscriptBox();
-            Thread.Sleep(100);
-
-            InsertTextToFocusedEditor(PrepareTextForPaste(formatted + "\n"));
+            InsertTextToFocusedEditor(PrepareTextForPaste(formatted + "\n"), cdpEditorIndex: 0);
 
             Logger.Trace($"Get Prior complete: {formatted}");
             InvokeUI(() => _mainForm.ShowStatusToast("Prior inserted"));
@@ -2144,8 +2324,10 @@ public class ActionController : IDisposable
                 InvokeUI(() => _mainForm.ShowStatusToast(msg));
             });
 
+            _lastCriticalRawNote = rawNote;
             if (string.IsNullOrEmpty(rawNote))
             {
+                _lastCriticalFormattedText = null;
                 InvokeUI(() => _mainForm.ShowStatusToast("No EXAM NOTE found"));
                 return;
             }
@@ -2155,14 +2337,19 @@ public class ActionController : IDisposable
 
             // Format
             var formatted = _noteFormatter.FormatNote(rawNote);
+            _lastCriticalFormattedText = formatted;
 
             // Insert into Mosaic final report box (not transcript)
-            NativeWindows.ActivateMosaicForcefully();
-            Thread.Sleep(200);
-            _mosaicCommander.FocusFinalReportBox();
-            Thread.Sleep(100);
+            // [CDP] Direct DOM insertion — no window activation or focus needed
+            if (_cdpService?.IsIframeConnected != true)
+            {
+                NativeWindows.ActivateMosaicForcefully();
+                Thread.Sleep(200);
+                _mosaicCommander.FocusFinalReportBox();
+                Thread.Sleep(100);
+            }
 
-            InsertTextToFocusedEditor(formatted);
+            InsertTextToFocusedEditor(formatted, cdpEditorIndex: 1);
 
             Logger.Trace($"Critical Findings complete: {formatted}");
 
@@ -2350,11 +2537,13 @@ public class ActionController : IDisposable
 
             InvokeUI(() =>
             {
+                var sr = (_cdpService?.IsIframeConnected == true) ? _cdpService.GetStructuredReport() : null;
                 _currentReportPopup = new ReportPopupForm(_config, reportText, baselineForDiff,
                     changesEnabled: _config.ShowReportChanges,
                     correlationEnabled: _config.CorrelationEnabled,
                     baselineIsSectionOnly: baselineForDiff != null && _baselineIsFromTemplateDb,
-                    accession: _mosaicReader.LastAccession);
+                    accession: _mosaicReader.LastAccession,
+                    structuredReport: sr);
                 _lastPopupReportText = reportText;
 
                 _currentReportPopup.ImpressionDeleteRequested += OnImpressionDeleteRequested;
@@ -2478,8 +2667,12 @@ public class ActionController : IDisposable
             }
             
             // Insert into Mosaic
-            NativeWindows.ActivateMosaicForcefully();
-            Thread.Sleep(200);
+            // [CDP] Direct DOM insertion — no window activation needed
+            if (_cdpService?.IsIframeConnected != true)
+            {
+                NativeWindows.ActivateMosaicForcefully();
+                Thread.Sleep(200);
+            }
             InsertTextToFocusedEditor(result);
             
             InvokeUI(() => _mainForm.ShowStatusToast($"Inserted: {result}"));
@@ -2608,8 +2801,15 @@ public class ActionController : IDisposable
         }
 
         // Fresh scrape to ensure we have the latest report text (not stale cache)
-        _mosaicReader.GetFinalReportFast();
-        var reportText = _mosaicReader.LastFinalReport;
+        // [CDP] Read directly from DOM — skip UIA scrape
+        var reportText = _cdpService?.IsIframeConnected == true
+            ? _cdpService.GetEditorText(1)
+            : null;
+        if (string.IsNullOrEmpty(reportText))
+        {
+            _mosaicReader.GetFinalReportFast();
+            reportText = _mosaicReader.LastFinalReport;
+        }
         if (string.IsNullOrEmpty(reportText))
         {
             InvokeUI(() => _mainForm.ShowStatusToast("No report text available", 2000));
@@ -2876,17 +3076,27 @@ public class ActionController : IDisposable
         Logger.Trace($"RecoMD: Got {recoText.Length} chars from clipboard via Win32");
 
         // Step 3: Get existing impression from the already-scraped report.
-        var reportText = _mosaicReader.LastFinalReport;
+        // [CDP] Read directly from DOM
+        var reportText = _cdpService?.IsIframeConnected == true
+            ? _cdpService.GetEditorText(1)
+            : null;
         if (string.IsNullOrEmpty(reportText))
         {
-            Logger.Trace("RecoMD: No scraped report available, attempting fresh scrape");
-            reportText = _mosaicReader.GetFinalReportFast();
+            reportText = _mosaicReader.LastFinalReport;
+            if (string.IsNullOrEmpty(reportText))
+            {
+                Logger.Trace("RecoMD: No scraped report available, attempting fresh scrape");
+                reportText = _mosaicReader.GetFinalReportFast();
+            }
         }
 
         string existingImpression = "";
         if (!string.IsNullOrEmpty(reportText))
         {
-            var (_, impression) = Services.CorrelationService.ExtractSections(reportText);
+            // CDP-first: structured report gives instant section extraction
+            var (_, impression) = (_cdpService?.IsIframeConnected == true)
+                ? Services.CorrelationService.ExtractSections(_cdpService.GetStructuredReport())
+                : Services.CorrelationService.ExtractSections(reportText);
             existingImpression = impression;
         }
 
@@ -2919,24 +3129,49 @@ public class ActionController : IDisposable
         // Step 5: Replace impression content — exact same pattern as RadAI insert.
         lock (PasteLock)
         {
-            NativeWindows.ActivateMosaicForcefully();
-            Thread.Sleep(100);
-
-            _mosaicCommander.FocusFinalReportBox();
-            Thread.Sleep(100);
-            NativeWindows.SendHotkey("ctrl+end");
-            Thread.Sleep(100);
-
-            bool selected = _mosaicCommander.SelectImpressionContent();
-            if (!selected)
+            // [CDP] Direct DOM: select impression via JS, then replace via insertContent
+            if (_cdpService?.IsIframeConnected == true)
             {
-                InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section", 3000));
-                return;
+                bool selected = _cdpService.SelectImpressionContent();
+                if (!selected)
+                {
+                    Logger.Trace("RecoMD: CDP SelectImpressionContent failed");
+                    InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section", 3000));
+                    return;
+                }
+                Thread.Sleep(50);
+                // Format as HTML ordered list so TipTap creates proper <li> nodes
+                var recoLines = combined.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+                var recoHtml = "<ol>" + string.Join("", recoLines.Select(l =>
+                    $"<li><p>{System.Net.WebUtility.HtmlEncode(l)}</p></li>")) + "</ol>";
+                if (!_cdpService.InsertContent(1, recoHtml))
+                {
+                    Logger.Trace("RecoMD: CDP InsertContent failed");
+                    InvokeUI(() => _mainForm.ShowStatusToast("CDP: Failed to paste recommendations", 3000));
+                    return;
+                }
             }
-            Thread.Sleep(50);
+            else
+            {
+                NativeWindows.ActivateMosaicForcefully();
+                Thread.Sleep(100);
 
-            InsertTextToFocusedEditor(combined);
-            Thread.Sleep(100);
+                _mosaicCommander.FocusFinalReportBox();
+                Thread.Sleep(100);
+                NativeWindows.SendHotkey("ctrl+end");
+                Thread.Sleep(100);
+
+                bool selected = _mosaicCommander.SelectImpressionContent();
+                if (!selected)
+                {
+                    InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section", 3000));
+                    return;
+                }
+                Thread.Sleep(50);
+
+                InsertTextToFocusedEditor(combined, cdpEditorIndex: 1);
+                Thread.Sleep(100);
+            }
         }
 
         Logger.Trace("RecoMD: Pasted recommendations into Mosaic impression");
@@ -3017,42 +3252,65 @@ public class ActionController : IDisposable
 
         lock (PasteLock)
         {
-            NativeWindows.ActivateMosaicForcefully();
-            Thread.Sleep(100);
-
-            // Focus report editor and scroll to bottom
-            _mosaicCommander.FocusFinalReportBox();
-            Thread.Sleep(100);
-            NativeWindows.SendHotkey("ctrl+end");
-            Thread.Sleep(100);
-
-            // Use UIA to find IMPRESSION content elements and select them
-            // Retry several times — after Process Report, Mosaic may still be rebuilding the editor
-            bool selected = false;
-            for (int attempt = 0; attempt < 5; attempt++)
+            // [CDP] Direct DOM: select impression via JS, then replace via insertContent
+            if (_cdpService?.IsIframeConnected == true)
             {
-                selected = _mosaicCommander.SelectImpressionContent();
-                if (selected) break;
-                Logger.Trace($"RadAI Insert: IMPRESSION not found, retry {attempt + 1}/5...");
-                Thread.Sleep(1500);
+                bool selected = _cdpService.SelectImpressionContent();
+                if (!selected)
+                {
+                    Logger.Trace("RadAI Insert: CDP SelectImpressionContent failed");
+                    InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section in editor", 3000));
+                    return;
+                }
+                Thread.Sleep(50);
+                // Format as HTML ordered list so TipTap creates proper <li> nodes
+                var htmlItems = string.Join("", items.Select(i =>
+                    $"<li><p>{System.Net.WebUtility.HtmlEncode(i)}</p></li>"));
+                var htmlImpression = $"<ol>{htmlItems}</ol>";
+                if (!_cdpService.InsertContent(1, htmlImpression))
+                {
+                    Logger.Trace("RadAI Insert: CDP InsertContent failed");
+                    InvokeUI(() => _mainForm.ShowStatusToast("CDP: Failed to insert impression", 3000));
+                    return;
+                }
+            }
+            else
+            {
                 NativeWindows.ActivateMosaicForcefully();
                 Thread.Sleep(100);
+
+                // Focus report editor and scroll to bottom
                 _mosaicCommander.FocusFinalReportBox();
                 Thread.Sleep(100);
                 NativeWindows.SendHotkey("ctrl+end");
                 Thread.Sleep(100);
-            }
-            if (!selected)
-            {
-                InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section in editor", 3000));
-                return;
-            }
 
-            Thread.Sleep(50);
+                // Use UIA to find IMPRESSION content elements and select them
+                // Retry several times — after Process Report, Mosaic may still be rebuilding the editor
+                bool selected = false;
+                for (int attempt = 0; attempt < 5; attempt++)
+                {
+                    selected = _mosaicCommander.SelectImpressionContent();
+                    if (selected) break;
+                    Logger.Trace($"RadAI Insert: IMPRESSION not found, retry {attempt + 1}/5...");
+                    Thread.Sleep(1500);
+                    NativeWindows.ActivateMosaicForcefully();
+                    Thread.Sleep(100);
+                    _mosaicCommander.FocusFinalReportBox();
+                    Thread.Sleep(100);
+                    NativeWindows.SendHotkey("ctrl+end");
+                    Thread.Sleep(100);
+                }
+                if (!selected)
+                {
+                    InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section in editor", 3000));
+                    return;
+                }
 
-            // Replace selection or insert at cursor
-            InsertTextToFocusedEditor(newImpression);
-            Thread.Sleep(100);
+                Thread.Sleep(50);
+                InsertTextToFocusedEditor(newImpression, cdpEditorIndex: 1);
+                Thread.Sleep(100);
+            }
         }
 
         // Kick off burst scraping so popup catches the update quickly
@@ -3071,10 +3329,14 @@ public class ActionController : IDisposable
             for (int attempt = 0; attempt < 3 && !verified; attempt++)
             {
                 Thread.Sleep(attempt == 0 ? 500 : 1000);
-                // REVISIT: Removed editor cache invalidation — paste doesn't rebuild DOM,
-                // the cached ProseMirror element reads updated text content directly.
-                _mosaicReader.GetFinalReportFast();
-                updatedReport = _mosaicReader.LastFinalReport ?? "";
+                // [CDP] Read directly from DOM for verification
+                if (_cdpService?.IsIframeConnected == true)
+                    updatedReport = _cdpService.GetEditorText(1) ?? "";
+                else
+                {
+                    _mosaicReader.GetFinalReportFast();
+                    updatedReport = _mosaicReader.LastFinalReport ?? "";
+                }
                 if (!string.IsNullOrEmpty(checkText) && !string.IsNullOrEmpty(updatedReport))
                     verified = updatedReport.Contains(checkText, StringComparison.OrdinalIgnoreCase);
                 if (!verified)
@@ -3123,10 +3385,15 @@ public class ActionController : IDisposable
         {
             // Classic popup mode: scrape and push to popup immediately
             Thread.Sleep(500);
-            // REVISIT: Removed editor cache invalidation — paste doesn't rebuild DOM,
-            // the cached ProseMirror element reads updated text content directly.
-            _mosaicReader.GetFinalReportFast();
-            var updatedReport = _mosaicReader.LastFinalReport;
+            // [CDP] Read directly from DOM
+            string? updatedReport;
+            if (_cdpService?.IsIframeConnected == true)
+                updatedReport = _cdpService.GetEditorText(1);
+            else
+            {
+                _mosaicReader.GetFinalReportFast();
+                updatedReport = _mosaicReader.LastFinalReport;
+            }
             if (!string.IsNullOrEmpty(updatedReport))
                 UpdateReportPopup(updatedReport, immediate: true);
             _pendingRadAiImpressionItems = null;
@@ -3161,46 +3428,83 @@ public class ActionController : IDisposable
 
         lock (PasteLock)
         {
-            NativeWindows.ActivateMosaicForcefully();
-            Thread.Sleep(100);
-
-            // Ctrl+End to scroll to bottom of report (works better than Page Down for short reports)
-            NativeWindows.SendHotkey("ctrl+end");
-            Thread.Sleep(100);
-
-            // Select impression content
-            bool selected = _mosaicCommander.SelectImpressionContent();
-            if (!selected)
+            // [CDP] Direct DOM: select impression via JS, then replace
+            if (_cdpService?.IsIframeConnected == true)
             {
-                Logger.Trace("PerformReplaceImpression: Could not find IMPRESSION section");
-                InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section", 3000));
-                _impressionDeletePending = false;
-                _pendingImpressionReplaceText = null;
-                InvokeUI(() => _currentReportPopup?.ClearDeletePending());
-                return;
-            }
+                bool selected = _cdpService.SelectImpressionContent();
+                if (!selected)
+                {
+                    Logger.Trace("PerformReplaceImpression: CDP SelectImpressionContent failed");
+                    InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section", 3000));
+                    _impressionDeletePending = false;
+                    _pendingImpressionReplaceText = null;
+                    InvokeUI(() => _currentReportPopup?.ClearDeletePending());
+                    return;
+                }
+                Thread.Sleep(50);
 
-            Thread.Sleep(50);
-
-            if (string.IsNullOrEmpty(newText))
-            {
-                // All points deleted — send Delete key to clear impression
-                const byte VK_DELETE = 0x2E;
-                NativeWindows.keybd_event(VK_DELETE, 0, 0, UIntPtr.Zero);
-                Thread.Sleep(10);
-                NativeWindows.keybd_event(VK_DELETE, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                if (string.IsNullOrEmpty(newText))
+                {
+                    // All points deleted — delete selection via TipTap
+                    _cdpService.InsertContent(1, "");
+                }
+                else
+                {
+                    // Format as HTML ordered list for proper numbering
+                    var lines = newText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+                    var html = "<ol>" + string.Join("", lines.Select(l =>
+                        $"<li><p>{System.Net.WebUtility.HtmlEncode(l)}</p></li>")) + "</ol>";
+                    _cdpService.InsertContent(1, html);
+                }
+                Thread.Sleep(100);
             }
             else
             {
-                InsertTextToFocusedEditor(newText);
+                NativeWindows.ActivateMosaicForcefully();
+                Thread.Sleep(100);
+
+                NativeWindows.SendHotkey("ctrl+end");
+                Thread.Sleep(100);
+
+                bool selected = _mosaicCommander.SelectImpressionContent();
+                if (!selected)
+                {
+                    Logger.Trace("PerformReplaceImpression: Could not find IMPRESSION section");
+                    InvokeUI(() => _mainForm.ShowStatusToast("Could not find IMPRESSION section", 3000));
+                    _impressionDeletePending = false;
+                    _pendingImpressionReplaceText = null;
+                    InvokeUI(() => _currentReportPopup?.ClearDeletePending());
+                    return;
+                }
+
+                Thread.Sleep(50);
+
+                if (string.IsNullOrEmpty(newText))
+                {
+                    const byte VK_DELETE = 0x2E;
+                    NativeWindows.keybd_event(VK_DELETE, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(10);
+                    NativeWindows.keybd_event(VK_DELETE, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                }
+                else
+                {
+                    InsertTextToFocusedEditor(newText, cdpEditorIndex: 1);
+                }
+                Thread.Sleep(100);
             }
-            Thread.Sleep(100);
         }
 
         // Verify: re-scrape and update report popup display
         Thread.Sleep(500);
-        _mosaicReader.GetFinalReportFast();
-        var updatedReport = _mosaicReader.LastFinalReport ?? "";
+        // [CDP] Read directly from DOM
+        string updatedReport;
+        if (_cdpService?.IsIframeConnected == true)
+            updatedReport = _cdpService.GetEditorText(1) ?? "";
+        else
+        {
+            _mosaicReader.GetFinalReportFast();
+            updatedReport = _mosaicReader.LastFinalReport ?? "";
+        }
 
         _pendingImpressionReplaceText = null;
         _impressionDeletePending = false;
@@ -3211,16 +3515,37 @@ public class ActionController : IDisposable
             // Update the report popup with the re-scraped content
             if (!string.IsNullOrEmpty(updatedReport) && _currentReportPopup != null && !_currentReportPopup.IsDisposed)
             {
-                _currentReportPopup.UpdateReport(updatedReport);
+                var sr = (_cdpService?.IsIframeConnected == true) ? _cdpService.GetStructuredReport() : null;
+                _currentReportPopup.UpdateReport(updatedReport, structuredReport: sr);
                 _lastPopupReportText = updatedReport;
             }
-            // Also update impression window if visible
-            var updatedImpression = ImpressionForm.ExtractImpression(updatedReport);
+            // Also update impression window if visible (CDP-first)
+            var updatedImpression = (_cdpService?.IsIframeConnected == true)
+                ? ImpressionForm.ExtractImpression(_cdpService.GetStructuredReport())
+                  ?? ImpressionForm.ExtractImpression(updatedReport)
+                : ImpressionForm.ExtractImpression(updatedReport);
             if (!string.IsNullOrEmpty(updatedImpression))
                 _mainForm.UpdateImpression(updatedImpression);
         });
 
         Logger.Trace("PerformReplaceImpression completed");
+    }
+
+    private void PerformManualCorrectTemplate()
+    {
+        var description = _mosaicReader.LastDescription;
+        if (string.IsNullOrWhiteSpace(description))
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("No study description available"));
+            return;
+        }
+
+        var searchText = AutomationService.BuildTemplateSearchText(description);
+        Logger.Trace($"ManualCorrectTemplate: correcting to '{searchText}'");
+        bool corrected = _cdpService?.SetStudyType(searchText, description) == true
+            || _automationService.AttemptCorrectTemplate(description);
+        InvokeUI(() => _mainForm.ShowStatusToast(
+            corrected ? "Template correction attempted" : "Template correction failed"));
     }
 
     #endregion
@@ -3298,10 +3623,40 @@ public class ActionController : IDisposable
             long nowTick64 = Environment.TickCount64;
             string? fastReportText = null;
 
+            // ═══════ CDP PATH (replaces both fast + slow UIA paths when connected) ═══════
+            bool cdpHandled = false;
+            if (_cdpService != null)
+            {
+                if (!_cdpService.IsConnected)
+                    try { _cdpService.TryConnect(); } catch { }
+
+                if (_cdpService.IsConnected)
+                {
+                    try
+                    {
+                        var cdp = _cdpService.Scrape();
+                        if (cdp != null)
+                        {
+                            _automationService.PopulateFromCdpData(cdp);
+                            fastReportText = cdp.ReportText;
+                            cdpHandled = true;
+                            _slowPathEverCompleted = true;
+                            _fastReadFailCount = 0;
+                            if (!string.IsNullOrEmpty(fastReportText))
+                            {
+                                UpdateReportPopup(fastReportText);
+                                UpdateRecoMd(_lastNonEmptyAccession, fastReportText);
+                            }
+                        }
+                    }
+                    catch (Exception ex) { Logger.Trace($"CDP scrape failed: {ex.Message}"); }
+                }
+            }
+
             // ═══════ FAST PATH (every tick, ~0ms) ═══════
             // Reads cached report editor + cached accession element. No tree walks.
             // Gated on: first slow path has completed (caches built) AND not too many consecutive failures.
-            if (_slowPathEverCompleted && _fastReadFailCount < FastReadFailThreshold)
+            if (!cdpHandled && _slowPathEverCompleted && _fastReadFailCount < FastReadFailThreshold)
             {
                 if (_mosaicReader.TryFastRead(out fastReportText, out var fastAccession))
                 {
@@ -3430,8 +3785,8 @@ public class ActionController : IDisposable
             // ProseMirror search throttle (3s instead of 10s) for faster report pickup.
             _automationService.IsBurstModeActive = IsReportBurstModeActive(nowTick64);
 
-            // Scrape Mosaic for report data
-            var reportText = _mosaicReader.GetFinalReportFast();
+            // Scrape Mosaic for report data (skip UIA if CDP already handled it)
+            var reportText = cdpHandled ? _mosaicReader.LastFinalReport : _mosaicReader.GetFinalReportFast();
 
             // Bail out if user action started during the scrape
             if (_isUserActive) return;
@@ -3567,9 +3922,9 @@ public class ActionController : IDisposable
 
             if (_slowPathDormant)
             {
-                // Dormant: report read + popup update done above. Only run Aidoc if enabled.
-                if (_config.AidocScrapeEnabled)
-                    UpdateClinicalHistoryAndAlerts(currentAccession, reportText, tickStartTick64);
+                // Dormant: report read + popup update done above. Still run alerts
+                // (template mismatch, gender check, Aidoc) — all cheap, no FlaUI tree walks.
+                UpdateClinicalHistoryAndAlerts(currentAccession, reportText, tickStartTick64);
                 // Flush batched UI updates and re-assert z-order after Aidoc FlaUI interactions
                 BatchUI(() => _mainForm.EnsureWindowsOnTop());
                 FlushUI();
@@ -4033,7 +4388,10 @@ public class ActionController : IDisposable
             if (!string.IsNullOrEmpty(reportText))
             {
                 // Non-drafted: wait for impression to appear - report is generated top-to-bottom after Process Report
-                var impression = ImpressionForm.ExtractImpression(reportText);
+                var impression = (_cdpService?.IsIframeConnected == true)
+                    ? ImpressionForm.ExtractImpression(_cdpService.GetStructuredReport())
+                      ?? ImpressionForm.ExtractImpression(reportText)
+                    : ImpressionForm.ExtractImpression(reportText);
                 if (!string.IsNullOrEmpty(impression))
                 {
                     _needsBaselineCapture = false;
@@ -4187,8 +4545,12 @@ public class ActionController : IDisposable
                     _processReportTextStableSince = DateTime.UtcNow;
                 }
 
-                bool stable = _processReportLastSeenText != null
-                    && (DateTime.UtcNow - _processReportTextStableSince).TotalSeconds >= 1;
+                // Wait for report to have IMPRESSION section AND be stable for 2s.
+                // Mosaic rebuilds in stages: template first, then impression — don't release early.
+                bool hasImpression = reportText != null
+                    && reportText.Contains("IMPRESSION", StringComparison.OrdinalIgnoreCase);
+                bool stable = _processReportLastSeenText != null && hasImpression
+                    && (DateTime.UtcNow - _processReportTextStableSince).TotalSeconds >= 2;
 
                 bool timedOut = _staleSetTime != default
                     && (DateTime.UtcNow - _staleSetTime).TotalSeconds > 15;
@@ -4196,7 +4558,7 @@ public class ActionController : IDisposable
                 if (stable || timedOut)
                 {
                     _processReportPressedForCurrentAccession = false;
-                    Logger.Trace($"Process Report popup hold released: stable={stable}, timedOut={timedOut}, len={reportText?.Length ?? 0}");
+                    Logger.Trace($"Process Report popup hold released: stable={stable}, timedOut={timedOut}, hasImpression={hasImpression}, len={reportText?.Length ?? 0}");
                 }
                 else
                 {
@@ -4216,10 +4578,12 @@ public class ActionController : IDisposable
                 _lastPopupReportText = reportText;
                 RequestReportScrapeBurst(PopupChangeBurstMs, "Report changed while popup visible");
                 _staleTextStableTime = default;
+                // CDP: pass structured report for instant section parsing in diff/rainbow
+                var sr = (_cdpService?.IsIframeConnected == true) ? _cdpService.GetStructuredReport() : null;
                 if (immediate)
-                    InvokeUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
+                    InvokeUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb, sr); });
                 else
-                    BatchUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb); });
+                    BatchUI(() => { if (!popup.IsDisposed) popup.UpdateReport(reportText, _baselineReport, _baselineIsFromTemplateDb, sr); });
             }
             else if (string.IsNullOrEmpty(reportText) && !string.IsNullOrEmpty(_lastPopupReportText))
             {
@@ -4263,23 +4627,35 @@ public class ActionController : IDisposable
         List<string>? genderMismatches = null;
 
         // Check template matching (red border when mismatch) if enabled
+        // Two checks: (1) study type dropdown vs description, (2) EXAM: line in report vs description.
+        // Edge case: dropdown can show correct study type but the editor still has the wrong template loaded.
         if (_config.ShowTemplateMismatch)
         {
             templateDescription = _mosaicReader.LastDescription;
             templateName = _mosaicReader.LastTemplateName;
-            bool bodyPartsMatch = AutomationService.DoBodyPartsMatch(templateDescription, templateName);
-            newTemplateMismatch = !bodyPartsMatch;
+            bool dropdownMatch = AutomationService.DoBodyPartsMatch(templateDescription, templateName);
+
+            // Also check the EXAM: line from the actual report text
+            var examTemplateName = AutomationService.ExtractTemplateName(reportText);
+            bool examMatch = AutomationService.DoBodyPartsMatch(templateDescription, examTemplateName);
+
+            newTemplateMismatch = !dropdownMatch || !examMatch;
+            // Use whichever name is mismatched for display/correction
+            if (!examMatch && dropdownMatch)
+                templateName = examTemplateName; // dropdown looks correct but editor has wrong template
 
             // Auto-correct template if mismatch detected (max 2 attempts: immediate + retry after 15s)
             if (newTemplateMismatch && _config.AttemptCorrectTemplate
-                && _templateCorrectionAttempts < 2
+                && _templateCorrectionAttempts < 1
                 && !string.IsNullOrWhiteSpace(templateDescription)
                 && Environment.TickCount64 >= _templateCorrectionNextRetryTick64)
             {
                 _templateCorrectionAttempts++;
                 _templateCorrectionNextRetryTick64 = Environment.TickCount64 + 15_000; // retry eligible in 15s
-                Logger.Trace($"AttemptCorrectTemplate: Attempt #{_templateCorrectionAttempts} — correcting from '{templateName}' to '{templateDescription}'");
-                bool corrected = _automationService.AttemptCorrectTemplate(templateDescription);
+                var searchText = AutomationService.BuildTemplateSearchText(templateDescription);
+                Logger.Trace($"AttemptCorrectTemplate: Attempt #{_templateCorrectionAttempts} — correcting from '{templateName}' to '{searchText}'");
+                bool corrected = _cdpService?.SetStudyType(searchText, templateDescription) == true
+                    || _automationService.AttemptCorrectTemplate(templateDescription);
                 if (corrected)
                 {
                     InvokeUI(() => _mainForm.ShowStatusToast("Template correction attempted"));
@@ -4412,7 +4788,8 @@ public class ActionController : IDisposable
             // Only update if we have content - don't clear during brief processing gaps
             if (!string.IsNullOrWhiteSpace(reportText))
             {
-                BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession, patientAge, patientGender));
+                var sr = (_cdpService?.IsIframeConnected == true) ? _cdpService.GetStructuredReport() : null;
+                BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession, patientAge, patientGender, sr));
                 BatchUI(() => _mainForm.UpdateClinicalHistoryTextColor(reportText));
             }
 
@@ -4457,7 +4834,8 @@ public class ActionController : IDisposable
             // (needed for auto-fix recheck to detect Mosaic self-corrections)
             if (!string.IsNullOrWhiteSpace(reportText))
             {
-                BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession, patientAge, patientGender));
+                var sr = (_cdpService?.IsIframeConnected == true) ? _cdpService.GetStructuredReport() : null;
+                BatchUI(() => _mainForm.UpdateClinicalHistory(reportText, currentAccession, patientAge, patientGender, sr));
             }
 
             // Determine highest priority alert to show
@@ -4543,7 +4921,11 @@ public class ActionController : IDisposable
         if (_impressionDeletePending)
             return;
 
-        var impression = ImpressionForm.ExtractImpression(reportText);
+        // CDP path: structured report gives instant, reliable impression extraction
+        var impression = (_cdpService?.IsIframeConnected == true)
+            ? ImpressionForm.ExtractImpression(_cdpService.GetStructuredReport())
+              ?? ImpressionForm.ExtractImpression(reportText) // fallback if CDP parse fails
+            : ImpressionForm.ExtractImpression(reportText);
         bool isDrafted = _mosaicReader.LastDraftedState;
 
         if (_searchingForImpression)
@@ -4706,18 +5088,41 @@ public class ActionController : IDisposable
         MacroConfig? Macro     // for Macro triggers: the matched macro
     );
 
+    /// <summary>Map an original-string index to the closest stripped-string index.</summary>
+    private static int OriginalToStrippedIndex(int origIdx, System.Collections.Generic.List<int> indexMap)
+    {
+        for (int i = 0; i < indexMap.Count; i++)
+            if (indexMap[i] >= origIdx) return i;
+        return indexMap.Count;
+    }
+
     private VoiceTriggerResult CheckVoiceTrigger(string rawTranscript)
     {
         var lower = rawTranscript.ToLowerInvariant();
 
-        // Track the rightmost match
-        int bestIndex = -1;
+        // Build a punctuation-stripped version for macro matching, with index map back to original.
+        // STT often transcribes "macro, no change." — punctuation must not break matching.
+        var strippedChars = new System.Collections.Generic.List<char>(lower.Length);
+        var indexMap = new System.Collections.Generic.List<int>(lower.Length); // stripped pos → original pos
+        for (int i = 0; i < lower.Length; i++)
+        {
+            char c = lower[i];
+            if (char.IsLetterOrDigit(c) || c == ' ')
+            {
+                strippedChars.Add(c);
+                indexMap.Add(i);
+            }
+        }
+        var stripped = new string(strippedChars.ToArray());
+
+        // Track the rightmost match (positions are in stripped string)
+        int bestStrippedIndex = -1;
         VoiceTriggerKind bestKind = VoiceTriggerKind.None;
         string? bestAction = null;
         MacroConfig? bestMacro = null;
         int bestMatchLen = 0;
 
-        // Check voice commands
+        // Check voice commands (match in both original and stripped)
         var commands = new (string phrase, string action)[]
         {
             ("process report", Actions.ProcessReport),
@@ -4726,10 +5131,26 @@ public class ActionController : IDisposable
 
         foreach (var (phrase, action) in commands)
         {
+            // Try original first (preserves exact position)
             int idx = lower.LastIndexOf(phrase);
-            if (idx >= 0 && idx > bestIndex)
+            if (idx >= 0)
             {
-                bestIndex = idx;
+                // Convert to stripped position for consistent comparison
+                int sIdx = OriginalToStrippedIndex(idx, indexMap);
+                if (sIdx > bestStrippedIndex)
+                {
+                    bestStrippedIndex = sIdx;
+                    bestKind = VoiceTriggerKind.Command;
+                    bestAction = action;
+                    bestMacro = null;
+                    bestMatchLen = phrase.Length;
+                }
+            }
+            // Also try stripped (handles "process, report" etc.)
+            idx = stripped.LastIndexOf(phrase);
+            if (idx > bestStrippedIndex)
+            {
+                bestStrippedIndex = idx;
                 bestKind = VoiceTriggerKind.Command;
                 bestAction = action;
                 bestMacro = null;
@@ -4738,7 +5159,10 @@ public class ActionController : IDisposable
         }
 
         // Check voice macros: "insert/input/macro " + exact macro name
+        // MT macros checked first, then Mosaic macros as fallback.
+        // Match against stripped string so "macro, no change." matches "macro no change".
         var triggerWords = new[] { "insert ", "input ", "macro " };
+
         foreach (var macro in _config.Macros)
         {
             if (!macro.Enabled || !macro.Voice || string.IsNullOrWhiteSpace(macro.Name))
@@ -4748,10 +5172,11 @@ public class ActionController : IDisposable
             foreach (var trigger in triggerWords)
             {
                 var fullPhrase = trigger + macroNameLower;
-                int idx = lower.LastIndexOf(fullPhrase);
-                if (idx >= 0 && idx > bestIndex)
+                int idx = stripped.LastIndexOf(fullPhrase);
+                // Prefer rightmost match; at same position prefer longest (e.g. "no change old" over "no change")
+                if (idx >= 0 && (idx > bestStrippedIndex || (idx == bestStrippedIndex && fullPhrase.Length > bestMatchLen)))
                 {
-                    bestIndex = idx;
+                    bestStrippedIndex = idx;
                     bestKind = VoiceTriggerKind.Macro;
                     bestAction = null;
                     bestMacro = macro;
@@ -4760,11 +5185,35 @@ public class ActionController : IDisposable
             }
         }
 
+        // Mosaic macros fallback: if no MT macro matched, check Mosaic macros from CDP
+        if (bestKind != VoiceTriggerKind.Macro && _cdpService?.MosaicMacros is { Count: > 0 } mosaicMacros)
+        {
+            foreach (var (name, text) in mosaicMacros)
+            {
+                var macroNameLower = name.ToLowerInvariant();
+                foreach (var trigger in triggerWords)
+                {
+                    var fullPhrase = trigger + macroNameLower;
+                    int idx = stripped.LastIndexOf(fullPhrase);
+                    if (idx >= 0 && (idx > bestStrippedIndex || (idx == bestStrippedIndex && fullPhrase.Length > bestMatchLen)))
+                    {
+                        bestStrippedIndex = idx;
+                        bestKind = VoiceTriggerKind.Macro;
+                        bestAction = null;
+                        // Wrap Mosaic macro as a MacroConfig for uniform handling
+                        bestMacro = new MacroConfig { Name = name, Text = text, Voice = true, Enabled = true };
+                        bestMatchLen = fullPhrase.Length;
+                    }
+                }
+            }
+        }
+
         if (bestKind == VoiceTriggerKind.None)
             return new VoiceTriggerResult(VoiceTriggerKind.None, rawTranscript, null, null);
 
-        // Everything before the match is prefix; match + everything after is consumed
-        var prefix = rawTranscript[..bestIndex].TrimEnd();
+        // Map stripped position back to original string for prefix extraction
+        int originalIndex = (bestStrippedIndex < indexMap.Count) ? indexMap[bestStrippedIndex] : 0;
+        var prefix = rawTranscript[..originalIndex].TrimEnd();
         return new VoiceTriggerResult(bestKind, prefix, bestAction, bestMacro);
     }
 
@@ -5286,6 +5735,41 @@ public class ActionController : IDisposable
         return _mosaicReader.LastAccession;
     }
 
+    public void ManualCorrectTemplate()
+    {
+        var description = _mosaicReader.LastDescription;
+        if (string.IsNullOrWhiteSpace(description))
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("No study description available"));
+            return;
+        }
+
+        // Run on action thread via TriggerAction
+        TriggerAction("__ManualCorrectTemplate__", "ContextMenu");
+    }
+
+    public string GetPriorDebugInfo()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("=== Get Prior Debug ===");
+        sb.AppendLine($"--- Raw (from InteleViewer) ---");
+        sb.AppendLine(_lastPriorRawText ?? "(no prior captured)");
+        sb.AppendLine($"--- Formatted ---");
+        sb.AppendLine(_lastPriorFormattedText ?? "(none)");
+        return sb.ToString().TrimEnd();
+    }
+
+    public string GetCriticalFindingsDebugInfo()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("=== Critical Findings Debug ===");
+        sb.AppendLine($"--- Raw (from Clario) ---");
+        sb.AppendLine(_lastCriticalRawNote ?? "(no note captured)");
+        sb.AppendLine($"--- Formatted ---");
+        sb.AppendLine(_lastCriticalFormattedText ?? "(none)");
+        return sb.ToString().TrimEnd();
+    }
+
     /// <summary>
     /// Create critical communication note for stroke case.
     /// Returns true if created, false if already exists or failed.
@@ -5454,6 +5938,7 @@ public class ActionController : IDisposable
         _automationService.Dispose();
         _pipeService?.Dispose();
         _sttService?.Dispose();  // [CustomSTT]
+        _cdpService?.Dispose();  // [CDP]
         _actionEvent.Dispose();
     }
 }

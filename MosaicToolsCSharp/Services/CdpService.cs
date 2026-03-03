@@ -1,0 +1,1575 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
+using System.Net.WebSockets;
+using System.Text;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace MosaicTools.Services;
+
+/// <summary>
+/// Chrome DevTools Protocol client for Mosaic's WebView2.
+/// Provides direct DOM access as an alternative to UI Automation.
+/// Two WebSocket connections: SlimHub (patient metadata) and iframe (report editors).
+/// Thread-safe synchronous public API — called from scrape timer thread.
+/// </summary>
+public class CdpService : IDisposable
+{
+    private const int CommandTimeoutMs = 3000;
+    private const int ConnectThrottleMs = 10_000;
+
+    private int _port;
+    private ClientWebSocket? _slimHubWs;
+    private ClientWebSocket? _iframeWs;
+    private string? _slimHubWsUrl;
+    private string? _iframeWsUrl;
+    private string? _lastIframeUrl; // Track iframe URL to detect report changes
+
+    private int _nextMessageId;
+    private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> _pending = new();
+    private readonly object _slimHubSendLock = new();
+    private readonly object _iframeSendLock = new();
+    private CancellationTokenSource? _slimHubCts;
+    private CancellationTokenSource? _iframeCts;
+    private long _lastConnectAttemptTick64;
+    private int _consecutiveTimeouts; // Track consecutive timeouts to auto-disconnect
+    private string? _lastLoggedAccession; // Only log when scrape data changes
+    private bool _firstScrapeLogged;
+    private string? _lastKnownStudyType; // Cache: persists across ticks when input has focus
+    private bool _studyTypeDiagLogged; // Only log DOM diagnostic once per empty streak
+    private int _lastKnownFocusedEditor = 0; // Default to transcript (0), updated by scrape ticks
+    private bool _mosaicMacrosFetched; // Only fetch once per iframe connection
+
+    public bool IsConnected => _slimHubWs?.State == WebSocketState.Open;
+    public bool IsIframeConnected => _iframeWs?.State == WebSocketState.Open;
+
+    /// <summary>
+    /// Mosaic macros fetched from /macros/available API. Key = lowercase macro name, Value = expansion text.
+    /// Populated on first scrape tick after iframe connects. Empty until fetched.
+    /// </summary>
+    public Dictionary<string, string> MosaicMacros { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    // ═══════ JS PAYLOADS ═══════
+
+    // SlimHub: just return visible text — all parsing done in C#
+    private const string JS_SCRAPE_SLIMHUB = @"(() => {
+        return (document.body?.innerText || '').substring(0, 3000);
+    })()";
+
+    private const string JS_SCRAPE_IFRAME = @"(() => {
+        const r = {};
+        const active = document.activeElement;
+
+        // Study type — try multiple selectors for robustness
+        r.studyType = '';
+
+        // Method 1: Known ID
+        const studyInput = document.getElementById('studies-search');
+        if (studyInput && active !== studyInput) {
+            r.studyType = studyInput.value || '';
+        }
+
+        // Method 2: First combobox role with a non-empty input value
+        if (!r.studyType) {
+            const combos = document.querySelectorAll('[role=""combobox""]');
+            for (const combo of combos) {
+                const inp = (combo.tagName === 'INPUT') ? combo : combo.querySelector('input');
+                if (inp && inp !== active && inp.value) {
+                    r.studyType = inp.value;
+                    break;
+                }
+            }
+        }
+
+        // Method 3: Input with aria-label containing 'study' or 'stud'
+        if (!r.studyType) {
+            for (const inp of document.querySelectorAll('input')) {
+                const label = (inp.getAttribute('aria-label') || '') + (inp.getAttribute('placeholder') || '');
+                if (/stud/i.test(label) && inp !== active && inp.value) {
+                    r.studyType = inp.value;
+                    break;
+                }
+            }
+        }
+
+        // Diagnostic when empty: report what we found so logs can reveal the DOM structure
+        if (!r.studyType) {
+            const combos = document.querySelectorAll('[role=""combobox""]');
+            const comboVals = [];
+            combos.forEach(c => {
+                const inp = (c.tagName === 'INPUT') ? c : c.querySelector('input');
+                comboVals.push((inp?.id || 'no-id') + '=' + JSON.stringify(inp?.value ?? null));
+            });
+            r.studyDiag = 'idExists=' + !!studyInput + ' combos=[' + comboVals.join(', ') + '] activeEl=' + (active?.tagName || '?') + '#' + (active?.id || '');
+        }
+
+        // Template name
+        const templateInput = document.getElementById('templates-select');
+        r.templateName = (templateInput && active !== templateInput) ? templateInput.value : '';
+
+        // ProseMirror editors: [0]=transcript, [1]=final report
+        // Custom DOM walker preserves <ol> numbering (CSS-generated, invisible to innerText)
+        function walkEditor(node) {
+            let t = '';
+            for (const c of node.childNodes) {
+                if (c.nodeType === 3) { t += c.textContent; continue; }
+                const tag = c.tagName;
+                if (tag === 'BR') { t += '\n'; continue; }
+                if (tag === 'OL') {
+                    let n = parseInt(c.getAttribute('start')) || 1;
+                    for (const li of c.children) {
+                        if (li.tagName === 'LI') { t += n + '. ' + walkEditor(li).trim() + '\n'; n++; }
+                    }
+                    continue;
+                }
+                if (tag === 'UL') {
+                    for (const li of c.children) {
+                        if (li.tagName === 'LI') { t += walkEditor(li).trim() + '\n'; }
+                    }
+                    continue;
+                }
+                if (tag === 'P' || tag === 'DIV' || (tag && tag.match(/^H[1-6]$/))) {
+                    t += walkEditor(c) + '\n'; continue;
+                }
+                t += walkEditor(c);
+            }
+            return t;
+        }
+        const editors = document.querySelectorAll('.ProseMirror');
+        r.editorCount = editors.length;
+        if (editors.length >= 2) {
+            r.reportText = walkEditor(editors[1]);
+        } else if (editors.length >= 1) {
+            r.reportText = walkEditor(editors[0]);
+        }
+
+        // Addendum detection
+        if (r.reportText && r.reportText.trimStart().startsWith('Addendum')) {
+            r.isAddendum = true;
+        }
+
+        // Track which editor has focus (for STT paste targeting)
+        r.focusedEditor = -1;
+        for (let i = 0; i < editors.length; i++) {
+            if (editors[i].classList.contains('ProseMirror-focused')
+                || editors[i].contains(document.activeElement)
+                || editors[i] === document.activeElement) {
+                r.focusedEditor = i; break;
+            }
+        }
+
+        return JSON.stringify(r);
+    })()";
+
+    // ═══════ CONNECTION MANAGEMENT ═══════
+
+    /// <summary>
+    /// Set the WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS env var to enable remote debugging.
+    /// Must be set before Mosaic starts — requires Mosaic restart.
+    /// </summary>
+    public static void EnsureEnvVar()
+    {
+        const string varName = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
+        const string required = "--remote-debugging-port=0";
+        var current = Environment.GetEnvironmentVariable(varName, EnvironmentVariableTarget.User);
+        if (current != null && current.Contains("--remote-debugging-port"))
+            return;
+
+        var newValue = string.IsNullOrEmpty(current) ? required : $"{current} {required}";
+        Environment.SetEnvironmentVariable(varName, newValue, EnvironmentVariableTarget.User);
+        Logger.Trace($"CDP: Set {varName}={newValue} (user-level). Mosaic restart required.");
+    }
+
+    /// <summary>
+    /// Discover the DevTools port from the DevToolsActivePort file, find targets, connect WebSockets.
+    /// Returns true if at least SlimHub is connected.
+    /// </summary>
+    public bool TryConnect()
+    {
+        long now = Environment.TickCount64;
+        if (now - _lastConnectAttemptTick64 < ConnectThrottleMs)
+            return IsConnected;
+        _lastConnectAttemptTick64 = now;
+
+        try
+        {
+            if (!DiscoverDevToolsPort())
+            {
+                Logger.Trace("CDP: DevToolsActivePort file not found");
+                return false;
+            }
+
+            DiscoverAndConnect();
+            return IsConnected;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP: TryConnect failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    private bool DiscoverDevToolsPort()
+    {
+        // Find MosaicInfoHub package directory
+        var packagesDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Packages");
+
+        if (!Directory.Exists(packagesDir))
+            return false;
+
+        var mosaicDirs = Directory.GetDirectories(packagesDir, "MosaicInfoHub_*");
+        if (mosaicDirs.Length == 0)
+            return false;
+
+        var portFile = Path.Combine(mosaicDirs[0], "LocalState", "EBWebView", "DevToolsActivePort");
+        if (!File.Exists(portFile))
+            return false;
+
+        var lines = File.ReadAllLines(portFile);
+        if (lines.Length == 0 || !int.TryParse(lines[0].Trim(), out var port))
+            return false;
+
+        _port = port;
+        return true;
+    }
+
+    private void DiscoverAndConnect()
+    {
+        // HTTP GET target list
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        var json = http.GetStringAsync($"http://localhost:{_port}/json").GetAwaiter().GetResult();
+        var targets = JsonSerializer.Deserialize<JsonElement>(json);
+
+        string? slimHubWs = null;
+        string? iframeWs = null;
+        string? iframeUrl = null;
+
+        foreach (var target in targets.EnumerateArray())
+        {
+            var url = target.TryGetProperty("url", out var urlEl) ? urlEl.GetString() ?? "" : "";
+            var wsUrl = target.TryGetProperty("webSocketDebuggerUrl", out var wsEl) ? wsEl.GetString() : null;
+            var title = target.TryGetProperty("title", out var titleEl) ? titleEl.GetString() : "";
+            var type = target.TryGetProperty("type", out var t) ? t.GetString() : "";
+
+            // Match SlimHub by title (most reliable) or URL pattern
+            if ((title == "SlimHub" || url.Contains("/index.html#/reporting")) && type == "page")
+            {
+                if (slimHubWs == null) slimHubWs = wsUrl;
+            }
+            // Match iframe by URL — type can be "page" or "iframe"
+            else if (url.Contains("rp.radpair.com") && url.Contains("/reports/"))
+            {
+                iframeWs = wsUrl;
+                iframeUrl = url;
+            }
+        }
+
+        // Connect SlimHub if not already connected
+        if (!string.IsNullOrEmpty(slimHubWs) && !IsConnected)
+        {
+            _slimHubWsUrl = slimHubWs;
+            Logger.Trace($"CDP: Connecting to SlimHub: {slimHubWs}");
+            ConnectSlimHub();
+        }
+        else if (slimHubWs == null && !IsConnected)
+        {
+            Logger.Trace("CDP: SlimHub target not found or no webSocketDebuggerUrl");
+        }
+
+        // Connect iframe (reconnect if URL changed = new report)
+        if (!string.IsNullOrEmpty(iframeWs) && (iframeWs != _iframeWsUrl || !IsIframeConnected))
+        {
+            DisconnectIframe();
+            _iframeWsUrl = iframeWs;
+            _lastIframeUrl = iframeUrl;
+            Logger.Trace($"CDP: Connecting to iframe: {iframeUrl}");
+            ConnectIframe();
+        }
+    }
+
+    private void ConnectSlimHub()
+    {
+        try
+        {
+            _slimHubCts?.Cancel();
+            _slimHubCts = new CancellationTokenSource();
+            _slimHubWs = new ClientWebSocket();
+            _slimHubWs.ConnectAsync(new Uri(_slimHubWsUrl!), CancellationToken.None).GetAwaiter().GetResult();
+
+            // Dedicated receive thread (not async Task) — avoids thread pool scheduling issues
+            var ws = _slimHubWs;
+            var ct = _slimHubCts.Token;
+            var thread = new Thread(() => ReceiveLoopSync(ws, ct, "SlimHub"))
+            {
+                IsBackground = true,
+                Name = "CDP-SlimHub-Recv"
+            };
+            thread.Start();
+
+            _consecutiveTimeouts = 0;
+            Logger.Trace($"CDP: Connected to SlimHub (port {_port}, wsUrl={_slimHubWsUrl})");
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP: SlimHub connect failed: {ex.Message}");
+            _slimHubWs = null;
+        }
+    }
+
+    private void ConnectIframe()
+    {
+        try
+        {
+            _iframeCts?.Cancel();
+            _iframeCts = new CancellationTokenSource();
+            _iframeWs = new ClientWebSocket();
+            _iframeWs.ConnectAsync(new Uri(_iframeWsUrl!), CancellationToken.None).GetAwaiter().GetResult();
+
+            var ws = _iframeWs;
+            var ct = _iframeCts.Token;
+            var thread = new Thread(() => ReceiveLoopSync(ws, ct, "Iframe"))
+            {
+                IsBackground = true,
+                Name = "CDP-Iframe-Recv"
+            };
+            thread.Start();
+
+            Logger.Trace($"CDP: Connected to iframe ({_lastIframeUrl})");
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP: Iframe connect failed: {ex.Message}");
+            _iframeWs = null;
+        }
+    }
+
+    private void DisconnectIframe()
+    {
+        try
+        {
+            _iframeCts?.Cancel();
+            if (_iframeWs?.State == WebSocketState.Open)
+                _iframeWs.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None)
+                    .GetAwaiter().GetResult();
+        }
+        catch { }
+        _iframeWs = null;
+        _iframeWsUrl = null;
+        _mosaicMacrosFetched = false; // Re-fetch macros on next connection
+    }
+
+    private void DisconnectSlimHub()
+    {
+        try
+        {
+            _slimHubCts?.Cancel();
+            if (_slimHubWs?.State == WebSocketState.Open)
+                _slimHubWs.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None)
+                    .GetAwaiter().GetResult();
+        }
+        catch { }
+        _slimHubWs = null;
+        _slimHubWsUrl = null;
+    }
+
+    // ═══════ WEBSOCKET COMMUNICATION ═══════
+
+    private JsonElement? SendCommand(ClientWebSocket? ws, object sendLock, string js, int timeoutMs = CommandTimeoutMs)
+    {
+        if (ws?.State != WebSocketState.Open) return null;
+
+        int id = Interlocked.Increment(ref _nextMessageId);
+        var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pending[id] = tcs;
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                id,
+                method = "Runtime.evaluate",
+                @params = new { expression = js, returnByValue = true }
+            });
+
+            var bytes = Encoding.UTF8.GetBytes(payload);
+            lock (sendLock)
+            {
+                ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+
+            if (tcs.Task.Wait(timeoutMs))
+            {
+                _consecutiveTimeouts = 0;
+                return tcs.Task.Result;
+            }
+
+            _consecutiveTimeouts++;
+            Logger.Trace($"CDP: Command {id} timed out ({timeoutMs}ms), consecutive={_consecutiveTimeouts}");
+
+            // After 3 consecutive timeouts, disconnect — receive loop is dead
+            if (_consecutiveTimeouts >= 3)
+            {
+                Logger.Trace("CDP: Too many consecutive timeouts, disconnecting");
+                DisconnectSlimHub();
+                DisconnectIframe();
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP: SendCommand error: {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            _pending.TryRemove(id, out _);
+        }
+    }
+
+    private JsonElement? SendToSlimHub(string js) => SendCommand(_slimHubWs, _slimHubSendLock, js);
+    private JsonElement? SendToIframe(string js) => SendCommand(_iframeWs, _iframeSendLock, js);
+
+    /// <summary>Send async JS (returns a Promise) to iframe with awaitPromise, longer timeout.</summary>
+    private string? SendToIframeAsync(string js)
+    {
+        if (_iframeWs?.State != WebSocketState.Open) return null;
+
+        int id = Interlocked.Increment(ref _nextMessageId);
+        var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pending[id] = tcs;
+
+        try
+        {
+            var payload = JsonSerializer.Serialize(new
+            {
+                id,
+                method = "Runtime.evaluate",
+                @params = new { expression = js, returnByValue = true, awaitPromise = true }
+            });
+
+            var bytes = Encoding.UTF8.GetBytes(payload);
+            lock (_iframeSendLock)
+            {
+                _iframeWs.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+
+            // Longer timeout for network fetch (10s)
+            if (tcs.Task.Wait(10_000))
+                return ExtractResultValue(tcs.Task.Result);
+
+            Logger.Trace($"CDP: Async command {id} timed out (10s)");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP: SendToIframeAsync error: {ex.Message}");
+            return null;
+        }
+        finally
+        {
+            _pending.TryRemove(id, out _);
+        }
+    }
+
+    /// <summary>
+    /// Synchronous receive loop running on a dedicated background thread.
+    /// Reads WebSocket messages and completes pending TaskCompletionSources.
+    /// </summary>
+    private void ReceiveLoopSync(ClientWebSocket ws, CancellationToken ct, string label)
+    {
+        var buf = new byte[256 * 1024];
+        Logger.Trace($"CDP: {label} receive loop started (thread {Environment.CurrentManagedThreadId})");
+        try
+        {
+            while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
+            {
+                var ms = new MemoryStream();
+                WebSocketReceiveResult result;
+                do
+                {
+                    var task = ws.ReceiveAsync(new ArraySegment<byte>(buf), ct);
+                    task.Wait(ct); // Block this thread until data arrives
+                    result = task.Result;
+                    ms.Write(buf, 0, result.Count);
+                } while (!result.EndOfMessage);
+
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    Logger.Trace($"CDP: {label} WebSocket closed by server");
+                    break;
+                }
+
+                var json = Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
+                try
+                {
+                    using var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.TryGetProperty("id", out var idEl))
+                    {
+                        int id = idEl.GetInt32();
+                        if (_pending.TryRemove(id, out var tcs))
+                        {
+                            tcs.TrySetResult(doc.RootElement.Clone());
+                        }
+                    }
+                    // else: event/notification without id — ignore
+                }
+                catch (Exception ex)
+                {
+                    Logger.Trace($"CDP: {label} parse error: {ex.Message}, json={json.Substring(0, Math.Min(json.Length, 200))}");
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (AggregateException ae) when (ae.InnerException is OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP: {label} receive loop error: {ex.GetType().Name}: {ex.Message}");
+        }
+        Logger.Trace($"CDP: {label} receive loop ended (ws.State={ws.State})");
+    }
+
+    /// <summary>
+    /// Extract the string value from a Runtime.evaluate response.
+    /// Response shape: { "result": { "result": { "type": "string", "value": "..." } } }
+    /// </summary>
+    private string? ExtractResultValue(JsonElement? response)
+    {
+        if (response == null) return null;
+        try
+        {
+            return response.Value
+                .GetProperty("result")
+                .GetProperty("result")
+                .GetProperty("value")
+                .GetString();
+        }
+        catch { return null; }
+    }
+
+    // ═══════ PUBLIC API: SCRAPE ═══════
+
+    /// <summary>
+    /// Scrape all metadata from SlimHub + report text from iframe in one call.
+    /// Returns null if SlimHub is not connected or command times out.
+    /// </summary>
+    public CdpScrapeResult? Scrape()
+    {
+        if (!IsConnected) return null;
+
+        // If iframe disconnected, try to reconnect (throttled — same as main connect)
+        if (!IsIframeConnected)
+        {
+            long now = Environment.TickCount64;
+            if (now - _lastConnectAttemptTick64 >= ConnectThrottleMs)
+            {
+                _lastConnectAttemptTick64 = now;
+                try { DiscoverAndConnect(); } catch { }
+            }
+        }
+
+        // Fetch Mosaic macros on first scrape tick after iframe connects
+        if (IsIframeConnected && !_mosaicMacrosFetched)
+        {
+            try { FetchMosaicMacros(); }
+            catch (Exception ex) { Logger.Trace($"CDP: FetchMosaicMacros exception: {ex.Message}"); }
+        }
+
+        var result = new CdpScrapeResult();
+
+        // Scrape SlimHub — JS returns raw visible text, all parsing done in C#
+        var visibleText = ExtractResultValue(SendToSlimHub(JS_SCRAPE_SLIMHUB));
+        if (visibleText == null)
+            return null; // SlimHub not responding — fall through to UIA
+
+        try
+        {
+            ParseVisibleText(result, visibleText);
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP: SlimHub parse error: {ex.Message}");
+            return null;
+        }
+
+        // Clear study-type cache on study change BEFORE iframe scrape
+        // (prevents stale template name from previous study on first tick of new study)
+        if (_lastLoggedAccession != null && result.Accession != _lastLoggedAccession)
+        {
+            _lastKnownStudyType = null;
+            _mosaicMacrosFetched = false; // Re-fetch macros on study change
+        }
+
+        // Scrape iframe (optional — iframe may not be connected if no report open)
+        if (IsIframeConnected)
+        {
+            var iframeJson = ExtractResultValue(SendToIframe(JS_SCRAPE_IFRAME));
+            if (iframeJson != null)
+            {
+                try
+                {
+                    var data = JsonSerializer.Deserialize<JsonElement>(iframeJson);
+                    var studyType = GetStr(data, "studyType");
+                    var templateName = GetStr(data, "templateName");
+
+                    // Prefer studyType (exam type selector), fall back to templateName
+                    var effectiveType = !string.IsNullOrEmpty(studyType) ? studyType
+                        : !string.IsNullOrEmpty(templateName) ? templateName : null;
+
+                    if (!string.IsNullOrEmpty(effectiveType))
+                        _lastKnownStudyType = effectiveType;
+                    result.TemplateName = _lastKnownStudyType;
+                    result.ReportText = GetStr(data, "reportText");
+                    result.IsAddendum = GetBool(data, "isAddendum");
+
+                    // Log diagnostic once when study type can't be read from DOM
+                    if (string.IsNullOrEmpty(effectiveType) && !_studyTypeDiagLogged)
+                    {
+                        _studyTypeDiagLogged = true;
+                        var diag = GetStr(data, "studyDiag");
+                        Logger.Trace($"CDP: StudyType empty from DOM — {diag ?? "no diag"}");
+                    }
+                    else if (!string.IsNullOrEmpty(effectiveType))
+                    {
+                        _studyTypeDiagLogged = false; // Reset so we log again if it breaks
+                    }
+
+                    // Track focused editor for STT paste targeting
+                    if (data.TryGetProperty("focusedEditor", out var fe)
+                        && fe.ValueKind == JsonValueKind.Number)
+                    {
+                        int focused = fe.GetInt32();
+                        if (focused >= 0) _lastKnownFocusedEditor = focused;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Trace($"CDP: Iframe parse error: {ex.Message}");
+                }
+            }
+        }
+
+        // Log on first scrape and when accession changes (avoid spamming every tick)
+        if (!_firstScrapeLogged || result.Accession != _lastLoggedAccession)
+        {
+            _firstScrapeLogged = true;
+            _lastLoggedAccession = result.Accession;
+            Logger.Trace($"CDP: Scraped → acc={result.Accession}, name={result.PatientName}, mrn={result.Mrn}, site={result.SiteCode}, desc={result.Description}, tmpl={result.TemplateName}, drafted={result.IsDrafted}, addendum={result.IsAddendum}, report={result.ReportText?.Length ?? 0} chars");
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Parse the visible text from SlimHub body to extract all patient/study metadata.
+    /// Text structure (line by line):
+    ///   WILLIAMS LATRINA                     ← patient name (first all-caps line)
+    ///   FEMALE, AGE 45, DOB: 05/03/1980      ← gender, age
+    ///   Study Date: 03/02/2026
+    ///   Body Part: ABDOMEN,PELVIS
+    ///   MRN: 2132099CRE                      ← MRN
+    ///   Ordering: RANGINWALA ADAM
+    ///   Site Group: CIRPA
+    ///   Site Code: CRE                       ← site code
+    ///   Description: CT ABDOMEN PELVIS ...    ← description
+    ///   Reason for visit: ...
+    ///   Current Study
+    ///   UNDRAFTED / DRAFTED                   ← draft status
+    ///   317276220260302CRE                    ← accession (last line, digits + optional site code)
+    /// </summary>
+    private static void ParseVisibleText(CdpScrapeResult result, string? visibleText)
+    {
+        if (string.IsNullOrEmpty(visibleText)) return;
+        var lines = visibleText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0) continue;
+
+            // Patient name: first all-caps alphabetic line (e.g. "SMITH, JOHN" or "WILLIAMS LATRINA")
+            if (result.PatientName == null && line.Length > 2 && line == line.ToUpperInvariant()
+                && System.Text.RegularExpressions.Regex.IsMatch(line, @"^[A-Z][A-Z ,'\-]+$"))
+            {
+                result.PatientName = line;
+                continue;
+            }
+
+            // Gender/Age: "FEMALE, AGE 45, DOB: ..." or "MALE, AGE 72"
+            if (result.PatientGender == null)
+            {
+                var ageSexMatch = System.Text.RegularExpressions.Regex.Match(line, @"\b(FEMALE|MALE)\b.*?\bAGE\s*(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (ageSexMatch.Success)
+                {
+                    result.PatientGender = ageSexMatch.Groups[1].Value.StartsWith("F", StringComparison.OrdinalIgnoreCase) ? "Female" : "Male";
+                    result.PatientAge = int.Parse(ageSexMatch.Groups[2].Value);
+                    continue;
+                }
+            }
+
+            // Labeled fields (case-insensitive prefix match)
+            if (line.StartsWith("MRN:", StringComparison.OrdinalIgnoreCase))
+            {
+                result.Mrn = line.Substring(4).Trim();
+                continue;
+            }
+            if (line.StartsWith("Site Code:", StringComparison.OrdinalIgnoreCase))
+            {
+                result.SiteCode = line.Substring("Site Code:".Length).Trim();
+                continue;
+            }
+            if (line.StartsWith("Description:", StringComparison.OrdinalIgnoreCase))
+            {
+                result.Description = line.Substring("Description:".Length).Trim();
+                continue;
+            }
+
+            // DRAFTED: if "DRAFTED" appears (standalone), study IS drafted — takes priority
+            if (line == "DRAFTED")
+            {
+                result.IsDrafted = true;
+                continue;
+            }
+            // UNDRAFTED: only set false if we haven't already seen DRAFTED
+            if (line == "UNDRAFTED" && !result.IsDrafted)
+            {
+                result.IsDrafted = false;
+                continue;
+            }
+        }
+
+        // Accession: scan from bottom, skip status words, find alphanumeric string >= 10 chars
+        // Formats: "317276220260302CRE", "320XR26005765ELP", "SSH2603020023297CST"
+        for (int i = lines.Length - 1; i >= 0; i--)
+        {
+            var line = lines[i].Trim();
+            if (line == "DRAFTED" || line == "UNDRAFTED" || line == "Current Study" || line.Length == 0)
+                continue;
+            if (line.Length >= 10 && System.Text.RegularExpressions.Regex.IsMatch(line, @"^[A-Za-z0-9]+$"))
+            {
+                result.Accession = line;
+            }
+            break; // Only check the bottom-most non-status line
+        }
+    }
+
+    // ═══════ PUBLIC API: EDITOR OPERATIONS ═══════
+
+    /// <summary>
+    /// Insert text content into a ProseMirror editor.
+    /// editorIndex: 0=transcript, 1=final report.
+    /// </summary>
+    public bool InsertContent(int editorIndex, string text)
+    {
+        if (!IsIframeConnected) return false;
+        var escaped = JsonSerializer.Serialize(text); // JSON-escapes the string
+        var js = $@"(() => {{
+            const editors = document.querySelectorAll('.ProseMirror');
+            if (editors.length <= {editorIndex} || !editors[{editorIndex}].editor) return 'no_editor';
+            editors[{editorIndex}].editor.commands.insertContent({escaped});
+            return 'ok';
+        }})()";
+        return ExtractResultValue(SendToIframe(js)) == "ok";
+    }
+
+    /// <summary>
+    /// Get the character before and after the cursor in a ProseMirror editor,
+    /// plus the selected text (if any). Used for smart STT insertions.
+    /// </summary>
+    public (char before, char after, string selectedText)? GetCursorContext(int editorIndex)
+    {
+        if (!IsIframeConnected) return null;
+        var js = $@"(() => {{
+            const editors = document.querySelectorAll('.ProseMirror');
+            if (editors.length <= {editorIndex} || !editors[{editorIndex}].editor) return null;
+            const editor = editors[{editorIndex}].editor;
+            const {{ from, to }} = editor.state.selection;
+            const doc = editor.state.doc;
+            const textBefore = doc.textBetween(Math.max(0, from - 1), from, '\n');
+            const textAfter = doc.textBetween(to, Math.min(doc.content.size, to + 1), '\n');
+            const sel = from !== to ? doc.textBetween(from, to) : '';
+            return JSON.stringify({{ before: textBefore, after: textAfter, sel: sel }});
+        }})()";
+        var json = ExtractResultValue(SendToIframe(js));
+        if (json == null) return null;
+        try
+        {
+            var data = JsonSerializer.Deserialize<JsonElement>(json);
+            var before = GetStr(data, "before");
+            var after = GetStr(data, "after");
+            var sel = GetStr(data, "sel") ?? "";
+            char b = string.IsNullOrEmpty(before) ? '\0' : before[0];
+            char a = string.IsNullOrEmpty(after) ? '\0' : after[0];
+            return (b, a, sel);
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Get the text content of a ProseMirror editor (preserves list numbering).</summary>
+    public string? GetEditorText(int editorIndex)
+    {
+        if (!IsIframeConnected) return null;
+        var js = $@"(() => {{
+            function walk(node) {{
+                let t = '';
+                for (const c of node.childNodes) {{
+                    if (c.nodeType === 3) {{ t += c.textContent; continue; }}
+                    const tag = c.tagName;
+                    if (tag === 'BR') {{ t += '\n'; continue; }}
+                    if (tag === 'OL') {{
+                        let n = parseInt(c.getAttribute('start')) || 1;
+                        for (const li of c.children) {{
+                            if (li.tagName === 'LI') {{ t += n + '. ' + walk(li).trim() + '\n'; n++; }}
+                        }}
+                        continue;
+                    }}
+                    if (tag === 'P' || tag === 'DIV' || (tag && tag.match(/^H[1-6]$/))) {{
+                        t += walk(c) + '\n'; continue;
+                    }}
+                    t += walk(c);
+                }}
+                return t;
+            }}
+            const editors = document.querySelectorAll('.ProseMirror');
+            if (editors.length <= {editorIndex}) return null;
+            return walk(editors[{editorIndex}]);
+        }})()";
+        return ExtractResultValue(SendToIframe(js));
+    }
+
+    /// <summary>
+    /// Get the focused editor index. First tries live DOM detection, then falls back to
+    /// the last-known focused editor tracked during scrape (survives window backgrounding).
+    /// Returns -1 only if never detected.
+    /// </summary>
+    public int GetFocusedEditorIndex()
+    {
+        if (!IsIframeConnected) return _lastKnownFocusedEditor;
+        var js = @"(() => {
+            const editors = document.querySelectorAll('.ProseMirror');
+            for (let i = 0; i < editors.length; i++) {
+                if (editors[i].classList.contains('ProseMirror-focused')) return i;
+            }
+            for (let i = 0; i < editors.length; i++) {
+                if (editors[i].contains(document.activeElement) || editors[i] === document.activeElement) return i;
+            }
+            return -1;
+        })()";
+        var result = ExtractResultValue(SendToIframe(js));
+        if (result != null && int.TryParse(result, out int idx) && idx >= 0)
+        {
+            _lastKnownFocusedEditor = idx;
+            return idx;
+        }
+        // Live detection failed (window backgrounded) — use last-known from scrape
+        return _lastKnownFocusedEditor;
+    }
+
+    /// <summary>Focus a ProseMirror editor at the end.</summary>
+    public bool FocusEditor(int editorIndex)
+    {
+        if (!IsIframeConnected) return false;
+        var js = $@"(() => {{
+            const editors = document.querySelectorAll('.ProseMirror');
+            if (editors.length <= {editorIndex} || !editors[{editorIndex}].editor) return 'no_editor';
+            editors[{editorIndex}].editor.commands.focus('end');
+            return 'ok';
+        }})()";
+        return ExtractResultValue(SendToIframe(js)) == "ok";
+    }
+
+    /// <summary>Select the IMPRESSION section content in editor 1 (final report).</summary>
+    public bool SelectImpressionContent()
+    {
+        if (!IsIframeConnected) return false;
+        var js = @"(() => {
+            const editors = document.querySelectorAll('.ProseMirror');
+            if (editors.length < 2 || !editors[1].editor) return 'no_editor';
+            const editor = editors[1].editor;
+            const doc = editor.state.doc;
+            // Find text node containing 'IMPRESSION', resolve to its parent paragraph,
+            // then select from end of that paragraph to end of doc
+            let selStart = -1;
+            doc.descendants((node, pos) => {
+                if (selStart >= 0) return false;
+                if (node.isText && node.text && node.text.includes('IMPRESSION')) {
+                    // Resolve position to find parent block boundary
+                    const $pos = doc.resolve(pos);
+                    // $pos.end() = end of innermost block, +1 = start of next block
+                    selStart = $pos.end($pos.depth) + 1;
+                    return false;
+                }
+            });
+            if (selStart < 0) return 'not_found';
+            const docEnd = doc.content.size - 1;
+            if (selStart >= docEnd) return 'empty';
+            editor.commands.setTextSelection({ from: selStart, to: docEnd });
+            return 'ok';
+        })()";
+        return ExtractResultValue(SendToIframe(js)) == "ok";
+    }
+
+    // ═══════ EXPERIMENTAL: EDITOR HIGHLIGHTING ═══════
+
+    /// <summary>
+    /// [Test] Highlight all occurrences of a word in the editor with a custom color.
+    /// Returns count of occurrences found.
+    /// </summary>
+    public int HighlightWord(int editorIndex, string word, string color = "#FF6B35")
+    {
+        if (!IsIframeConnected) return -1;
+        var escapedWord = word.Replace("'", "\\'").Replace("\\", "\\\\");
+        var js = $@"(() => {{
+            const editors = document.querySelectorAll('.ProseMirror');
+            if (editors.length <= {editorIndex} || !editors[{editorIndex}].editor) return -1;
+            const editor = editors[{editorIndex}].editor;
+            const doc = editor.state.doc;
+            const word = '{escapedWord}'.toLowerCase();
+            let found = [];
+            doc.descendants((node, pos) => {{
+                if (node.isText) {{
+                    let idx = node.text.toLowerCase().indexOf(word);
+                    while (idx !== -1) {{
+                        found.push({{ from: pos + idx, to: pos + idx + word.length }});
+                        idx = node.text.toLowerCase().indexOf(word, idx + 1);
+                    }}
+                }}
+            }});
+            if (found.length === 0) return 0;
+            // Apply highlight to each occurrence (reverse order to preserve positions)
+            for (let i = found.length - 1; i >= 0; i--) {{
+                editor.chain()
+                    .setTextSelection(found[i])
+                    .setHighlight({{ color: '{color}' }})
+                    .run();
+            }}
+            editor.commands.setTextSelection(doc.content.size - 1);
+            return found.length;
+        }})()";
+        var result = ExtractResultValue(SendToIframe(js));
+        if (result != null && int.TryParse(result, out var count))
+        {
+            Logger.Trace($"CDP HighlightWord: '{word}' color={color} → {count} occurrences");
+            return count;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// [Test] Remove all highlights from the editor (restores to unhighlighted state).
+    /// </summary>
+    public bool ClearAllHighlights(int editorIndex)
+    {
+        if (!IsIframeConnected) return false;
+        var js = $@"(() => {{
+            const editors = document.querySelectorAll('.ProseMirror');
+            if (editors.length <= {editorIndex} || !editors[{editorIndex}].editor) return false;
+            const editor = editors[{editorIndex}].editor;
+            editor.chain().selectAll().unsetHighlight().run();
+            editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+            return true;
+        }})()";
+        var result = ExtractResultValue(SendToIframe(js));
+        return result == "true";
+    }
+
+    // ═══════ PUBLIC API: STRUCTURED REPORT ═══════
+
+    // JS payload that walks ProseMirror JSON tree and returns structured sections.
+    // Highlighted text = user-dictated content. Non-highlighted = template boilerplate.
+    // IMPRESSION items are always treated as dictated regardless of highlight state.
+    // Runs entirely in browser — only compact result crosses CDP.
+    private const string JS_GET_STRUCTURED_REPORT = @"(() => {
+        const editors = document.querySelectorAll('.ProseMirror');
+        if (editors.length < 2 || !editors[1].editor) return null;
+        const doc = editors[1].editor.getJSON();
+        if (!doc || !doc.content) return null;
+
+        const sections = [];
+        let current = null;
+        let inFindings = false;
+        let currentSub = null;
+
+        function textFromNode(node, dictOnly, tmplOnly) {
+            if (!node) return '';
+            if (node.type === 'text') {
+                const hasHL = node.marks && node.marks.some(m => m.type === 'highlight');
+                // Highlighted = dictated, non-highlighted = template
+                if (dictOnly && !hasHL) return '';
+                if (tmplOnly && hasHL) return '';
+                return node.text || '';
+            }
+            if (!node.content) return '';
+            return node.content.map(c => textFromNode(c, dictOnly, tmplOnly)).join('');
+        }
+
+        function allText(node) { return textFromNode(node, false, false); }
+        function dictText(node) { return textFromNode(node, true, false); }
+        function tmplText(node) { return textFromNode(node, false, true); }
+
+        function collectContent(node) {
+            const full = allText(node).trim();
+            const dict = dictText(node).trim();
+            const tmpl = tmplText(node).trim();
+            return { full, dict, tmpl };
+        }
+
+        function pushContent(target, node) {
+            const c = collectContent(node);
+            if (c.full) {
+                target.fullText += (target.fullText ? '\n' : '') + c.full;
+                // If ANY part of a paragraph is highlighted, the whole paragraph is dictated
+                if (c.dict) target.dictatedText += (target.dictatedText ? '\n' : '') + c.full;
+                if (c.tmpl) target.templateText += (target.templateText ? '\n' : '') + c.tmpl;
+            }
+        }
+
+        for (const node of doc.content) {
+            if (node.type === 'heading') {
+                const name = allText(node).replace(/:$/, '').trim();
+                if (!name) continue;
+
+                // Is this a top-level section or a FINDINGS subsection?
+                const isTopLevel = ['EXAM','TECHNIQUE','COMPARISON','CLINICAL HISTORY',
+                    'FINDINGS','IMPRESSION','INDICATION','PROCEDURE','CONCLUSION',
+                    'RECOMMENDATION','SIGNATURE','ADDENDUM'].includes(name.toUpperCase());
+
+                if (isTopLevel || !inFindings) {
+                    currentSub = null;
+                    current = { name: name, fullText: '', dictatedText: '', templateText: '', items: [], subsections: [] };
+                    sections.push(current);
+                    inFindings = (name.toUpperCase() === 'FINDINGS');
+                } else {
+                    // Subsection under FINDINGS
+                    currentSub = { name: name, fullText: '', dictatedText: '', templateText: '', items: [], subsections: [] };
+                    if (current) current.subsections.push(currentSub);
+                }
+                continue;
+            }
+
+            if (node.type === 'section') {
+                // IMPRESSION is wrapped in a <section> node
+                if (node.content) {
+                    let impSection = null;
+                    for (const child of node.content) {
+                        if (child.type === 'heading') {
+                            const name = allText(child).replace(/:$/, '').trim();
+                            impSection = { name: name, fullText: '', dictatedText: '', templateText: '', items: [], subsections: [] };
+                            sections.push(impSection);
+                            current = impSection;
+                            currentSub = null;
+                            inFindings = false;
+                        } else if (child.type === 'orderedList' && child.content && impSection) {
+                            let n = (child.attrs && child.attrs.start) || 1;
+                            for (const li of child.content) {
+                                if (li.type === 'listItem') {
+                                    const itemText = allText(li).trim();
+                                    if (itemText) {
+                                        impSection.items.push(itemText);
+                                        const numbered = n + '. ' + itemText;
+                                        impSection.fullText += (impSection.fullText ? '\n' : '') + numbered;
+                                        // Impression items are always dictated
+                                        impSection.dictatedText += (impSection.dictatedText ? '\n' : '') + numbered;
+                                    }
+                                    n++;
+                                }
+                            }
+                        } else if (impSection) {
+                            pushContent(impSection, child);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // Regular content node (draggableItem, draggableInline, paragraph)
+            if (!current) continue;
+            const target = currentSub || current;
+            pushContent(target, node);
+        }
+
+        return JSON.stringify(sections);
+    })()";
+
+    /// <summary>
+    /// Get the final report as a structured object with sections, dictated/template text separation,
+    /// and IMPRESSION items. Uses ProseMirror's getJSON() for reliable parsing instead of regex.
+    /// Optional enhancement — existing regex-based parsing remains as fallback.
+    /// </summary>
+    public StructuredReport? GetStructuredReport()
+    {
+        if (!IsIframeConnected) return null;
+
+        var json = ExtractResultValue(SendToIframe(JS_GET_STRUCTURED_REPORT));
+        if (json == null) return null;
+
+        try
+        {
+            var sections = JsonSerializer.Deserialize<List<ReportSection>>(json, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            });
+
+            if (sections == null) return null;
+
+            var report = new StructuredReport { Sections = sections };
+            Logger.Trace($"CDP: GetStructuredReport — {sections.Count} sections: {string.Join(", ", sections.Select(s => s.Name))}");
+            return report;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP: GetStructuredReport parse error: {ex.Message}");
+            return null;
+        }
+    }
+
+    // ═══════ PUBLIC API: BUTTON CLICKS ═══════
+
+    /// <summary>Click the Process Report button in the iframe.</summary>
+    public bool ClickProcessReport()
+    {
+        if (!IsIframeConnected) return false;
+        var js = @"(() => {
+            const btns = document.querySelectorAll('button');
+            for (const b of btns) {
+                if (b.innerText?.trim() === 'Process Report' || b.getAttribute('aria-label') === 'Process Report') {
+                    b.click(); return 'ok';
+                }
+            }
+            return 'not_found';
+        })()";
+        return ExtractResultValue(SendToIframe(js)) == "ok";
+    }
+
+    /// <summary>Click the Sign Report button in the iframe.</summary>
+    public bool ClickSignReport()
+    {
+        if (!IsIframeConnected) return false;
+        var js = @"(() => {
+            const btns = document.querySelectorAll('button');
+            for (const b of btns) {
+                if (b.innerText?.trim() === 'Sign Report' || b.getAttribute('aria-label') === 'Sign Report') {
+                    b.click(); return 'ok';
+                }
+            }
+            return 'not_found';
+        })()";
+        return ExtractResultValue(SendToIframe(js)) == "ok";
+    }
+
+    /// <summary>Click the Create Impression button in the iframe.</summary>
+    public bool ClickCreateImpression()
+    {
+        if (!IsIframeConnected) return false;
+        var js = @"(() => {
+            const btns = document.querySelectorAll('button');
+            for (const b of btns) {
+                const text = b.innerText?.trim() || '';
+                if (text === 'Create Impression' || text.includes('Impression')) {
+                    b.click(); return 'ok';
+                }
+            }
+            return 'not_found';
+        })()";
+        return ExtractResultValue(SendToIframe(js)) == "ok";
+    }
+
+    /// <summary>Click the Discard Study button in the iframe.</summary>
+    public bool ClickDiscardStudy()
+    {
+        if (!IsIframeConnected) return false;
+        var js = @"(() => {
+            const btns = document.querySelectorAll('button');
+            for (const b of btns) {
+                const text = b.innerText?.trim() || '';
+                const label = b.getAttribute('aria-label') || '';
+                if (text === 'Discard' || text === 'Discard Study' || label.includes('Discard')) {
+                    b.click(); return 'ok';
+                }
+            }
+            return 'not_found';
+        })()";
+        return ExtractResultValue(SendToIframe(js)) == "ok";
+    }
+
+    // ═══════ PUBLIC API: MOSAIC MACROS ═══════
+
+    /// <summary>
+    /// Fetch Mosaic macro definitions from the RadPair API via the iframe's auth context.
+    /// Called once after iframe connects. Results cached in MosaicMacros dictionary.
+    /// </summary>
+    public void FetchMosaicMacros()
+    {
+        if (!IsIframeConnected || _mosaicMacrosFetched) return;
+        _mosaicMacrosFetched = true;
+
+        // Execute fetch() inside the iframe — piggybacks on the page's existing auth cookies/headers
+        var js = @"(async () => {
+            try {
+                const resp = await fetch('https://api-rp.radpair.com/macros/available', { credentials: 'include' });
+                if (!resp.ok) return JSON.stringify({ error: resp.status });
+                const data = await resp.json();
+                return JSON.stringify(data);
+            } catch(e) { return JSON.stringify({ error: e.message }); }
+        })()";
+
+        // Runtime.evaluate with awaitPromise for async fetch
+        var result = SendToIframeAsync(js);
+        if (result == null)
+        {
+            Logger.Trace("CDP: FetchMosaicMacros — no response");
+            return;
+        }
+
+        try
+        {
+            var root = JsonSerializer.Deserialize<JsonElement>(result);
+
+            // Check for error
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("error", out var err))
+            {
+                Logger.Trace($"CDP: FetchMosaicMacros — API error: {err}");
+                _mosaicMacrosFetched = false; // Allow retry
+                return;
+            }
+
+            // Parse macro array — we don't know the exact schema yet, so log it and try common patterns
+            var macros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                ParseMacroArray(root, macros);
+            }
+            else if (root.ValueKind == JsonValueKind.Object)
+            {
+                // Might be { results: [...] } or { macros: [...] } wrapper
+                foreach (var prop in root.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind == JsonValueKind.Array)
+                    {
+                        ParseMacroArray(prop.Value, macros);
+                        break;
+                    }
+                }
+            }
+
+            MosaicMacros = macros;
+            Logger.Trace($"CDP: FetchMosaicMacros — loaded {macros.Count} Mosaic macros");
+            if (macros.Count > 0)
+            {
+                // Log first few names for debugging
+                var sample = string.Join(", ", macros.Keys.Take(5));
+                Logger.Trace($"CDP: Mosaic macro names (sample): {sample}");
+            }
+            else
+            {
+                // Log raw response for schema discovery
+                var preview = result.Length > 500 ? result[..500] + "..." : result;
+                Logger.Trace($"CDP: Mosaic macros raw response (no macros parsed): {preview}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP: FetchMosaicMacros — parse error: {ex.Message}");
+            _mosaicMacrosFetched = false; // Allow retry
+        }
+    }
+
+    private static void ParseMacroArray(JsonElement array, Dictionary<string, string> macros)
+    {
+        foreach (var item in array.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object) continue;
+
+            // RadPair schema: "phrase" = trigger name, "full_text" = expansion
+            // Also try common alternatives in case schema changes
+            var name = GetStr(item, "phrase") ?? GetStr(item, "name") ?? GetStr(item, "title")
+                ?? GetStr(item, "trigger") ?? GetStr(item, "keyword");
+            var text = GetStr(item, "full_text") ?? GetStr(item, "content") ?? GetStr(item, "text")
+                ?? GetStr(item, "expansion") ?? GetStr(item, "body");
+
+            if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(text))
+            {
+                macros.TryAdd(name.Trim(), text.Trim());
+            }
+        }
+    }
+
+    // ═══════ PUBLIC API: TEMPLATE CORRECTION ═══════
+
+    /// <summary>
+    /// Set the study type by searching the combobox. Replaces the UIA study-selector dance.
+    /// </summary>
+    public bool SetStudyType(string searchText)
+    {
+        return SetStudyType(searchText, null);
+    }
+
+    /// <summary>
+    /// Set the study type by searching the combobox and clicking the best-matching dropdown option.
+    /// When studyDescription is provided, options are scored by body part + modality matching.
+    /// </summary>
+    public bool SetStudyType(string searchText, string? studyDescription)
+    {
+        if (!IsIframeConnected) return false;
+        var escaped = JsonSerializer.Serialize(searchText);
+
+        // Step 1: Focus combobox, clear it, type search text using React-compatible setter
+        // React overrides HTMLInputElement.prototype.value setter — we must use the native one
+        // to bypass React's tracking, then dispatch an 'input' event so React picks up the change.
+        var jsType = $@"(() => {{
+            const combos = document.querySelectorAll('[role=""combobox""]');
+            if (combos.length === 0) return 'no_combo';
+            const combo = combos[0];
+            combo.focus();
+            const input = combo.querySelector('input') || combo;
+            if (input.tagName !== 'INPUT') return 'no_input';
+
+            input.focus();
+            const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            nativeSetter.call(input, '');
+            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            nativeSetter.call(input, {escaped});
+            input.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            return 'ok';
+        }})()";
+        var typeResult = ExtractResultValue(SendToIframe(jsType));
+        if (typeResult != "ok")
+        {
+            Logger.Trace($"CDP: SetStudyType step 1 failed: {typeResult}");
+            return false;
+        }
+
+        // Step 2: Wait for Mosaic to search/filter, then read dropdown options
+        Thread.Sleep(1500);
+
+        // Read all option texts from dropdown
+        const string jsReadOptions = @"(() => {
+            const options = document.querySelectorAll('[role=""option""]');
+            if (options.length === 0) return 'waiting';
+            const texts = [];
+            options.forEach(o => texts.push(o.textContent?.trim() || ''));
+            return JSON.stringify(texts);
+        })()";
+
+        string? optionsJson = null;
+        for (int i = 0; i < 6; i++) // up to ~6 more seconds
+        {
+            var result = ExtractResultValue(SendToIframe(jsReadOptions));
+            if (result != null && result != "waiting")
+            {
+                optionsJson = result;
+                break;
+            }
+            Thread.Sleep(1000);
+        }
+
+        if (optionsJson == null)
+        {
+            Logger.Trace("CDP: SetStudyType timed out waiting for dropdown options");
+            return false;
+        }
+
+        // Step 3: Find best matching option
+        int bestIndex = 0; // Default to first option
+        try
+        {
+            var options = JsonSerializer.Deserialize<string[]>(optionsJson);
+            if (options == null || options.Length == 0)
+            {
+                Logger.Trace("CDP: SetStudyType no options parsed");
+                return false;
+            }
+
+            Logger.Trace($"CDP: SetStudyType found {options.Length} options");
+
+            if (!string.IsNullOrEmpty(studyDescription))
+            {
+                // Match using body parts + modality (same logic as UIA AttemptCorrectTemplate)
+                var descParts = AutomationService.ExtractBodyParts(studyDescription);
+                descParts.ExceptWith(AutomationService.OrganKeywords);
+                descParts.Remove("CTA");
+                descParts.Remove("MRA");
+                var descModality = AutomationService.ExtractModality(studyDescription);
+
+                for (int i = 0; i < options.Length; i++)
+                {
+                    Logger.Trace($"  [{i}] '{options[i]}'");
+                    var itemParts = AutomationService.ExtractBodyParts(options[i]);
+                    itemParts.ExceptWith(AutomationService.OrganKeywords);
+                    itemParts.Remove("CTA");
+                    itemParts.Remove("MRA");
+                    var itemModality = AutomationService.ExtractModality(options[i]);
+                    bool modalityMatch = descModality == null || itemModality == null
+                        || string.Equals(descModality, itemModality, StringComparison.OrdinalIgnoreCase);
+                    if (modalityMatch && itemParts.Count > 0 && descParts.SetEquals(itemParts))
+                    {
+                        bestIndex = i;
+                        Logger.Trace($"  → Best match at [{i}]: modality+body parts match");
+                        break;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP: SetStudyType option matching error: {ex.Message}");
+        }
+
+        // Step 4: Click the matched option, then blur to prevent Mosaic re-searching
+        var jsClickOption = $@"(() => {{
+            const options = document.querySelectorAll('[role=""option""]');
+            if (options.length <= {bestIndex}) return 'no_option';
+            options[{bestIndex}].click();
+            return 'ok';
+        }})()";
+        var clickResult = ExtractResultValue(SendToIframe(jsClickOption));
+        Logger.Trace($"CDP: SetStudyType clicked option [{bestIndex}]: {clickResult}");
+
+        if (clickResult == "ok")
+        {
+            // Brief pause for MUI to process the selection, then blur the input
+            // to prevent the leftover search text from triggering a re-search
+            Thread.Sleep(500);
+            SendToIframe(@"(() => {
+                const combos = document.querySelectorAll('[role=""combobox""]');
+                if (combos.length > 0) {
+                    const input = combos[0].querySelector('input') || combos[0];
+                    if (input.blur) input.blur();
+                }
+                // Also click somewhere neutral to fully deselect
+                const editors = document.querySelectorAll('.ProseMirror');
+                if (editors.length > 0) editors[editors.length - 1].focus();
+            })()");
+        }
+
+        return clickResult == "ok";
+    }
+
+    // ═══════ HELPERS ═══════
+
+    private static string? GetStr(JsonElement el, string prop)
+    {
+        if (el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String)
+            return v.GetString();
+        return null;
+    }
+
+    private static bool GetBool(JsonElement el, string prop)
+    {
+        if (el.TryGetProperty(prop, out var v))
+        {
+            if (v.ValueKind == JsonValueKind.True) return true;
+            if (v.ValueKind == JsonValueKind.False) return false;
+        }
+        return false;
+    }
+
+    // ═══════ DISPOSE ═══════
+
+    public void Dispose()
+    {
+        try
+        {
+            _slimHubCts?.Cancel();
+            _iframeCts?.Cancel();
+
+            if (_slimHubWs?.State == WebSocketState.Open)
+                try { _slimHubWs.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None).Wait(1000); } catch { }
+            if (_iframeWs?.State == WebSocketState.Open)
+                try { _iframeWs.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None).Wait(1000); } catch { }
+
+            _slimHubWs?.Dispose();
+            _iframeWs?.Dispose();
+            _slimHubCts?.Dispose();
+            _iframeCts?.Dispose();
+        }
+        catch { }
+
+        // Complete any pending requests
+        foreach (var kvp in _pending)
+            kvp.Value.TrySetCanceled();
+        _pending.Clear();
+
+        Logger.Trace("CDP: Disposed");
+    }
+}
+
+/// <summary>
+/// Data class holding all scraped metadata from a CDP scrape operation.
+/// Fields mirror AutomationService.Last* properties.
+/// </summary>
+public class CdpScrapeResult
+{
+    public string? PatientName { get; set; }
+    public string? PatientGender { get; set; }
+    public string? Mrn { get; set; }
+    public string? SiteCode { get; set; }
+    public string? Accession { get; set; }
+    public string? Description { get; set; }
+    public string? TemplateName { get; set; }
+    public string? ReportText { get; set; }
+    public int? PatientAge { get; set; }
+    public bool IsDrafted { get; set; }
+    public bool IsAddendum { get; set; }
+}
+
+/// <summary>
+/// Structured report parsed from ProseMirror JSON tree.
+/// Sections split at heading nodes, with dictated vs template text separation
+/// based on Mosaic's highlight marks (highlighted = user-dictated, non-highlighted = template boilerplate).
+/// IMPRESSION items are always treated as dictated.
+/// </summary>
+public class StructuredReport
+{
+    public List<ReportSection> Sections { get; set; } = new();
+
+    /// <summary>Get a section by name (case-insensitive, strips trailing colon).</summary>
+    public ReportSection? GetSection(string name)
+    {
+        var normalized = name.TrimEnd(':').Trim();
+        return Sections.FirstOrDefault(s =>
+            string.Equals(s.Name, normalized, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Get full report text (all sections concatenated).</summary>
+    public string GetFullText() => string.Join("\n", Sections.Select(s => s.GetFullTextWithHeader()));
+
+    /// <summary>Get only user-dictated text (non-highlighted, non-template).</summary>
+    public string GetDictatedText() => string.Join("\n", Sections
+        .Where(s => !string.IsNullOrWhiteSpace(s.DictatedText))
+        .Select(s => s.Name + ":\n" + s.DictatedText));
+}
+
+public class ReportSection
+{
+    /// <summary>Section name without colon, e.g. "EXAM", "FINDINGS", "IMPRESSION".</summary>
+    public string Name { get; set; } = "";
+
+    /// <summary>All text in this section (template + dictated).</summary>
+    public string FullText { get; set; } = "";
+
+    /// <summary>Only highlighted (user-dictated) text. IMPRESSION items always included.</summary>
+    public string DictatedText { get; set; } = "";
+
+    /// <summary>Only non-highlighted (template boilerplate) text.</summary>
+    public string TemplateText { get; set; } = "";
+
+    /// <summary>For IMPRESSION: individual numbered items.</summary>
+    public List<string> Items { get; set; } = new();
+
+    /// <summary>For FINDINGS: subsections like LOWER CHEST, HEPATOBILIARY, etc.</summary>
+    public List<ReportSection> Subsections { get; set; } = new();
+
+    public string GetFullTextWithHeader() =>
+        string.IsNullOrWhiteSpace(FullText) ? Name + ":" : Name + ":\n" + FullText;
+}

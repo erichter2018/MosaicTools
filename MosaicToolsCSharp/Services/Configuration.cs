@@ -475,6 +475,13 @@ public class Configuration
     [JsonPropertyName("experimental_use_sendinput_insert")]
     public bool ExperimentalUseSendInputInsert { get; set; } = false;
 
+    // CDP (Chrome DevTools Protocol) — direct DOM access to Mosaic's WebView2
+    [JsonPropertyName("cdp_enabled")]
+    public bool CdpEnabled { get; set; } = false;
+
+    [JsonPropertyName("cdp_env_var_set")]
+    public bool CdpEnvVarSet { get; set; } = false;
+
     // UI Options
     [JsonPropertyName("show_tooltips")]
     public bool ShowTooltips { get; set; } = true;
