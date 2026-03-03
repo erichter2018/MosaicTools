@@ -1,3 +1,10 @@
+4.0.0
+- CDP integration: Chrome DevTools Protocol for direct Mosaic DOM access (faster, no COM leaks)
+- Independent column scrolling: Transcript, Report, and Utility columns scroll separately instead of the whole page
+- Scroll fix auto-reinjects on study changes — works seamlessly across 300+ studies per session
+- CDP setting and scroll toggle in Experimental settings (requires Mosaic restart on first enable)
+- CDP falls back to UI Automation when unavailable
+
 3.9.5
 - Auto-correct template mismatch: automatically searches and selects the correct template when Mosaic picks the wrong one
 - Template mismatch detection now checks modality (CT vs XR vs CTA etc.), not just body parts

@@ -433,6 +433,12 @@ public class ActionController : IDisposable
             Logger.Trace("CDP: Disabled and disposed");
         }
 
+        // [CDP] Remove scroll fix if setting was toggled off
+        if (_cdpService != null && !_config.CdpIndependentScrolling && _cdpService.ScrollFixActive)
+        {
+            _cdpService.RemoveScrollFix();
+        }
+
         // [KeytermLearning] Re-initialize on settings change
         if (_config.SttKeytermLearningEnabled && _config.CustomSttEnabled
             && _config.SttProvider == "deepgram")
@@ -3632,6 +3638,12 @@ public class ActionController : IDisposable
 
                 if (_cdpService.IsConnected)
                 {
+                    // [CDP] Inject independent column scrolling CSS if enabled
+                    if (_config.CdpIndependentScrolling && _cdpService.IsIframeConnected)
+                    {
+                        try { _cdpService.InjectScrollFix(); } catch { }
+                    }
+
                     try
                     {
                         var cdp = _cdpService.Scrape();

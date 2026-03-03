@@ -482,6 +482,9 @@ public class Configuration
     [JsonPropertyName("cdp_env_var_set")]
     public bool CdpEnvVarSet { get; set; } = false;
 
+    [JsonPropertyName("cdp_independent_scrolling")]
+    public bool CdpIndependentScrolling { get; set; } = true;
+
     // UI Options
     [JsonPropertyName("show_tooltips")]
     public bool ShowTooltips { get; set; } = true;

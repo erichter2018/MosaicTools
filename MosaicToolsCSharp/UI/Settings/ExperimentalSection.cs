@@ -17,6 +17,7 @@ public class ExperimentalSection : SettingsSection
     private readonly NumericUpDown _connectivityTimeoutUpDown;
     private readonly CheckBox _useSendInputInsertCheck;
     private readonly CheckBox _cdpEnabledCheck;
+    private readonly CheckBox _cdpScrollFixCheck;
 
     public ExperimentalSection(ToolTip toolTip) : base("Experimental", toolTip)
     {
@@ -56,9 +57,14 @@ public class ExperimentalSection : SettingsSection
 
         _cdpEnabledCheck = AddCheckBox("Use CDP for Mosaic interaction", LeftMargin, _nextY,
             "Falls back to UI Automation if CDP unavailable. Requires Mosaic restart on first enable.");
+        _cdpEnabledCheck.CheckedChanged += (s, e) => UpdateCdpSettingsStates();
         _nextY += RowHeight;
 
         AddHintLabel("Reads Mosaic DOM directly via Chrome DevTools Protocol — faster, no COM leaks", LeftMargin + 25);
+
+        _cdpScrollFixCheck = AddCheckBox("Independent column scrolling", LeftMargin + 25, _nextY,
+            "Makes Transcript, Report, and sidebar columns scroll independently instead of the whole page.");
+        _nextY += RowHeight;
 
         UpdateHeight();
     }
@@ -70,6 +76,11 @@ public class ExperimentalSection : SettingsSection
         _connectivityTimeoutUpDown.Enabled = enabled;
     }
 
+    private void UpdateCdpSettingsStates()
+    {
+        _cdpScrollFixCheck.Enabled = _cdpEnabledCheck.Checked;
+    }
+
     public override void LoadSettings(Configuration config)
     {
         _connectivityMonitorEnabledCheck.Checked = config.ConnectivityMonitorEnabled;
@@ -78,8 +89,10 @@ public class ExperimentalSection : SettingsSection
         _connectivityTimeoutUpDown.Value = Math.Max(1, (config.ConnectivityTimeoutMs + 500) / 1000);
         _useSendInputInsertCheck.Checked = config.ExperimentalUseSendInputInsert;
         _cdpEnabledCheck.Checked = config.CdpEnabled;
+        _cdpScrollFixCheck.Checked = config.CdpIndependentScrolling;
 
         UpdateNetworkSettingsStates();
+        UpdateCdpSettingsStates();
     }
 
     public override void SaveSettings(Configuration config)
@@ -90,5 +103,6 @@ public class ExperimentalSection : SettingsSection
         config.ConnectivityTimeoutMs = (int)_connectivityTimeoutUpDown.Value * 1000;
         config.ExperimentalUseSendInputInsert = _useSendInputInsertCheck.Checked;
         config.CdpEnabled = _cdpEnabledCheck.Checked;
+        config.CdpIndependentScrolling = _cdpScrollFixCheck.Checked;
     }
 }

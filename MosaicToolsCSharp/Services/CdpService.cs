@@ -44,9 +44,11 @@ public class CdpService : IDisposable
     private bool _studyTypeDiagLogged; // Only log DOM diagnostic once per empty streak
     private int _lastKnownFocusedEditor = 0; // Default to transcript (0), updated by scrape ticks
     private bool _mosaicMacrosFetched; // Only fetch once per iframe connection
+    private bool _scrollFixActive;     // Track whether CSS scroll fix is injected in current iframe
 
     public bool IsConnected => _slimHubWs?.State == WebSocketState.Open;
     public bool IsIframeConnected => _iframeWs?.State == WebSocketState.Open;
+    public bool ScrollFixActive => _scrollFixActive;
 
     /// <summary>
     /// Mosaic macros fetched from /macros/available API. Key = lowercase macro name, Value = expansion text.
@@ -164,6 +166,146 @@ public class CdpService : IDisposable
         }
 
         return JSON.stringify(r);
+    })()";
+
+    // Inject CSS to make Mosaic's three columns independently scrollable.
+    // Only the editor/content area scrolls — headers and toolbars stay fixed at top.
+    // Always removes old injection and re-discovers DOM (no stale persistence across reports).
+    private const string JS_INJECT_SCROLL_FIX = @"(() => {
+        // Always clean slate — remove previous injection + data attributes
+        const old = document.getElementById('mt-scroll-fix');
+        if (old) old.remove();
+        for (const attr of ['data-mt-cols','data-mt-col','data-mt-col-editor','data-mt-col-scroll','data-mt-editor-wrapper','data-mt-editor-area']) {
+            document.querySelectorAll('[' + attr + ']').forEach(el => el.removeAttribute(attr));
+        }
+
+        const editors = document.querySelectorAll('.ProseMirror');
+        if (editors.length < 2) return JSON.stringify({error:'need_2_editors', found:editors.length});
+
+        // Find lowest common ancestor of the two editors = column container
+        function getAncestors(el) {
+            const a = [];
+            while (el && el !== document.body) { a.push(el); el = el.parentElement; }
+            return a;
+        }
+        const a0 = getAncestors(editors[0]);
+        const s1 = new Set(getAncestors(editors[1]));
+        let lca = null;
+        for (const el of a0) { if (s1.has(el)) { lca = el; break; } }
+        if (!lca) return JSON.stringify({error:'no_lca'});
+
+        let colContainer = null;
+        const lcaStyle = getComputedStyle(lca);
+        if ((lcaStyle.display === 'flex' || lcaStyle.display === 'inline-flex') && lcaStyle.flexDirection === 'row') {
+            colContainer = lca;
+        } else {
+            let p = lca.parentElement;
+            while (p && p !== document.body) {
+                const ps = getComputedStyle(p);
+                if ((ps.display === 'flex' || ps.display === 'inline-flex') && ps.flexDirection === 'row') {
+                    const kids = Array.from(p.children).filter(c => getComputedStyle(c).display !== 'none' && c.offsetWidth > 80);
+                    if (kids.length >= 2) { colContainer = p; break; }
+                }
+                p = p.parentElement;
+            }
+        }
+        if (!colContainer) return JSON.stringify({error:'no_flex_row_container'});
+
+        const columns = Array.from(colContainer.children).filter(c => {
+            const cs = getComputedStyle(c);
+            return cs.display !== 'none' && c.offsetWidth > 50;
+        });
+        if (columns.length < 2) return JSON.stringify({error:'too_few_columns', found:columns.length});
+
+        const topPx = Math.round(colContainer.getBoundingClientRect().top);
+        colContainer.setAttribute('data-mt-cols', '');
+
+        // Tag columns: editor columns get flex layout with scrollable editor area,
+        // utility column (no editor) scrolls as a whole
+        let editorAreas = 0;
+        columns.forEach((col, i) => {
+            col.setAttribute('data-mt-col', String(i));
+            const editor = col.querySelector('.ProseMirror');
+            if (editor) {
+                col.setAttribute('data-mt-col-editor', '');
+                // Walk up from editor: find wrapper (direct child of col)
+                // then inner (direct child of wrapper) — the actual scrollable content
+                let wrapper = editor;
+                while (wrapper.parentElement && wrapper.parentElement !== col) {
+                    wrapper = wrapper.parentElement;
+                }
+                if (wrapper && wrapper.parentElement === col) {
+                    wrapper.setAttribute('data-mt-editor-wrapper', '');
+                    // One level deeper: find which child of wrapper contains the editor
+                    let inner = editor;
+                    while (inner.parentElement && inner.parentElement !== wrapper) {
+                        inner = inner.parentElement;
+                    }
+                    if (inner && inner.parentElement === wrapper) {
+                        inner.setAttribute('data-mt-editor-area', '');
+                        editorAreas++;
+                    }
+                }
+            } else {
+                col.setAttribute('data-mt-col-scroll', '');
+            }
+        });
+
+        const styleEl = document.createElement('style');
+        styleEl.id = 'mt-scroll-fix';
+        styleEl.textContent = `/* MosaicTools: independent column scrolling */
+html, body { overflow: hidden !important; }
+[data-mt-cols] {
+    height: calc(100vh - ${topPx}px) !important;
+    max-height: calc(100vh - ${topPx}px) !important;
+    overflow: hidden !important;
+}
+[data-mt-col] {
+    height: 100% !important;
+}
+[data-mt-col-editor] {
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+}
+[data-mt-col-scroll] {
+    overflow-y: auto !important;
+}
+[data-mt-editor-wrapper] {
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+    flex: 1 1 0 !important;
+    min-height: 0 !important;
+}
+[data-mt-editor-wrapper] > *:not([data-mt-editor-area]) {
+    flex: 0 0 auto !important;
+}
+[data-mt-editor-area] {
+    flex: 1 1 0 !important;
+    overflow-y: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+}`;
+        document.head.appendChild(styleEl);
+
+        return JSON.stringify({
+            ok: true,
+            columns: columns.length,
+            topPx: topPx,
+            editorAreas: editorAreas,
+            containerTag: colContainer.tagName,
+            containerClass: (colContainer.className || '').substring(0, 100)
+        });
+    })()";
+
+    private const string JS_REMOVE_SCROLL_FIX = @"(() => {
+        const style = document.getElementById('mt-scroll-fix');
+        if (style) style.remove();
+        for (const attr of ['data-mt-cols','data-mt-col','data-mt-col-editor','data-mt-col-scroll','data-mt-editor-wrapper','data-mt-editor-area']) {
+            document.querySelectorAll('[' + attr + ']').forEach(el => el.removeAttribute(attr));
+        }
+        return 'removed';
     })()";
 
     // ═══════ CONNECTION MANAGEMENT ═══════
@@ -363,6 +505,7 @@ public class CdpService : IDisposable
         _iframeWs = null;
         _iframeWsUrl = null;
         _mosaicMacrosFetched = false; // Re-fetch macros on next connection
+        _scrollFixActive = false;     // Re-inject scroll fix on next connection
     }
 
     private void DisconnectSlimHub()
@@ -1199,6 +1342,67 @@ public class CdpService : IDisposable
             return 'not_found';
         })()";
         return ExtractResultValue(SendToIframe(js)) == "ok";
+    }
+
+    // ═══════ PUBLIC API: SCROLL FIX ═══════
+
+    /// <summary>
+    /// Inject CSS into the iframe to make the three columns independently scrollable.
+    /// Always re-discovers DOM and injects fresh CSS (no stale persistence).
+    /// Checks if style tag still exists in DOM before skipping — handles study changes that refresh DOM.
+    /// </summary>
+    public bool InjectScrollFix()
+    {
+        if (_scrollFixActive)
+        {
+            // Verify the style tag still exists (DOM refreshes on study change)
+            try
+            {
+                var check = ExtractResultValue(SendToIframe(
+                    "!!document.getElementById('mt-scroll-fix')"));
+                if (check == "true") return true;
+                // Style tag gone — DOM was refreshed, re-inject
+                _scrollFixActive = false;
+                Logger.Trace("CDP: Scroll fix style tag gone — re-injecting");
+            }
+            catch { _scrollFixActive = false; }
+        }
+        if (!IsIframeConnected) return false;
+
+        var resultJson = ExtractResultValue(SendToIframe(JS_INJECT_SCROLL_FIX));
+        if (resultJson == null) return false;
+
+        try
+        {
+            var data = JsonSerializer.Deserialize<JsonElement>(resultJson);
+            if (data.TryGetProperty("ok", out var ok) && ok.GetBoolean())
+            {
+                _scrollFixActive = true;
+                var cols = data.TryGetProperty("columns", out var c) ? c.ToString() : "?";
+                var top = data.TryGetProperty("topPx", out var t) ? t.ToString() : "?";
+                var areas = data.TryGetProperty("editorAreas", out var ea) ? ea.ToString() : "?";
+                Logger.Trace($"CDP: Scroll fix injected — {cols} columns, {areas} editor areas, topPx={top}");
+                return true;
+            }
+            // Not ready yet (e.g., editors not loaded) — will retry next tick
+            var error = GetStr(data, "error") ?? "unknown";
+            Logger.Trace($"CDP: Scroll fix not ready: {error}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP: Scroll fix error: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Remove the injected scroll fix CSS from the iframe.</summary>
+    public void RemoveScrollFix()
+    {
+        _scrollFixActive = false;
+        if (!IsIframeConnected) return;
+        try { SendToIframe(JS_REMOVE_SCROLL_FIX); }
+        catch { }
     }
 
     // ═══════ PUBLIC API: MOSAIC MACROS ═══════
