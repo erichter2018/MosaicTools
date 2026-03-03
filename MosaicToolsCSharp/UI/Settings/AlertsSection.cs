@@ -25,6 +25,7 @@ public class AlertsSection : SettingsSection
     private readonly CheckBox _showDraftedIndicatorCheck;
     private readonly CheckBox _patientMismatchEnabledCheck;
     private readonly CheckBox _showTemplateMismatchCheck;
+    private readonly CheckBox _attemptCorrectTemplateCheck;
     private readonly CheckBox _genderCheckEnabledCheck;
     private readonly CheckBox _strokeDetectionEnabledCheck;
     private readonly CheckBox _strokeDetectionUseClinicalHistoryCheck;
@@ -112,9 +113,14 @@ public class AlertsSection : SettingsSection
         // Template Mismatch
         _showTemplateMismatchCheck = AddCheckBox("Template mismatch", LeftMargin, _nextY,
             "Red border when report template doesn't match study type.");
+        _showTemplateMismatchCheck.CheckedChanged += (s, e) => UpdateTemplateMismatchSubStates();
         var redLabel = AddLabel("(red border)", LeftMargin + 160, _nextY + 2);
         redLabel.ForeColor = Color.FromArgb(220, 100, 100);
         redLabel.Font = new Font("Segoe UI", 8);
+        _nextY += SubRowHeight;
+
+        _attemptCorrectTemplateCheck = AddCheckBox("Attempt to correct template", LeftMargin + 25, _nextY,
+            "Automatically type the study description into Mosaic's Study field\nto fix the template when a mismatch is detected.", true);
         _nextY += SubRowHeight;
 
         // Gender Check
@@ -222,6 +228,13 @@ public class AlertsSection : SettingsSection
         _showDraftedIndicatorCheck.ForeColor = subColor;
     }
 
+    private void UpdateTemplateMismatchSubStates()
+    {
+        bool enabled = _showTemplateMismatchCheck.Checked;
+        _attemptCorrectTemplateCheck.Enabled = enabled;
+        _attemptCorrectTemplateCheck.ForeColor = enabled ? Color.FromArgb(180, 180, 180) : Color.FromArgb(100, 100, 100);
+    }
+
     private void UpdateRecoMdSubStates()
     {
         bool enabled = _recoMdEnabledCheck.Checked;
@@ -273,6 +286,7 @@ public class AlertsSection : SettingsSection
         _showDraftedIndicatorCheck.Checked = config.ShowDraftedIndicator;
         _patientMismatchEnabledCheck.Checked = config.PatientMismatchEnabled;
         _showTemplateMismatchCheck.Checked = config.ShowTemplateMismatch;
+        _attemptCorrectTemplateCheck.Checked = config.AttemptCorrectTemplate;
         _genderCheckEnabledCheck.Checked = config.GenderCheckEnabled;
         _aidocScrapeEnabledCheck.Checked = config.AidocScrapeEnabled;
         _recoMdEnabledCheck.Checked = config.RecoMdEnabled;
@@ -284,6 +298,7 @@ public class AlertsSection : SettingsSection
         _strokeAutoCreateNoteCheck.Checked = config.StrokeAutoCreateNote;
 
         UpdateNotificationBoxStates();
+        UpdateTemplateMismatchSubStates();
         UpdateRecoMdSubStates();
         UpdateStrokeSubStates();
     }
@@ -300,6 +315,7 @@ public class AlertsSection : SettingsSection
         config.ShowDraftedIndicator = _showDraftedIndicatorCheck.Checked;
         config.PatientMismatchEnabled = _patientMismatchEnabledCheck.Checked;
         config.ShowTemplateMismatch = _showTemplateMismatchCheck.Checked;
+        config.AttemptCorrectTemplate = _attemptCorrectTemplateCheck.Checked;
         config.GenderCheckEnabled = _genderCheckEnabledCheck.Checked;
         config.AidocScrapeEnabled = _aidocScrapeEnabledCheck.Checked;
         config.RecoMdEnabled = _recoMdEnabledCheck.Checked;

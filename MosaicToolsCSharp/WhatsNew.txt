@@ -1,3 +1,11 @@
+3.9.5
+- Auto-correct template mismatch: automatically searches and selects the correct template when Mosaic picks the wrong one
+- Template mismatch detection now checks modality (CT vs XR vs CTA etc.), not just body parts
+- CTA/MRA compound modality detection (e.g. "CT Chest Angiography" correctly recognized as CTA)
+- Template correction retries once after 15 seconds if the first attempt didn't fix it
+- STT: "New line after every sentence" option in Punctuation settings (off by default)
+- STT: auto-punctuate now defaults to ON for new installs
+
 3.9.4
 - Fix: report popup not appearing when saved position is off-screen (e.g., disconnected monitor)
 - Fix: off-screen detection now checks full window bounds, not just top-left corner

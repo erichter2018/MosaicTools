@@ -84,6 +84,7 @@ public static class NativeWindows
     public const int VK_LEFT = 0x25;
     public const int VK_RIGHT = 0x27;
     public const int VK_END = 0x23;
+    public const int VK_DOWN = 0x28;
     public const int VK_NEXT = 0x22; // Page Down
     public const int KEYEVENTF_EXTENDEDKEY = 0x0001;
     public const int KEYEVENTF_KEYUP = 0x0002;

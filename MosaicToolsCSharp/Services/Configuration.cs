@@ -133,6 +133,9 @@ public class Configuration
     [JsonPropertyName("show_template_mismatch")]
     public bool ShowTemplateMismatch { get; set; } = false;
 
+    [JsonPropertyName("attempt_correct_template")]
+    public bool AttemptCorrectTemplate { get; set; } = false;
+
     [JsonPropertyName("gender_check_enabled")]
     public bool GenderCheckEnabled { get; set; } = false;
 
@@ -388,7 +391,7 @@ public class Configuration
     public string SttAudioDeviceName { get; set; } = "";
 
     [JsonPropertyName("stt_auto_punctuate")]
-    public bool SttAutoPunctuate { get; set; } = false;
+    public bool SttAutoPunctuate { get; set; } = true;
 
     [JsonPropertyName("stt_deepgram_keyterms")]
     public string SttDeepgramKeyterms { get; set; } = "";
@@ -413,6 +416,9 @@ public class Configuration
 
     [JsonPropertyName("stt_show_indicator")]
     public bool SttShowIndicator { get; set; } = true;
+
+    [JsonPropertyName("stt_newline_after_sentence")]
+    public bool SttNewlineAfterSentence { get; set; } = false;
 
     [JsonPropertyName("stt_expand_contractions")]
     public bool SttExpandContractions { get; set; } = true;

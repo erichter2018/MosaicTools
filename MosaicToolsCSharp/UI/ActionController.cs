@@ -192,6 +192,8 @@ public class ActionController : IDisposable
     // Alert state tracking for alerts-only mode
     private bool _patientMismatchActive = false;
     private bool _templateMismatchActive = false;
+    private int _templateCorrectionAttempts = 0;
+    private long _templateCorrectionNextRetryTick64 = 0;
     private bool _genderMismatchActive = false;
     private bool _strokeDetectedActive = false;
     private bool _pendingClarioPriorityRetry = false;
@@ -485,6 +487,9 @@ public class ActionController : IDisposable
                         transcript = char.ToLower(transcript[0]) + transcript[1..];
                 }
                 transcript = ApplyCustomReplacements(transcript);
+
+                if (_config.SttNewlineAfterSentence)
+                    transcript = InsertNewlineAfterSentences(transcript);
 
                 var hasTextToPaste = transcript.Length > 0;
                 var textToPaste = " " + transcript + " ";
@@ -3574,8 +3579,14 @@ public class ActionController : IDisposable
             // Full slow path: expensive metadata/Clario work
             RecordTemplateIfNeeded(reportText);
             InsertPendingMacros(currentAccession, reportText);
-            UpdateClinicalHistoryAndAlerts(currentAccession, reportText, tickStartTick64);
-            UpdateImpressionDisplay(reportText);
+            // Skip clinical history + impression updates on the same tick as a study change.
+            // reportText was read BEFORE the change was detected, so it may contain stale data
+            // from the previous study. Next tick will have fresh data from the new study.
+            if (!accessionChanged)
+            {
+                UpdateClinicalHistoryAndAlerts(currentAccession, reportText, tickStartTick64);
+                UpdateImpressionDisplay(reportText);
+            }
             // Flush batched UI updates and re-assert z-order after Aidoc FlaUI interactions
             BatchUI(() => _mainForm.EnsureWindowsOnTop());
             FlushUI();
@@ -3822,6 +3833,8 @@ public class ActionController : IDisposable
         }
         // Reset alert state tracking
         _templateMismatchActive = false;
+        _templateCorrectionAttempts = 0;
+        _templateCorrectionNextRetryTick64 = 0;
         _genderMismatchActive = false;
         _strokeDetectedActive = false;
         _pendingClarioPriorityRetry = false;
@@ -3935,6 +3948,14 @@ public class ActionController : IDisposable
             if (_config.HideIndicatorWhenNoStudy && _config.IndicatorEnabled)
             {
                 BatchUI(() => _mainForm.ToggleIndicator(false));
+            }
+
+            // Hide impression window when no study is open
+            if (_config.ShowImpression)
+            {
+                _searchingForImpression = false;
+                _impressionFromProcessReport = false;
+                BatchUI(() => _mainForm.HideImpressionWindow());
             }
         }
     }
@@ -4248,6 +4269,27 @@ public class ActionController : IDisposable
             templateName = _mosaicReader.LastTemplateName;
             bool bodyPartsMatch = AutomationService.DoBodyPartsMatch(templateDescription, templateName);
             newTemplateMismatch = !bodyPartsMatch;
+
+            // Auto-correct template if mismatch detected (max 2 attempts: immediate + retry after 15s)
+            if (newTemplateMismatch && _config.AttemptCorrectTemplate
+                && _templateCorrectionAttempts < 2
+                && !string.IsNullOrWhiteSpace(templateDescription)
+                && Environment.TickCount64 >= _templateCorrectionNextRetryTick64)
+            {
+                _templateCorrectionAttempts++;
+                _templateCorrectionNextRetryTick64 = Environment.TickCount64 + 15_000; // retry eligible in 15s
+                Logger.Trace($"AttemptCorrectTemplate: Attempt #{_templateCorrectionAttempts} — correcting from '{templateName}' to '{templateDescription}'");
+                bool corrected = _automationService.AttemptCorrectTemplate(templateDescription);
+                if (corrected)
+                {
+                    InvokeUI(() => _mainForm.ShowStatusToast("Template correction attempted"));
+                    // Next scrape tick will re-evaluate and clear the red border if fixed
+                }
+                else
+                {
+                    InvokeUI(() => _mainForm.ShowStatusToast("Template correction failed"));
+                }
+            }
         }
 
         // Check for gender mismatch
@@ -5068,6 +5110,18 @@ public class ActionController : IDisposable
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         }
         return text;
+    }
+
+    /// <summary>
+    /// Insert a newline after each sentence-ending period.
+    /// Skips periods in decimal numbers (e.g. "1.2", "3.5").
+    /// </summary>
+    private static string InsertNewlineAfterSentences(string text)
+    {
+        // Match a period followed by a space (sentence boundary),
+        // but NOT when the period is between digits (decimal number like 1.2)
+        return System.Text.RegularExpressions.Regex.Replace(
+            text, @"(?<!\d)\.(\s+)", ".\n");
     }
 
     /// <summary>

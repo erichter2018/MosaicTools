@@ -41,6 +41,7 @@ public class SttSection : SettingsSection
     private readonly Label _keytermLearningHint;
 
     // Text processing
+    private readonly CheckBox _newlineAfterSentenceCheck;
     private readonly CheckBox _expandContractionsCheck;
     private readonly CheckBox _radiologyCleanupCheck;
     private readonly DataGridView _replacementsGrid;
@@ -148,6 +149,10 @@ public class SttSection : SettingsSection
         _nextY += SubRowHeight;
 
         AddHintLabel("Off = dictate punctuation (say \"period\", \"comma\"). On = auto-inserted.", LeftMargin + 25);
+
+        _newlineAfterSentenceCheck = AddCheckBox("New line after every sentence", LeftMargin + 25, _nextY,
+            "Insert a line break after each sentence-ending period.");
+        _nextY += SubRowHeight;
 
         // Deepgram keyterms (shown only for Deepgram provider)
         _deepgramKeytermsLabel = AddLabel("Keyterms:", LeftMargin + 25, _nextY + 3);
@@ -423,6 +428,7 @@ public class SttSection : SettingsSection
         _regionCombo.Enabled = enabled;
         _audioDeviceCombo.Enabled = enabled;
         _autoPunctuateCheck.Enabled = enabled;
+        _newlineAfterSentenceCheck.Enabled = enabled;
         _deepgramKeytermsBox.Enabled = enabled;
         _deepgramKeytermsSortButton.Enabled = enabled;
         _keytermLearningCheck.Enabled = enabled;
@@ -710,6 +716,7 @@ public class SttSection : SettingsSection
         }
 
         _autoPunctuateCheck.Checked = config.SttAutoPunctuate;
+        _newlineAfterSentenceCheck.Checked = config.SttNewlineAfterSentence;
         _deepgramKeytermsBox.Text = config.SttDeepgramKeyterms.Replace(",", "\r\n");
         _startBeepCheck.Checked = config.SttStartBeepEnabled;
         _stopBeepCheck.Checked = config.SttStopBeepEnabled;
@@ -767,6 +774,7 @@ public class SttSection : SettingsSection
         }
 
         config.SttAutoPunctuate = _autoPunctuateCheck.Checked;
+        config.SttNewlineAfterSentence = _newlineAfterSentenceCheck.Checked;
         config.SttDeepgramKeyterms = _deepgramKeytermsBox.Text.Trim();
         config.SttStartBeepEnabled = _startBeepCheck.Checked;
         config.SttStopBeepEnabled = _stopBeepCheck.Checked;

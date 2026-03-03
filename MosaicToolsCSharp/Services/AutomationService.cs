@@ -1045,6 +1045,272 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         }
     }
 
+    private static readonly string[] KnownModalities = { "CT", "CTA", "MRI", "MR", "MRA", "XR", "US", "PET", "NM", "FLUORO", "DEXA", "MAMMOGRAM" };
+
+    /// <summary>
+    /// Extract the effective modality from a study description (e.g. "CT", "XR", "MRI").
+    /// Detects compound modalities: "CT Chest Angiography" → "CTA", "MR Angio Brain" → "MRA".
+    /// Returns null if no known modality found.
+    /// </summary>
+    public static string? ExtractModality(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        var upper = text.ToUpperInvariant();
+
+        // Check for explicit CTA/MRA prefix first (highest priority)
+        if (upper.StartsWith("CTA ") || upper == "CTA") return "CTA";
+        if (upper.StartsWith("MRA ") || upper == "MRA") return "MRA";
+
+        // Check for CT + angio compound → CTA
+        if ((upper.StartsWith("CT ") || upper == "CT") && upper.Contains("ANGIO"))
+            return "CTA";
+
+        // Check for MR/MRI + angio compound → MRA
+        if ((upper.StartsWith("MR ") || upper.StartsWith("MRI ") || upper == "MR" || upper == "MRI")
+            && upper.Contains("ANGIO"))
+            return "MRA";
+
+        // Standard modality prefix match
+        foreach (var m in KnownModalities)
+        {
+            if (upper.StartsWith(m + " ") || upper == m)
+                return m;
+        }
+
+        // Also check for "XRAY" → XR
+        if (upper.Contains("XRAY") || upper.Contains("X-RAY") || upper.Contains("X RAY"))
+            return "XR";
+        return null;
+    }
+
+    /// <summary>
+    /// Extract modality + body parts from a study description for template search.
+    /// e.g. "XR ABDOMEN 1 VIEW (KUB)" → "XR Abdomen", "CT CHEST ABDOMEN PELVIS WITH CONTRAST" → "CT Chest Abdomen Pelvis"
+    /// </summary>
+    public static string BuildTemplateSearchText(string description)
+    {
+        if (string.IsNullOrWhiteSpace(description)) return description;
+
+        var upper = description.ToUpperInvariant();
+
+        // Extract modality (first word)
+        string? modality = ExtractModality(description);
+
+        // Extract body parts using existing logic
+        var bodyParts = ExtractBodyParts(description);
+        // Remove organ keywords and special types that aren't useful for template search
+        bodyParts.ExceptWith(OrganKeywords);
+        bodyParts.Remove("CTA");
+        bodyParts.Remove("MRA");
+
+        if (modality == null && bodyParts.Count == 0)
+            return description; // Can't parse, return as-is
+
+        // Build search text: "Modality Body1 Body2"
+        var parts = new System.Collections.Generic.List<string>();
+        if (modality != null) parts.Add(modality);
+        // Title-case the body parts for natural search
+        foreach (var bp in bodyParts.OrderBy(p => p))
+            parts.Add(System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(bp.ToLowerInvariant()));
+
+        return string.Join(" ", parts);
+    }
+
+    /// <summary>
+    /// Attempt to correct a template mismatch by clicking the Study element,
+    /// pasting a simplified search (modality + body parts), and selecting the first dropdown result.
+    /// Runs keyboard/clipboard work on a dedicated STA thread (scrape timer is MTA).
+    /// </summary>
+    public bool AttemptCorrectTemplate(string studyDescription)
+    {
+        AutomationElement? window = null;
+        AutomationElement? studyElement = null;
+        try
+        {
+            var searchText = BuildTemplateSearchText(studyDescription);
+            Logger.Trace($"AttemptCorrectTemplate: Description '{studyDescription}' → search '{searchText}'");
+
+            window = FindMosaicWindow();
+            if (window == null)
+            {
+                Logger.Trace("AttemptCorrectTemplate: Mosaic window not found");
+                return false;
+            }
+
+            studyElement = window.FindFirstDescendant(cf => cf.ByName("Study"));
+            if (studyElement == null)
+            {
+                Logger.Trace("AttemptCorrectTemplate: 'Study' element not found");
+                return false;
+            }
+
+            // Focus the Study element via click at center (Chrome-based app — Focus() unreliable)
+            var rect = studyElement.BoundingRectangle;
+            if (rect.Width <= 0 || rect.Height <= 0)
+            {
+                Logger.Trace("AttemptCorrectTemplate: Study element has no valid bounds");
+                return false;
+            }
+
+            studyElement.Click();
+            Thread.Sleep(200);
+
+            // Select all existing text and paste search text via clipboard.
+            // Must run clipboard + keystrokes on STA thread (scrape timer is MTA/ThreadPool).
+            bool pasteOk = false;
+            var staThread = new Thread(() =>
+            {
+                try
+                {
+                    NativeWindows.SendCtrlA();
+                    Thread.Sleep(100);
+
+                    if (ClipboardService.SetText(searchText))
+                    {
+                        Thread.Sleep(50);
+                        NativeWindows.SendHotkey("ctrl+v");
+                        pasteOk = true;
+                    }
+                    else
+                    {
+                        Logger.Trace("AttemptCorrectTemplate: Clipboard.SetText failed");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Trace($"AttemptCorrectTemplate STA error: {ex.Message}");
+                }
+            });
+            staThread.SetApartmentState(ApartmentState.STA);
+            staThread.Start();
+            staThread.Join(3000);
+
+            if (!pasteOk)
+            {
+                Logger.Trace("AttemptCorrectTemplate: Paste did not complete");
+                return false;
+            }
+
+            // Wait for dropdown to populate — Mosaic needs time to filter results
+            Thread.Sleep(1500);
+
+            // Dump dropdown items for diagnostics and find the best match
+            AutomationElement[]? listItems = null;
+            try
+            {
+                // Look for listbox/list items within the Mosaic window (dropdown is part of the DOM)
+                listItems = window.FindAllDescendants(cf =>
+                    cf.ByControlType(FlaUI.Core.Definitions.ControlType.ListItem));
+
+                if (listItems != null && listItems.Length > 0)
+                {
+                    Logger.Trace($"AttemptCorrectTemplate: Found {listItems.Length} dropdown items:");
+                    var descBodyParts = ExtractBodyParts(studyDescription);
+                    descBodyParts.ExceptWith(OrganKeywords);
+                    descBodyParts.Remove("CTA");
+                    descBodyParts.Remove("MRA");
+                    var descModality = ExtractModality(studyDescription);
+                    int bestIndex = -1;
+
+                    for (int i = 0; i < listItems.Length; i++)
+                    {
+                        var itemName = listItems[i].Name ?? "(null)";
+                        Logger.Trace($"  [{i}] '{itemName}'");
+
+                        // Find first item whose modality AND body parts match the description
+                        if (bestIndex < 0 && !string.IsNullOrWhiteSpace(itemName))
+                        {
+                            var itemParts = ExtractBodyParts(itemName);
+                            itemParts.ExceptWith(OrganKeywords);
+                            itemParts.Remove("CTA");
+                            itemParts.Remove("MRA");
+                            var itemModality = ExtractModality(itemName);
+                            bool modalityMatch = descModality == null || itemModality == null
+                                || string.Equals(descModality, itemModality, StringComparison.OrdinalIgnoreCase);
+                            if (modalityMatch && itemParts.Count > 0 && descBodyParts.SetEquals(itemParts))
+                            {
+                                bestIndex = i;
+                                Logger.Trace($"  → Best match at [{i}]: modality+body parts match");
+                            }
+                        }
+                    }
+
+                    if (bestIndex >= 0)
+                    {
+                        // Click the matching item
+                        var itemRect = listItems[bestIndex].BoundingRectangle;
+                        if (itemRect.Width > 0 && itemRect.Height > 0)
+                        {
+                            listItems[bestIndex].Click();
+                            Thread.Sleep(200);
+                            Logger.Trace($"AttemptCorrectTemplate: Clicked dropdown item [{bestIndex}]");
+                        }
+                        else
+                        {
+                            // Fallback: arrow down to it and press Enter
+                            for (int i = 0; i <= bestIndex; i++)
+                            {
+                                NativeWindows.keybd_event(NativeWindows.VK_DOWN, 0, 0, UIntPtr.Zero);
+                                Thread.Sleep(20);
+                                NativeWindows.keybd_event(NativeWindows.VK_DOWN, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                                Thread.Sleep(50);
+                            }
+                            NativeWindows.keybd_event(NativeWindows.VK_RETURN, 0, 0, UIntPtr.Zero);
+                            Thread.Sleep(20);
+                            NativeWindows.keybd_event(NativeWindows.VK_RETURN, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                            Logger.Trace($"AttemptCorrectTemplate: Arrow-selected dropdown item [{bestIndex}]");
+                        }
+                    }
+                    else
+                    {
+                        // No body-part match found — select first item as fallback
+                        Logger.Trace("AttemptCorrectTemplate: No body-part match, selecting first item");
+                        NativeWindows.keybd_event(NativeWindows.VK_DOWN, 0, 0, UIntPtr.Zero);
+                        Thread.Sleep(20);
+                        NativeWindows.keybd_event(NativeWindows.VK_DOWN, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                        Thread.Sleep(200);
+                        NativeWindows.keybd_event(NativeWindows.VK_RETURN, 0, 0, UIntPtr.Zero);
+                        Thread.Sleep(20);
+                        NativeWindows.keybd_event(NativeWindows.VK_RETURN, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                    }
+                }
+                else
+                {
+                    // No list items found — try Down+Enter as fallback
+                    Logger.Trace("AttemptCorrectTemplate: No dropdown items found via UIA, falling back to Down+Enter");
+                    NativeWindows.keybd_event(NativeWindows.VK_DOWN, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(20);
+                    NativeWindows.keybd_event(NativeWindows.VK_DOWN, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                    Thread.Sleep(200);
+                    NativeWindows.keybd_event(NativeWindows.VK_RETURN, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(20);
+                    NativeWindows.keybd_event(NativeWindows.VK_RETURN, 0, NativeWindows.KEYEVENTF_KEYUP, UIntPtr.Zero);
+                }
+            }
+            finally
+            {
+                ReleaseElements(listItems);
+            }
+
+            // Focus the transcript box so dictation doesn't go to the Study dropdown
+            Thread.Sleep(300);
+            FocusTranscriptBox();
+
+            Logger.Trace($"AttemptCorrectTemplate: Completed for '{searchText}'");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"AttemptCorrectTemplate error: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            ReleaseElement(studyElement);
+            ReleaseElement(window);
+        }
+    }
+
     // For simulated mouse clicks (Focus() doesn't work in Chrome-based apps)
     [DllImport("user32.dll")]
     private static extern bool SetCursorPos(int x, int y);
@@ -2839,24 +3105,30 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         NormalizeRunoffStudy(descParts);
         NormalizeRunoffStudy(templateParts);
 
-        // Compare on primary body regions only — organ-specific keywords (RENAL, KIDNEY, LIVER, etc.)
-        // are ignored because they often appear as clinical indications in descriptions
-        // (e.g., "CT ABDOMEN PELVIS RENAL CALCULI" should match "CT ABDOMEN AND PELVIS")
-        var descRegions = new HashSet<string>(descParts.Where(p => !OrganKeywords.Contains(p)), StringComparer.OrdinalIgnoreCase);
-        var templateRegions = new HashSet<string>(templateParts.Where(p => !OrganKeywords.Contains(p)), StringComparer.OrdinalIgnoreCase);
+        // Compare on primary body regions only:
+        // - Organ keywords (RENAL, KIDNEY, etc.) ignored — often clinical indications
+        // - CTA/MRA ignored — these are modalities, checked separately via ExtractModality
+        var excludeFromBodyParts = new HashSet<string>(OrganKeywords, StringComparer.OrdinalIgnoreCase) { "CTA", "MRA" };
+        var descRegions = new HashSet<string>(descParts.Where(p => !excludeFromBodyParts.Contains(p)), StringComparer.OrdinalIgnoreCase);
+        var templateRegions = new HashSet<string>(templateParts.Where(p => !excludeFromBodyParts.Contains(p)), StringComparer.OrdinalIgnoreCase);
 
         if (descRegions.Count == 0 || templateRegions.Count == 0)
             return true; // Can't determine after filtering, assume OK
 
-        bool match = descRegions.SetEquals(templateRegions);
+        bool bodyMatch = descRegions.SetEquals(templateRegions);
 
-        if (match)
+        // Also check modality (CT vs XR vs MRI etc.) — body parts alone aren't sufficient
+        // (e.g. "XR Abdomen" template should NOT match "CT ABDOMEN" description)
+        var descModality = ExtractModality(description);
+        var templateModality = ExtractModality(templateName);
+        bool modalityMatch = descModality == null || templateModality == null
+            || string.Equals(descModality, templateModality, StringComparison.OrdinalIgnoreCase);
+
+        bool match = bodyMatch && modalityMatch;
+
+        if (!match)
         {
-            // Template match (not logged — fires every scrape cycle)
-        }
-        else
-        {
-            Logger.Trace($"Template MISMATCH: Description [{string.Join(", ", descParts)}] vs Template [{string.Join(", ", templateParts)}]");
+            Logger.Trace($"Template MISMATCH: Description [{(descModality ?? "?")}:{string.Join(", ", descParts)}] vs Template [{(templateModality ?? "?")}:{string.Join(", ", templateParts)}]");
         }
 
         return match;

@@ -179,7 +179,7 @@ public class KeytermLearningService
             return _data.Entries.Values
                 .OrderByDescending(e => ComputeScore(e))
                 .Take(maxCount)
-                .Select(e => e.Word)
+                .Select(e => CleanWord(e.Word))
                 .ToList();
         }
     }
@@ -261,7 +261,7 @@ public class KeytermLearningService
             {
                 _data.Entries[lowerKey] = new KeytermEntry
                 {
-                    Word = displayForm.Trim(),
+                    Word = CleanWord(displayForm),
                     Source = source,
                     Occurrences = 1,
                     TotalConfidence = confidence,
