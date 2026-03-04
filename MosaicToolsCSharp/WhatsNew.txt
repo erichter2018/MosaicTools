@@ -1,3 +1,16 @@
+4.1.0
+- STT Ensemble Mode: run Deepgram + AssemblyAI + Speechmatics simultaneously, secondaries correct low-confidence words via 2-of-3 voting
+- Live ensemble metrics popup: draggable overlay showing confidence, per-provider corrections/confirms, consensus stats
+- Per-provider keyterm auto-learning: each provider maintains its own learned keyterm list (separate JSON files)
+- AssemblyAI: edge endpoint, faster endpointing, keyterm support via constructor
+- Speechmatics: halved final latency (max_delay 2→1s), keyterm support via additional_vocab
+- Keyterms now sent to all providers (previously Deepgram only)
+- STT text processing extracted to shared SttTextProcessor (ensemble + single-provider use same pipeline)
+- CDP: auto-scroll to cursor during dictation, hide report drag/delete handles (new settings)
+- Fix: auto-fix clinical history pasting "TEMPLATE MISMATCH" diagnostic text into report instead of actual clinical history
+- Fix: auto-fix infinite loop when template mismatch + empty accession caused endless 5-second paste cycles
+- Fix: auto-fix max 2 paste attempts per study as safety net against infinite loops
+
 4.0.0
 - CDP integration: Chrome DevTools Protocol for direct Mosaic DOM access (faster, no COM leaks)
 - Independent column scrolling: Transcript, Report, and Utility columns scroll separately instead of the whole page

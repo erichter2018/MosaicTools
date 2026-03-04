@@ -13,6 +13,7 @@ public class AssemblyAIProvider : ISttProvider
 {
     private readonly string _apiKey;
     private readonly bool _autoPunctuate;
+    private readonly string _keyterms;
     private ClientWebSocket? _ws;
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveTask;
@@ -21,57 +22,6 @@ public class AssemblyAIProvider : ISttProvider
     private TaskCompletionSource<bool>? _sessionBegin; // Signals when server sends Begin
     private DateTime _lastDisconnect = DateTime.MinValue; // Rate-limit protection
     private readonly SemaphoreSlim _connectLock = new(1, 1); // Serialize StartSessionAsync calls
-
-    // Radiology keyterms to boost recognition accuracy (max 100 terms, 50 chars each)
-    private static readonly string[] MedicalKeyterms =
-    [
-        // Chest
-        "atelectasis", "pneumothorax", "pneumomediastinum",       // 3
-        "cardiomegaly", "hepatomegaly", "splenomegaly",           // 6
-        "lymphadenopathy", "bronchiectasis",                       // 8
-        "hemothorax", "hemopneumothorax",                          // 10
-        "retrocardiac", "costophrenic", "cardiophrenic",           // 13
-        "hilar", "perihilar", "basilar", "bibasilar",              // 17
-        "peribronchial", "parenchymal", "mediastinal",             // 20
-        // Tubes/procedures
-        "nasogastric", "endotracheal", "tracheostomy",             // 23
-        "thoracentesis", "paracentesis",                           // 25
-        // Hepatobiliary
-        "cholecystectomy", "cholecystitis",                        // 27
-        "cholelithiasis", "choledocholithiasis",                   // 29
-        // Renal
-        "hydronephrosis", "nephrolithiasis", "ureterolithiasis",   // 32
-        "pyelonephritis",                                          // 33
-        // GI
-        "diverticulitis", "diverticulosis", "pancreatitis",        // 36
-        "pneumoperitoneum", "pneumobilia",                         // 38
-        "intussusception", "volvulus", "ileus",                    // 41
-        "mesenteric", "omentum", "retroperitoneal",                // 44
-        // MSK
-        "opacification", "radiolucency", "lucency",                // 47
-        "osseous", "periosteal", "osteophyte", "osteophytic",      // 51
-        "spondylosis", "spondylolisthesis",                        // 53
-        "atherosclerotic",                                         // 54
-        "patulous", "tortuous", "ectatic",                         // 57
-        "lobulated", "spiculated", "infundibulum",                 // 60
-        // Gyn
-        "adnexal", "endometrial", "myometrial",                   // 63
-        // Spine
-        "paraspinal", "foraminal", "neuroforaminal",               // 66
-        "laminectomy", "discectomy",                               // 68
-        "vertebroplasty", "kyphoplasty", "arthroplasty",           // 71
-        // Trauma
-        "subluxation", "diastasis", "comminuted", "nondisplaced",  // 75
-        "avulsion",                                                // 76
-        // Neuro
-        "intraparenchymal", "subarachnoid",                        // 78
-        "falcine", "tentorial", "uncal",                           // 81
-        "vasogenic", "cytotoxic",                                  // 83
-        "encephalomalacia", "gliosis", "demyelination",            // 86
-        "periventricular", "pneumocephalus",                       // 88
-        // Misc descriptors
-        "Hounsfield", "radiopacity",                               // 90
-    ];  // 90 terms
 
     public string Name => "AssemblyAI";
     public bool RequiresApiKey => true;
@@ -83,10 +33,11 @@ public class AssemblyAIProvider : ISttProvider
     public event Action<string>? ErrorOccurred;
     public event Action<bool>? ConnectionStateChanged;
 
-    public AssemblyAIProvider(string apiKey, bool autoPunctuate = false)
+    public AssemblyAIProvider(string apiKey, bool autoPunctuate = false, string keyterms = "")
     {
         _apiKey = apiKey;
         _autoPunctuate = autoPunctuate;
+        _keyterms = keyterms;
     }
 
     public async Task<bool> StartSessionAsync(CancellationToken ct = default)
@@ -111,10 +62,11 @@ public class AssemblyAIProvider : ISttProvider
             _ws = new ClientWebSocket();
             _ws.Options.SetRequestHeader("Authorization", _apiKey);
 
-            // No format_turns — we handle punctuation client-side via spoken punctuation
+            // Edge endpoint auto-selects nearest server; format_turns=false saves ~200ms
             var uri = new Uri(
-                "wss://streaming.assemblyai.com/v3/ws" +
-                $"?sample_rate={AudioFormat.SampleRate}&encoding=pcm_s16le");
+                "wss://streaming.edge.assemblyai.com/v3/ws" +
+                $"?sample_rate={AudioFormat.SampleRate}&encoding=pcm_s16le&format_turns=false" +
+                $"&end_of_turn_confidence_threshold=0.5&min_end_of_turn_silence_when_confident=560&max_turn_silence=1600");
 
             await _ws.ConnectAsync(uri, ct);
             _connected = true;
@@ -138,12 +90,20 @@ public class AssemblyAIProvider : ISttProvider
                 return false;
             }
 
-            // Send medical keyterms to boost recognition accuracy
-            var config = new { type = "UpdateConfiguration", keyterms_prompt = MedicalKeyterms };
-            var configJson = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(config));
-            await _ws.SendAsync(new ArraySegment<byte>(configJson), WebSocketMessageType.Text, true, ct);
+            // Send keyterms to boost recognition accuracy (max 100 terms, 50 chars each)
+            var keytermArray = string.IsNullOrWhiteSpace(_keyterms)
+                ? Array.Empty<string>()
+                : _keyterms.Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(t => t.Trim()).Where(t => t.Length > 0 && t.Length <= 50)
+                    .Take(100).ToArray();
+            if (keytermArray.Length > 0)
+            {
+                var config = new { type = "UpdateConfiguration", keyterms_prompt = keytermArray };
+                var configJson = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(config));
+                await _ws.SendAsync(new ArraySegment<byte>(configJson), WebSocketMessageType.Text, true, ct);
+            }
 
-            Logger.Trace($"AssemblyAIProvider: Connected, sent {MedicalKeyterms.Length} keyterms");
+            Logger.Trace($"AssemblyAIProvider: Connected, sent {keytermArray.Length} keyterms");
             return true;
         }
         catch (WebSocketException ex) when (ex.Message.Contains("401") || ex.Message.Contains("403") || ex.Message.Contains("Unauthorized"))

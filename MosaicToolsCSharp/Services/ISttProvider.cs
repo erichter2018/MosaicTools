@@ -9,7 +9,7 @@ public record SttWord(string Text, string PunctuatedText, float Confidence, doub
 /// <summary>
 /// A transcription result (interim or final).
 /// </summary>
-public record SttResult(string Transcript, SttWord[] Words, float Confidence, bool IsFinal, bool SpeechFinal, double Duration);
+public record SttResult(string Transcript, SttWord[] Words, float Confidence, bool IsFinal, bool SpeechFinal, double Duration, string ProviderName = "");
 
 /// <summary>
 /// Audio format declared by a provider. SttService uses this to configure WaveIn.

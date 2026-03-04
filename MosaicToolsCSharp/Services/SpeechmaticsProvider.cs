@@ -14,6 +14,7 @@ public class SpeechmaticsProvider : ISttProvider
     private readonly string _apiKey;
     private readonly string _region; // "us" or "eu"
     private readonly bool _autoPunctuate;
+    private readonly string _keyterms;
     private ClientWebSocket? _ws;
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveTask;
@@ -31,11 +32,12 @@ public class SpeechmaticsProvider : ISttProvider
     public event Action<string>? ErrorOccurred;
     public event Action<bool>? ConnectionStateChanged;
 
-    public SpeechmaticsProvider(string apiKey, string region = "us", bool autoPunctuate = false)
+    public SpeechmaticsProvider(string apiKey, string region = "us", bool autoPunctuate = false, string keyterms = "")
     {
         _apiKey = apiKey;
         _region = region;
         _autoPunctuate = autoPunctuate;
+        _keyterms = keyterms;
     }
 
     public async Task<bool> StartSessionAsync(CancellationToken ct = default)
@@ -69,11 +71,22 @@ public class SpeechmaticsProvider : ISttProvider
                 ["domain"] = "medical",
                 ["enable_partials"] = true,
                 ["enable_entities"] = true,
-                ["max_delay"] = 2.0,
+                ["max_delay"] = 1.0,
+                ["max_delay_mode"] = "flexible",
                 ["operating_point"] = "enhanced"
             };
             if (!_autoPunctuate)
                 txConfig["punctuation_overrides"] = new { permitted_marks = Array.Empty<string>() };
+
+            // Parse keyterms into additional_vocab array (up to 1000 terms)
+            if (!string.IsNullOrWhiteSpace(_keyterms))
+            {
+                var vocab = _keyterms.Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(t => t.Trim()).Where(t => t.Length > 0)
+                    .Take(1000).ToArray();
+                if (vocab.Length > 0)
+                    txConfig["additional_vocab"] = vocab;
+            }
 
             var startMsg = JsonSerializer.Serialize(new
             {

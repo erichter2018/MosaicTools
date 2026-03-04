@@ -45,10 +45,24 @@ public class CdpService : IDisposable
     private int _lastKnownFocusedEditor = 0; // Default to transcript (0), updated by scrape ticks
     private bool _mosaicMacrosFetched; // Only fetch once per iframe connection
     private bool _scrollFixActive;     // Track whether CSS scroll fix is injected in current iframe
+    private double _columnRatio = 0.333; // Transcript:Report ratio (persisted via config)
+    private string? _lastIframeHash;   // Smart scrape: skip full iframe scrape when hash unchanged
+    private CdpScrapeResult? _lastCdpScrapeResult; // Cached result for hash-match reuse
+    private bool _autoScrollWatcherActive; // Whether auto-scroll watcher interval is injected
+    private bool _hideDragHandles = true; // Hide Tiptap drag handles in editor
 
     public bool IsConnected => _slimHubWs?.State == WebSocketState.Open;
     public bool IsIframeConnected => _iframeWs?.State == WebSocketState.Open;
     public bool ScrollFixActive => _scrollFixActive;
+    public bool AutoScrollEnabled { get; set; } = true;
+    public bool HideDragHandles { get => _hideDragHandles; set => _hideDragHandles = value; }
+
+    /// <summary>Set column ratio from config on startup, and read back after drag.</summary>
+    public double ColumnRatio
+    {
+        get => _columnRatio;
+        set => _columnRatio = Math.Clamp(value, 0.15, 0.75);
+    }
 
     /// <summary>
     /// Mosaic macros fetched from /macros/available API. Key = lowercase macro name, Value = expansion text.
@@ -168,143 +182,426 @@ public class CdpService : IDisposable
         return JSON.stringify(r);
     })()";
 
-    // Inject CSS to make Mosaic's three columns independently scrollable.
-    // Only the editor/content area scrolls — headers and toolbars stay fixed at top.
-    // Always removes old injection and re-discovers DOM (no stale persistence across reports).
-    private const string JS_INJECT_SCROLL_FIX = @"(() => {
-        // Always clean slate — remove previous injection + data attributes
-        const old = document.getElementById('mt-scroll-fix');
-        if (old) old.remove();
-        for (const attr of ['data-mt-cols','data-mt-col','data-mt-col-editor','data-mt-col-scroll','data-mt-editor-wrapper','data-mt-editor-area']) {
-            document.querySelectorAll('[' + attr + ']').forEach(el => el.removeAttribute(attr));
-        }
-
+    // Quick hash for smart scrape: lightweight fingerprint of iframe state.
+    // If hash matches previous tick, skip the expensive JS_SCRAPE_IFRAME evaluation.
+    private const string JS_QUICK_HASH = @"(() => {
         const editors = document.querySelectorAll('.ProseMirror');
-        if (editors.length < 2) return JSON.stringify({error:'need_2_editors', found:editors.length});
-
-        // Find lowest common ancestor of the two editors = column container
-        function getAncestors(el) {
-            const a = [];
-            while (el && el !== document.body) { a.push(el); el = el.parentElement; }
-            return a;
+        if (editors.length < 2) return 'E' + editors.length;
+        const txt = editors[1].innerText || '';
+        const len = txt.length;
+        const h30 = txt.substring(0, 30);
+        const t30 = len > 30 ? txt.substring(len - 30) : '';
+        let focused = -1;
+        for (let i = 0; i < editors.length; i++) {
+            if (editors[i].classList.contains('ProseMirror-focused')
+                || editors[i].contains(document.activeElement)) { focused = i; break; }
         }
+        const studyInput = document.getElementById('studies-search');
+        const sv = (studyInput && studyInput !== document.activeElement) ? studyInput.value : '';
+        const drafted = document.body.innerText.includes('DRAFTED') ? 'D' : 'U';
+        return len + '|' + h30 + '|' + t30 + '|' + focused + '|' + sv + '|' + drafted;
+    })()";
+
+    // Inject CSS to make Mosaic's three columns independently scrollable,
+    // plus a draggable resize handle between transcript (col 0) and report (col 1).
+    // Always removes old injection and re-discovers DOM (no stale persistence across reports).
+    // {0} placeholder = column ratio (e.g. "0.333"), injected from C# at call time.
+    private const string JS_INJECT_SCROLL_FIX_TEMPLATE = @"(() => {{
+        // ── CLEANUP: remove previous injection + data attributes + stale inline styles ──
+        document.getElementById('mt-scroll-fix')?.remove();
+        document.querySelectorAll('[data-mt-resize-handle]').forEach(h => h.remove());
+        const mtAttrs = ['data-mt-cols','data-mt-horizontal','data-mt-vertical','data-mt-col',
+            'data-mt-col-editor','data-mt-col-scroll','data-mt-editor-wrapper','data-mt-editor-area',
+            'data-mt-editor-inner','data-mt-scroll-area','data-mt-vr'];
+        for (const attr of mtAttrs) {{
+            document.querySelectorAll('[' + attr + ']').forEach(el => {{
+                el.removeAttribute(attr);
+                el.style.width = '';
+                el.style.height = '';
+                el.style.flex = '';
+            }});
+        }}
+        // Also clear stale inline styles on ProseMirror ancestor chains — catches elements
+        // that lost data-mt attrs when Mosaic's React re-rendered (e.g. orientation switch)
+        document.querySelectorAll('.ProseMirror').forEach(editor => {{
+            let el = editor.parentElement;
+            while (el && el !== document.body) {{
+                el.style.width = '';
+                el.style.height = '';
+                el.style.flex = '';
+                el = el.parentElement;
+            }}
+        }});
+
+        // ── DETECT: find editors and column structure ──
+        const editors = document.querySelectorAll('.ProseMirror');
+        if (editors.length < 2) return JSON.stringify({{error:'need_2_editors', found:editors.length}});
+
+        function getAncestors(el) {{
+            const a = [];
+            while (el && el !== document.body) {{ a.push(el); el = el.parentElement; }}
+            return a;
+        }}
         const a0 = getAncestors(editors[0]);
         const s1 = new Set(getAncestors(editors[1]));
         let lca = null;
-        for (const el of a0) { if (s1.has(el)) { lca = el; break; } }
-        if (!lca) return JSON.stringify({error:'no_lca'});
+        for (const el of a0) {{ if (s1.has(el)) {{ lca = el; break; }} }}
+        if (!lca) return JSON.stringify({{error:'no_lca'}});
 
         let colContainer = null;
         const lcaStyle = getComputedStyle(lca);
-        if ((lcaStyle.display === 'flex' || lcaStyle.display === 'inline-flex') && lcaStyle.flexDirection === 'row') {
+        if ((lcaStyle.display === 'flex' || lcaStyle.display === 'inline-flex') && lcaStyle.flexDirection === 'row') {{
             colContainer = lca;
-        } else {
+        }} else {{
             let p = lca.parentElement;
-            while (p && p !== document.body) {
+            while (p && p !== document.body) {{
                 const ps = getComputedStyle(p);
-                if ((ps.display === 'flex' || ps.display === 'inline-flex') && ps.flexDirection === 'row') {
+                if ((ps.display === 'flex' || ps.display === 'inline-flex') && ps.flexDirection === 'row') {{
                     const kids = Array.from(p.children).filter(c => getComputedStyle(c).display !== 'none' && c.offsetWidth > 80);
-                    if (kids.length >= 2) { colContainer = p; break; }
-                }
+                    if (kids.length >= 2) {{ colContainer = p; break; }}
+                }}
                 p = p.parentElement;
-            }
-        }
-        if (!colContainer) return JSON.stringify({error:'no_flex_row_container'});
+            }}
+        }}
+        if (!colContainer) return JSON.stringify({{error:'no_flex_row_container'}});
 
-        const columns = Array.from(colContainer.children).filter(c => {
+        const columns = Array.from(colContainer.children).filter(c => {{
             const cs = getComputedStyle(c);
             return cs.display !== 'none' && c.offsetWidth > 50;
-        });
-        if (columns.length < 2) return JSON.stringify({error:'too_few_columns', found:columns.length});
+        }});
+        if (columns.length < 2) return JSON.stringify({{error:'too_few_columns', found:columns.length}});
 
         const topPx = Math.round(colContainer.getBoundingClientRect().top);
         colContainer.setAttribute('data-mt-cols', '');
 
-        // Tag columns: editor columns get flex layout with scrollable editor area,
-        // utility column (no editor) scrolls as a whole
+        // ── TAG: mark columns, wrappers, editor areas ──
+        // Horizontal: col0=transcript, col1=report, col2=utility (2+ editor columns)
+        // Vertical:   col0=stacked(transcript+report), col1=utility (1 editor column)
         let editorAreas = 0;
-        columns.forEach((col, i) => {
+        let editorColCount = 0;
+        columns.forEach((col, i) => {{
             col.setAttribute('data-mt-col', String(i));
-            const editor = col.querySelector('.ProseMirror');
-            if (editor) {
+            const editorsInCol = col.querySelectorAll('.ProseMirror');
+            if (editorsInCol.length > 0) {{
                 col.setAttribute('data-mt-col-editor', '');
-                // Walk up from editor: find wrapper (direct child of col)
-                // then inner (direct child of wrapper) — the actual scrollable content
-                let wrapper = editor;
-                while (wrapper.parentElement && wrapper.parentElement !== col) {
-                    wrapper = wrapper.parentElement;
-                }
-                if (wrapper && wrapper.parentElement === col) {
-                    wrapper.setAttribute('data-mt-editor-wrapper', '');
-                    // One level deeper: find which child of wrapper contains the editor
-                    let inner = editor;
-                    while (inner.parentElement && inner.parentElement !== wrapper) {
-                        inner = inner.parentElement;
-                    }
-                    if (inner && inner.parentElement === wrapper) {
-                        inner.setAttribute('data-mt-editor-area', '');
-                        editorAreas++;
-                    }
-                }
-            } else {
+                editorColCount++;
+                editorsInCol.forEach(editor => {{
+                    let wrapper = editor;
+                    while (wrapper.parentElement && wrapper.parentElement !== col) {{
+                        wrapper = wrapper.parentElement;
+                    }}
+                    if (wrapper && wrapper.parentElement === col) {{
+                        wrapper.setAttribute('data-mt-editor-wrapper', '');
+                        let inner = editor;
+                        while (inner.parentElement && inner.parentElement !== wrapper) {{
+                            inner = inner.parentElement;
+                        }}
+                        if (inner && inner.parentElement === wrapper) {{
+                            inner.setAttribute('data-mt-editor-area', '');
+                            editorAreas++;
+                            // Mark ProseMirror's parent as scroll target (RichTextContent level)
+                            if (editor.parentElement) {{
+                                editor.parentElement.setAttribute('data-mt-scroll-area', '');
+                            }}
+                            let walk = editor.parentElement;
+                            while (walk && walk !== inner) {{
+                                walk.setAttribute('data-mt-editor-inner', '');
+                                walk = walk.parentElement;
+                            }}
+                        }}
+                    }}
+                }});
+            }} else {{
                 col.setAttribute('data-mt-col-scroll', '');
-            }
-        });
+            }}
+        }});
 
+        // ── LAYOUT: detect orientation, insert resize handle, compute dynamic CSS values ──
+        const isHorizontal = editorColCount >= 2;
+        colContainer.setAttribute(isHorizontal ? 'data-mt-horizontal' : 'data-mt-vertical', '');
+
+        // Dynamic CSS values — embedded in style tag, NOT set as inline styles.
+        // This ensures orientation switches leave no stale inline styles behind.
+        let col0Width = 0, col1Width = 0, vRatio = 0.3;
+
+        if (isHorizontal) {{
+            const w0 = columns[0].offsetWidth;
+            const w1 = columns[1].offsetWidth;
+
+            const handle = document.createElement('div');
+            handle.setAttribute('data-mt-resize-handle', '');
+            colContainer.insertBefore(handle, columns[1]);
+
+            const ratio = window.__mtColumnRatio || {0};
+            const totalW = w0 + w1 - 6;
+            col0Width = Math.round(ratio * totalW);
+            col1Width = totalW - col0Width;
+            window.__mtColumnRatio = ratio;
+
+            // Drag: uses inline setProperty('important') for real-time updates only
+            handle.addEventListener('mousedown', e => {{
+                e.preventDefault();
+                handle.classList.add('dragging');
+                const tw = columns[0].offsetWidth + columns[1].offsetWidth;
+                const startOffset = columns[0].getBoundingClientRect().left;
+                function onMove(ev) {{
+                    const newCol0Width = ev.clientX - startOffset;
+                    let r = newCol0Width / tw;
+                    r = Math.max(0.15, Math.min(0.75, r));
+                    const cw0 = Math.round(r * tw);
+                    columns[0].style.setProperty('width', cw0 + 'px', 'important');
+                    columns[1].style.setProperty('width', (tw - cw0) + 'px', 'important');
+                    window.__mtColumnRatio = r;
+                }}
+                function onUp() {{
+                    handle.classList.remove('dragging');
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup', onUp);
+                }}
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            }});
+        }} else {{
+            // Vertical layout: resize handle between stacked wrappers
+            const editorCol = columns.find(c => c.hasAttribute('data-mt-col-editor'));
+            if (editorCol) {{
+                const wrappers = Array.from(editorCol.children).filter(c => c.hasAttribute('data-mt-editor-wrapper'));
+                if (wrappers.length >= 2) {{
+                    wrappers[0].setAttribute('data-mt-vr', '0');
+                    wrappers[1].setAttribute('data-mt-vr', '1');
+
+                    const handle = document.createElement('div');
+                    handle.setAttribute('data-mt-resize-handle', '');
+                    handle.setAttribute('data-mt-resize-horizontal', '');
+                    editorCol.insertBefore(handle, wrappers[1]);
+
+                    vRatio = window.__mtVerticalRatio || 0.3;
+                    window.__mtVerticalRatio = vRatio;
+
+                    handle.addEventListener('mousedown', e => {{
+                        e.preventDefault();
+                        handle.classList.add('dragging');
+                        const th = wrappers[0].offsetHeight + wrappers[1].offsetHeight;
+                        const startTop = wrappers[0].getBoundingClientRect().top;
+                        function onMove(ev) {{
+                            let r = (ev.clientY - startTop) / th;
+                            r = Math.max(0.1, Math.min(0.85, r));
+                            wrappers[0].style.setProperty('flex', r + ' 0 0px', 'important');
+                            wrappers[1].style.setProperty('flex', (1 - r) + ' 0 0px', 'important');
+                            window.__mtVerticalRatio = r;
+                        }}
+                        function onUp() {{
+                            handle.classList.remove('dragging');
+                            document.removeEventListener('mousemove', onMove);
+                            document.removeEventListener('mouseup', onUp);
+                        }}
+                        document.addEventListener('mousemove', onMove);
+                        document.addEventListener('mouseup', onUp);
+                    }});
+                }}
+            }}
+        }}
+
+        // ── CSS: all layout values embedded in stylesheet, no inline styles ──
+        const hideDragHandles = {1};
         const styleEl = document.createElement('style');
         styleEl.id = 'mt-scroll-fix';
-        styleEl.textContent = `/* MosaicTools: independent column scrolling */
-html, body { overflow: hidden !important; }
-[data-mt-cols] {
-    height: calc(100vh - ${topPx}px) !important;
-    max-height: calc(100vh - ${topPx}px) !important;
+        let css = `/* MosaicTools: independent column scrolling + resize */
+html, body {{ overflow: hidden !important; }}
+[data-mt-cols] {{
+    height: calc(100vh - ${{topPx}}px) !important;
+    max-height: calc(100vh - ${{topPx}}px) !important;
     overflow: hidden !important;
-}
-[data-mt-col] {
+}}
+[data-mt-col] {{
     height: 100% !important;
-}
-[data-mt-col-editor] {
+    overflow: hidden !important;
+}}
+[data-mt-col-editor] {{
     display: flex !important;
     flex-direction: column !important;
     overflow: hidden !important;
-}
-[data-mt-col-scroll] {
+}}
+[data-mt-col-scroll] {{
     overflow-y: auto !important;
-}
-[data-mt-editor-wrapper] {
+}}
+[data-mt-editor-wrapper] {{
     display: flex !important;
     flex-direction: column !important;
+    flex-wrap: nowrap !important;
     overflow: hidden !important;
-    flex: 1 1 0 !important;
     min-height: 0 !important;
-}
-[data-mt-editor-wrapper] > *:not([data-mt-editor-area]) {
+}}
+[data-mt-editor-wrapper] > *:not([data-mt-editor-area]) {{
     flex: 0 0 auto !important;
-}
-[data-mt-editor-area] {
+}}
+[data-mt-editor-area] {{
     flex: 1 1 0 !important;
     overflow-y: auto !important;
     min-height: 0 !important;
     max-height: none !important;
-}`;
+}}
+[data-mt-editor-inner] {{
+    overflow: visible !important;
+}}
+[data-mt-editor-area] .ProseMirror {{
+    overflow: visible !important;
+}}
+/* ── Horizontal mode ── */
+[data-mt-horizontal] > [data-mt-col-editor] {{
+    box-sizing: border-box !important;
+    max-width: none !important;
+    flex: 0 0 auto !important;
+}}
+[data-mt-horizontal] [data-mt-editor-wrapper] {{
+    flex: 1 1 0 !important;
+}}
+[data-mt-horizontal] > [data-mt-col=""0""][data-mt-col-editor] {{
+    width: ${{col0Width}}px !important;
+}}
+[data-mt-horizontal] > [data-mt-col=""1""][data-mt-col-editor] {{
+    width: ${{col1Width}}px !important;
+}}
+/* ── Vertical mode ── */
+[data-mt-vertical] > [data-mt-col-editor] {{
+    max-width: none !important;
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    overflow: hidden !important;
+}}
+[data-mt-vertical] [data-mt-editor-wrapper] {{
+    max-width: 100% !important;
+    min-width: 0 !important;
+}}
+[data-mt-vertical] [data-mt-editor-area] {{
+    flex-wrap: nowrap !important;
+    overflow: hidden !important;
+}}
+[data-mt-vertical] [data-mt-editor-area] > *:not([data-mt-editor-inner]) {{
+    flex: 0 0 auto !important;
+}}
+[data-mt-vertical] [data-mt-editor-inner] {{
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 1 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: hidden !important;
+}}
+[data-mt-vertical] [data-mt-editor-inner] > *:not([data-mt-editor-inner]):not(.ProseMirror):not([data-mt-scroll-area]) {{
+    flex: 0 0 auto !important;
+}}
+[data-mt-vertical] [data-mt-scroll-area] {{
+    flex: 1 1 0 !important;
+    min-height: 0 !important;
+    overflow-y: auto !important;
+}}
+[data-mt-vertical] [data-mt-editor-area] .ProseMirror {{
+    overflow: visible !important;
+}}
+[data-mt-vertical] [data-mt-editor-wrapper] [class*=""MuiGrid""] {{
+    max-width: 100% !important;
+}}
+[data-mt-vertical] [data-mt-editor-wrapper][data-mt-vr=""0""] {{
+    flex: ${{vRatio}} 0 0px !important;
+    min-height: 0 !important;
+}}
+[data-mt-vertical] [data-mt-editor-wrapper][data-mt-vr=""1""] {{
+    flex: ${{1 - vRatio}} 0 0px !important;
+    min-height: 0 !important;
+}}
+/* ── Resize handle ── */
+[data-mt-resize-handle] {{
+    width: 6px; cursor: col-resize;
+    background: rgba(255, 255, 255, 0.06);
+    position: relative; z-index: 10; flex-shrink: 0;
+    transition: background 0.15s;
+}}
+[data-mt-resize-handle]::after {{
+    content: '';
+    position: absolute;
+    left: 2px; top: 50%; transform: translateY(-50%);
+    width: 2px; height: 32px;
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 1px;
+}}
+[data-mt-resize-horizontal] {{
+    width: auto !important; height: 6px !important;
+    cursor: row-resize !important;
+}}
+[data-mt-resize-horizontal]::after {{
+    left: 50% !important; top: 2px !important;
+    transform: translateX(-50%) !important;
+    width: 32px !important; height: 2px !important;
+}}
+[data-mt-resize-handle]:hover, [data-mt-resize-handle].dragging {{
+    background: rgba(100, 150, 255, 0.3);
+}}
+[data-mt-resize-handle]:hover::after, [data-mt-resize-handle].dragging::after {{
+    background: rgba(100, 150, 255, 0.6);
+}}`;
+        if (hideDragHandles) {{
+            css += `
+.ProseMirror [data-drag-handle] {{ display: none !important; }}
+.ProseMirror [data-testid=""DeleteIcon""] {{ display: none !important; }}
+.ProseMirror button:has(> [data-testid=""DeleteIcon""]) {{ display: none !important; }}
+.ProseMirror button:has(> [data-testid=""DragHandleIcon""]) {{ display: none !important; }}`;
+        }}
+        styleEl.textContent = css;
         document.head.appendChild(styleEl);
 
-        return JSON.stringify({
+        // ── DIAGNOSTICS ──
+        const wrapperInfo = [];
+        document.querySelectorAll('[data-mt-editor-wrapper]').forEach(w => {{
+            const a = w.querySelector('[data-mt-editor-area]');
+            const p = w.querySelector('.ProseMirror');
+            const wr = w.getBoundingClientRect();
+            const pr = p ? p.getBoundingClientRect() : {{left:0,top:0,width:0}};
+            wrapperInfo.push({{ww: w.offsetWidth, wh: w.offsetHeight, aw: a ? a.offsetWidth : 0, ah: a ? a.offsetHeight : 0,
+                wl: Math.round(wr.left), wt: Math.round(wr.top), pl: Math.round(pr.left), pt: Math.round(pr.top), pw: Math.round(pr.width)}});
+        }});
+        return JSON.stringify({{
             ok: true,
+            layout: isHorizontal ? 'horizontal' : 'vertical',
             columns: columns.length,
             topPx: topPx,
             editorAreas: editorAreas,
+            editorCols: editorColCount,
+            ratio: isHorizontal ? window.__mtColumnRatio : window.__mtVerticalRatio,
+            hideDragHandles: hideDragHandles,
+            wrappers: wrapperInfo,
+            containerW: colContainer.offsetWidth,
+            windowW: window.innerWidth,
+            colWidths: columns.map(c => c.offsetWidth),
             containerTag: colContainer.tagName,
             containerClass: (colContainer.className || '').substring(0, 100)
-        });
-    })()";
+        }});
+    }})()";
 
     private const string JS_REMOVE_SCROLL_FIX = @"(() => {
-        const style = document.getElementById('mt-scroll-fix');
-        if (style) style.remove();
-        for (const attr of ['data-mt-cols','data-mt-col','data-mt-col-editor','data-mt-col-scroll','data-mt-editor-wrapper','data-mt-editor-area']) {
-            document.querySelectorAll('[' + attr + ']').forEach(el => el.removeAttribute(attr));
+        document.getElementById('mt-scroll-fix')?.remove();
+        document.querySelectorAll('[data-mt-resize-handle]').forEach(h => h.remove());
+        const attrs = ['data-mt-cols','data-mt-horizontal','data-mt-vertical','data-mt-col',
+            'data-mt-col-editor','data-mt-col-scroll','data-mt-editor-wrapper','data-mt-editor-area',
+            'data-mt-editor-inner','data-mt-scroll-area','data-mt-vr'];
+        for (const attr of attrs) {
+            document.querySelectorAll('[' + attr + ']').forEach(el => {
+                el.removeAttribute(attr);
+                el.style.width = '';
+                el.style.height = '';
+                el.style.flex = '';
+            });
         }
+        document.querySelectorAll('.ProseMirror').forEach(editor => {
+            let el = editor.parentElement;
+            while (el && el !== document.body) {
+                el.style.width = '';
+                el.style.height = '';
+                el.style.flex = '';
+                el = el.parentElement;
+            }
+        });
         return 'removed';
     })()";
 
@@ -506,6 +803,9 @@ html, body { overflow: hidden !important; }
         _iframeWsUrl = null;
         _mosaicMacrosFetched = false; // Re-fetch macros on next connection
         _scrollFixActive = false;     // Re-inject scroll fix on next connection
+        _lastIframeHash = null;       // Reset hash cache on disconnect
+        _lastCdpScrapeResult = null;
+        _autoScrollWatcherActive = false;
     }
 
     private void DisconnectSlimHub()
@@ -750,56 +1050,79 @@ html, body { overflow: hidden !important; }
         {
             _lastKnownStudyType = null;
             _mosaicMacrosFetched = false; // Re-fetch macros on study change
+            _lastIframeHash = null;       // Force full scrape on study change
+            _lastCdpScrapeResult = null;
         }
 
         // Scrape iframe (optional — iframe may not be connected if no report open)
         if (IsIframeConnected)
         {
-            var iframeJson = ExtractResultValue(SendToIframe(JS_SCRAPE_IFRAME));
-            if (iframeJson != null)
+            // Smart scrape: check lightweight hash first to skip expensive full scrape
+            bool hashChanged = true;
+            var quickHash = ExtractResultValue(SendToIframe(JS_QUICK_HASH));
+            if (quickHash != null && quickHash == _lastIframeHash && _lastCdpScrapeResult != null)
             {
-                try
+                // Hash unchanged — reuse cached iframe data
+                hashChanged = false;
+                result.TemplateName = _lastCdpScrapeResult.TemplateName;
+                result.ReportText = _lastCdpScrapeResult.ReportText;
+                result.IsAddendum = _lastCdpScrapeResult.IsAddendum;
+            }
+
+            if (hashChanged)
+            {
+                var iframeJson = ExtractResultValue(SendToIframe(JS_SCRAPE_IFRAME));
+                if (iframeJson != null)
                 {
-                    var data = JsonSerializer.Deserialize<JsonElement>(iframeJson);
-                    var studyType = GetStr(data, "studyType");
-                    var templateName = GetStr(data, "templateName");
-
-                    // Prefer studyType (exam type selector), fall back to templateName
-                    var effectiveType = !string.IsNullOrEmpty(studyType) ? studyType
-                        : !string.IsNullOrEmpty(templateName) ? templateName : null;
-
-                    if (!string.IsNullOrEmpty(effectiveType))
-                        _lastKnownStudyType = effectiveType;
-                    result.TemplateName = _lastKnownStudyType;
-                    result.ReportText = GetStr(data, "reportText");
-                    result.IsAddendum = GetBool(data, "isAddendum");
-
-                    // Log diagnostic once when study type can't be read from DOM
-                    if (string.IsNullOrEmpty(effectiveType) && !_studyTypeDiagLogged)
+                    try
                     {
-                        _studyTypeDiagLogged = true;
-                        var diag = GetStr(data, "studyDiag");
-                        Logger.Trace($"CDP: StudyType empty from DOM — {diag ?? "no diag"}");
-                    }
-                    else if (!string.IsNullOrEmpty(effectiveType))
-                    {
-                        _studyTypeDiagLogged = false; // Reset so we log again if it breaks
-                    }
+                        var data = JsonSerializer.Deserialize<JsonElement>(iframeJson);
+                        var studyType = GetStr(data, "studyType");
+                        var templateName = GetStr(data, "templateName");
 
-                    // Track focused editor for STT paste targeting
-                    if (data.TryGetProperty("focusedEditor", out var fe)
-                        && fe.ValueKind == JsonValueKind.Number)
-                    {
-                        int focused = fe.GetInt32();
-                        if (focused >= 0) _lastKnownFocusedEditor = focused;
+                        // Prefer studyType (exam type selector), fall back to templateName
+                        var effectiveType = !string.IsNullOrEmpty(studyType) ? studyType
+                            : !string.IsNullOrEmpty(templateName) ? templateName : null;
+
+                        if (!string.IsNullOrEmpty(effectiveType))
+                            _lastKnownStudyType = effectiveType;
+                        result.TemplateName = _lastKnownStudyType;
+                        result.ReportText = GetStr(data, "reportText");
+                        result.IsAddendum = GetBool(data, "isAddendum");
+
+                        // Log diagnostic once when study type can't be read from DOM
+                        if (string.IsNullOrEmpty(effectiveType) && !_studyTypeDiagLogged)
+                        {
+                            _studyTypeDiagLogged = true;
+                            var diag = GetStr(data, "studyDiag");
+                            Logger.Trace($"CDP: StudyType empty from DOM — {diag ?? "no diag"}");
+                        }
+                        else if (!string.IsNullOrEmpty(effectiveType))
+                        {
+                            _studyTypeDiagLogged = false; // Reset so we log again if it breaks
+                        }
+
+                        // Track focused editor for STT paste targeting
+                        if (data.TryGetProperty("focusedEditor", out var fe)
+                            && fe.ValueKind == JsonValueKind.Number)
+                        {
+                            int focused = fe.GetInt32();
+                            if (focused >= 0) _lastKnownFocusedEditor = focused;
+                        }
+
+                        // Update hash cache
+                        _lastIframeHash = quickHash;
                     }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Trace($"CDP: Iframe parse error: {ex.Message}");
+                    catch (Exception ex)
+                    {
+                        Logger.Trace($"CDP: Iframe parse error: {ex.Message}");
+                    }
                 }
             }
         }
+
+        // Cache result for hash-match reuse next tick
+        _lastCdpScrapeResult = result;
 
         // Log on first scrape and when accession changes (avoid spamming every tick)
         if (!_firstScrapeLogged || result.Accession != _lastLoggedAccession)
@@ -920,7 +1243,9 @@ html, body { overflow: hidden !important; }
             editors[{editorIndex}].editor.commands.insertContent({escaped});
             return 'ok';
         }})()";
-        return ExtractResultValue(SendToIframe(js)) == "ok";
+        var ok = ExtractResultValue(SendToIframe(js)) == "ok";
+        if (ok) ScrollCursorIntoView(editorIndex);
+        return ok;
     }
 
     /// <summary>
@@ -1369,7 +1694,11 @@ html, body { overflow: hidden !important; }
         }
         if (!IsIframeConnected) return false;
 
-        var resultJson = ExtractResultValue(SendToIframe(JS_INJECT_SCROLL_FIX));
+        // Format template with current column ratio and drag handle hiding flag
+        var js = string.Format(JS_INJECT_SCROLL_FIX_TEMPLATE,
+            _columnRatio.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            _hideDragHandles ? "true" : "false");
+        var resultJson = ExtractResultValue(SendToIframe(js));
         if (resultJson == null) return false;
 
         try
@@ -1378,10 +1707,15 @@ html, body { overflow: hidden !important; }
             if (data.TryGetProperty("ok", out var ok) && ok.GetBoolean())
             {
                 _scrollFixActive = true;
+                var layout = GetStr(data, "layout") ?? "?";
                 var cols = data.TryGetProperty("columns", out var c) ? c.ToString() : "?";
                 var top = data.TryGetProperty("topPx", out var t) ? t.ToString() : "?";
                 var areas = data.TryGetProperty("editorAreas", out var ea) ? ea.ToString() : "?";
-                Logger.Trace($"CDP: Scroll fix injected — {cols} columns, {areas} editor areas, topPx={top}");
+                var wrappers = data.TryGetProperty("wrappers", out var w) ? w.ToString() : "";
+                var containerW = data.TryGetProperty("containerW", out var cw) ? cw.ToString() : "?";
+                var windowW = data.TryGetProperty("windowW", out var ww) ? ww.ToString() : "?";
+                var colWidths = data.TryGetProperty("colWidths", out var cwArr) ? cwArr.ToString() : "";
+                Logger.Trace($"CDP: Scroll fix injected — {layout}, {cols} columns, {areas} editor areas, topPx={top}, ratio={_columnRatio:F3}, containerW={containerW}, windowW={windowW}, colWidths={colWidths}, wrappers={wrappers}");
                 return true;
             }
             // Not ready yet (e.g., editors not loaded) — will retry next tick
@@ -1394,6 +1728,147 @@ html, body { overflow: hidden !important; }
             Logger.Trace($"CDP: Scroll fix error: {ex.Message}");
             return false;
         }
+    }
+
+    /// <summary>Dump DOM structure around editors for debugging scroll/resize issues.</summary>
+    public string? DumpScrollDiagnostic()
+    {
+        if (!IsIframeConnected) return null;
+        var js = @"(() => {
+            const editors = document.querySelectorAll('.ProseMirror');
+            if (editors.length < 2) return JSON.stringify({error:'need_2_editors'});
+            const result = [];
+            for (let ei = 0; ei < Math.min(editors.length, 2); ei++) {
+                const chain = [];
+                let el = editors[ei];
+                while (el && el !== document.body) {
+                    const cs = getComputedStyle(el);
+                    chain.push({
+                        tag: el.tagName,
+                        cls: (el.className||'').substring(0,80),
+                        id: el.id||'',
+                        w: el.offsetWidth, h: el.offsetHeight,
+                        ov: cs.overflow, ovx: cs.overflowX, ovy: cs.overflowY,
+                        disp: cs.display, flexDir: cs.flexDirection,
+                        flexBasis: cs.flexBasis, flexGrow: cs.flexGrow, flexShrink: cs.flexShrink,
+                        mt: Array.from(el.attributes).filter(a=>a.name.startsWith('data-mt')).map(a=>a.name).join(',')
+                    });
+                    el = el.parentElement;
+                }
+                result.push({editor: ei, chain: chain});
+            }
+            // Also dump flex container children widths
+            const cols = document.querySelector('[data-mt-cols]');
+            if (cols) {
+                const kids = Array.from(cols.children).map(c => ({
+                    tag: c.tagName, cls: (c.className||'').substring(0,50),
+                    w: c.offsetWidth, h: c.offsetHeight,
+                    flexBasis: getComputedStyle(c).flexBasis,
+                    flexGrow: getComputedStyle(c).flexGrow,
+                    flexShrink: getComputedStyle(c).flexShrink,
+                    mt: Array.from(c.attributes).filter(a=>a.name.startsWith('data-mt')).map(a=>a.name).join(',')
+                }));
+                result.push({colContainer: true, w: cols.offsetWidth, kids: kids});
+            }
+            return JSON.stringify(result);
+        })()";
+        return ExtractResultValue(SendToIframe(js));
+    }
+
+    /// <summary>Dump children of tagged elements for debugging vertical layout issues.</summary>
+    public string? DumpVerticalLayoutDiag()
+    {
+        if (!IsIframeConnected) return null;
+        // Walk from each ProseMirror UP to its wrapper, dumping each ancestor's layout info
+        // plus its siblings — reveals what creates the internal two-column layout
+        var js = @"(() => {
+            const result = [];
+            const editors = document.querySelectorAll('.ProseMirror');
+            editors.forEach((editor, ei) => {
+                const chain = [];
+                let el = editor;
+                const wrapper = el.closest('[data-mt-editor-wrapper]');
+                while (el && el !== wrapper) {
+                    const parent = el.parentElement;
+                    if (!parent) break;
+                    const ps = getComputedStyle(parent);
+                    const siblings = Array.from(parent.children).map(s => {
+                        const ss = getComputedStyle(s);
+                        return {
+                            tag: s.tagName,
+                            cls: (s.className||'').substring(0,60),
+                            w: s.offsetWidth, h: s.offsetHeight,
+                            disp: ss.display, flexDir: ss.flexDirection,
+                            maxW: ss.maxWidth, gridCol: ss.gridTemplateColumns?.substring(0,40) || '',
+                            mt: Array.from(s.attributes).filter(a=>a.name.startsWith('data-mt')).map(a=>a.name).join(','),
+                            isPath: s === el
+                        };
+                    });
+                    chain.push({
+                        parentTag: parent.tagName,
+                        parentCls: (parent.className||'').substring(0,80),
+                        parentW: parent.offsetWidth, parentH: parent.offsetHeight,
+                        disp: ps.display, flexDir: ps.flexDirection,
+                        gridCols: ps.gridTemplateColumns?.substring(0,60) || '',
+                        maxW: ps.maxWidth,
+                        mt: Array.from(parent.attributes).filter(a=>a.name.startsWith('data-mt')).map(a=>a.name).join(','),
+                        childCount: siblings.length,
+                        children: siblings
+                    });
+                    el = parent;
+                }
+                result.push({editor: ei, levels: chain.length, chain});
+            });
+            return JSON.stringify(result);
+        })()";
+        return ExtractResultValue(SendToIframe(js));
+    }
+
+    /// <summary>Find interactive/icon elements inside ProseMirror editors for diagnostics.</summary>
+    public string? DumpEditorControls()
+    {
+        if (!IsIframeConnected) return null;
+        var js = @"(() => {
+            const pm = document.querySelectorAll('.ProseMirror');
+            const results = [];
+            pm.forEach((editor, ei) => {
+                // Find SVGs, buttons, clickable icons, draggable elements, small interactive elements
+                const candidates = editor.querySelectorAll('button, [role=""button""], svg, [draggable], [data-drag-handle], [data-delete-handle], [contenteditable=""false""]');
+                candidates.forEach(el => {
+                    const cs = getComputedStyle(el);
+                    if (cs.display === 'none') return; // skip already hidden
+                    const attrs = Array.from(el.attributes).map(a => a.name + '=' + a.value.substring(0,30)).join(', ');
+                    const parentTag = el.parentElement ? el.parentElement.tagName : '';
+                    const parentCls = el.parentElement ? (el.parentElement.className||'').substring(0,60) : '';
+                    const parentAttrs = el.parentElement ? Array.from(el.parentElement.attributes).filter(a=>a.name!=='class'&&a.name!=='style').map(a => a.name + '=' + a.value.substring(0,30)).join(', ') : '';
+                    results.push({
+                        editor: ei,
+                        tag: el.tagName,
+                        cls: (el.className&&el.className.substring ? el.className.substring(0,80) : ''),
+                        w: el.offsetWidth, h: el.offsetHeight,
+                        attrs: attrs.substring(0,200),
+                        parentTag, parentCls, parentAttrs,
+                        disp: cs.display, pos: cs.position
+                    });
+                });
+            });
+            return JSON.stringify(results);
+        })()";
+        return ExtractResultValue(SendToIframe(js));
+    }
+
+    /// <summary>Read back the column ratio from the browser (after user drag) and persist to config.</summary>
+    public double? ReadColumnRatio()
+    {
+        if (!IsIframeConnected) return null;
+        var result = ExtractResultValue(SendToIframe("window.__mtColumnRatio || null"));
+        if (result != null && double.TryParse(result, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var ratio))
+        {
+            _columnRatio = Math.Clamp(ratio, 0.15, 0.75);
+            return _columnRatio;
+        }
+        return null;
     }
 
     /// <summary>Remove the injected scroll fix CSS from the iframe.</summary>
@@ -1657,6 +2132,96 @@ html, body { overflow: hidden !important; }
         }
 
         return clickResult == "ok";
+    }
+
+    // ═══════ PUBLIC API: AUTO-SCROLL TO CURSOR ═══════
+
+    /// <summary>
+    /// Scroll the cursor into view in the given editor's scrollable area.
+    /// Called after InsertContent (STT paste) to keep cursor visible during dictation.
+    /// </summary>
+    public void ScrollCursorIntoView(int editorIndex)
+    {
+        if (!IsIframeConnected || !AutoScrollEnabled) return;
+        var js = $@"(() => {{
+            const editors = document.querySelectorAll('.ProseMirror');
+            const ed = editors[{editorIndex}];
+            if (!ed) return 'no_editor';
+            const area = ed.closest('[data-mt-editor-area]');
+            if (!area) return 'no_area';
+            const sel = window.getSelection();
+            if (!sel || sel.rangeCount === 0) return 'no_sel';
+            const range = sel.getRangeAt(0);
+            const rect = range.getBoundingClientRect();
+            const areaRect = area.getBoundingClientRect();
+            if (rect.bottom > areaRect.bottom - 20) {{
+                area.scrollTop += (rect.bottom - areaRect.bottom + 60);
+                return 'scrolled';
+            }}
+            if (rect.top < areaRect.top + 20) {{
+                area.scrollTop -= (areaRect.top - rect.top + 60);
+                return 'scrolled_up';
+            }}
+            return 'visible';
+        }})()";
+        try { SendToIframe(js); } catch { }
+    }
+
+    /// <summary>
+    /// Inject a lightweight auto-scroll watcher that runs on a 300ms interval.
+    /// Used for Dragon/built-in dictation where we can't hook into insert events.
+    /// Checks if cursor is below viewport and scrolls it into view.
+    /// </summary>
+    public void InjectAutoScrollWatcher()
+    {
+        if (!IsIframeConnected || !AutoScrollEnabled || _autoScrollWatcherActive) return;
+        var js = @"(() => {
+            if (window.__mtAutoScrollInterval) return 'already_active';
+            window.__mtAutoScrollInterval = setInterval(() => {
+                const sel = window.getSelection();
+                if (!sel || sel.rangeCount === 0) return;
+                const range = sel.getRangeAt(0);
+                const rect = range.getBoundingClientRect();
+                if (rect.width === 0 && rect.height === 0) return; // collapsed/invisible
+                // Find the editor area containing the selection
+                let node = sel.anchorNode;
+                while (node && !node.classList?.contains('ProseMirror')) node = node.parentElement;
+                if (!node) return;
+                const area = node.closest('[data-mt-editor-area]');
+                if (!area) return;
+                const areaRect = area.getBoundingClientRect();
+                if (rect.bottom > areaRect.bottom - 20) {
+                    area.scrollTop += (rect.bottom - areaRect.bottom + 60);
+                } else if (rect.top < areaRect.top + 20) {
+                    area.scrollTop -= (areaRect.top - rect.top + 60);
+                }
+            }, 300);
+            return 'injected';
+        })()";
+        try
+        {
+            var result = ExtractResultValue(SendToIframe(js));
+            _autoScrollWatcherActive = true;
+            Logger.Trace($"CDP: Auto-scroll watcher: {result}");
+        }
+        catch { }
+    }
+
+    /// <summary>Remove the auto-scroll watcher interval.</summary>
+    public void RemoveAutoScrollWatcher()
+    {
+        if (!_autoScrollWatcherActive) return;
+        _autoScrollWatcherActive = false;
+        if (!IsIframeConnected) return;
+        var js = @"(() => {
+            if (window.__mtAutoScrollInterval) {
+                clearInterval(window.__mtAutoScrollInterval);
+                window.__mtAutoScrollInterval = null;
+                return 'removed';
+            }
+            return 'not_active';
+        })()";
+        try { SendToIframe(js); } catch { }
     }
 
     // ═══════ HELPERS ═══════

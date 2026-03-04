@@ -55,7 +55,8 @@ public class ActionController : IDisposable
     private readonly RecoMdService _recoMdService;
     private CdpService? _cdpService;  // [CDP] — null if CDP not enabled
     private SttService? _sttService;  // [CustomSTT] — null if Custom STT not enabled
-    private KeytermLearningService? _keytermLearning; // [KeytermLearning] — null if not enabled
+    private Dictionary<string, KeytermLearningService> _keytermLearningByProvider = new(); // [KeytermLearning] per-provider instances
+    private EnsembleMetricsForm? _ensembleMetrics; // [Ensemble] live stats popup
     private bool _sttDirectPasteActive; // [CustomSTT] Track whether direct paste is active
     private IntPtr _sttPasteTargetWindow; // [CustomSTT] Window that had focus when recording started
     private readonly object _directPasteLock = new(); // [CustomSTT] Serialize direct paste operations
@@ -212,6 +213,8 @@ public class ActionController : IDisposable
     private bool _lastAidocRelevant = false;
     private bool _aidocDoneForStudy = false; // Once scraped successfully, don't re-scrape
     private long _lastAidocScrapeTick64; // Throttle: minimum 5s between Aidoc scrapes
+    private long _lastColumnRatioReadTick64; // Throttle: read back column ratio every ~30s
+    private bool _scrollDiagLogged; // One-shot: dump DOM after scroll fix for debugging
 
     // RecoMD state tracking — continuous send on every scrape tick
     private string? _recoMdOpenedForAccession; // accession currently opened in RecoMD
@@ -289,6 +292,9 @@ public class ActionController : IDisposable
         if (_config.CdpEnabled)
         {
             _cdpService = new CdpService();
+            _cdpService.ColumnRatio = _config.CdpColumnRatio;
+            _cdpService.AutoScrollEnabled = _config.CdpAutoScrollEnabled;
+            _cdpService.HideDragHandles = _config.CdpHideDragHandles;
             if (!_config.CdpEnvVarSet)
             {
                 CdpService.EnsureEnvVar();
@@ -375,12 +381,27 @@ public class ActionController : IDisposable
             _templateDatabase.Cleanup();
         }
 
-        // [KeytermLearning] Initialize keyterm auto-learning
-        if (_config.SttKeytermLearningEnabled && _config.CustomSttEnabled
-            && _config.SttProvider == "deepgram")
+        // [KeytermLearning] Initialize per-provider keyterm auto-learning
+        if (_config.SttKeytermLearningEnabled && _config.CustomSttEnabled)
         {
-            _keytermLearning = new KeytermLearningService();
-            _keytermLearning.Load();
+            if (_config.SttEnsembleEnabled)
+            {
+                // Ensemble: learning instances for all 3 providers
+                foreach (var prov in new[] { "deepgram", "assemblyai", "speechmatics" })
+                {
+                    var svc = new KeytermLearningService(prov);
+                    svc.Load();
+                    _keytermLearningByProvider[prov] = svc;
+                }
+            }
+            else
+            {
+                // Single-provider: one instance for the active provider
+                var provName = _config.SttProvider ?? "deepgram";
+                var svc = new KeytermLearningService(provName);
+                svc.Load();
+                _keytermLearningByProvider[provName] = svc;
+            }
         }
 
         // [CustomSTT] Initialize custom STT service
@@ -425,6 +446,9 @@ public class ActionController : IDisposable
                     InvokeUI(() => _mainForm.ShowStatusToast("CDP: Restart Mosaic to enable direct DOM access.", 8000));
                 }
             }
+            _cdpService.ColumnRatio = _config.CdpColumnRatio;
+            _cdpService.AutoScrollEnabled = _config.CdpAutoScrollEnabled;
+            _cdpService.HideDragHandles = _config.CdpHideDragHandles;
         }
         else if (_cdpService != null)
         {
@@ -440,18 +464,29 @@ public class ActionController : IDisposable
         }
 
         // [KeytermLearning] Re-initialize on settings change
-        if (_config.SttKeytermLearningEnabled && _config.CustomSttEnabled
-            && _config.SttProvider == "deepgram")
+        if (_config.SttKeytermLearningEnabled && _config.CustomSttEnabled)
         {
-            if (_keytermLearning == null)
+            _keytermLearningByProvider.Clear();
+            if (_config.SttEnsembleEnabled)
             {
-                _keytermLearning = new KeytermLearningService();
-                _keytermLearning.Load();
+                foreach (var prov in new[] { "deepgram", "assemblyai", "speechmatics" })
+                {
+                    var svc = new KeytermLearningService(prov);
+                    svc.Load();
+                    _keytermLearningByProvider[prov] = svc;
+                }
+            }
+            else
+            {
+                var provName = _config.SttProvider ?? "deepgram";
+                var svc = new KeytermLearningService(provName);
+                svc.Load();
+                _keytermLearningByProvider[provName] = svc;
             }
         }
         else
         {
-            _keytermLearning = null;
+            _keytermLearningByProvider.Clear();
         }
 
         // [CustomSTT] Re-initialize STT service on settings change
@@ -477,12 +512,31 @@ public class ActionController : IDisposable
     // [CustomSTT] Initialize the custom STT service
     private void InitializeSttService()
     {
-        // [KeytermLearning] Merge manual + auto-learned keyterms
+        // [KeytermLearning] Merge manual + auto-learned keyterms, per-provider
         string? mergedKeyterms = null;
-        if (_keytermLearning != null)
-            mergedKeyterms = MergeKeyterms(_config.SttDeepgramKeyterms, _keytermLearning);
+        Dictionary<string, string>? perProviderKeyterms = null;
 
-        _sttService = new SttService(_config, mergedKeyterms);
+        if (_config.SttEnsembleEnabled && _keytermLearningByProvider.Count > 0)
+        {
+            // Ensemble mode: each provider gets its own merged keyterms
+            perProviderKeyterms = new Dictionary<string, string>();
+            foreach (var prov in new[] { "deepgram", "assemblyai", "speechmatics" })
+            {
+                if (_keytermLearningByProvider.TryGetValue(prov, out var learning))
+                    perProviderKeyterms[prov] = MergeKeyterms(_config.SttDeepgramKeyterms, learning);
+                else
+                    perProviderKeyterms[prov] = _config.SttDeepgramKeyterms;
+            }
+        }
+        else if (_keytermLearningByProvider.Count > 0)
+        {
+            // Single-provider mode: one merged keyterm string
+            var provName = _config.SttProvider ?? "deepgram";
+            if (_keytermLearningByProvider.TryGetValue(provName, out var learning))
+                mergedKeyterms = MergeKeyterms(_config.SttDeepgramKeyterms, learning);
+        }
+
+        _sttService = new SttService(_config, mergedKeyterms, perProviderKeyterms);
         var error = _sttService.Initialize();
         if (error != null)
         {
@@ -493,19 +547,56 @@ public class ActionController : IDisposable
             return;
         }
 
+        // [KeytermLearning] In ensemble mode, subscribe to per-provider raw finals for learning
+        _sttService.RawProviderFinalReceived += result =>
+        {
+            if (result.Words?.Length > 0 && !string.IsNullOrEmpty(result.ProviderName) &&
+                _keytermLearningByProvider.TryGetValue(result.ProviderName, out var learning))
+            {
+                learning.CollectLowConfidenceWords(result.Words,
+                    (float)_config.SttKeytermLearningConfidenceThreshold);
+            }
+        };
+
+        // [Ensemble] Live metrics popup
+        _sttService.EnsembleStatsUpdated += stats =>
+        {
+            _ensembleMetrics?.UpdateStats(stats);
+        };
+
+        // [Ensemble] Show/hide metrics popup and track recording state
+        _sttService.RecordingStateChanged += recording =>
+        {
+            if (_config.SttEnsembleEnabled && _config.SttEnsembleShowMetrics)
+            {
+                InvokeUI(() =>
+                {
+                    if (_ensembleMetrics == null)
+                    {
+                        _ensembleMetrics = new EnsembleMetricsForm();
+                    }
+                    _ensembleMetrics.SetRecording(recording);
+                    if (recording && !_ensembleMetrics.Visible)
+                        _ensembleMetrics.Show();
+                });
+            }
+        };
+
         _sttService.TranscriptionReceived += result =>
         {
             // Always update TranscriptionForm
             InvokeUI(() => _mainForm.OnSttTranscriptionReceived(result));
 
-            // [KeytermLearning] Collect low-confidence words from final results
-            if (result.IsFinal && result.Words?.Length > 0)
-                _keytermLearning?.CollectLowConfidenceWords(result.Words,
-                    (float)_config.SttKeytermLearningConfidenceThreshold);
+            // [KeytermLearning] In single-provider mode, collect from main transcription events
+            if (result.ProviderName != "ensemble" && result.IsFinal && result.Words?.Length > 0)
+            {
+                var provName = !string.IsNullOrEmpty(result.ProviderName) ? result.ProviderName : (_config.SttProvider ?? "deepgram");
+                if (_keytermLearningByProvider.TryGetValue(provName, out var learning))
+                    learning.CollectLowConfidenceWords(result.Words,
+                        (float)_config.SttKeytermLearningConfidenceThreshold);
+            }
 
             // [CustomSTT] Direct paste: final results go straight into Mosaic's transcript box.
-            // Must run on STA thread (clipboard requires it). Use a dedicated STA thread that
-            // stays alive through the entire activate → focus → paste sequence.
             if (result.IsFinal && !string.IsNullOrEmpty(result.Transcript) && _sttDirectPasteActive)
             {
                 // [CustomSTT] Check for voice commands/macros on raw transcript BEFORE
@@ -517,27 +608,10 @@ public class ActionController : IDisposable
                     ? voiceTrigger.PrefixText
                     : result.Transcript;
 
-                // When auto-punctuation is off, apply client-side spoken punctuation
-                // (replaces Deepgram dictation mode so "colon" stays a word for medical context).
-                // When auto-punctuation is on, Deepgram handles punctuation and capitalization
-                // server-side — skip client-side processing to preserve its output.
-                string transcript;
-                if (_config.SttAutoPunctuate)
-                {
-                    transcript = _config.SttExpandContractions ? ExpandContractions(rawText) : rawText;
-                    transcript = _config.SttRadiologyCleanup ? ApplyRadiologyCleanup(transcript).Trim() : transcript.Trim();
-                }
-                else
-                {
-                    transcript = ApplySpokenPunctuation(rawText, _config.SttExpandContractions).Trim();
-                    transcript = _config.SttRadiologyCleanup ? ApplyRadiologyCleanup(transcript) : transcript;
-                    if (transcript.Length > 0 && !(transcript.Length > 1 && char.IsDigit(transcript[1])))
-                        transcript = char.ToLower(transcript[0]) + transcript[1..];
-                }
-                transcript = ApplyCustomReplacements(transcript);
-
-                if (_config.SttNewlineAfterSentence)
-                    transcript = InsertNewlineAfterSentences(transcript);
+                // Apply all STT text transforms — skip for ensemble results (already post-processed by merger)
+                var transcript = result.ProviderName == "ensemble"
+                    ? rawText
+                    : SttTextProcessor.ProcessTranscript(rawText, _config);
 
                 var hasTextToPaste = transcript.Length > 0;
                 // Smart spacing is handled by ApplyCdpSmartInsert when CDP is active;
@@ -1274,6 +1348,15 @@ public class ActionController : IDisposable
         Logger.Trace($"Dictation toggle initiated. State: {_dictationActive}");
         if (!_dictationActive)
             RequestReportScrapeBurst(DictationStopBurstMs, "Dictation stopped");
+
+        // [CDP] Manage auto-scroll watcher for built-in dictation (Dragon)
+        if (_cdpService != null && _config.CdpAutoScrollEnabled)
+        {
+            if (_dictationActive)
+                ThreadPool.QueueUserWorkItem(_ => { try { _cdpService.InjectAutoScrollWatcher(); } catch { } });
+            else
+                ThreadPool.QueueUserWorkItem(_ => { try { _cdpService.RemoveAutoScrollWatcher(); } catch { } });
+        }
     }
 
     // [CustomSTT] Toggle recording via SttService instead of Mosaic's built-in dictation
@@ -3642,6 +3725,38 @@ public class ActionController : IDisposable
                     if (_config.CdpIndependentScrolling && _cdpService.IsIframeConnected)
                     {
                         try { _cdpService.InjectScrollFix(); } catch { }
+
+                        // One-shot diagnostic: dump DOM structure after scroll fix succeeds
+                        if (_cdpService.ScrollFixActive && !_scrollDiagLogged)
+                        {
+                            _scrollDiagLogged = true;
+                            try
+                            {
+                                var diag = _cdpService.DumpScrollDiagnostic();
+                                if (diag != null)
+                                    Logger.Trace($"CDP: Scroll diagnostic (fixActive={_cdpService.ScrollFixActive}):\n{diag}");
+                                var vdiag = _cdpService.DumpVerticalLayoutDiag();
+                                if (vdiag != null)
+                                    Logger.Trace($"CDP: Vertical layout diagnostic:\n{vdiag}");
+                            }
+                            catch { }
+                        }
+
+                        // Read back column ratio after user drag (every ~30s to avoid overhead)
+                        if (_cdpService.ScrollFixActive && nowTick64 - _lastColumnRatioReadTick64 > 30_000)
+                        {
+                            _lastColumnRatioReadTick64 = nowTick64;
+                            try
+                            {
+                                var ratio = _cdpService.ReadColumnRatio();
+                                if (ratio.HasValue && Math.Abs(ratio.Value - _config.CdpColumnRatio) > 0.005)
+                                {
+                                    _config.CdpColumnRatio = ratio.Value;
+                                    _config.Save();
+                                }
+                            }
+                            catch { }
+                        }
                     }
 
                     try
@@ -4161,13 +4276,17 @@ public class ActionController : IDisposable
         _lastPopupReportText = null;
 
         // [KeytermLearning] Verify collected words against final report before clearing
-        if (_keytermLearning != null && !_discardDialogShownForCurrentAccession)
+        if (_keytermLearningByProvider.Count > 0 && !_discardDialogShownForCurrentAccession)
         {
             var reportForVerify = _mosaicReader.LastFinalReport;
             if (!string.IsNullOrEmpty(reportForVerify))
-                _keytermLearning.VerifyAgainstReport(reportForVerify);
+            {
+                foreach (var learning in _keytermLearningByProvider.Values)
+                    learning.VerifyAgainstReport(reportForVerify);
+            }
         }
-        _keytermLearning?.ClearSessionBuffer();
+        foreach (var learning in _keytermLearningByProvider.Values)
+            learning.ClearSessionBuffer();
 
         _mosaicReader.ClearLastReport();
 

@@ -34,11 +34,25 @@ public class SttSection : SettingsSection
     private readonly Label _deepgramKeytermsCount;
     private readonly Button _deepgramKeytermsSortButton;
 
-    // Keyterm auto-learning
+    // Keyterm auto-learning (per-provider)
     private readonly CheckBox _keytermLearningCheck;
-    private readonly Label _keytermLearningStats;
-    private readonly Button _keytermLearningViewButton;
     private readonly Label _keytermLearningHint;
+    private readonly Label _dgLearningStats;
+    private readonly Button _dgLearningViewButton;
+    private readonly Label _aaiLearningStats;
+    private readonly Button _aaiLearningViewButton;
+    private readonly Label _smLearningStats;
+    private readonly Button _smLearningViewButton;
+
+    // Ensemble mode
+    private readonly CheckBox _ensembleCheck;
+    private readonly Label _ensembleHint;
+    private readonly Label _ensembleKeyStatus;
+    private readonly Label _ensembleWaitLabel;
+    private readonly NumericUpDown _ensembleWaitUpDown;
+    private readonly Label _ensembleThreshLabel;
+    private readonly NumericUpDown _ensembleThreshUpDown;
+    private readonly CheckBox _ensembleShowMetricsCheck;
 
     // Text processing
     private readonly CheckBox _newlineAfterSentenceCheck;
@@ -74,7 +88,7 @@ public class SttSection : SettingsSection
 
     public SttSection(ToolTip toolTip) : base("Speech-to-Text", toolTip)
     {
-        _searchTerms.AddRange(new[] { "stt", "speech", "transcription", "deepgram", "speechmatics", "assemblyai", "dictation", "custom stt", "beep", "punctuation", "contraction", "replacement", "correction", "radiology cleanup" });
+        _searchTerms.AddRange(new[] { "stt", "speech", "transcription", "deepgram", "speechmatics", "assemblyai", "dictation", "custom stt", "beep", "punctuation", "contraction", "replacement", "correction", "radiology cleanup", "ensemble" });
 
         _enabledCheck = AddCheckBox("Enable Custom STT Mode", LeftMargin, _nextY,
             "Use cloud STT instead of Mosaic's built-in speech recognition. Cancel Mosaic's WebHID prompt when enabled.");
@@ -184,7 +198,7 @@ public class SttSection : SettingsSection
         Controls.Add(_deepgramKeytermsCount);
         _nextY += 80;
 
-        // Keyterm auto-learning (Deepgram only)
+        // Keyterm auto-learning (per-provider rows)
         _keytermLearningCheck = AddCheckBox("Auto-learn keyterms from reports", LeftMargin + 25, _nextY,
             "Tracks low-confidence words during dictation and verifies them against the final signed report.");
         _nextY += SubRowHeight;
@@ -200,19 +214,71 @@ public class SttSection : SettingsSection
         Controls.Add(_keytermLearningHint);
         _nextY += SubRowHeight;
 
-        _keytermLearningStats = new Label
-        {
-            Text = "No auto-learned terms yet",
-            Location = new Point(LeftMargin + 45, _nextY + 2),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(170, 170, 170),
-            Font = new Font("Segoe UI", 8f)
-        };
-        Controls.Add(_keytermLearningStats);
+        // Per-provider stats rows
+        var statsFont = new Font("Segoe UI", 8f);
+        var statsColor = Color.FromArgb(170, 170, 170);
 
-        _keytermLearningViewButton = AddButton("View", LeftMargin + 300, _nextY - 1, 50, 24, OnViewKeytermLearningClick,
-            "View auto-learned keyterms with details");
-        _keytermLearningViewButton.Font = new Font("Segoe UI", 8f);
+        AddLabel("Deepgram:", LeftMargin + 45, _nextY + 2).Font = statsFont;
+        _dgLearningStats = new Label { Text = "0 terms", Location = new Point(LeftMargin + 130, _nextY + 2), AutoSize = true, ForeColor = statsColor, Font = statsFont };
+        Controls.Add(_dgLearningStats);
+        _dgLearningViewButton = AddButton("View", LeftMargin + 210, _nextY - 1, 45, 22, (s, e) => OnViewKeytermLearningClick("deepgram"), "View Deepgram auto-learned keyterms");
+        _dgLearningViewButton.Font = new Font("Segoe UI", 7.5f);
+        _nextY += SubRowHeight;
+
+        AddLabel("AssemblyAI:", LeftMargin + 45, _nextY + 2).Font = statsFont;
+        _aaiLearningStats = new Label { Text = "0 terms", Location = new Point(LeftMargin + 130, _nextY + 2), AutoSize = true, ForeColor = statsColor, Font = statsFont };
+        Controls.Add(_aaiLearningStats);
+        _aaiLearningViewButton = AddButton("View", LeftMargin + 210, _nextY - 1, 45, 22, (s, e) => OnViewKeytermLearningClick("assemblyai"), "View AssemblyAI auto-learned keyterms");
+        _aaiLearningViewButton.Font = new Font("Segoe UI", 7.5f);
+        _nextY += SubRowHeight;
+
+        AddLabel("Speechmatics:", LeftMargin + 45, _nextY + 2).Font = statsFont;
+        _smLearningStats = new Label { Text = "0 terms", Location = new Point(LeftMargin + 130, _nextY + 2), AutoSize = true, ForeColor = statsColor, Font = statsFont };
+        Controls.Add(_smLearningStats);
+        _smLearningViewButton = AddButton("View", LeftMargin + 210, _nextY - 1, 45, 22, (s, e) => OnViewKeytermLearningClick("speechmatics"), "View Speechmatics auto-learned keyterms");
+        _smLearningViewButton.Font = new Font("Segoe UI", 7.5f);
+        _nextY += RowHeight;
+
+        // Ensemble Mode
+        AddSectionDivider("Ensemble Mode");
+
+        _ensembleCheck = AddCheckBox("Enable Ensemble Mode", LeftMargin + 25, _nextY,
+            "Run all 3 providers simultaneously. Deepgram drives, secondaries correct low-confidence words.");
+        _ensembleCheck.CheckedChanged += (_, _) => UpdateEnsembleStates();
+        _nextY += SubRowHeight;
+
+        _ensembleHint = new Label
+        {
+            Text = "Requires API keys for all 3 providers. ~$0.015/min total.",
+            Location = new Point(LeftMargin + 45, _nextY),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(150, 150, 150),
+            Font = new Font("Segoe UI", 7.5f)
+        };
+        Controls.Add(_ensembleHint);
+        _nextY += SubRowHeight;
+
+        _ensembleKeyStatus = new Label
+        {
+            Text = "",
+            Location = new Point(LeftMargin + 45, _nextY),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 7.5f)
+        };
+        Controls.Add(_ensembleKeyStatus);
+        _nextY += SubRowHeight;
+
+        _ensembleWaitLabel = AddLabel("Merge wait:", LeftMargin + 45, _nextY + 3);
+        _ensembleWaitUpDown = AddNumericUpDown(LeftMargin + 130, _nextY, 60, 100, 2000, 500);
+        AddLabel("ms", LeftMargin + 195, _nextY + 3);
+
+        _ensembleThreshLabel = AddLabel("Correct below:", LeftMargin + 240, _nextY + 3);
+        _ensembleThreshUpDown = AddNumericUpDown(LeftMargin + 340, _nextY, 50, 50, 99, 80);
+        AddLabel("%", LeftMargin + 395, _nextY + 3);
+        _nextY += SubRowHeight;
+
+        _ensembleShowMetricsCheck = AddCheckBox("Show live metrics popup", LeftMargin + 45, _nextY,
+            "Show a draggable overlay with confidence, corrections, and provider stats during dictation.");
         _nextY += RowHeight;
 
         // Text Processing
@@ -363,16 +429,19 @@ public class SttSection : SettingsSection
         _regionLabel.Visible = isSpeechmatics;
         _regionCombo.Visible = isSpeechmatics;
 
-        // Update keyterms visibility (Deepgram only)
-        bool isDeepgram = newIdx == ProviderDeepgramMedical;
-        _deepgramKeytermsLabel.Visible = isDeepgram;
-        _deepgramKeytermsBox.Visible = isDeepgram;
-        _deepgramKeytermsCount.Visible = isDeepgram;
-        _deepgramKeytermsSortButton.Visible = isDeepgram;
-        _keytermLearningCheck.Visible = isDeepgram;
-        _keytermLearningStats.Visible = isDeepgram;
-        _keytermLearningViewButton.Visible = isDeepgram;
-        _keytermLearningHint.Visible = isDeepgram;
+        // Keyterms and auto-learning are now supported by all providers
+        _deepgramKeytermsLabel.Visible = true;
+        _deepgramKeytermsBox.Visible = true;
+        _deepgramKeytermsCount.Visible = true;
+        _deepgramKeytermsSortButton.Visible = true;
+        _keytermLearningCheck.Visible = true;
+        _dgLearningStats.Visible = true;
+        _dgLearningViewButton.Visible = true;
+        _aaiLearningStats.Visible = true;
+        _aaiLearningViewButton.Visible = true;
+        _smLearningStats.Visible = true;
+        _smLearningViewButton.Visible = true;
+        _keytermLearningHint.Visible = true;
 
         // Update pricing hint
         _pricingHint.Text = newIdx switch
@@ -382,6 +451,8 @@ public class SttSection : SettingsSection
             ProviderAssemblyAI => "Free tier: 330 hours. $0.0025/min streaming",
             _ => ""
         };
+
+        UpdateEnsembleStates();
     }
 
     private void SaveKeysFromUI(int providerIndex)
@@ -432,7 +503,9 @@ public class SttSection : SettingsSection
         _deepgramKeytermsBox.Enabled = enabled;
         _deepgramKeytermsSortButton.Enabled = enabled;
         _keytermLearningCheck.Enabled = enabled;
-        _keytermLearningViewButton.Enabled = enabled;
+        _dgLearningViewButton.Enabled = enabled;
+        _aaiLearningViewButton.Enabled = enabled;
+        _smLearningViewButton.Enabled = enabled;
         _expandContractionsCheck.Enabled = enabled;
         _radiologyCleanupCheck.Enabled = enabled;
         _replacementsGrid.Enabled = enabled;
@@ -443,22 +516,54 @@ public class SttSection : SettingsSection
         _startBeepVolume.Enabled = enabled;
         _stopBeepVolume.Enabled = enabled;
         _showIndicatorCheck.Enabled = enabled;
+        _ensembleCheck.Enabled = enabled;
+        UpdateEnsembleStates();
+    }
+
+    private void UpdateEnsembleStates()
+    {
+        bool ensembleEnabled = _enabledCheck.Checked && _ensembleCheck.Checked;
+        _ensembleWaitUpDown.Enabled = ensembleEnabled;
+        _ensembleThreshUpDown.Enabled = ensembleEnabled;
+        _ensembleShowMetricsCheck.Enabled = ensembleEnabled;
+
+        // Dynamic key status
+        var missing = new List<string>();
+        if (string.IsNullOrWhiteSpace(_deepgramKey)) missing.Add("Deepgram");
+        if (string.IsNullOrWhiteSpace(_assemblyAIKey)) missing.Add("AssemblyAI");
+        if (string.IsNullOrWhiteSpace(_speechmaticsKey)) missing.Add("Speechmatics");
+
+        if (missing.Count == 0)
+        {
+            _ensembleKeyStatus.Text = "All 3 API keys configured";
+            _ensembleKeyStatus.ForeColor = Color.FromArgb(100, 180, 100);
+        }
+        else
+        {
+            _ensembleKeyStatus.Text = $"Missing: {string.Join(", ", missing)}";
+            _ensembleKeyStatus.ForeColor = Color.IndianRed;
+        }
     }
 
     private void RefreshKeytermLearningStats()
     {
+        RefreshProviderStats("deepgram", _dgLearningStats);
+        RefreshProviderStats("assemblyai", _aaiLearningStats);
+        RefreshProviderStats("speechmatics", _smLearningStats);
+    }
+
+    private static void RefreshProviderStats(string providerName, Label label)
+    {
         try
         {
-            var svc = new KeytermLearningService();
+            var svc = new KeytermLearningService(providerName);
             svc.Load();
             var count = svc.EntryCount;
-            _keytermLearningStats.Text = count == 0
-                ? "No auto-learned terms yet"
-                : $"{count} auto-learned term{(count == 1 ? "" : "s")}";
+            label.Text = $"{count} term{(count == 1 ? "" : "s")}";
         }
         catch
         {
-            _keytermLearningStats.Text = "No auto-learned terms yet";
+            label.Text = "0 terms";
         }
     }
 
@@ -486,17 +591,18 @@ public class SttSection : SettingsSection
         _deepgramKeytermsBox.Text = string.Join("\r\n", terms);
     }
 
-    private void OnViewKeytermLearningClick(object? sender, EventArgs e)
+    private void OnViewKeytermLearningClick(string providerName)
     {
-        var svc = new KeytermLearningService();
+        var svc = new KeytermLearningService(providerName);
         svc.Load();
         var entries = svc.GetAllEntries();
 
         if (entries.Count == 0)
         {
-            MessageBox.Show("No auto-learned keyterms yet.\n\nDictate reports with Custom STT enabled, " +
+            var provLabel = providerName switch { "assemblyai" => "AssemblyAI", "speechmatics" => "Speechmatics", _ => "Deepgram" };
+            MessageBox.Show($"No auto-learned keyterms for {provLabel} yet.\n\nDictate reports with Custom STT enabled, " +
                 "then sign/advance studies. Terms will appear after the first verification cycle.",
-                "Auto-Learned Keyterms", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                $"Auto-Learned Keyterms ({provLabel})", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -534,18 +640,20 @@ public class SttSection : SettingsSection
         }
 
         lines.AppendLine();
-        lines.AppendLine($"Total: {entries.Count} auto-learned terms ({sentCount} sent to Deepgram, {manualTerms.Count} manual)");
+        var provDisplayName = providerName switch { "assemblyai" => "AssemblyAI", "speechmatics" => "Speechmatics", _ => "Deepgram" };
         lines.AppendLine();
-        lines.AppendLine("Conf  = average Deepgram confidence when the word was heard");
+        lines.AppendLine($"Total: {entries.Count} auto-learned terms ({sentCount} sent to {provDisplayName}, {manualTerms.Count} manual)");
+        lines.AppendLine();
+        lines.AppendLine($"Conf  = average {provDisplayName} confidence when the word was heard");
         lines.AppendLine("Score = log(1 + occurrences) \u00d7 (1 \u2212 conf)\u00b2 \u00d7 weight");
         lines.AppendLine("  survived=1.0x, corrected=2.0x (corrections are more valuable)");
         lines.AppendLine("  Log dampens volume; squared gap prioritizes truly problematic words.");
         lines.AppendLine();
-        lines.AppendLine("Top-scoring terms are sent to Deepgram as keyterms.");
+        lines.AppendLine($"Top-scoring terms are sent to {provDisplayName} as keyterms.");
 
         var form = new Form
         {
-            Text = "Auto-Learned Keyterms",
+            Text = $"Auto-Learned Keyterms ({provDisplayName})",
             Size = new Size(520, 420),
             StartPosition = FormStartPosition.CenterParent,
             MinimizeBox = false,
@@ -684,15 +792,19 @@ public class SttSection : SettingsSection
         bool isSpeechmatics = idx == ProviderSpeechmatics;
         _regionLabel.Visible = isSpeechmatics;
         _regionCombo.Visible = isSpeechmatics;
-        bool isDeepgram = idx == ProviderDeepgramMedical;
-        _deepgramKeytermsLabel.Visible = isDeepgram;
-        _deepgramKeytermsBox.Visible = isDeepgram;
-        _deepgramKeytermsCount.Visible = isDeepgram;
-        _deepgramKeytermsSortButton.Visible = isDeepgram;
-        _keytermLearningCheck.Visible = isDeepgram;
-        _keytermLearningStats.Visible = isDeepgram;
-        _keytermLearningViewButton.Visible = isDeepgram;
-        _keytermLearningHint.Visible = isDeepgram;
+        // Keyterms and auto-learning are now supported by all providers
+        _deepgramKeytermsLabel.Visible = true;
+        _deepgramKeytermsBox.Visible = true;
+        _deepgramKeytermsCount.Visible = true;
+        _deepgramKeytermsSortButton.Visible = true;
+        _keytermLearningCheck.Visible = true;
+        _dgLearningStats.Visible = true;
+        _dgLearningViewButton.Visible = true;
+        _aaiLearningStats.Visible = true;
+        _aaiLearningViewButton.Visible = true;
+        _smLearningStats.Visible = true;
+        _smLearningViewButton.Visible = true;
+        _keytermLearningHint.Visible = true;
         _pricingHint.Text = idx switch
         {
             ProviderDeepgramMedical => "Free tier: $200 credit. Nova-3 Medical: $0.0077/min streaming",
@@ -728,6 +840,13 @@ public class SttSection : SettingsSection
         // Keyterm learning
         _keytermLearningCheck.Checked = config.SttKeytermLearningEnabled;
         RefreshKeytermLearningStats();
+
+        // Ensemble
+        _ensembleCheck.Checked = config.SttEnsembleEnabled;
+        _ensembleWaitUpDown.Value = Math.Clamp(config.SttEnsembleWaitMs, 100, 2000);
+        _ensembleThreshUpDown.Value = Math.Clamp((int)(config.SttEnsembleConfidenceThreshold * 100), 50, 99);
+        _ensembleShowMetricsCheck.Checked = config.SttEnsembleShowMetrics;
+        UpdateEnsembleStates();
 
         // Text processing
         _expandContractionsCheck.Checked = config.SttExpandContractions;
@@ -783,6 +902,12 @@ public class SttSection : SettingsSection
         config.SttShowIndicator = _showIndicatorCheck.Checked;
         config.SttAutoStartOnCase = _autoStartCheck.Checked;
         config.SttKeytermLearningEnabled = _keytermLearningCheck.Checked;
+
+        // Ensemble
+        config.SttEnsembleEnabled = _ensembleCheck.Checked;
+        config.SttEnsembleWaitMs = (int)_ensembleWaitUpDown.Value;
+        config.SttEnsembleConfidenceThreshold = (double)_ensembleThreshUpDown.Value / 100.0;
+        config.SttEnsembleShowMetrics = _ensembleShowMetricsCheck.Checked;
 
         // Text processing
         config.SttExpandContractions = _expandContractionsCheck.Checked;

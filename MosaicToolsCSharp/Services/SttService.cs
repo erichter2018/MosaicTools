@@ -1,44 +1,65 @@
-// [CustomSTT] Orchestrator for audio capture + STT provider
+// [CustomSTT] Orchestrator for audio capture + STT provider(s)
 using NAudio.Wave;
 
 namespace MosaicTools.Services;
 
 /// <summary>
 /// Manages PowerMic audio capture and STT provider lifecycle.
-/// Thin orchestrator — all timing, flush, and disconnect logic lives in providers.
+/// Supports single-provider mode (unchanged from original) and ensemble mode
+/// (fan-out to 3 providers with merger).
 /// </summary>
 public class SttService : IDisposable
 {
     private readonly Configuration _config;
     private readonly string? _keytermOverride;
+    private readonly Dictionary<string, string>? _perProviderKeyterms;
+
+    // Single-provider mode (unchanged path)
     private ISttProvider? _provider;
+
+    // Ensemble mode
+    private ISttProvider? _primaryProvider;     // Deepgram (always)
+    private ISttProvider? _secondaryProvider1;  // AssemblyAI
+    private ISttProvider? _secondaryProvider2;  // Speechmatics
+    private SttEnsembleMerger? _merger;
+    private bool _ensembleMode;
+
     private WaveInEvent? _waveIn;
     private int _selectedDeviceIndex = -1;
     private volatile bool _recording;
-    private volatile bool _stopping; // Suppress reconnect during intentional stop
+    private volatile bool _stopping;
 
     public bool IsRecording => _recording;
-    public bool IsConnected => _provider?.IsConnected ?? false;
-    public string ProviderName => _provider?.Name ?? "None";
+    public bool IsConnected => _ensembleMode
+        ? (_primaryProvider?.IsConnected ?? false)
+        : (_provider?.IsConnected ?? false);
+    public string ProviderName => _ensembleMode
+        ? "Ensemble (DG+AAI+SM)"
+        : (_provider?.Name ?? "None");
 
     public event Action<SttResult>? TranscriptionReceived;
+    /// <summary>
+    /// Fires for every provider's final result (before merge). Used for per-provider keyterm learning.
+    /// </summary>
+    public event Action<SttResult>? RawProviderFinalReceived;
+    /// <summary>
+    /// Fires after each ensemble merge with live stats snapshot. Only in ensemble mode.
+    /// </summary>
+    public event Action<EnsembleStats>? EnsembleStatsUpdated;
     public event Action<string>? StatusChanged;
     public event Action<bool>? RecordingStateChanged;
     public event Action<string>? ErrorOccurred;
 
-    public SttService(Configuration config, string? keytermOverride = null)
+    public SttService(Configuration config, string? keytermOverride = null,
+        Dictionary<string, string>? perProviderKeyterms = null)
     {
         _config = config;
         _keytermOverride = keytermOverride;
+        _perProviderKeyterms = perProviderKeyterms;
     }
 
-    /// <summary>
-    /// Initialize provider and find audio device. Call once on startup.
-    /// Returns error message or null on success.
-    /// </summary>
     public string? Initialize()
     {
-        // Find PowerMic audio device
         _selectedDeviceIndex = FindAudioDevice();
         if (_selectedDeviceIndex < 0)
         {
@@ -47,46 +68,170 @@ public class SttService : IDisposable
             return msg;
         }
 
-        // Create provider
-        _provider = CreateProvider();
-        if (_provider == null)
+        // Decide: ensemble or single-provider
+        if (_config.SttEnsembleEnabled && CanRunEnsemble())
         {
-            return "STT provider not configured. Check Settings.";
+            return InitializeEnsemble();
         }
+        else
+        {
+            // Single-provider mode — unchanged path
+            _ensembleMode = false;
+            _provider = CreateProvider();
+            if (_provider == null)
+                return "STT provider not configured. Check Settings.";
 
-        _provider.TranscriptionReceived += OnTranscriptionReceived;
-        _provider.ErrorOccurred += OnProviderError;
-        _provider.ConnectionStateChanged += OnConnectionStateChanged;
+            _provider.TranscriptionReceived += OnTranscriptionReceived;
+            _provider.ErrorOccurred += OnProviderError;
+            _provider.ConnectionStateChanged += OnConnectionStateChanged;
 
-        Logger.Trace($"SttService: Initialized (device={_selectedDeviceIndex}, provider={_provider.Name})");
+            Logger.Trace($"SttService: Initialized single-provider (device={_selectedDeviceIndex}, provider={_provider.Name})");
+            return null;
+        }
+    }
+
+    private bool CanRunEnsemble()
+    {
+        return !string.IsNullOrEmpty(_config.SttApiKey) &&
+               !string.IsNullOrEmpty(_config.SttAssemblyAIApiKey) &&
+               !string.IsNullOrEmpty(_config.SttSpeechmaticsApiKey);
+    }
+
+    private string? InitializeEnsemble()
+    {
+        _ensembleMode = true;
+
+        var dgKeyterms = GetProviderKeyterms("deepgram");
+        var aaiKeyterms = GetProviderKeyterms("assemblyai");
+        var smKeyterms = GetProviderKeyterms("speechmatics");
+
+        _primaryProvider = new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate, dgKeyterms);
+        _secondaryProvider1 = new AssemblyAIProvider(_config.SttAssemblyAIApiKey, _config.SttAutoPunctuate, aaiKeyterms);
+        _secondaryProvider2 = new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, _config.SttAutoPunctuate, smKeyterms);
+
+        _merger = new SttEnsembleMerger(
+            _config,
+            _config.SttEnsembleWaitMs,
+            _config.SttEnsembleConfidenceThreshold);
+
+        _merger.MergedResultReady += result =>
+        {
+            TranscriptionReceived?.Invoke(result);
+        };
+        _merger.StatsUpdated += stats =>
+        {
+            EnsembleStatsUpdated?.Invoke(stats);
+        };
+
+        // Primary (Deepgram): interims go to display, finals go to merger + raw event
+        _primaryProvider.TranscriptionReceived += result =>
+        {
+            var tagged = result with { ProviderName = "deepgram" };
+            if (!result.IsFinal)
+            {
+                TranscriptionReceived?.Invoke(tagged); // Interims for live display
+            }
+            else
+            {
+                RawProviderFinalReceived?.Invoke(tagged);
+                _merger?.SubmitResult(tagged);
+            }
+        };
+        _primaryProvider.ErrorOccurred += OnProviderError;
+        _primaryProvider.ConnectionStateChanged += OnConnectionStateChanged;
+
+        // Secondary providers: only finals, errors logged silently
+        _secondaryProvider1.TranscriptionReceived += result =>
+        {
+            if (!result.IsFinal) return;
+            var tagged = result with { ProviderName = "assemblyai" };
+            RawProviderFinalReceived?.Invoke(tagged);
+            _merger?.SubmitResult(tagged);
+        };
+        _secondaryProvider1.ErrorOccurred += err => Logger.Trace($"SttService [AAI secondary]: {err}");
+        _secondaryProvider1.ConnectionStateChanged += connected =>
+        {
+            if (!connected) Logger.Trace("SttService: AAI secondary disconnected");
+        };
+
+        _secondaryProvider2.TranscriptionReceived += result =>
+        {
+            if (!result.IsFinal) return;
+            var tagged = result with { ProviderName = "speechmatics" };
+            RawProviderFinalReceived?.Invoke(tagged);
+            _merger?.SubmitResult(tagged);
+        };
+        _secondaryProvider2.ErrorOccurred += err => Logger.Trace($"SttService [SM secondary]: {err}");
+        _secondaryProvider2.ConnectionStateChanged += connected =>
+        {
+            if (!connected) Logger.Trace("SttService: SM secondary disconnected");
+        };
+
+        Logger.Trace($"SttService: Initialized ensemble mode (device={_selectedDeviceIndex})");
         return null;
     }
 
-    /// <summary>
-    /// Start recording audio and streaming to provider.
-    /// Connects to provider if not already connected.
-    /// </summary>
+    private string GetProviderKeyterms(string providerName)
+    {
+        if (_perProviderKeyterms != null && _perProviderKeyterms.TryGetValue(providerName, out var kt))
+            return kt;
+        return _keytermOverride ?? _config.SttDeepgramKeyterms;
+    }
+
     public async Task StartRecordingAsync()
     {
         if (_recording) return;
-        if (_provider == null || _selectedDeviceIndex < 0) return;
 
-        // Start session (provider connects if needed)
-        if (!_provider.IsConnected)
+        if (_ensembleMode)
         {
-            StatusChanged?.Invoke("Connecting...");
-            var connected = await _provider.StartSessionAsync();
-            if (!connected)
+            if (_primaryProvider == null) return;
+
+            // Primary must connect
+            if (!_primaryProvider.IsConnected)
             {
-                StatusChanged?.Invoke("Connection failed");
-                return;
+                StatusChanged?.Invoke("Connecting...");
+                var connected = await _primaryProvider.StartSessionAsync();
+                if (!connected)
+                {
+                    StatusChanged?.Invoke("Connection failed");
+                    return;
+                }
+            }
+
+            // Secondaries connect in parallel (failures tolerated)
+            var s1 = _secondaryProvider1;
+            var s2 = _secondaryProvider2;
+            _ = Task.Run(async () =>
+            {
+                try { if (s1 is { IsConnected: false }) await s1.StartSessionAsync(); }
+                catch (Exception ex) { Logger.Trace($"SttService: AAI connect failed: {ex.Message}"); }
+            });
+            _ = Task.Run(async () =>
+            {
+                try { if (s2 is { IsConnected: false }) await s2.StartSessionAsync(); }
+                catch (Exception ex) { Logger.Trace($"SttService: SM connect failed: {ex.Message}"); }
+            });
+        }
+        else
+        {
+            if (_provider == null || _selectedDeviceIndex < 0) return;
+
+            if (!_provider.IsConnected)
+            {
+                StatusChanged?.Invoke("Connecting...");
+                var connected = await _provider.StartSessionAsync();
+                if (!connected)
+                {
+                    StatusChanged?.Invoke("Connection failed");
+                    return;
+                }
             }
         }
 
-        // Start audio capture using provider's declared format
+        // Start audio capture
         try
         {
-            var fmt = _provider.AudioFormat;
+            var fmt = _ensembleMode ? _primaryProvider!.AudioFormat : _provider!.AudioFormat;
             _waveIn = new WaveInEvent
             {
                 DeviceNumber = _selectedDeviceIndex,
@@ -110,37 +255,52 @@ public class SttService : IDisposable
         }
     }
 
-    /// <summary>
-    /// Stop recording. Provider owns the full stop pipeline —
-    /// tail buffer, flush, and disconnect decisions.
-    /// Audio keeps flowing during EndSessionAsync so the provider
-    /// captures trailing speech.
-    /// </summary>
     public async Task StopRecordingAsync()
     {
         if (!_recording) return;
-        _stopping = true; // Suppress OnConnectionStateChanged reconnect
+        _stopping = true;
 
-        // Update UI immediately
         RecordingStateChanged?.Invoke(false);
 
-        // Provider runs its full stop pipeline (tail buffer, flush, optional disconnect).
-        // _recording stays true so OnAudioDataAvailable keeps sending audio during this.
-        try
+        if (_ensembleMode)
         {
-            if (_provider is { IsConnected: true })
-                await _provider.EndSessionAsync();
+            // End primary first
+            try
+            {
+                if (_primaryProvider is { IsConnected: true })
+                    await _primaryProvider.EndSessionAsync();
+            }
+            catch (Exception ex) { Logger.Trace($"SttService: Primary EndSession error: {ex.Message}"); }
+
+            // End secondaries in parallel with timeout
+            var s1 = _secondaryProvider1;
+            var s2 = _secondaryProvider2;
+            var t1 = Task.Run(async () =>
+            {
+                try { if (s1 is { IsConnected: true }) await s1.EndSessionAsync(); } catch { }
+            });
+            var t2 = Task.Run(async () =>
+            {
+                try { if (s2 is { IsConnected: true }) await s2.EndSessionAsync(); } catch { }
+            });
+            await Task.WhenAny(Task.WhenAll(t1, t2), Task.Delay(2000));
         }
-        catch (Exception ex)
+        else
         {
-            Logger.Trace($"SttService: EndSession error: {ex.Message}");
+            try
+            {
+                if (_provider is { IsConnected: true })
+                    await _provider.EndSessionAsync();
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"SttService: EndSession error: {ex.Message}");
+            }
         }
 
-        // Now stop audio capture
         _recording = false;
         _stopping = false;
 
-        // Capture and null the reference to prevent races with OnRecordingStopped/OnConnectionStateChanged
         var waveIn = _waveIn;
         _waveIn = null;
 
@@ -165,33 +325,47 @@ public class SttService : IDisposable
         StatusChanged?.Invoke("Stopped");
         Logger.Trace("SttService: Recording stopped");
 
-        // Pre-connect for next PTT press so the user doesn't wait on reconnection.
-        // Providers that disconnect each session (AssemblyAI, Deepgram) benefit most.
-        // Providers still connected (Corti) will no-op in StartSessionAsync.
-        var provider = _provider;
-        if (provider is { IsConnected: false })
+        // Pre-connect for next PTT press
+        if (_ensembleMode)
         {
+            var p = _primaryProvider;
+            var s1 = _secondaryProvider1;
+            var s2 = _secondaryProvider2;
             _ = Task.Run(async () =>
             {
-                try { await provider.StartSessionAsync(); }
-                catch (Exception ex) { Logger.Trace($"SttService: Pre-connect failed: {ex.Message}"); }
+                try { if (p is { IsConnected: false }) await p.StartSessionAsync(); } catch { }
+                try { if (s1 is { IsConnected: false }) await s1.StartSessionAsync(); } catch { }
+                try { if (s2 is { IsConnected: false }) await s2.StartSessionAsync(); } catch { }
             });
+        }
+        else
+        {
+            var provider = _provider;
+            if (provider is { IsConnected: false })
+            {
+                _ = Task.Run(async () =>
+                {
+                    try { await provider.StartSessionAsync(); }
+                    catch (Exception ex) { Logger.Trace($"SttService: Pre-connect failed: {ex.Message}"); }
+                });
+            }
         }
     }
 
-    /// <summary>
-    /// Fully shut down provider (e.g., on settings change or app exit).
-    /// </summary>
     public async Task DisconnectAsync()
     {
         if (_recording)
-        {
             await StopRecordingAsync();
-        }
 
-        if (_provider != null)
+        if (_ensembleMode)
         {
-            await _provider.ShutdownAsync();
+            if (_primaryProvider != null) await _primaryProvider.ShutdownAsync();
+            if (_secondaryProvider1 != null) await _secondaryProvider1.ShutdownAsync();
+            if (_secondaryProvider2 != null) await _secondaryProvider2.ShutdownAsync();
+        }
+        else
+        {
+            if (_provider != null) await _provider.ShutdownAsync();
         }
 
         StatusChanged?.Invoke("Disconnected");
@@ -199,8 +373,19 @@ public class SttService : IDisposable
 
     private void OnAudioDataAvailable(object? sender, WaveInEventArgs e)
     {
-        if (!_recording || _provider == null) return;
-        _provider.SendAudio(e.Buffer, 0, e.BytesRecorded);
+        if (!_recording) return;
+
+        if (_ensembleMode)
+        {
+            // Fan out same audio to all providers
+            _primaryProvider?.SendAudio(e.Buffer, 0, e.BytesRecorded);
+            _secondaryProvider1?.SendAudio(e.Buffer, 0, e.BytesRecorded);
+            _secondaryProvider2?.SendAudio(e.Buffer, 0, e.BytesRecorded);
+        }
+        else
+        {
+            _provider?.SendAudio(e.Buffer, 0, e.BytesRecorded);
+        }
     }
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)
@@ -211,8 +396,6 @@ public class SttService : IDisposable
             ErrorOccurred?.Invoke($"Audio device error: {e.Exception.Message}");
             StatusChanged?.Invoke("Audio error");
         }
-        // Don't dispose _waveIn here — disposal is handled by StopRecordingAsync/Dispose
-        // to avoid racing with the native StopRecording call that triggered this callback.
     }
 
     private void OnTranscriptionReceived(SttResult result)
@@ -230,7 +413,6 @@ public class SttService : IDisposable
     {
         if (!connected && _recording && !_stopping)
         {
-            // Connection dropped unexpectedly while recording
             _recording = false;
             RecordingStateChanged?.Invoke(false);
 
@@ -252,8 +434,6 @@ public class SttService : IDisposable
             }
 
             StatusChanged?.Invoke("Disconnected");
-
-            // Attempt reconnection
             _ = Task.Run(ReconnectAsync);
         }
     }
@@ -265,15 +445,37 @@ public class SttService : IDisposable
             StatusChanged?.Invoke($"Reconnecting ({attempt}/3)...");
             Logger.Trace($"SttService: Reconnect attempt {attempt}");
 
-            await Task.Delay(1000 * attempt); // Exponential backoff
+            await Task.Delay(1000 * attempt);
 
-            if (_provider == null) break;
-            var success = await _provider.StartSessionAsync();
-            if (success)
+            if (_ensembleMode)
             {
-                StatusChanged?.Invoke("Reconnected");
-                Logger.Trace("SttService: Reconnected successfully");
-                return;
+                if (_primaryProvider == null) break;
+                var success = await _primaryProvider.StartSessionAsync();
+                if (success)
+                {
+                    StatusChanged?.Invoke("Reconnected");
+                    Logger.Trace("SttService: Reconnected successfully");
+                    // Reconnect secondaries in background
+                    var s1 = _secondaryProvider1;
+                    var s2 = _secondaryProvider2;
+                    _ = Task.Run(async () =>
+                    {
+                        try { if (s1 is { IsConnected: false }) await s1.StartSessionAsync(); } catch { }
+                        try { if (s2 is { IsConnected: false }) await s2.StartSessionAsync(); } catch { }
+                    });
+                    return;
+                }
+            }
+            else
+            {
+                if (_provider == null) break;
+                var success = await _provider.StartSessionAsync();
+                if (success)
+                {
+                    StatusChanged?.Invoke("Reconnected");
+                    Logger.Trace("SttService: Reconnected successfully");
+                    return;
+                }
             }
         }
 
@@ -287,7 +489,6 @@ public class SttService : IDisposable
         var configuredName = _config.SttAudioDeviceName;
         int deviceCount = WaveInEvent.DeviceCount;
 
-        // If user configured a specific device, look for exact match
         if (!string.IsNullOrEmpty(configuredName))
         {
             for (int i = 0; i < deviceCount; i++)
@@ -302,7 +503,6 @@ public class SttService : IDisposable
             Logger.Trace($"SttService: Configured device '{configuredName}' not found, falling back to auto-detect");
         }
 
-        // Auto-detect PowerMic by known name fragments
         string[] micKeywords = { "PowerMic", "Dictaphone", "Nuance", "SpeechMike", "Philips" };
         for (int i = 0; i < deviceCount; i++)
         {
@@ -317,7 +517,6 @@ public class SttService : IDisposable
             }
         }
 
-        // Log available devices for debugging
         for (int i = 0; i < deviceCount; i++)
         {
             var caps = WaveInEvent.GetCapabilities(i);
@@ -329,7 +528,6 @@ public class SttService : IDisposable
 
     private ISttProvider? CreateProvider()
     {
-        // Check that the active provider has credentials configured
         var hasKey = _config.SttProvider switch
         {
             "deepgram" => !string.IsNullOrEmpty(_config.SttApiKey),
@@ -348,16 +546,13 @@ public class SttService : IDisposable
         return _config.SttProvider switch
         {
             "deepgram" => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate, keyterms),
-            "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, _config.SttAutoPunctuate),
+            "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, _config.SttAutoPunctuate, keyterms),
             "corti" => new CortiProvider(_config.SttCortiClientId, _config.SttCortiClientSecret, _config.SttCortiEnvironment, _config.SttAutoPunctuate),
-            "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, _config.SttAutoPunctuate),
+            "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, _config.SttAutoPunctuate, keyterms),
             _ => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate, keyterms)
         };
     }
 
-    /// <summary>
-    /// Get list of available audio input devices for settings UI.
-    /// </summary>
     public static List<string> GetAudioDevices()
     {
         var devices = new List<string>();
@@ -388,11 +583,24 @@ public class SttService : IDisposable
             }
         }
 
-        // Dispose provider on a background thread to avoid blocking the UI thread
-        // (provider Dispose calls ShutdownAsync synchronously which can take seconds)
-        var provider = _provider;
-        _provider = null;
-        if (provider != null)
-            Task.Run(() => { try { provider.Dispose(); } catch { } });
+        if (_ensembleMode)
+        {
+            var p = _primaryProvider; _primaryProvider = null;
+            var s1 = _secondaryProvider1; _secondaryProvider1 = null;
+            var s2 = _secondaryProvider2; _secondaryProvider2 = null;
+            Task.Run(() =>
+            {
+                try { p?.Dispose(); } catch { }
+                try { s1?.Dispose(); } catch { }
+                try { s2?.Dispose(); } catch { }
+            });
+        }
+        else
+        {
+            var provider = _provider;
+            _provider = null;
+            if (provider != null)
+                Task.Run(() => { try { provider.Dispose(); } catch { } });
+        }
     }
 }

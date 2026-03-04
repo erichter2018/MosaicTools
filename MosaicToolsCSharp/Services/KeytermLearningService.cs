@@ -45,9 +45,7 @@ public class LowConfidenceCapture
 
 public class KeytermLearningService
 {
-    private static readonly string DataPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "MosaicTools", "KeytermLearning.json");
+    private readonly string DataPath;
 
     private static readonly HashSet<string> StopWords = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -71,6 +69,14 @@ public class KeytermLearningService
     private KeytermLearningData _data = new();
     private readonly List<LowConfidenceCapture> _sessionBuffer = new();
     private readonly object _lock = new();
+
+    public KeytermLearningService(string providerName = "deepgram")
+    {
+        var fileName = $"KeytermLearning_{providerName}.json";
+        DataPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "MosaicTools", fileName);
+    }
 
     public void CollectLowConfidenceWords(SttWord[] words, float threshold)
     {

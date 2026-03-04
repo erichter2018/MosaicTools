@@ -74,6 +74,7 @@ public class ClinicalHistoryForm : Form
     private string? _lastAutoFixedAccession;
     private DateTime _lastAutoFixTime = DateTime.MinValue;
     private volatile bool _autoFixInProgress = false;
+    private int _autoFixPasteCount = 0; // Safety net: max pastes per study
 
     // Session-wide clinical history fix tracking callbacks (set by MainForm)
     private Func<string?, bool>? _hasClinicalHistoryFixed;
@@ -751,21 +752,32 @@ public class ClinicalHistoryForm : Form
             return;
         }
 
-        if (_hasClinicalHistoryFixed != null)
+        // Don't auto-fix when accession is unknown — we might paste into the wrong study
+        if (string.IsNullOrEmpty(accession))
         {
-            if (_hasClinicalHistoryFixed(accession))
-            {
-                _onAutoFixComplete?.Invoke();
-                return;
-            }
+            _onAutoFixComplete?.Invoke();
+            return;
         }
-        else
+
+        // Session-wide tracking (preferred)
+        if (_hasClinicalHistoryFixed != null && _hasClinicalHistoryFixed(accession))
         {
-            if (!string.IsNullOrEmpty(accession) && string.Equals(_lastAutoFixedAccession, accession, StringComparison.Ordinal))
-            {
-                _onAutoFixComplete?.Invoke();
-                return;
-            }
+            _onAutoFixComplete?.Invoke();
+            return;
+        }
+
+        // Local fallback: prevents re-trigger for same accession (always checked as safety net)
+        if (string.Equals(_lastAutoFixedAccession, accession, StringComparison.Ordinal))
+        {
+            _onAutoFixComplete?.Invoke();
+            return;
+        }
+
+        // Safety net: max 2 paste attempts per study to prevent infinite loops
+        if (_autoFixPasteCount >= 2)
+        {
+            _onAutoFixComplete?.Invoke();
+            return;
         }
 
         if (_autoFixInProgress)
@@ -791,12 +803,17 @@ public class ClinicalHistoryForm : Form
                 if (!stillFixed)
                 {
                     Logger.Trace($"Auto-fix: Mosaic self-corrected for '{capturedAccession}', skipping paste");
+                    // Mark as fixed so we don't re-trigger on subsequent scrape ticks.
+                    // Without this, a transient clean state (e.g. template reload race) causes
+                    // an infinite loop: detect → wait 5s → "self-corrected" → re-detect → repeat.
+                    _markClinicalHistoryFixed?.Invoke(capturedAccession);
                     _autoFixInProgress = false;
                     _onAutoFixComplete?.Invoke();
                     return;
                 }
 
-                Logger.Trace($"Auto-fix: still malformed after recheck for '{capturedAccession}', pasting fix");
+                _autoFixPasteCount++;
+                Logger.Trace($"Auto-fix: still malformed after recheck for '{capturedAccession}', pasting fix (attempt {_autoFixPasteCount}/2)");
                 _lastAutoFixTime = DateTime.Now;
                 _markClinicalHistoryFixed?.Invoke(capturedAccession);
                 PasteClinicalHistoryToMosaic(showYellowCheckmark: true);
@@ -814,6 +831,7 @@ public class ClinicalHistoryForm : Form
     {
         _lastAutoFixedAccession = null;
         _autoFixInProgress = false;
+        _autoFixPasteCount = 0;
     }
 
     public void OnStudyChanged(bool isNewStudy = true)
@@ -828,6 +846,7 @@ public class ClinicalHistoryForm : Form
 
         _lastAutoFixedAccession = null;
         _lastAutoFixTime = DateTime.MinValue;
+        _autoFixPasteCount = 0;
         _patientMismatchActive = false;
         StopMismatchPulse();
         _templateMismatch = false;
@@ -1394,7 +1413,9 @@ public class ClinicalHistoryForm : Form
 
     private void PasteClinicalHistoryToMosaic(bool showYellowCheckmark = false)
     {
-        var text = _contentLabel.Text;
+        // Use _currentDisplayedText, NOT _contentLabel.Text — the label may be showing
+        // an alert overlay (e.g. "TEMPLATE MISMATCH\nStudy:...") instead of clinical history.
+        var text = _currentDisplayedText ?? _contentLabel.Text;
         if (string.IsNullOrWhiteSpace(text) || text == "(No clinical history)")
         {
             ShowToast("No clinical history to paste");

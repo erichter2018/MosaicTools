@@ -402,6 +402,19 @@ public class Configuration
     [JsonPropertyName("stt_keyterm_learning_confidence_threshold")]
     public double SttKeytermLearningConfidenceThreshold { get; set; } = 0.85;
 
+    // Ensemble mode
+    [JsonPropertyName("stt_ensemble_enabled")]
+    public bool SttEnsembleEnabled { get; set; } = false;
+
+    [JsonPropertyName("stt_ensemble_wait_ms")]
+    public int SttEnsembleWaitMs { get; set; } = 500;
+
+    [JsonPropertyName("stt_ensemble_confidence_threshold")]
+    public double SttEnsembleConfidenceThreshold { get; set; } = 0.80;
+
+    [JsonPropertyName("stt_ensemble_show_metrics")]
+    public bool SttEnsembleShowMetrics { get; set; } = true;
+
     [JsonPropertyName("stt_start_beep_enabled")]
     public bool SttStartBeepEnabled { get; set; } = true;
 
@@ -484,6 +497,15 @@ public class Configuration
 
     [JsonPropertyName("cdp_independent_scrolling")]
     public bool CdpIndependentScrolling { get; set; } = true;
+
+    [JsonPropertyName("cdp_column_ratio")]
+    public double CdpColumnRatio { get; set; } = 0.333;
+
+    [JsonPropertyName("cdp_auto_scroll_enabled")]
+    public bool CdpAutoScrollEnabled { get; set; } = true;
+
+    [JsonPropertyName("cdp_hide_drag_handles")]
+    public bool CdpHideDragHandles { get; set; } = true;
 
     // UI Options
     [JsonPropertyName("show_tooltips")]

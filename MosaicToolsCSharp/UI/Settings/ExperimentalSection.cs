@@ -18,6 +18,8 @@ public class ExperimentalSection : SettingsSection
     private readonly CheckBox _useSendInputInsertCheck;
     private readonly CheckBox _cdpEnabledCheck;
     private readonly CheckBox _cdpScrollFixCheck;
+    private readonly CheckBox _cdpAutoScrollCheck;
+    private readonly CheckBox _cdpHideDragHandlesCheck;
 
     public ExperimentalSection(ToolTip toolTip) : base("Experimental", toolTip)
     {
@@ -66,6 +68,14 @@ public class ExperimentalSection : SettingsSection
             "Makes Transcript, Report, and sidebar columns scroll independently instead of the whole page.");
         _nextY += RowHeight;
 
+        _cdpAutoScrollCheck = AddCheckBox("Auto-scroll to cursor during dictation", LeftMargin + 25, _nextY,
+            "Keeps the cursor visible by scrolling the editor area when text is inserted near the bottom.");
+        _nextY += RowHeight;
+
+        _cdpHideDragHandlesCheck = AddCheckBox("Hide report drag/delete handles", LeftMargin + 25, _nextY,
+            "Hides the drag-to-reorder and delete icons on paragraphs in the report editor.");
+        _nextY += RowHeight;
+
         UpdateHeight();
     }
 
@@ -79,6 +89,8 @@ public class ExperimentalSection : SettingsSection
     private void UpdateCdpSettingsStates()
     {
         _cdpScrollFixCheck.Enabled = _cdpEnabledCheck.Checked;
+        _cdpAutoScrollCheck.Enabled = _cdpEnabledCheck.Checked;
+        _cdpHideDragHandlesCheck.Enabled = _cdpEnabledCheck.Checked;
     }
 
     public override void LoadSettings(Configuration config)
@@ -90,6 +102,8 @@ public class ExperimentalSection : SettingsSection
         _useSendInputInsertCheck.Checked = config.ExperimentalUseSendInputInsert;
         _cdpEnabledCheck.Checked = config.CdpEnabled;
         _cdpScrollFixCheck.Checked = config.CdpIndependentScrolling;
+        _cdpAutoScrollCheck.Checked = config.CdpAutoScrollEnabled;
+        _cdpHideDragHandlesCheck.Checked = config.CdpHideDragHandles;
 
         UpdateNetworkSettingsStates();
         UpdateCdpSettingsStates();
@@ -104,5 +118,7 @@ public class ExperimentalSection : SettingsSection
         config.ExperimentalUseSendInputInsert = _useSendInputInsertCheck.Checked;
         config.CdpEnabled = _cdpEnabledCheck.Checked;
         config.CdpIndependentScrolling = _cdpScrollFixCheck.Checked;
+        config.CdpAutoScrollEnabled = _cdpAutoScrollCheck.Checked;
+        config.CdpHideDragHandles = _cdpHideDragHandlesCheck.Checked;
     }
 }
