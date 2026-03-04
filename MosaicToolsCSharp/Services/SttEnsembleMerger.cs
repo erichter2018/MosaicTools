@@ -41,8 +41,9 @@ public class SttEnsembleMerger
 
     // Current pending merge
     private SttResult? _primaryResult;
-    private readonly List<SttResult> _secondary1Buffer = new(); // Soniox finals accumulated between DG finals
-    private readonly List<SttResult> _secondary2Buffer = new(); // SM finals accumulated between DG finals
+    private long _primaryArrivedTicks; // Wall-clock arrival time for staleness detection
+    private readonly List<(SttResult Result, long ArrivedTicks)> _secondary1Buffer = new();
+    private readonly List<(SttResult Result, long ArrivedTicks)> _secondary2Buffer = new();
     private CancellationTokenSource? _timerCts;
 
     // Session stats
@@ -109,18 +110,23 @@ public class SttEnsembleMerger
         lock (_lock)
         {
             var name = result.ProviderName;
+            var now = Environment.TickCount64;
             if (name == "deepgram")
             {
                 _primaryResult = result;
+                _primaryArrivedTicks = now;
+                // Purge secondary entries from previous utterance (arrived >2s before this primary)
+                PurgeStaleEntries(_secondary1Buffer, now - 2000);
+                PurgeStaleEntries(_secondary2Buffer, now - 2000);
             }
             else if (name == _s1Name)
             {
-                _secondary1Buffer.Add(result);
+                _secondary1Buffer.Add((result, now));
                 Interlocked.Increment(ref _s1Arrivals);
             }
             else if (name == _s2Name)
             {
-                _secondary2Buffer.Add(result);
+                _secondary2Buffer.Add((result, now));
                 Interlocked.Increment(ref _s2Arrivals);
             }
             else
@@ -132,8 +138,9 @@ public class SttEnsembleMerger
             if (_primaryResult == null) return;
 
             // Check if all active secondaries have contributed — emit immediately
-            var s1Ready = _s1Name == "none" || _secondary1Buffer.Count > 0;
-            var s2Ready = _s2Name == "none" || _secondary2Buffer.Count > 0;
+            // Only count entries that arrived within 1.5s of primary (avoid stale cross-utterance data)
+            var s1Ready = _s1Name == "none" || HasFreshEntries(_secondary1Buffer);
+            var s2Ready = _s2Name == "none" || HasFreshEntries(_secondary2Buffer);
             if (s1Ready && s2Ready)
             {
                 Logger.Trace($"Ensemble: all 3 providers arrived ({Short(_s1Name)}={_secondary1Buffer.Count} finals, {Short(_s2Name)}={_secondary2Buffer.Count} finals) — merging immediately");
@@ -169,6 +176,7 @@ public class SttEnsembleMerger
                         }
                     }
                     catch (OperationCanceledException) { }
+                    finally { cts.Dispose(); }
                 });
             }
         }
@@ -191,43 +199,6 @@ public class SttEnsembleMerger
         _lastCorrectionDetail = null;
     }
 
-    /// <summary>
-    /// Check if a secondary result's timestamps overlap the primary's.
-    /// Discards stale secondaries from a previous utterance that were still pending.
-    /// </summary>
-    private static bool IsTimeAligned(SttResult primary, SttResult? secondary)
-    {
-        if (secondary == null) return false;
-
-        var pWords = primary.Words;
-        var sWords = secondary.Words;
-        if (pWords == null || pWords.Length == 0 || sWords == null || sWords.Length == 0)
-            return true; // Can't verify — give benefit of the doubt
-
-        var pStart = pWords[0].StartTime;
-        var pEnd = pWords[^1].EndTime;
-        var sStart = sWords[0].StartTime;
-        var sEnd = sWords[^1].EndTime;
-
-        // If either has no timing data (0.0), skip the check
-        if (pEnd <= 0 || sEnd <= 0) return true;
-
-        // Check for any overlap between the two time ranges
-        var overlapStart = Math.Max(pStart, sStart);
-        var overlapEnd = Math.Min(pEnd, sEnd);
-        if (overlapEnd > overlapStart) return true; // Ranges overlap — aligned
-
-        // No overlap — check how far apart they are
-        var gap = Math.Max(pStart - sEnd, sStart - pEnd);
-        if (gap > 1.0) // More than 1 second gap → definitely stale
-        {
-            Logger.Trace($"Ensemble: discarding stale secondary (gap={gap:F1}s, primary={pStart:F1}-{pEnd:F1}s, secondary={sStart:F1}-{sEnd:F1}s)");
-            return false;
-        }
-
-        return true; // Close enough — might be the same utterance
-    }
-
     private bool AllWordsHighConfidence(SttResult result)
     {
         if (result.Words == null || result.Words.Length == 0) return true;
@@ -239,24 +210,38 @@ public class SttEnsembleMerger
     private void CancelTimer()
     {
         _timerCts?.Cancel();
-        _timerCts?.Dispose();
-        _timerCts = null;
+        _timerCts = null; // Disposal handled by lambda's finally block
+    }
+
+    private static void PurgeStaleEntries(List<(SttResult Result, long ArrivedTicks)> buffer, long cutoffTicks)
+    {
+        var removed = buffer.RemoveAll(b => b.ArrivedTicks < cutoffTicks);
+        if (removed > 0)
+            Logger.Trace($"Ensemble: purged {removed} stale secondary buffer entries");
+    }
+
+    private bool HasFreshEntries(List<(SttResult Result, long ArrivedTicks)> buffer)
+    {
+        if (buffer.Count == 0) return false;
+        // At least one entry arrived within 1.5s of primary arrival
+        var cutoff = _primaryArrivedTicks - 1500;
+        return buffer.Exists(b => b.ArrivedTicks >= cutoff);
     }
 
     /// <summary>
     /// Combine buffered secondary finals into a single SttResult with merged transcript and word arrays.
     /// Speechmatics sends word-by-word finals, so we may have 10+ fragments that need concatenation.
     /// </summary>
-    private static SttResult? CombineBufferedResults(List<SttResult> buffer)
+    private static SttResult? CombineBufferedResults(List<(SttResult Result, long ArrivedTicks)> buffer)
     {
         if (buffer.Count == 0) return null;
-        if (buffer.Count == 1) return buffer[0];
+        if (buffer.Count == 1) return buffer[0].Result;
 
         // Concatenate transcripts and word arrays
         var allWords = new List<SttWord>();
         var transcriptParts = new List<string>();
 
-        foreach (var r in buffer)
+        foreach (var (r, _) in buffer)
         {
             if (!string.IsNullOrEmpty(r.Transcript))
                 transcriptParts.Add(r.Transcript);
@@ -271,10 +256,10 @@ public class SttEnsembleMerger
             IsFinal: true,
             SpeechFinal: true,
             Duration: allWords.Count > 0 ? allWords.Max(w => w.EndTime) - allWords.Min(w => w.StartTime) : 0,
-            ProviderName: buffer[0].ProviderName
+            ProviderName: buffer[0].Result.ProviderName
         );
 
-        Logger.Trace($"Ensemble: combined {buffer.Count} {buffer[0].ProviderName} finals → {allWords.Count} words, \"{combined.Transcript}\"");
+        Logger.Trace($"Ensemble: combined {buffer.Count} {buffer[0].Result.ProviderName} finals → {allWords.Count} words, \"{combined.Transcript}\"");
         return combined;
     }
 
@@ -296,10 +281,6 @@ public class SttEnsembleMerger
 
         Interlocked.Increment(ref _mergeCount);
         _studyMerges++;
-
-        // Discard stale secondaries whose timestamps don't overlap the primary
-        s1 = IsTimeAligned(primary, s1) ? s1 : null;
-        s2 = IsTimeAligned(primary, s2) ? s2 : null;
 
         var s1Status = s1 != null ? $"{s1.Words?.Length ?? 0} words" : "missing";
         var s2Status = s2 != null ? $"{s2.Words?.Length ?? 0} words" : "missing";

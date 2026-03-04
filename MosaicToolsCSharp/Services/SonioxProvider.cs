@@ -18,6 +18,7 @@ public class SonioxProvider : ISttProvider
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveTask;
     private volatile bool _connected;
+    private readonly SemaphoreSlim _connectLock = new(1, 1); // Serialize StartSessionAsync calls
     private TaskCompletionSource<bool>? _finalizeComplete;
     private string _accumulatedText = ""; // Growing transcript for interim display
 
@@ -48,13 +49,18 @@ public class SonioxProvider : ISttProvider
 
     public async Task<bool> StartSessionAsync(CancellationToken ct = default)
     {
+        if (_connected) return true; // Already connected (e.g., pre-connect succeeded)
+
+        // Serialize concurrent calls (pre-connect racing with PTT press)
+        await _connectLock.WaitAsync(ct);
         try
         {
+            if (_connected) return true; // Re-check after acquiring lock
+
             // Clean up previous session
             var oldCts = _receiveCts; _receiveCts = null;
             var oldTask = _receiveTask; _receiveTask = null;
             var oldWs = _ws; _ws = null;
-            _connected = false;
 
             oldCts?.Cancel();
             try { if (oldTask != null) await oldTask; } catch { }
@@ -117,6 +123,10 @@ public class SonioxProvider : ISttProvider
             Logger.Trace($"SonioxProvider: Connect failed: {ex.Message}");
             ErrorOccurred?.Invoke($"Connection failed: {ex.Message}");
             return false;
+        }
+        finally
+        {
+            _connectLock.Release();
         }
     }
 

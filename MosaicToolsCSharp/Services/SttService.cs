@@ -280,7 +280,7 @@ public class SttService : IDisposable
             _ = Task.Run(async () =>
             {
                 try { if (s2 is { IsConnected: false }) await s2.StartSessionAsync(); }
-                catch (Exception ex) { Logger.Trace($"SttService: SM connect failed: {ex.Message}"); }
+                catch (Exception ex) { Logger.Trace($"SttService: {_s2Name} connect failed: {ex.Message}"); }
             });
         }
         else
@@ -355,7 +355,6 @@ public class SttService : IDisposable
                 try { if (s2 is { IsConnected: true }) await s2.EndSessionAsync(); } catch { }
             });
             await Task.WhenAny(Task.WhenAll(t1, t2), Task.Delay(2000));
-            _merger?.FlushAlltimeStats();
         }
         else
         {
@@ -666,6 +665,9 @@ public class SttService : IDisposable
 
         if (_ensembleMode)
         {
+            // Flush study stats to all-time on shutdown (crash safety)
+            _merger?.FlushAlltimeStats();
+
             var p = _primaryProvider; _primaryProvider = null;
             var s1 = _secondaryProvider1; _secondaryProvider1 = null;
             var s2 = _secondaryProvider2; _secondaryProvider2 = null;
