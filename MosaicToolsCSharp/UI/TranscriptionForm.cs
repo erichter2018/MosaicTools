@@ -141,8 +141,8 @@ public class TranscriptionForm : Form
     }
 
     /// <summary>
-    /// Append a transcription result. Shows interim text in gray, final in white.
-    /// Clears previous text on each new final result (since it's already pasted to Mosaic).
+    /// Append a transcription result. Shows interim text in gray italic, speech-final in white.
+    /// Only clears on SpeechFinal (utterance end). IsFinal-only results are paste-only (no display).
     /// </summary>
     public void AppendResult(SttResult result)
     {
@@ -155,9 +155,9 @@ public class TranscriptionForm : Form
         // Temporarily allow edits — ReadOnly RichTextBox produces system beeps on modification
         _textBox.ReadOnly = false;
 
-        if (result.IsFinal)
+        if (result.SpeechFinal)
         {
-            // Clear and show the final text briefly before it disappears
+            // Clear and show the final text briefly before it disappears (utterance-end)
             _textBox.Clear();
             _insertionPoint = 0;
             _interimText = "";
@@ -185,6 +185,11 @@ public class TranscriptionForm : Form
 
             _textBox.SelectionStart = _textBox.TextLength;
             AutoGrowHeight();
+        }
+        else if (result.IsFinal)
+        {
+            // IsFinal but not SpeechFinal: paste-only result (e.g. Soniox token batches).
+            // Skip display update — the interim handles the overlay text.
         }
         else
         {

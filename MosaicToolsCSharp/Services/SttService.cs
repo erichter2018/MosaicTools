@@ -19,8 +19,10 @@ public class SttService : IDisposable
 
     // Ensemble mode
     private ISttProvider? _primaryProvider;     // Deepgram (always)
-    private ISttProvider? _secondaryProvider1;  // AssemblyAI
-    private ISttProvider? _secondaryProvider2;  // Speechmatics
+    private ISttProvider? _secondaryProvider1;  // Configurable (default: Soniox)
+    private ISttProvider? _secondaryProvider2;  // Configurable (default: Speechmatics)
+    private string _s1Name = "";               // Provider name for secondary 1
+    private string _s2Name = "";               // Provider name for secondary 2
     private SttEnsembleMerger? _merger;
     private bool _ensembleMode;
 
@@ -30,12 +32,29 @@ public class SttService : IDisposable
     private volatile bool _stopping;
 
     public bool IsRecording => _recording;
+    public bool IsStopping => _stopping;
     public bool IsConnected => _ensembleMode
         ? (_primaryProvider?.IsConnected ?? false)
         : (_provider?.IsConnected ?? false);
     public string ProviderName => _ensembleMode
-        ? "Ensemble (DG+AAI+SM)"
+        ? "Ensemble (DG" +
+          (_s1Name != "none" ? $"+{ShortName(_s1Name)}" : "") +
+          (_s2Name != "none" ? $"+{ShortName(_s2Name)}" : "") + ")"
         : (_provider?.Name ?? "None");
+
+    /// <summary>Returns the two secondary provider names when in ensemble mode.</summary>
+    public (string s1, string s2) EnsembleSecondaries => (_s1Name, _s2Name);
+
+    /// <summary>Exposes the merger for external validation counter updates.</summary>
+    internal SttEnsembleMerger? Merger => _merger;
+
+    private static string ShortName(string provider) => provider switch
+    {
+        "soniox" => "SNX",
+        "speechmatics" => "SM",
+        "assemblyai" => "AAI",
+        _ => provider.ToUpperInvariant()[..Math.Min(3, provider.Length)]
+    };
 
     public event Action<SttResult>? TranscriptionReceived;
     /// <summary>
@@ -46,6 +65,10 @@ public class SttService : IDisposable
     /// Fires after each ensemble merge with live stats snapshot. Only in ensemble mode.
     /// </summary>
     public event Action<EnsembleStats>? EnsembleStatsUpdated;
+    /// <summary>
+    /// Fires after an ensemble merge that produced corrections, for validation against signed reports.
+    /// </summary>
+    public event Action<List<CorrectionRecord>>? EnsembleCorrectionsEmitted;
     public event Action<string>? StatusChanged;
     public event Action<bool>? RecordingStateChanged;
     public event Action<string>? ErrorOccurred;
@@ -92,27 +115,58 @@ public class SttService : IDisposable
 
     private bool CanRunEnsemble()
     {
-        return !string.IsNullOrEmpty(_config.SttApiKey) &&
-               !string.IsNullOrEmpty(_config.SttAssemblyAIApiKey) &&
-               !string.IsNullOrEmpty(_config.SttSpeechmaticsApiKey);
+        // Need Deepgram + at least one secondary that's not "none" with a valid key
+        if (string.IsNullOrEmpty(_config.SttApiKey)) return false;
+        var s1 = _config.SttEnsembleSecondary1;
+        var s2 = _config.SttEnsembleSecondary2;
+        return (s1 != "none" && HasKeyForProvider(s1)) ||
+               (s2 != "none" && HasKeyForProvider(s2));
+    }
+
+    private bool HasKeyForProvider(string provider) => provider switch
+    {
+        "soniox" => !string.IsNullOrEmpty(_config.SttSonioxApiKey),
+        "speechmatics" => !string.IsNullOrEmpty(_config.SttSpeechmaticsApiKey),
+        "assemblyai" => !string.IsNullOrEmpty(_config.SttAssemblyAIApiKey),
+        "none" => true,
+        _ => false
+    };
+
+    private ISttProvider CreateEnsembleSecondary(string provider, string keyterms)
+    {
+        return provider switch
+        {
+            "soniox" => new SonioxProvider(_config.SttSonioxApiKey, _config.SttAutoPunctuate, keyterms),
+            "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, _config.SttAutoPunctuate, keyterms),
+            "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, _config.SttAutoPunctuate, keyterms),
+            _ => throw new ArgumentException($"Unknown ensemble provider: {provider}")
+        };
     }
 
     private string? InitializeEnsemble()
     {
         _ensembleMode = true;
+        _s1Name = _config.SttEnsembleSecondary1;
+        _s2Name = _config.SttEnsembleSecondary2;
 
         var dgKeyterms = GetProviderKeyterms("deepgram");
-        var aaiKeyterms = GetProviderKeyterms("assemblyai");
-        var smKeyterms = GetProviderKeyterms("speechmatics");
-
         _primaryProvider = new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate, dgKeyterms);
-        _secondaryProvider1 = new AssemblyAIProvider(_config.SttAssemblyAIApiKey, _config.SttAutoPunctuate, aaiKeyterms);
-        _secondaryProvider2 = new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, _config.SttAutoPunctuate, smKeyterms);
+
+        // Create secondary providers (skip "none")
+        if (_s1Name != "none" && HasKeyForProvider(_s1Name))
+        {
+            _secondaryProvider1 = CreateEnsembleSecondary(_s1Name, GetProviderKeyterms(_s1Name));
+        }
+        if (_s2Name != "none" && HasKeyForProvider(_s2Name))
+        {
+            _secondaryProvider2 = CreateEnsembleSecondary(_s2Name, GetProviderKeyterms(_s2Name));
+        }
 
         _merger = new SttEnsembleMerger(
             _config,
             _config.SttEnsembleWaitMs,
-            _config.SttEnsembleConfidenceThreshold);
+            _config.SttEnsembleConfidenceThreshold,
+            _s1Name, _s2Name);
 
         _merger.MergedResultReady += result =>
         {
@@ -121,6 +175,10 @@ public class SttService : IDisposable
         _merger.StatsUpdated += stats =>
         {
             EnsembleStatsUpdated?.Invoke(stats);
+        };
+        _merger.CorrectionsEmitted += corrections =>
+        {
+            EnsembleCorrectionsEmitted?.Invoke(corrections);
         };
 
         // Primary (Deepgram): interims go to display, finals go to merger + raw event
@@ -133,6 +191,16 @@ public class SttService : IDisposable
             }
             else
             {
+                var wc = result.Words?.Length ?? 0;
+                var lowConf = result.Words?.Count(w => w.Confidence < _config.SttEnsembleConfidenceThreshold) ?? 0;
+                var preview = result.Transcript.Length > 60 ? result.Transcript[..60] + "..." : result.Transcript;
+                Logger.Trace($"Ensemble [DG] final: {wc} words ({lowConf} low-conf), \"{preview}\"");
+                if (result.Words != null)
+                {
+                    var wordDetails = string.Join(", ", result.Words.Select(w =>
+                        $"{w.Text}({w.Confidence:F2})"));
+                    Logger.Trace($"Ensemble [DG] words: {wordDetails}");
+                }
                 RawProviderFinalReceived?.Invoke(tagged);
                 _merger?.SubmitResult(tagged);
             }
@@ -141,34 +209,37 @@ public class SttService : IDisposable
         _primaryProvider.ConnectionStateChanged += OnConnectionStateChanged;
 
         // Secondary providers: only finals, errors logged silently
-        _secondaryProvider1.TranscriptionReceived += result =>
-        {
-            if (!result.IsFinal) return;
-            var tagged = result with { ProviderName = "assemblyai" };
-            RawProviderFinalReceived?.Invoke(tagged);
-            _merger?.SubmitResult(tagged);
-        };
-        _secondaryProvider1.ErrorOccurred += err => Logger.Trace($"SttService [AAI secondary]: {err}");
-        _secondaryProvider1.ConnectionStateChanged += connected =>
-        {
-            if (!connected) Logger.Trace("SttService: AAI secondary disconnected");
-        };
-
-        _secondaryProvider2.TranscriptionReceived += result =>
-        {
-            if (!result.IsFinal) return;
-            var tagged = result with { ProviderName = "speechmatics" };
-            RawProviderFinalReceived?.Invoke(tagged);
-            _merger?.SubmitResult(tagged);
-        };
-        _secondaryProvider2.ErrorOccurred += err => Logger.Trace($"SttService [SM secondary]: {err}");
-        _secondaryProvider2.ConnectionStateChanged += connected =>
-        {
-            if (!connected) Logger.Trace("SttService: SM secondary disconnected");
-        };
+        if (_secondaryProvider1 != null) WireSecondary(_secondaryProvider1, _s1Name);
+        if (_secondaryProvider2 != null) WireSecondary(_secondaryProvider2, _s2Name);
 
         Logger.Trace($"SttService: Initialized ensemble mode (device={_selectedDeviceIndex})");
         return null;
+    }
+
+    private void WireSecondary(ISttProvider provider, string name)
+    {
+        var shortName = ShortName(name);
+        provider.TranscriptionReceived += result =>
+        {
+            if (!result.IsFinal) return;
+            var tagged = result with { ProviderName = name };
+            var wc = result.Words?.Length ?? 0;
+            var preview = result.Transcript.Length > 60 ? result.Transcript[..60] + "..." : result.Transcript;
+            Logger.Trace($"Ensemble [{shortName}] final: {wc} words, \"{preview}\"");
+            if (result.Words != null)
+            {
+                var wordDetails = string.Join(", ", result.Words.Select(w =>
+                    $"{w.Text}({w.Confidence:F2})"));
+                Logger.Trace($"Ensemble [{shortName}] words: {wordDetails}");
+            }
+            RawProviderFinalReceived?.Invoke(tagged);
+            _merger?.SubmitResult(tagged);
+        };
+        provider.ErrorOccurred += err => Logger.Trace($"SttService [{shortName} secondary]: {err}");
+        provider.ConnectionStateChanged += connected =>
+        {
+            if (!connected) Logger.Trace($"SttService: {name} secondary disconnected");
+        };
     }
 
     private string GetProviderKeyterms(string providerName)
@@ -204,7 +275,7 @@ public class SttService : IDisposable
             _ = Task.Run(async () =>
             {
                 try { if (s1 is { IsConnected: false }) await s1.StartSessionAsync(); }
-                catch (Exception ex) { Logger.Trace($"SttService: AAI connect failed: {ex.Message}"); }
+                catch (Exception ex) { Logger.Trace($"SttService: {_s1Name} connect failed: {ex.Message}"); }
             });
             _ = Task.Run(async () =>
             {
@@ -284,6 +355,7 @@ public class SttService : IDisposable
                 try { if (s2 is { IsConnected: true }) await s2.EndSessionAsync(); } catch { }
             });
             await Task.WhenAny(Task.WhenAll(t1, t2), Task.Delay(2000));
+            _merger?.FlushAlltimeStats();
         }
         else
         {
@@ -325,7 +397,8 @@ public class SttService : IDisposable
         StatusChanged?.Invoke("Stopped");
         Logger.Trace("SttService: Recording stopped");
 
-        // Pre-connect for next PTT press
+        // Pre-connect all providers in parallel for next PTT press.
+        // Sequential pre-connect caused AAI's 1500ms rate-limit delay to block SM connect.
         if (_ensembleMode)
         {
             var p = _primaryProvider;
@@ -334,7 +407,13 @@ public class SttService : IDisposable
             _ = Task.Run(async () =>
             {
                 try { if (p is { IsConnected: false }) await p.StartSessionAsync(); } catch { }
+            });
+            _ = Task.Run(async () =>
+            {
                 try { if (s1 is { IsConnected: false }) await s1.StartSessionAsync(); } catch { }
+            });
+            _ = Task.Run(async () =>
+            {
                 try { if (s2 is { IsConnected: false }) await s2.StartSessionAsync(); } catch { }
             });
         }
@@ -533,6 +612,7 @@ public class SttService : IDisposable
             "deepgram" => !string.IsNullOrEmpty(_config.SttApiKey),
             "speechmatics" => !string.IsNullOrEmpty(_config.SttSpeechmaticsApiKey),
             "assemblyai" => !string.IsNullOrEmpty(_config.SttAssemblyAIApiKey),
+            "soniox" => !string.IsNullOrEmpty(_config.SttSonioxApiKey),
             "corti" => !string.IsNullOrEmpty(_config.SttCortiClientId),
             _ => !string.IsNullOrEmpty(_config.SttApiKey)
         };
@@ -547,6 +627,7 @@ public class SttService : IDisposable
         {
             "deepgram" => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate, keyterms),
             "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, _config.SttAutoPunctuate, keyterms),
+            "soniox" => new SonioxProvider(_config.SttSonioxApiKey, _config.SttAutoPunctuate, keyterms),
             "corti" => new CortiProvider(_config.SttCortiClientId, _config.SttCortiClientSecret, _config.SttCortiEnvironment, _config.SttAutoPunctuate),
             "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, _config.SttAutoPunctuate, keyterms),
             _ => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate, keyterms)

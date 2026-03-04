@@ -57,6 +57,7 @@ public class ActionController : IDisposable
     private SttService? _sttService;  // [CustomSTT] — null if Custom STT not enabled
     private Dictionary<string, KeytermLearningService> _keytermLearningByProvider = new(); // [KeytermLearning] per-provider instances
     private EnsembleMetricsForm? _ensembleMetrics; // [Ensemble] live stats popup
+    private readonly List<CorrectionRecord> _pendingCorrections = new(); // [Ensemble] corrections awaiting validation
     private bool _sttDirectPasteActive; // [CustomSTT] Track whether direct paste is active
     private IntPtr _sttPasteTargetWindow; // [CustomSTT] Window that had focus when recording started
     private readonly object _directPasteLock = new(); // [CustomSTT] Serialize direct paste operations
@@ -386,9 +387,10 @@ public class ActionController : IDisposable
         {
             if (_config.SttEnsembleEnabled)
             {
-                // Ensemble: learning instances for all 3 providers
-                foreach (var prov in new[] { "deepgram", "assemblyai", "speechmatics" })
+                // Ensemble: learning instances for active providers
+                foreach (var prov in new[] { "deepgram", _config.SttEnsembleSecondary1, _config.SttEnsembleSecondary2 })
                 {
+                    if (prov == "none") continue;
                     var svc = new KeytermLearningService(prov);
                     svc.Load();
                     _keytermLearningByProvider[prov] = svc;
@@ -469,8 +471,9 @@ public class ActionController : IDisposable
             _keytermLearningByProvider.Clear();
             if (_config.SttEnsembleEnabled)
             {
-                foreach (var prov in new[] { "deepgram", "assemblyai", "speechmatics" })
+                foreach (var prov in new[] { "deepgram", _config.SttEnsembleSecondary1, _config.SttEnsembleSecondary2 })
                 {
+                    if (prov == "none") continue;
                     var svc = new KeytermLearningService(prov);
                     svc.Load();
                     _keytermLearningByProvider[prov] = svc;
@@ -520,8 +523,9 @@ public class ActionController : IDisposable
         {
             // Ensemble mode: each provider gets its own merged keyterms
             perProviderKeyterms = new Dictionary<string, string>();
-            foreach (var prov in new[] { "deepgram", "assemblyai", "speechmatics" })
+            foreach (var prov in new[] { "deepgram", _config.SttEnsembleSecondary1, _config.SttEnsembleSecondary2 })
             {
+                if (prov == "none") continue;
                 if (_keytermLearningByProvider.TryGetValue(prov, out var learning))
                     perProviderKeyterms[prov] = MergeKeyterms(_config.SttDeepgramKeyterms, learning);
                 else
@@ -564,6 +568,13 @@ public class ActionController : IDisposable
             _ensembleMetrics?.UpdateStats(stats);
         };
 
+        // [Ensemble] Collect corrections for validation against signed report
+        _sttService.EnsembleCorrectionsEmitted += corrections =>
+        {
+            lock (_pendingCorrections)
+                _pendingCorrections.AddRange(corrections);
+        };
+
         // [Ensemble] Show/hide metrics popup and track recording state
         _sttService.RecordingStateChanged += recording =>
         {
@@ -573,7 +584,7 @@ public class ActionController : IDisposable
                 {
                     if (_ensembleMetrics == null)
                     {
-                        _ensembleMetrics = new EnsembleMetricsForm();
+                        _ensembleMetrics = new EnsembleMetricsForm(_config, _config.SttEnsembleSecondary1, _config.SttEnsembleSecondary2);
                     }
                     _ensembleMetrics.SetRecording(recording);
                     if (recording && !_ensembleMetrics.Visible)
@@ -1362,6 +1373,18 @@ public class ActionController : IDisposable
     // [CustomSTT] Toggle recording via SttService instead of Mosaic's built-in dictation
     private void PerformToggleRecordStt(bool? desiredState)
     {
+        // If a stop is still in progress (ensemble takes ~2.4s), wait for it to finish
+        // before checking state. Without this, _recording may still be true from the
+        // incomplete stop, causing the early-exit below to think we're already recording.
+        if (_sttService!.IsStopping)
+        {
+            Logger.Trace("CustomSTT: Stop still in progress, waiting...");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (_sttService.IsStopping && sw.ElapsedMilliseconds < 3000)
+                Thread.Sleep(50);
+            Logger.Trace($"CustomSTT: Stop completed after {sw.ElapsedMilliseconds}ms wait");
+        }
+
         bool isRecording = _sttService!.IsRecording;
 
         // If we have a desired state and are already there, correct _dictationActive and skip
@@ -1395,7 +1418,8 @@ public class ActionController : IDisposable
                 AudioService.PlayBeepAsync(500, 200, _config.SttStopBeepVolume);
 
             // Stop recording — StopRecordingAsync waits for finalize + disconnects
-            Task.Run(async () => await _sttService!.StopRecordingAsync()).Wait(2000);
+            // Ensemble mode takes ~2.4s (primary + secondaries with 2s cap), so 4s timeout
+            Task.Run(async () => await _sttService!.StopRecordingAsync()).Wait(4000);
             _dictationActive = false;
 
             // Wait for any in-flight paste to complete before cleaning up.
@@ -4288,6 +4312,62 @@ public class ActionController : IDisposable
         foreach (var learning in _keytermLearningByProvider.Values)
             learning.ClearSessionBuffer();
 
+        // [Ensemble] Validate corrections and commit all-time stats (only for signed reports)
+        if (_sttService?.Merger is { } merger)
+        {
+            if (!_discardDialogShownForCurrentAccession)
+            {
+                // Commit study stats to all-time
+                merger.CommitStudyToAlltime();
+
+                // Validate corrections against final report
+                List<CorrectionRecord> correctionsToValidate;
+                lock (_pendingCorrections)
+                {
+                    correctionsToValidate = _pendingCorrections.Count > 0
+                        ? new List<CorrectionRecord>(_pendingCorrections)
+                        : new List<CorrectionRecord>();
+                }
+                if (correctionsToValidate.Count > 0)
+                {
+                    var validationReport = _mosaicReader.LastFinalReport;
+                    if (!string.IsNullOrEmpty(validationReport))
+                    {
+                        int validated = 0, rejected = 0;
+                        foreach (var c in correctionsToValidate)
+                        {
+                            var replacementFound = System.Text.RegularExpressions.Regex.IsMatch(
+                                validationReport, @"\b" + System.Text.RegularExpressions.Regex.Escape(c.Replacement) + @"\b",
+                                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                            var originalFound = System.Text.RegularExpressions.Regex.IsMatch(
+                                validationReport, @"\b" + System.Text.RegularExpressions.Regex.Escape(c.Original) + @"\b",
+                                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                            if (replacementFound)
+                                validated++;
+                            else if (originalFound)
+                                rejected++;
+                            // else: inconclusive (neither found — user rewrote the section)
+                        }
+                        if (validated > 0 || rejected > 0)
+                        {
+                            merger.SessionValidated += validated;
+                            merger.SessionRejected += rejected;
+                            _config.SttEnsembleAlltimeValidated += validated;
+                            _config.SttEnsembleAlltimeRejected += rejected;
+                            _config.Save();
+                            Logger.Trace($"Ensemble validation: {validated} validated, {rejected} rejected (of {correctionsToValidate.Count} corrections, {correctionsToValidate.Count - validated - rejected} inconclusive)");
+                        }
+                    }
+                }
+                merger.FireStatsUpdated();
+            }
+            // Always reset study counters and clear pending corrections for next study
+            merger.ResetStudyCounters();
+            lock (_pendingCorrections)
+                _pendingCorrections.Clear();
+        }
+
         _mosaicReader.ClearLastReport();
 
         // UIA reset moved to periodic timer (CheckPeriodicUiaReset, every 10 min).
@@ -5231,6 +5311,19 @@ public class ActionController : IDisposable
     {
         var lower = rawTranscript.ToLowerInvariant();
 
+        // Fix STT concatenation: Deepgram often merges trigger word with macro name
+        // (e.g. "macronochange" instead of "macro no change"). Fix before stripping.
+        // Apply to both lower and rawTranscript so index mapping stays consistent.
+        var triggerPrefixes = new[] { "insert", "input", "macro" };
+        var fixedLower = FixConcatenatedMacroTriggers(lower, triggerPrefixes, _config.Macros,
+            _cdpService?.MosaicMacros);
+        if (fixedLower != lower)
+        {
+            // Reconstruct rawTranscript with the same split applied (case-preserving)
+            rawTranscript = ApplySameInsertions(rawTranscript, lower, fixedLower);
+            lower = fixedLower;
+        }
+
         // Build a punctuation-stripped version for macro matching, with index map back to original.
         // STT often transcribes "macro, no change." — punctuation must not break matching.
         var strippedChars = new System.Collections.Generic.List<char>(lower.Length);
@@ -5346,6 +5439,101 @@ public class ActionController : IDisposable
         int originalIndex = (bestStrippedIndex < indexMap.Count) ? indexMap[bestStrippedIndex] : 0;
         var prefix = rawTranscript[..originalIndex].TrimEnd();
         return new VoiceTriggerResult(bestKind, prefix, bestAction, bestMacro);
+    }
+
+    /// <summary>
+    /// Apply the same space insertions from lower→fixedLower to the original-case string.
+    /// Walks both strings in parallel, inserting spaces where fixedLower has them but lower doesn't.
+    /// </summary>
+    private static string ApplySameInsertions(string original, string lower, string fixedLower)
+    {
+        if (fixedLower.Length <= lower.Length) return original;
+        var sb = new System.Text.StringBuilder(original.Length + (fixedLower.Length - lower.Length));
+        int oi = 0; // position in original/lower
+        int fi = 0; // position in fixedLower
+        while (fi < fixedLower.Length && oi < lower.Length)
+        {
+            if (lower[oi] == fixedLower[fi])
+            {
+                sb.Append(original[oi]);
+                oi++;
+                fi++;
+            }
+            else if (fixedLower[fi] == ' ')
+            {
+                // Space was inserted — add it to output
+                sb.Append(' ');
+                fi++;
+            }
+            else
+            {
+                // Mismatch — shouldn't happen, just copy original
+                sb.Append(original[oi]);
+                oi++;
+                fi++;
+            }
+        }
+        // Append remaining
+        while (oi < original.Length)
+        {
+            sb.Append(original[oi]);
+            oi++;
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Fix STT concatenation errors where the trigger word is merged with the macro name.
+    /// Deepgram often merges "macro" with the next word(s): "macronochange" or "macrono change".
+    /// This normalizes such concatenations back to "macro no change" using known macro names.
+    /// </summary>
+    private static string FixConcatenatedMacroTriggers(string text, string[] triggerPrefixes,
+        List<MacroConfig> mtMacros, Dictionary<string, string>? mosaicMacros)
+    {
+        // Collect all known macro names: original form (with spaces) and collapsed (no spaces)
+        var macrosByCollapsed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var m in mtMacros)
+        {
+            if (m.Enabled && m.Voice && !string.IsNullOrWhiteSpace(m.Name))
+            {
+                var collapsed = m.Name.ToLowerInvariant().Replace(" ", "");
+                macrosByCollapsed[collapsed] = m.Name.ToLowerInvariant();
+            }
+        }
+        if (mosaicMacros != null)
+        {
+            foreach (var (name, _) in mosaicMacros)
+            {
+                var collapsed = name.ToLowerInvariant().Replace(" ", "");
+                macrosByCollapsed.TryAdd(collapsed, name.ToLowerInvariant());
+            }
+        }
+
+        if (macrosByCollapsed.Count == 0) return text;
+
+        // For each trigger prefix, check if any part of the text contains
+        // the prefix concatenated with a known macro name (spaces removed).
+        // Replace the concatenated form with "trigger originalname" (with proper spaces).
+        foreach (var prefix in triggerPrefixes)
+        {
+            foreach (var (collapsed, original) in macrosByCollapsed)
+            {
+                var concatenated = prefix + collapsed; // e.g. "macronochange"
+                int idx = text.IndexOf(concatenated, StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) continue;
+
+                // Verify it's at a word boundary (start of string or preceded by space)
+                if (idx > 0 && text[idx - 1] != ' ') continue;
+
+                // Replace with properly spaced version: "macro no change"
+                var replacement = prefix + " " + original;
+                text = text[..idx] + replacement + text[(idx + concatenated.Length)..];
+                Logger.Trace($"Voice trigger fix: \"{concatenated}\" → \"{replacement}\"");
+                return text;
+            }
+        }
+
+        return text;
     }
 
     // ── Radiology transcript cleanup ──────────────────────────────────────

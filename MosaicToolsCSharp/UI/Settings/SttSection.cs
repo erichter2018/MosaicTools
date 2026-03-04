@@ -39,15 +39,21 @@ public class SttSection : SettingsSection
     private readonly Label _keytermLearningHint;
     private readonly Label _dgLearningStats;
     private readonly Button _dgLearningViewButton;
-    private readonly Label _aaiLearningStats;
-    private readonly Button _aaiLearningViewButton;
+    private readonly Label _snxLearningStats;
+    private readonly Button _snxLearningViewButton;
     private readonly Label _smLearningStats;
     private readonly Button _smLearningViewButton;
+    private readonly Label _aaiLearningStats;
+    private readonly Button _aaiLearningViewButton;
 
     // Ensemble mode
     private readonly CheckBox _ensembleCheck;
     private readonly Label _ensembleHint;
     private readonly Label _ensembleKeyStatus;
+    private readonly Label _ensembleS1Label;
+    private readonly ComboBox _ensembleS1Combo;
+    private readonly Label _ensembleS2Label;
+    private readonly ComboBox _ensembleS2Combo;
     private readonly Label _ensembleWaitLabel;
     private readonly NumericUpDown _ensembleWaitUpDown;
     private readonly Label _ensembleThreshLabel;
@@ -77,18 +83,20 @@ public class SttSection : SettingsSection
     private const int ProviderDeepgramMedical = 0;
     private const int ProviderSpeechmatics = 1;
     private const int ProviderAssemblyAI = 2;
+    private const int ProviderSoniox = 3;
 
     // Per-provider credential storage (swapped on provider change)
     private string _deepgramKey = "";
     private string _speechmaticsKey = "";
     private string _assemblyAIKey = "";
+    private string _sonioxKey = "";
     private string _speechmaticsRegion = "us";
     private int _previousProviderIndex;
     private bool _loading; // Suppress OnProviderChanged during LoadSettings
 
     public SttSection(ToolTip toolTip) : base("Speech-to-Text", toolTip)
     {
-        _searchTerms.AddRange(new[] { "stt", "speech", "transcription", "deepgram", "speechmatics", "assemblyai", "dictation", "custom stt", "beep", "punctuation", "contraction", "replacement", "correction", "radiology cleanup", "ensemble" });
+        _searchTerms.AddRange(new[] { "stt", "speech", "transcription", "deepgram", "speechmatics", "assemblyai", "soniox", "dictation", "custom stt", "beep", "punctuation", "contraction", "replacement", "correction", "radiology cleanup", "ensemble" });
 
         _enabledCheck = AddCheckBox("Enable Custom STT Mode", LeftMargin, _nextY,
             "Use cloud STT instead of Mosaic's built-in speech recognition. Cancel Mosaic's WebHID prompt when enabled.");
@@ -102,7 +110,7 @@ public class SttSection : SettingsSection
 
         AddLabel("Provider:", LeftMargin + 25, _nextY + 3);
         _providerCombo = AddComboBox(LeftMargin + 110, _nextY, 200,
-            new[] { "Deepgram Nova-3 Medical", "Speechmatics Medical", "AssemblyAI" });
+            new[] { "Deepgram Nova-3 Medical", "Speechmatics Medical", "AssemblyAI", "Soniox" });
         _providerCombo.SelectedIndexChanged += (_, _) => OnProviderChanged();
         _nextY += RowHeight;
 
@@ -225,11 +233,11 @@ public class SttSection : SettingsSection
         _dgLearningViewButton.Font = new Font("Segoe UI", 7.5f);
         _nextY += SubRowHeight;
 
-        AddLabel("AssemblyAI:", LeftMargin + 45, _nextY + 2).Font = statsFont;
-        _aaiLearningStats = new Label { Text = "0 terms", Location = new Point(LeftMargin + 130, _nextY + 2), AutoSize = true, ForeColor = statsColor, Font = statsFont };
-        Controls.Add(_aaiLearningStats);
-        _aaiLearningViewButton = AddButton("View", LeftMargin + 210, _nextY - 1, 45, 22, (s, e) => OnViewKeytermLearningClick("assemblyai"), "View AssemblyAI auto-learned keyterms");
-        _aaiLearningViewButton.Font = new Font("Segoe UI", 7.5f);
+        AddLabel("Soniox:", LeftMargin + 45, _nextY + 2).Font = statsFont;
+        _snxLearningStats = new Label { Text = "0 terms", Location = new Point(LeftMargin + 130, _nextY + 2), AutoSize = true, ForeColor = statsColor, Font = statsFont };
+        Controls.Add(_snxLearningStats);
+        _snxLearningViewButton = AddButton("View", LeftMargin + 210, _nextY - 1, 45, 22, (s, e) => OnViewKeytermLearningClick("soniox"), "View Soniox auto-learned keyterms");
+        _snxLearningViewButton.Font = new Font("Segoe UI", 7.5f);
         _nextY += SubRowHeight;
 
         AddLabel("Speechmatics:", LeftMargin + 45, _nextY + 2).Font = statsFont;
@@ -237,6 +245,13 @@ public class SttSection : SettingsSection
         Controls.Add(_smLearningStats);
         _smLearningViewButton = AddButton("View", LeftMargin + 210, _nextY - 1, 45, 22, (s, e) => OnViewKeytermLearningClick("speechmatics"), "View Speechmatics auto-learned keyterms");
         _smLearningViewButton.Font = new Font("Segoe UI", 7.5f);
+        _nextY += SubRowHeight;
+
+        AddLabel("AssemblyAI:", LeftMargin + 45, _nextY + 2).Font = statsFont;
+        _aaiLearningStats = new Label { Text = "0 terms", Location = new Point(LeftMargin + 130, _nextY + 2), AutoSize = true, ForeColor = statsColor, Font = statsFont };
+        Controls.Add(_aaiLearningStats);
+        _aaiLearningViewButton = AddButton("View", LeftMargin + 210, _nextY - 1, 45, 22, (s, e) => OnViewKeytermLearningClick("assemblyai"), "View AssemblyAI auto-learned keyterms");
+        _aaiLearningViewButton.Font = new Font("Segoe UI", 7.5f);
         _nextY += RowHeight;
 
         // Ensemble Mode
@@ -249,7 +264,7 @@ public class SttSection : SettingsSection
 
         _ensembleHint = new Label
         {
-            Text = "Requires API keys for all 3 providers. ~$0.015/min total.",
+            Text = "Requires API keys for all 3 providers. ~$0.014/min total.",
             Location = new Point(LeftMargin + 45, _nextY),
             AutoSize = true,
             ForeColor = Color.FromArgb(150, 150, 150),
@@ -266,6 +281,37 @@ public class SttSection : SettingsSection
             Font = new Font("Segoe UI", 7.5f)
         };
         Controls.Add(_ensembleKeyStatus);
+        _nextY += SubRowHeight;
+
+        var primaryLabel = new Label
+        {
+            Text = "Primary:",
+            Location = new Point(LeftMargin + 45, _nextY + 3),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(200, 200, 200),
+            Font = new Font("Segoe UI", 8.25f)
+        };
+        Controls.Add(primaryLabel);
+        var primaryValue = new Label
+        {
+            Text = "Deepgram (driver)",
+            Location = new Point(LeftMargin + 140, _nextY + 3),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(76, 175, 80),
+            Font = new Font("Segoe UI", 8.25f, FontStyle.Bold)
+        };
+        Controls.Add(primaryValue);
+        _nextY += SubRowHeight;
+
+        var secondaryProviders = new[] { "Soniox", "Speechmatics", "AssemblyAI", "None" };
+        _ensembleS1Label = AddLabel("Secondary 1:", LeftMargin + 45, _nextY + 3);
+        _ensembleS1Combo = AddComboBox(LeftMargin + 140, _nextY, 130, secondaryProviders);
+        _ensembleS1Combo.SelectedIndexChanged += (_, _) => UpdateEnsembleStates();
+        _nextY += SubRowHeight;
+
+        _ensembleS2Label = AddLabel("Secondary 2:", LeftMargin + 45, _nextY + 3);
+        _ensembleS2Combo = AddComboBox(LeftMargin + 140, _nextY, 130, secondaryProviders);
+        _ensembleS2Combo.SelectedIndexChanged += (_, _) => UpdateEnsembleStates();
         _nextY += SubRowHeight;
 
         _ensembleWaitLabel = AddLabel("Merge wait:", LeftMargin + 45, _nextY + 3);
@@ -437,10 +483,12 @@ public class SttSection : SettingsSection
         _keytermLearningCheck.Visible = true;
         _dgLearningStats.Visible = true;
         _dgLearningViewButton.Visible = true;
-        _aaiLearningStats.Visible = true;
-        _aaiLearningViewButton.Visible = true;
+        _snxLearningStats.Visible = true;
+        _snxLearningViewButton.Visible = true;
         _smLearningStats.Visible = true;
         _smLearningViewButton.Visible = true;
+        _aaiLearningStats.Visible = true;
+        _aaiLearningViewButton.Visible = true;
         _keytermLearningHint.Visible = true;
 
         // Update pricing hint
@@ -449,6 +497,7 @@ public class SttSection : SettingsSection
             ProviderDeepgramMedical => "Free tier: $200 credit. Nova-3 Medical: $0.0077/min streaming",
             ProviderSpeechmatics => "Free tier: 480 min/month. Medical model: $0.004/min streaming",
             ProviderAssemblyAI => "Free tier: 330 hours. $0.0025/min streaming",
+            ProviderSoniox => "Pay-as-you-go. Real-time model: $0.002/min streaming",
             _ => ""
         };
 
@@ -469,6 +518,9 @@ public class SttSection : SettingsSection
             case ProviderAssemblyAI:
                 _assemblyAIKey = _apiKeyBox.Text;
                 break;
+            case ProviderSoniox:
+                _sonioxKey = _apiKeyBox.Text;
+                break;
         }
     }
 
@@ -485,6 +537,9 @@ public class SttSection : SettingsSection
                 break;
             case ProviderAssemblyAI:
                 _apiKeyBox.Text = _assemblyAIKey;
+                break;
+            case ProviderSoniox:
+                _apiKeyBox.Text = _sonioxKey;
                 break;
         }
     }
@@ -504,8 +559,9 @@ public class SttSection : SettingsSection
         _deepgramKeytermsSortButton.Enabled = enabled;
         _keytermLearningCheck.Enabled = enabled;
         _dgLearningViewButton.Enabled = enabled;
-        _aaiLearningViewButton.Enabled = enabled;
+        _snxLearningViewButton.Enabled = enabled;
         _smLearningViewButton.Enabled = enabled;
+        _aaiLearningViewButton.Enabled = enabled;
         _expandContractionsCheck.Enabled = enabled;
         _radiologyCleanupCheck.Enabled = enabled;
         _replacementsGrid.Enabled = enabled;
@@ -526,17 +582,24 @@ public class SttSection : SettingsSection
         _ensembleWaitUpDown.Enabled = ensembleEnabled;
         _ensembleThreshUpDown.Enabled = ensembleEnabled;
         _ensembleShowMetricsCheck.Enabled = ensembleEnabled;
+        _ensembleS1Combo.Enabled = _enabledCheck.Checked;
+        _ensembleS2Combo.Enabled = _enabledCheck.Checked;
 
-        // Dynamic key status
+        // Dynamic key status based on selected secondaries
         var missing = new List<string>();
         if (string.IsNullOrWhiteSpace(_deepgramKey)) missing.Add("Deepgram");
-        if (string.IsNullOrWhiteSpace(_assemblyAIKey)) missing.Add("AssemblyAI");
-        if (string.IsNullOrWhiteSpace(_speechmaticsKey)) missing.Add("Speechmatics");
+        var s1Name = EnsembleComboToProvider(_ensembleS1Combo.SelectedIndex);
+        var s2Name = EnsembleComboToProvider(_ensembleS2Combo.SelectedIndex);
+        if (s1Name != "none" && !HasKeyForSelectedProvider(s1Name)) missing.Add(EnsembleProviderDisplayName(s1Name));
+        if (s2Name != "none" && !HasKeyForSelectedProvider(s2Name)) missing.Add(EnsembleProviderDisplayName(s2Name));
 
+        var activeCount = 1 + (s1Name != "none" ? 1 : 0) + (s2Name != "none" ? 1 : 0);
         if (missing.Count == 0)
         {
-            _ensembleKeyStatus.Text = "All 3 API keys configured";
-            _ensembleKeyStatus.ForeColor = Color.FromArgb(100, 180, 100);
+            _ensembleKeyStatus.Text = activeCount == 1
+                ? "Only Deepgram — select secondaries to enable ensemble"
+                : $"All {activeCount} API keys configured";
+            _ensembleKeyStatus.ForeColor = activeCount == 1 ? Color.FromArgb(200, 180, 80) : Color.FromArgb(100, 180, 100);
         }
         else
         {
@@ -545,11 +608,48 @@ public class SttSection : SettingsSection
         }
     }
 
+    private static string EnsembleComboToProvider(int idx) => idx switch
+    {
+        0 => "soniox",
+        1 => "speechmatics",
+        2 => "assemblyai",
+        3 => "none",
+        _ => "soniox"
+    };
+
+    private static int ProviderToEnsembleCombo(string provider) => provider switch
+    {
+        "soniox" => 0,
+        "speechmatics" => 1,
+        "assemblyai" => 2,
+        "none" => 3,
+        _ => 0
+    };
+
+    private static string EnsembleProviderDisplayName(string provider) => provider switch
+    {
+        "soniox" => "Soniox",
+        "speechmatics" => "Speechmatics",
+        "assemblyai" => "AssemblyAI",
+        "none" => "None",
+        _ => provider
+    };
+
+    private bool HasKeyForSelectedProvider(string provider) => provider switch
+    {
+        "soniox" => !string.IsNullOrWhiteSpace(_sonioxKey),
+        "speechmatics" => !string.IsNullOrWhiteSpace(_speechmaticsKey),
+        "assemblyai" => !string.IsNullOrWhiteSpace(_assemblyAIKey),
+        "none" => true,
+        _ => false
+    };
+
     private void RefreshKeytermLearningStats()
     {
         RefreshProviderStats("deepgram", _dgLearningStats);
-        RefreshProviderStats("assemblyai", _aaiLearningStats);
+        RefreshProviderStats("soniox", _snxLearningStats);
         RefreshProviderStats("speechmatics", _smLearningStats);
+        RefreshProviderStats("assemblyai", _aaiLearningStats);
     }
 
     private static void RefreshProviderStats(string providerName, Label label)
@@ -599,7 +699,7 @@ public class SttSection : SettingsSection
 
         if (entries.Count == 0)
         {
-            var provLabel = providerName switch { "assemblyai" => "AssemblyAI", "speechmatics" => "Speechmatics", _ => "Deepgram" };
+            var provLabel = providerName switch { "soniox" => "Soniox", "speechmatics" => "Speechmatics", "assemblyai" => "AssemblyAI", _ => "Deepgram" };
             MessageBox.Show($"No auto-learned keyterms for {provLabel} yet.\n\nDictate reports with Custom STT enabled, " +
                 "then sign/advance studies. Terms will appear after the first verification cycle.",
                 $"Auto-Learned Keyterms ({provLabel})", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -640,7 +740,7 @@ public class SttSection : SettingsSection
         }
 
         lines.AppendLine();
-        var provDisplayName = providerName switch { "assemblyai" => "AssemblyAI", "speechmatics" => "Speechmatics", _ => "Deepgram" };
+        var provDisplayName = providerName switch { "soniox" => "Soniox", "speechmatics" => "Speechmatics", "assemblyai" => "AssemblyAI", _ => "Deepgram" };
         lines.AppendLine();
         lines.AppendLine($"Total: {entries.Count} auto-learned terms ({sentCount} sent to {provDisplayName}, {manualTerms.Count} manual)");
         lines.AppendLine();
@@ -703,6 +803,7 @@ public class SttSection : SettingsSection
         {
             ProviderSpeechmatics => "https://portal.speechmatics.com/signup",
             ProviderAssemblyAI => "https://www.assemblyai.com/dashboard/signup",
+            ProviderSoniox => "https://console.soniox.com",
             _ => "https://console.deepgram.com/signup"
         };
 
@@ -743,6 +844,17 @@ public class SttSection : SettingsSection
                 "Streaming costs $0.15/hour ($0.0025/min).\n\n" +
                 "Keep your API key private \u2014 do not share it.",
                 "AssemblyAI Setup"),
+            ProviderSoniox => (
+                "How to get a Soniox API key:\n\n" +
+                "1. Click \"Get API Key\" to open the Soniox Console\n" +
+                "2. Create an account\n" +
+                "3. After signing in, go to API Keys\n" +
+                "4. Create a new API key and copy it\n" +
+                "5. Paste the key into the API Key field above\n\n" +
+                "Real-time streaming: $0.002/min ($0.12/hour).\n" +
+                "Token-by-token delivery with word-level confidence.\n\n" +
+                "Keep your API key private \u2014 do not share it.",
+                "Soniox Setup"),
             _ => (
                 "How to get a Deepgram API key:\n\n" +
                 "1. Click \"Get API Key\" to open the Deepgram signup page\n" +
@@ -772,6 +884,7 @@ public class SttSection : SettingsSection
         _speechmaticsKey = config.SttSpeechmaticsApiKey;
         _speechmaticsRegion = config.SttSpeechmaticsRegion;
         _assemblyAIKey = config.SttAssemblyAIApiKey;
+        _sonioxKey = config.SttSonioxApiKey;
 
         // Map provider to dropdown index (corti falls back to deepgram)
         var idx = config.SttProvider switch
@@ -779,6 +892,7 @@ public class SttSection : SettingsSection
             "deepgram" => ProviderDeepgramMedical,
             "speechmatics" => ProviderSpeechmatics,
             "assemblyai" => ProviderAssemblyAI,
+            "soniox" => ProviderSoniox,
             _ => ProviderDeepgramMedical
         };
 
@@ -800,16 +914,19 @@ public class SttSection : SettingsSection
         _keytermLearningCheck.Visible = true;
         _dgLearningStats.Visible = true;
         _dgLearningViewButton.Visible = true;
-        _aaiLearningStats.Visible = true;
-        _aaiLearningViewButton.Visible = true;
+        _snxLearningStats.Visible = true;
+        _snxLearningViewButton.Visible = true;
         _smLearningStats.Visible = true;
         _smLearningViewButton.Visible = true;
+        _aaiLearningStats.Visible = true;
+        _aaiLearningViewButton.Visible = true;
         _keytermLearningHint.Visible = true;
         _pricingHint.Text = idx switch
         {
             ProviderDeepgramMedical => "Free tier: $200 credit. Nova-3 Medical: $0.0077/min streaming",
             ProviderSpeechmatics => "Free tier: 480 min/month. Medical model: $0.004/min streaming",
             ProviderAssemblyAI => "Free tier: 330 hours. $0.0025/min streaming",
+            ProviderSoniox => "Pay-as-you-go. Real-time model: $0.002/min streaming",
             _ => ""
         };
 
@@ -843,6 +960,8 @@ public class SttSection : SettingsSection
 
         // Ensemble
         _ensembleCheck.Checked = config.SttEnsembleEnabled;
+        _ensembleS1Combo.SelectedIndex = ProviderToEnsembleCombo(config.SttEnsembleSecondary1);
+        _ensembleS2Combo.SelectedIndex = ProviderToEnsembleCombo(config.SttEnsembleSecondary2);
         _ensembleWaitUpDown.Value = Math.Clamp(config.SttEnsembleWaitMs, 100, 2000);
         _ensembleThreshUpDown.Value = Math.Clamp((int)(config.SttEnsembleConfidenceThreshold * 100), 50, 99);
         _ensembleShowMetricsCheck.Checked = config.SttEnsembleShowMetrics;
@@ -872,6 +991,7 @@ public class SttSection : SettingsSection
         config.SttSpeechmaticsApiKey = _speechmaticsKey.Trim();
         config.SttSpeechmaticsRegion = _speechmaticsRegion;
         config.SttAssemblyAIApiKey = _assemblyAIKey.Trim();
+        config.SttSonioxApiKey = _sonioxKey.Trim();
 
         // Map dropdown index to provider+model
         (config.SttProvider, config.SttModel) = _providerCombo.SelectedIndex switch
@@ -879,6 +999,7 @@ public class SttSection : SettingsSection
             ProviderDeepgramMedical => ("deepgram", "nova-3-medical"),
             ProviderSpeechmatics => ("speechmatics", ""),
             ProviderAssemblyAI => ("assemblyai", ""),
+            ProviderSoniox => ("soniox", ""),
             _ => ("deepgram", "nova-3-medical")
         };
 
@@ -905,6 +1026,8 @@ public class SttSection : SettingsSection
 
         // Ensemble
         config.SttEnsembleEnabled = _ensembleCheck.Checked;
+        config.SttEnsembleSecondary1 = EnsembleComboToProvider(_ensembleS1Combo.SelectedIndex);
+        config.SttEnsembleSecondary2 = EnsembleComboToProvider(_ensembleS2Combo.SelectedIndex);
         config.SttEnsembleWaitMs = (int)_ensembleWaitUpDown.Value;
         config.SttEnsembleConfidenceThreshold = (double)_ensembleThreshUpDown.Value / 100.0;
         config.SttEnsembleShowMetrics = _ensembleShowMetricsCheck.Checked;

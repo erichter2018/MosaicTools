@@ -1,3 +1,14 @@
+4.1.1
+- Soniox STT provider: new secondary provider for ensemble mode (BPE token merging for accurate word-level output)
+- Ensemble correction validation: corrections verified against signed reports, precision tracked per-session and all-time
+- Ensemble metrics popup: precision display showing correction accuracy (session + all-time)
+- Ensemble trust fixes: stricter context-anchor requirements prevent false corrections on short phrases
+- Ensemble: punctuation-only differences no longer counted as corrections (keeps Deepgram's smart formatting)
+- Ensemble: all-time stats only update when report is signed (not during dictation)
+- Deepgram: added utterance_end_ms for faster end-of-speech detection
+- Soniox: cross-response BPE word merging (e.g. "perip"+"ancreatic" → "peripancreatic")
+- Soniox: endpoint delay reduced to 300ms to match Deepgram timing
+
 4.1.0
 - STT Ensemble Mode: run Deepgram + AssemblyAI + Speechmatics simultaneously, secondaries correct low-confidence words via 2-of-3 voting
 - Live ensemble metrics popup: draggable overlay showing confidence, per-provider corrections/confirms, consensus stats

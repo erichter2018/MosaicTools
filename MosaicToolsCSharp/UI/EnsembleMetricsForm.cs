@@ -9,10 +9,11 @@ namespace MosaicTools.UI;
 
 /// <summary>
 /// Small draggable overlay showing live ensemble STT statistics.
-/// Shows Deepgram confidence, per-provider corrections/confirms, last correction detail.
+/// Shows Deepgram confidence, per-provider corrections/confirms, accuracy impact, last correction detail.
 /// </summary>
 public class EnsembleMetricsForm : Form
 {
+    private readonly Configuration _config;
     private EnsembleStats? _lastStats;
     private bool _recording;
     private Point _dragOffset;
@@ -28,12 +29,12 @@ public class EnsembleMetricsForm : Form
     private readonly Label _correctedLabel;
 
     // Provider sections
-    private readonly Label _aaiHeader;
-    private readonly Label _aaiFinalsLabel;
-    private readonly Label _aaiFixedLabel;
-    private readonly Label _aaiConfirmedLabel;
-    private readonly Panel _aaiBar;
-    private readonly Panel _aaiBarBg;
+    private readonly Label _snxHeader;
+    private readonly Label _snxFinalsLabel;
+    private readonly Label _snxFixedLabel;
+    private readonly Label _snxConfirmedLabel;
+    private readonly Panel _snxBar;
+    private readonly Panel _snxBarBg;
 
     private readonly Label _smHeader;
     private readonly Label _smFinalsLabel;
@@ -46,26 +47,62 @@ public class EnsembleMetricsForm : Form
     private readonly Label _consensusLabel;
     private readonly Label _lastCorrLabel;
 
+    // Accuracy impact
+    private readonly Label _accuracyHeader;
+    private readonly Label _sessionAccuracyLabel;
+    private readonly Label _alltimeAccuracyLabel;
+    private readonly Label _precisionLabel;
+
+    // All-time
+    private readonly Label _alltimeHeader;
+    private readonly Label _alltimeWordsLabel;
+    private readonly Label _alltimeCorrectedLabel;
+    private readonly Label _alltimeConfLabel;
+
     private static readonly Color DimColor = Color.FromArgb(120, 120, 130);
     private static readonly Color BrightColor = Color.FromArgb(210, 210, 220);
-    private static readonly Color AaiColor = Color.FromArgb(100, 180, 255);  // blue
-    private static readonly Color SmColor = Color.FromArgb(180, 130, 255);   // purple
     private static readonly Color FixColor = Color.FromArgb(100, 220, 100);  // green
     private static readonly Color ConfirmColor = Color.FromArgb(200, 200, 100); // yellow-ish
 
-    public EnsembleMetricsForm()
+    private static Color ProviderColor(string name) => name switch
     {
+        "soniox" => Color.FromArgb(80, 200, 180),    // teal
+        "speechmatics" => Color.FromArgb(180, 130, 255), // purple
+        "assemblyai" => Color.FromArgb(100, 180, 255),   // blue
+        _ => Color.FromArgb(150, 150, 200)
+    };
+
+    private static string ShortName(string name) => name switch
+    {
+        "soniox" => "SNX", "speechmatics" => "SM", "assemblyai" => "AAI",
+        _ => name.ToUpperInvariant()[..Math.Min(3, name.Length)]
+    };
+
+    public EnsembleMetricsForm(Configuration config, string s1Name = "soniox", string s2Name = "speechmatics")
+    {
+        _config = config;
+        var s1Color = ProviderColor(s1Name);
+        var s2Color = ProviderColor(s2Name);
+        var s1Short = ShortName(s1Name);
+        var s2Short = ShortName(s2Name);
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
-        Size = new Size(260, 270);
+        Size = new Size(260, 376);
         BackColor = Color.FromArgb(22, 22, 28);
         Opacity = 0.93;
 
-        // Position at bottom-left above taskbar
-        var screen = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
-        Location = new Point(screen.Left + 10, screen.Bottom - Height - 10);
+        // Restore saved position, or default to bottom-left above taskbar
+        if (config.SttEnsembleMetricsX != int.MinValue && config.SttEnsembleMetricsY != int.MinValue)
+        {
+            Location = new Point(config.SttEnsembleMetricsX, config.SttEnsembleMetricsY);
+        }
+        else
+        {
+            var screen = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
+            Location = new Point(screen.Left + 10, screen.Bottom - Height - 10);
+        }
 
         var bodyFont = new Font("Segoe UI", 8f);
         var smallFont = new Font("Segoe UI", 7.5f);
@@ -165,27 +202,21 @@ public class EnsembleMetricsForm : Form
         y += 20;
 
         // ── Divider ──
-        var div1 = new Panel
-        {
-            Location = new Point(pad, y),
-            Size = new Size(contentW, 1),
-            BackColor = Color.FromArgb(45, 45, 55)
-        };
-        Controls.Add(div1);
+        Controls.Add(new Panel { Location = new Point(pad, y), Size = new Size(contentW, 1), BackColor = Color.FromArgb(45, 45, 55) });
         y += 5;
 
-        // ── AssemblyAI section ──
-        _aaiHeader = new Label
+        // ── Secondary 1 section ──
+        _snxHeader = new Label
         {
-            Text = "AAI",
+            Text = s1Short,
             Location = new Point(pad, y),
             AutoSize = true,
             Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
-            ForeColor = AaiColor
+            ForeColor = s1Color
         };
-        Controls.Add(_aaiHeader);
+        Controls.Add(_snxHeader);
 
-        _aaiFinalsLabel = new Label
+        _snxFinalsLabel = new Label
         {
             Text = "0 finals",
             Location = new Point(pad + 35, y),
@@ -193,28 +224,28 @@ public class EnsembleMetricsForm : Form
             Font = smallFont,
             ForeColor = DimColor
         };
-        Controls.Add(_aaiFinalsLabel);
+        Controls.Add(_snxFinalsLabel);
         y += 15;
 
-        // AAI contribution bar background
-        _aaiBarBg = new Panel
+        // S1 contribution bar background
+        _snxBarBg = new Panel
         {
             Location = new Point(pad, y),
             Size = new Size(contentW, 6),
             BackColor = Color.FromArgb(35, 35, 45)
         };
-        Controls.Add(_aaiBarBg);
+        Controls.Add(_snxBarBg);
 
-        _aaiBar = new Panel
+        _snxBar = new Panel
         {
             Location = new Point(0, 0),
             Size = new Size(0, 6),
-            BackColor = AaiColor
+            BackColor = s1Color
         };
-        _aaiBarBg.Controls.Add(_aaiBar);
+        _snxBarBg.Controls.Add(_snxBar);
         y += 9;
 
-        _aaiFixedLabel = new Label
+        _snxFixedLabel = new Label
         {
             Text = "0 fixed",
             Location = new Point(pad + 4, y),
@@ -222,9 +253,9 @@ public class EnsembleMetricsForm : Form
             Font = tinyFont,
             ForeColor = FixColor
         };
-        Controls.Add(_aaiFixedLabel);
+        Controls.Add(_snxFixedLabel);
 
-        _aaiConfirmedLabel = new Label
+        _snxConfirmedLabel = new Label
         {
             Text = "0 confirmed",
             Location = new Point(pad + 80, y),
@@ -232,17 +263,17 @@ public class EnsembleMetricsForm : Form
             Font = tinyFont,
             ForeColor = ConfirmColor
         };
-        Controls.Add(_aaiConfirmedLabel);
+        Controls.Add(_snxConfirmedLabel);
         y += 17;
 
-        // ── Speechmatics section ──
+        // ── Secondary 2 section ──
         _smHeader = new Label
         {
-            Text = "SM",
+            Text = s2Short,
             Location = new Point(pad, y),
             AutoSize = true,
             Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
-            ForeColor = SmColor
+            ForeColor = s2Color
         };
         Controls.Add(_smHeader);
 
@@ -257,7 +288,7 @@ public class EnsembleMetricsForm : Form
         Controls.Add(_smFinalsLabel);
         y += 15;
 
-        // SM contribution bar background
+        // S2 contribution bar background
         _smBarBg = new Panel
         {
             Location = new Point(pad, y),
@@ -270,7 +301,7 @@ public class EnsembleMetricsForm : Form
         {
             Location = new Point(0, 0),
             Size = new Size(0, 6),
-            BackColor = SmColor
+            BackColor = s2Color
         };
         _smBarBg.Controls.Add(_smBar);
         y += 9;
@@ -297,13 +328,7 @@ public class EnsembleMetricsForm : Form
         y += 17;
 
         // ── Divider ──
-        var div2 = new Panel
-        {
-            Location = new Point(pad, y),
-            Size = new Size(contentW, 1),
-            BackColor = Color.FromArgb(45, 45, 55)
-        };
-        Controls.Add(div2);
+        Controls.Add(new Panel { Location = new Point(pad, y), Size = new Size(contentW, 1), BackColor = Color.FromArgb(45, 45, 55) });
         y += 5;
 
         // ── Consensus + last correction ──
@@ -327,6 +352,102 @@ public class EnsembleMetricsForm : Form
             ForeColor = Color.FromArgb(200, 170, 80)
         };
         Controls.Add(_lastCorrLabel);
+        y += 30;
+
+        // ── Divider ──
+        Controls.Add(new Panel { Location = new Point(pad, y), Size = new Size(contentW, 1), BackColor = Color.FromArgb(45, 45, 55) });
+        y += 5;
+
+        // ── Accuracy impact ──
+        _accuracyHeader = new Label
+        {
+            Text = "ACCURACY vs DG SOLO",
+            Location = new Point(pad, y),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 7f, FontStyle.Bold),
+            ForeColor = Color.FromArgb(90, 160, 120)
+        };
+        Controls.Add(_accuracyHeader);
+        y += 14;
+
+        _sessionAccuracyLabel = new Label
+        {
+            Text = "Session: +0.00%",
+            Location = new Point(pad + 4, y),
+            AutoSize = true,
+            Font = bodyFont,
+            ForeColor = DimColor
+        };
+        Controls.Add(_sessionAccuracyLabel);
+        y += 16;
+
+        _alltimeAccuracyLabel = new Label
+        {
+            Text = "All-time: +0.00%",
+            Location = new Point(pad + 4, y),
+            AutoSize = true,
+            Font = bodyFont,
+            ForeColor = DimColor
+        };
+        Controls.Add(_alltimeAccuracyLabel);
+        y += 16;
+
+        _precisionLabel = new Label
+        {
+            Text = "Precision: \u2014",
+            Location = new Point(pad + 4, y),
+            AutoSize = true,
+            Font = bodyFont,
+            ForeColor = DimColor
+        };
+        Controls.Add(_precisionLabel);
+        y += 20;
+
+        // ── Divider ──
+        Controls.Add(new Panel { Location = new Point(pad, y), Size = new Size(contentW, 1), BackColor = Color.FromArgb(45, 45, 55) });
+        y += 5;
+
+        // ── All-time stats ──
+        _alltimeHeader = new Label
+        {
+            Text = "ALL-TIME",
+            Location = new Point(pad, y),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 7f, FontStyle.Bold),
+            ForeColor = Color.FromArgb(90, 90, 100)
+        };
+        Controls.Add(_alltimeHeader);
+        y += 14;
+
+        _alltimeWordsLabel = new Label
+        {
+            Text = "0 words",
+            Location = new Point(pad + 4, y),
+            AutoSize = true,
+            Font = tinyFont,
+            ForeColor = DimColor
+        };
+        Controls.Add(_alltimeWordsLabel);
+
+        _alltimeCorrectedLabel = new Label
+        {
+            Text = "0 corrected",
+            Location = new Point(pad + 80, y),
+            AutoSize = true,
+            Font = tinyFont,
+            ForeColor = DimColor
+        };
+        Controls.Add(_alltimeCorrectedLabel);
+
+        _alltimeConfLabel = new Label
+        {
+            Text = "Conf: --",
+            Location = new Point(pad + 165, y),
+            AutoSize = true,
+            Font = tinyFont,
+            ForeColor = DimColor
+        };
+        Controls.Add(_alltimeConfLabel);
 
         // Make the form draggable — attach to all non-interactive controls
         MouseDown += OnFormMouseDown;
@@ -400,16 +521,16 @@ public class EnsembleMetricsForm : Form
         _correctedLabel.Text = $"Corrected: {stats.CorrectedWords}";
         _correctedLabel.ForeColor = stats.CorrectedWords > 0 ? FixColor : DimColor;
 
-        // ── AssemblyAI ──
-        _aaiFinalsLabel.Text = $"{stats.S1Arrivals} finals";
-        _aaiFixedLabel.Text = $"{stats.S1Corrections} fixed";
-        _aaiFixedLabel.ForeColor = stats.S1Corrections > 0 ? FixColor : DimColor;
-        _aaiConfirmedLabel.Text = $"{stats.S1Confirms} confirmed";
-        _aaiConfirmedLabel.ForeColor = stats.S1Confirms > 0 ? ConfirmColor : DimColor;
+        // ── Soniox ──
+        _snxFinalsLabel.Text = $"{stats.S1Arrivals} finals";
+        _snxFixedLabel.Text = $"{stats.S1Corrections} fixed";
+        _snxFixedLabel.ForeColor = stats.S1Corrections > 0 ? FixColor : DimColor;
+        _snxConfirmedLabel.Text = $"{stats.S1Confirms} confirmed";
+        _snxConfirmedLabel.ForeColor = stats.S1Confirms > 0 ? ConfirmColor : DimColor;
 
-        // AAI contribution bar: proportion of total corrections from this provider
-        var aaiRatio = stats.CorrectedWords > 0 ? (double)stats.S1Corrections / stats.CorrectedWords : 0;
-        _aaiBar.Width = (int)(_aaiBarBg.Width * Math.Clamp(aaiRatio, 0, 1));
+        // Soniox contribution bar: proportion of total corrections from this provider
+        var snxRatio = stats.CorrectedWords > 0 ? (double)stats.S1Corrections / stats.CorrectedWords : 0;
+        _snxBar.Width = (int)(_snxBarBg.Width * Math.Clamp(snxRatio, 0, 1));
 
         // ── Speechmatics ──
         _smFinalsLabel.Text = $"{stats.S2Arrivals} finals";
@@ -430,6 +551,48 @@ public class EnsembleMetricsForm : Form
         // ── Last correction detail ──
         if (!string.IsNullOrEmpty(stats.LastCorrectionDetail))
             _lastCorrLabel.Text = stats.LastCorrectionDetail;
+
+        // ── Accuracy impact ──
+        // Correction rate = corrections / total words. Each correction is a word that DG
+        // got wrong (low confidence) and secondaries fixed, so this is the accuracy delta.
+        var sessionImpact = stats.TotalWords > 0 ? (double)stats.CorrectedWords / stats.TotalWords * 100 : 0;
+        _sessionAccuracyLabel.Text = $"Session: +{sessionImpact:F2}% ({stats.CorrectedWords} of {stats.TotalWords:N0})";
+        _sessionAccuracyLabel.ForeColor = stats.CorrectedWords > 0 ? FixColor : DimColor;
+
+        var alltimeImpact = stats.AlltimeWords > 0 ? (double)stats.AlltimeCorrected / stats.AlltimeWords * 100 : 0;
+        _alltimeAccuracyLabel.Text = $"All-time: +{alltimeImpact:F2}% ({stats.AlltimeCorrected:N0} of {stats.AlltimeWords:N0})";
+        _alltimeAccuracyLabel.ForeColor = stats.AlltimeCorrected > 0 ? FixColor : DimColor;
+
+        // ── Precision (validated corrections) ──
+        var sessTotal = stats.SessionValidated + stats.SessionRejected;
+        var atTotal = stats.AlltimeValidated + stats.AlltimeRejected;
+        if (sessTotal > 0 || atTotal > 0)
+        {
+            var sessPart = sessTotal > 0
+                ? $"{stats.SessionValidated}/{sessTotal} ({(double)stats.SessionValidated / sessTotal:P0})"
+                : "\u2014";
+            var atPart = atTotal > 0
+                ? $"{stats.AlltimeValidated}/{atTotal} ({(double)stats.AlltimeValidated / atTotal:P0})"
+                : "\u2014";
+            _precisionLabel.Text = $"Precision: {sessPart} | All-time: {atPart}";
+            _precisionLabel.ForeColor = BrightColor;
+        }
+        else
+        {
+            _precisionLabel.Text = "Precision: \u2014";
+            _precisionLabel.ForeColor = DimColor;
+        }
+
+        // ── All-time ──
+        _alltimeWordsLabel.Text = $"{stats.AlltimeWords:N0} words";
+        _alltimeCorrectedLabel.Text = $"{stats.AlltimeCorrected:N0} corrected";
+        if (stats.AlltimeWords > 0)
+        {
+            _alltimeConfLabel.Text = $"Conf: {stats.AlltimeAverageConfidence:P1}";
+            _alltimeConfLabel.ForeColor = stats.AlltimeAverageConfidence >= 0.95 ? Color.FromArgb(100, 220, 100) :
+                stats.AlltimeAverageConfidence >= 0.85 ? Color.FromArgb(200, 200, 100) : DimColor;
+        }
+        _alltimeCorrectedLabel.ForeColor = stats.AlltimeCorrected > 0 ? FixColor : DimColor;
     }
 
     // ── Dragging ──
@@ -457,7 +620,13 @@ public class EnsembleMetricsForm : Form
 
     private void OnFormMouseUp(object? sender, MouseEventArgs e)
     {
-        _dragging = false;
+        if (_dragging)
+        {
+            _dragging = false;
+            _config.SttEnsembleMetricsX = Location.X;
+            _config.SttEnsembleMetricsY = Location.Y;
+            _config.Save();
+        }
     }
 
     protected override CreateParams CreateParams

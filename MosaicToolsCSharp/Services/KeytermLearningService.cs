@@ -82,6 +82,8 @@ public class KeytermLearningService
     {
         if (words.Length == 0) return;
 
+        int belowThreshold = 0, filtered = 0, added = 0;
+
         lock (_lock)
         {
             for (int i = 0; i < words.Length; i++)
@@ -89,8 +91,17 @@ public class KeytermLearningService
                 var w = words[i];
                 if (w.Confidence >= threshold) continue;
 
+                belowThreshold++;
                 var clean = CleanWord(w.Text);
-                if (!IsUsefulWord(clean)) continue;
+                if (!IsUsefulWord(clean))
+                {
+                    filtered++;
+                    Logger.Trace($"KeytermLearning: skipped \"{w.Text}\" ({w.Confidence:F2}) — filtered (stop word, too short, or number)");
+                    continue;
+                }
+
+                added++;
+                Logger.Trace($"KeytermLearning: captured \"{w.Text}\" ({w.Confidence:F2}) → \"{clean}\"");
 
                 // Gather context: up to 2 high-confidence words before and after
                 var before = new List<string>();
@@ -118,8 +129,7 @@ public class KeytermLearningService
             }
         }
 
-        if (_sessionBuffer.Count > 0)
-            Logger.Trace($"KeytermLearning: Collected {_sessionBuffer.Count} low-confidence words this session");
+        Logger.Trace($"KeytermLearning: {words.Length} words, {belowThreshold} below threshold ({threshold:F2}), {filtered} filtered, {added} captured, {_sessionBuffer.Count} total buffered");
     }
 
     public void VerifyAgainstReport(string finalReportText)

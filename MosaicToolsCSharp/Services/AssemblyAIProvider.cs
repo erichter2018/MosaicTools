@@ -63,10 +63,12 @@ public class AssemblyAIProvider : ISttProvider
             _ws.Options.SetRequestHeader("Authorization", _apiKey);
 
             // Edge endpoint auto-selects nearest server; format_turns=false saves ~200ms
+            // Aggressive endpointing: as ensemble secondary, false turn-endings are fine —
+            // we want words ASAP, Deepgram controls actual paste timing.
             var uri = new Uri(
                 "wss://streaming.edge.assemblyai.com/v3/ws" +
                 $"?sample_rate={AudioFormat.SampleRate}&encoding=pcm_s16le&format_turns=false" +
-                $"&end_of_turn_confidence_threshold=0.5&min_end_of_turn_silence_when_confident=560&max_turn_silence=1600");
+                $"&end_of_turn_confidence_threshold=0.4&min_end_of_turn_silence_when_confident=160&max_turn_silence=1200");
 
             await _ws.ConnectAsync(uri, ct);
             _connected = true;

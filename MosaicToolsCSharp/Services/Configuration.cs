@@ -375,6 +375,9 @@ public class Configuration
     [JsonPropertyName("stt_corti_environment")]
     public string SttCortiEnvironment { get; set; } = "us"; // "us" or "eu"
 
+    [JsonPropertyName("stt_soniox_api_key")]
+    public string SttSonioxApiKey { get; set; } = "";
+
     [JsonPropertyName("stt_speechmatics_api_key")]
     public string SttSpeechmaticsApiKey { get; set; } = "";
 
@@ -410,10 +413,41 @@ public class Configuration
     public int SttEnsembleWaitMs { get; set; } = 500;
 
     [JsonPropertyName("stt_ensemble_confidence_threshold")]
-    public double SttEnsembleConfidenceThreshold { get; set; } = 0.80;
+    public double SttEnsembleConfidenceThreshold { get; set; } = 0.85;
 
     [JsonPropertyName("stt_ensemble_show_metrics")]
     public bool SttEnsembleShowMetrics { get; set; } = true;
+
+    [JsonPropertyName("stt_ensemble_secondary1")]
+    public string SttEnsembleSecondary1 { get; set; } = "soniox";
+
+    [JsonPropertyName("stt_ensemble_secondary2")]
+    public string SttEnsembleSecondary2 { get; set; } = "speechmatics";
+
+    // All-time ensemble stats (persisted across sessions)
+    [JsonPropertyName("stt_ensemble_alltime_words")]
+    public int SttEnsembleAlltimeWords { get; set; }
+
+    [JsonPropertyName("stt_ensemble_alltime_corrected")]
+    public int SttEnsembleAlltimeCorrected { get; set; }
+
+    [JsonPropertyName("stt_ensemble_alltime_confidence_sum")]
+    public double SttEnsembleAlltimeConfidenceSum { get; set; }
+
+    [JsonPropertyName("stt_ensemble_alltime_merges")]
+    public int SttEnsembleAlltimeMerges { get; set; }
+
+    [JsonPropertyName("stt_ensemble_alltime_validated")]
+    public int SttEnsembleAlltimeValidated { get; set; }
+
+    [JsonPropertyName("stt_ensemble_alltime_rejected")]
+    public int SttEnsembleAlltimeRejected { get; set; }
+
+    [JsonPropertyName("stt_ensemble_metrics_x")]
+    public int SttEnsembleMetricsX { get; set; } = int.MinValue;
+
+    [JsonPropertyName("stt_ensemble_metrics_y")]
+    public int SttEnsembleMetricsY { get; set; } = int.MinValue;
 
     [JsonPropertyName("stt_start_beep_enabled")]
     public bool SttStartBeepEnabled { get; set; } = true;

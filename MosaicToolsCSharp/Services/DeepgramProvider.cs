@@ -34,7 +34,7 @@ public class DeepgramProvider : ISttProvider
     public DeepgramProvider(string apiKey, string model = "nova-3-medical", bool autoPunctuate = false, string keyterms = "")
     {
         _apiKey = apiKey;
-        _model = model;
+        _model = string.IsNullOrWhiteSpace(model) ? "nova-3-medical" : model;
         _autoPunctuate = autoPunctuate;
         _keyterms = keyterms;
     }
@@ -78,9 +78,10 @@ public class DeepgramProvider : ISttProvider
                 $"?model={_model}" +
                 $"&encoding=linear16&sample_rate={AudioFormat.SampleRate}&channels={AudioFormat.Channels}" +
                 punctParams +
-                $"&interim_results=true&endpointing=300" +
+                $"&interim_results=true&endpointing=300&utterance_end_ms=1000" +
                 keytermParams);
 
+            Logger.Trace($"DeepgramProvider: Connecting to {uri}");
             await _ws.ConnectAsync(uri, ct);
             _connected = true;
             ConnectionStateChanged?.Invoke(true);
@@ -88,7 +89,7 @@ public class DeepgramProvider : ISttProvider
             _receiveCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             _receiveTask = Task.Run(() => ReceiveLoop(_receiveCts.Token));
 
-            Logger.Trace($"DeepgramProvider: Connected ({_model}) uri={uri}");
+            Logger.Trace($"DeepgramProvider: Connected ({_model})");
             return true;
         }
         catch (WebSocketException ex) when (ex.Message.Contains("401") || ex.Message.Contains("Unauthorized"))
