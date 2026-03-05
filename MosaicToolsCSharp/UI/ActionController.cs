@@ -644,10 +644,15 @@ public class ActionController : IDisposable
                     ? transcript
                     : " " + transcript + " ";
 
-                // Capture trigger info for use on STA thread
+                // Capture trigger info and uncertain word indices for use on STA thread
                 var triggerKind = voiceTrigger.Kind;
                 var triggerAction = voiceTrigger.ActionName;
                 var triggerMacro = voiceTrigger.Macro;
+                // Only pass confidence indices for full transcript (not voice trigger prefixes)
+                var mediumIdx = voiceTrigger.Kind == VoiceTriggerKind.None
+                    ? result.MediumConfWordIndices : null;
+                var lowIdx = voiceTrigger.Kind == VoiceTriggerKind.None
+                    ? result.LowConfWordIndices : null;
 
                 var svc = _automationService;
                 var t = new Thread(() =>
@@ -664,7 +669,7 @@ public class ActionController : IDisposable
                         // Paste prefix text (if any)
                         if (hasTextToPaste)
                         {
-                            InsertTextToFocusedEditor(textToPaste);
+                            InsertTextToFocusedEditor(textToPaste, mediumConfIndices: mediumIdx, lowConfIndices: lowIdx);
                             Thread.Sleep(50);
                             Logger.Trace($"CustomSTT: Direct paste ({textToPaste.Length} chars): \"{(textToPaste.Length > 40 ? textToPaste[..40] + "..." : textToPaste)}\"");
                         }
@@ -992,12 +997,12 @@ public class ActionController : IDisposable
     /// Context-aware STT text insertion via CDP. Adjusts capitalization and spacing
     /// based on characters surrounding the cursor in the ProseMirror editor.
     /// </summary>
-    private bool ApplyCdpSmartInsert(string text, int editorIndex)
+    private bool ApplyCdpSmartInsert(string text, int editorIndex, int[]? mediumConfIndices = null, int[]? lowConfIndices = null)
     {
         if (_cdpService == null) return false;
         var ctx = _cdpService.GetCursorContext(editorIndex);
         if (ctx == null)
-            return _cdpService.InsertContent(editorIndex, text, highlight: _config.SttHighlightDictated); // fallback to plain insert
+            return _cdpService.InsertContent(editorIndex, text, highlight: _config.SttHighlightDictated, mediumConfIndices: mediumConfIndices, lowConfIndices: lowConfIndices); // fallback to plain insert
 
         var (before, after, selectedText) = ctx.Value;
         bool hasSelection = selectedText.Length > 0;
@@ -1044,10 +1049,10 @@ public class ActionController : IDisposable
         if (!afterIsSpace && char.IsLetterOrDigit(after))
             text = text + " ";
 
-        return _cdpService.InsertContent(editorIndex, text, highlight: _config.SttHighlightDictated);
+        return _cdpService.InsertContent(editorIndex, text, highlight: _config.SttHighlightDictated, mediumConfIndices: mediumConfIndices, lowConfIndices: lowConfIndices);
     }
 
-    private void InsertTextToFocusedEditor(string text, int cdpEditorIndex = -1)
+    private void InsertTextToFocusedEditor(string text, int cdpEditorIndex = -1, int[]? mediumConfIndices = null, int[]? lowConfIndices = null)
     {
         // [CDP] Direct DOM insertion — no clipboard, no focus management
         if (_cdpService?.IsIframeConnected == true)
@@ -1067,7 +1072,7 @@ public class ActionController : IDisposable
             }
             if (isSttPaste)
             {
-                if (ApplyCdpSmartInsert(text, idx))
+                if (ApplyCdpSmartInsert(text, idx, mediumConfIndices, lowConfIndices))
                     return;
             }
             else
@@ -1430,28 +1435,24 @@ public class ActionController : IDisposable
             if (_config.SttStopBeepEnabled)
                 AudioService.PlayBeepAsync(500, 200, _config.SttStopBeepVolume);
 
-            // Stop recording — StopRecordingAsync waits for finalize + disconnects
-            // Ensemble mode takes ~2.4s (primary + secondaries with 2s cap), so 4s timeout
-            Task.Run(async () => await _sttService!.StopRecordingAsync()).Wait(4000);
+            // Stop recording — primary finalize is fast (~500ms), secondary cleanup is background
+            Task.Run(async () => await _sttService!.StopRecordingAsync()).Wait(2000);
             _dictationActive = false;
-
-            // Wait for any in-flight paste to complete before cleaning up.
-            // The final Deepgram result (from Finalize) spawns a paste thread that
-            // acquires _directPasteLock. We must wait for it to finish before
-            // restoring focus, otherwise we yank focus from Mosaic mid-paste.
             _sttDirectPasteActive = false;
-            lock (_directPasteLock) { } // drain any in-flight paste
-            InvokeUI(() => _mainForm.HideTranscriptionForm());
 
-            // Restore focus to the app the user was in before recording.
-            // Mid-session pastes skip focus restoration to avoid ping-pong,
-            // so we do it here after recording stops.
+            // Drain any in-flight paste and restore focus in background so the STA
+            // action thread is freed up quickly for the next button press.
             var restoreHwnd = _sttPasteTargetWindow;
-            if (restoreHwnd != IntPtr.Zero && NativeWindows.IsWindow(restoreHwnd))
+            _ = Task.Run(() =>
             {
-                Thread.Sleep(50);
-                NativeWindows.ActivateWindow(restoreHwnd, 200);
-            }
+                lock (_directPasteLock) { } // drain any in-flight paste
+                InvokeUI(() => _mainForm.HideTranscriptionForm());
+                if (restoreHwnd != IntPtr.Zero && NativeWindows.IsWindow(restoreHwnd))
+                {
+                    Thread.Sleep(50);
+                    NativeWindows.ActivateWindow(restoreHwnd, 200);
+                }
+            });
         }
 
         Logger.Trace($"CustomSTT: Recording toggled to {newState}");
@@ -1940,6 +1941,15 @@ public class ActionController : IDisposable
         // Mark that discard was explicitly requested via MosaicTools
         // This ensures CLOSED_UNSIGNED is sent even if the scrape loop handles it
         _discardDialogShownForCurrentAccession = true;
+
+        // [Ensemble] Clear dictation data — discarded study has no valid report to validate against
+        if (_sttService?.Merger is { } discardMerger)
+        {
+            discardMerger.ResetStudyCounters();
+            lock (_pendingCorrections)
+                _pendingCorrections.Clear();
+        }
+        _lastNonEmptyReport = null;
 
         // [CDP] Discard via button click, fall back to FlaUI
         bool success = _cdpService?.ClickDiscardStudy() == true;
@@ -4403,6 +4413,27 @@ public class ActionController : IDisposable
                         }
                     }
                 }
+
+                // Validate per-provider accuracy against signed report
+                if (!string.IsNullOrEmpty(validationReport))
+                {
+                    var (ensAcc, dgAcc, s1Acc, s2Acc) = merger.ValidateAccuracyAgainstReport(validationReport);
+                    if (ensAcc.Total > 0)
+                    {
+                        merger.AddSessionAccuracy(ensAcc, dgAcc, s1Acc, s2Acc);
+                        _config.SttEnsembleAlltimeAccEnsembleMatched += ensAcc.Matched;
+                        _config.SttEnsembleAlltimeAccEnsembleTotal += ensAcc.Total;
+                        _config.SttEnsembleAlltimeAccDgMatched += dgAcc.Matched;
+                        _config.SttEnsembleAlltimeAccDgTotal += dgAcc.Total;
+                        _config.SttEnsembleAlltimeAccS1Matched += s1Acc.Matched;
+                        _config.SttEnsembleAlltimeAccS1Total += s1Acc.Total;
+                        _config.SttEnsembleAlltimeAccS2Matched += s2Acc.Matched;
+                        _config.SttEnsembleAlltimeAccS2Total += s2Acc.Total;
+                        _config.Save();
+                        Logger.Trace($"Ensemble accuracy: ens={ensAcc.Matched}/{ensAcc.Total} dg={dgAcc.Matched}/{dgAcc.Total} s1={s1Acc.Matched}/{s1Acc.Total} s2={s2Acc.Matched}/{s2Acc.Total}");
+                    }
+                }
+
                 merger.FireStatsUpdated();
             }
             // Always reset study counters and clear pending corrections for next study

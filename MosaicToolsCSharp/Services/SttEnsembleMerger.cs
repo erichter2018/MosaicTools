@@ -7,21 +7,41 @@ namespace MosaicTools.Services;
 public record EnsembleStats(
     int TotalWords, int LowConfidenceWords, int CorrectedWords,
     double AverageConfidence, int MergeCount,
-    int S1Arrivals, int S2Arrivals,
+    int S1Arrivals, int S2Arrivals, int S1MergeParticipations, int S2MergeParticipations,
     int S1Corrections, int S2Corrections, int ConsensusCorrections,
     int S1Confirms, int S2Confirms,
     string? LastCorrectionDetail,
+    List<string> RecentCorrections,
     // All-time (persisted across sessions)
     int AlltimeWords, int AlltimeCorrected,
     double AlltimeAverageConfidence, int AlltimeMerges,
     // Correction validation (verified against signed reports)
     int SessionValidated, int SessionRejected,
-    int AlltimeValidated, int AlltimeRejected);
+    int AlltimeValidated, int AlltimeRejected,
+    // Per-provider accuracy (bag-matched against signed report)
+    int SessionEnsembleMatched, int SessionEnsembleTotal,
+    int SessionDgMatched, int SessionDgTotal,
+    int SessionS1Matched, int SessionS1Total,
+    int SessionS2Matched, int SessionS2Total,
+    int AlltimeEnsembleMatched, int AlltimeEnsembleTotal,
+    int AlltimeDgMatched, int AlltimeDgTotal,
+    int AlltimeS1Matched, int AlltimeS1Total,
+    int AlltimeS2Matched, int AlltimeS2Total);
 
 /// <summary>
 /// Records a single ensemble correction for later validation against the signed report.
 /// </summary>
 public record CorrectionRecord(string Original, string Replacement, string Source);
+
+/// <summary>
+/// Records what each provider said at a single word position during ensemble merge.
+/// </summary>
+internal record WordRecord(string MergedWord, string DgWord, string? S1Word, string? S2Word);
+
+/// <summary>
+/// Result of bag-matching a provider's words against the signed report.
+/// </summary>
+internal record ProviderAccuracyResult(int Matched, int Total);
 
 /// <summary>
 /// Collects final results from Deepgram (primary), Soniox, and Speechmatics.
@@ -56,18 +76,30 @@ public class SttEnsembleMerger
     private int _s2Arrivals;           // Speechmatics finals received
 
     // Per-provider contribution stats
+    private int _s1MergeParticipations; // Merges where Soniox data was available
+    private int _s2MergeParticipations; // Merges where SM data was available
     private int _s1Corrections;        // Times Soniox word replaced Deepgram
     private int _s2Corrections;        // Times SM word replaced Deepgram
     private int _consensusCorrections; // Both secondaries agreed → overruled Deepgram
     private int _s1Confirms;           // Soniox agreed with low-conf Deepgram word (validated it)
     private int _s2Confirms;           // SM agreed with low-conf Deepgram word (validated it)
     private string? _lastCorrectionDetail; // e.g. "pole → poll (SNX+SM)"
+    private readonly List<string> _recentCorrections = new(); // last 3 corrections
 
     // Per-study delta — only committed to all-time when report is signed
     private int _studyWords;
     private int _studyCorrected;
     private double _studyConfSum;
     private int _studyMerges;
+
+    // Per-study word records for provider accuracy validation
+    private readonly List<WordRecord> _studyWordRecords = new();
+
+    // Per-provider accuracy (session, updated at each study change)
+    private int _sessionEnsembleMatched, _sessionEnsembleTotal;
+    private int _sessionDgMatched, _sessionDgTotal;
+    private int _sessionS1Matched, _sessionS1Total;
+    private int _sessionS2Matched, _sessionS2Total;
 
     public int TotalWords => _totalWords;
     public int LowConfidenceWords => _lowConfidenceWords;
@@ -81,8 +113,8 @@ public class SttEnsembleMerger
 
     private static string Short(string n) => n switch
     {
-        "soniox" => "SNX", "speechmatics" => "SM", "assemblyai" => "AAI", "none" => "—",
-        _ => n.ToUpperInvariant()[..Math.Min(3, n.Length)]
+        "soniox" => "Soniox", "speechmatics" => "Speechmatics", "assemblyai" => "AssemblyAI", "none" => "\u2014",
+        _ => n
     };
 
     public event Action<SttResult>? MergedResultReady;
@@ -115,9 +147,11 @@ public class SttEnsembleMerger
             {
                 _primaryResult = result;
                 _primaryArrivedTicks = now;
-                // Purge secondary entries from previous utterance (arrived >2s before this primary)
-                PurgeStaleEntries(_secondary1Buffer, now - 2000);
-                PurgeStaleEntries(_secondary2Buffer, now - 2000);
+                // Purge secondary entries from previous utterance (arrived >5s before this primary).
+                // Wide window to keep word-by-word providers (SM) alive on long phrases;
+                // FilterStaleAudioWords in EmitMerged handles precise cleanup via audio timestamps.
+                PurgeStaleEntries(_secondary1Buffer, now - 5000);
+                PurgeStaleEntries(_secondary2Buffer, now - 5000);
             }
             else if (name == _s1Name)
             {
@@ -191,12 +225,36 @@ public class SttEnsembleMerger
         _mergeCount = 0;
         _s1Arrivals = 0;
         _s2Arrivals = 0;
+        _s1MergeParticipations = 0;
+        _s2MergeParticipations = 0;
         _s1Corrections = 0;
         _s2Corrections = 0;
         _consensusCorrections = 0;
         _s1Confirms = 0;
         _s2Confirms = 0;
         _lastCorrectionDetail = null;
+    }
+
+    /// <summary>
+    /// Reset ALL stats: session counters, validation counters, recent corrections, and per-study deltas.
+    /// Called from "Clear All-Time Stats" button. Caller should also clear config alltime values.
+    /// </summary>
+    public void ResetAllStats()
+    {
+        ResetStats();
+        SessionValidated = 0;
+        SessionRejected = 0;
+        _studyWords = 0;
+        _studyCorrected = 0;
+        _studyConfSum = 0;
+        _studyMerges = 0;
+        _studyWordRecords.Clear();
+        _sessionEnsembleMatched = 0; _sessionEnsembleTotal = 0;
+        _sessionDgMatched = 0; _sessionDgTotal = 0;
+        _sessionS1Matched = 0; _sessionS1Total = 0;
+        _sessionS2Matched = 0; _sessionS2Total = 0;
+        lock (_recentCorrections) { _recentCorrections.Clear(); }
+        FireStatsUpdated();
     }
 
     private bool AllWordsHighConfidence(SttResult result)
@@ -222,11 +280,14 @@ public class SttEnsembleMerger
     {
         if (words.Length == 0) return words;
 
-        // Find first word that's within the primary's time range
+        // Find first word whose midpoint is within the primary's time range.
+        // Using midpoint instead of EndTime prevents boundary words from bleeding through
+        // (e.g., "peritoneum" ending at 4.3s but centered at 4.0s when floor is 4.05s).
         int firstValid = 0;
         for (int i = 0; i < words.Length; i++)
         {
-            if (words[i].EndTime >= audioFloor)
+            var mid = (words[i].StartTime + words[i].EndTime) / 2;
+            if (mid >= audioFloor)
             {
                 firstValid = i;
                 break;
@@ -311,6 +372,9 @@ public class SttEnsembleMerger
         Interlocked.Increment(ref _mergeCount);
         _studyMerges++;
 
+        if (s1 != null) Interlocked.Increment(ref _s1MergeParticipations);
+        if (s2 != null) Interlocked.Increment(ref _s2MergeParticipations);
+
         var s1Status = s1 != null ? $"{s1.Words?.Length ?? 0} words" : "missing";
         var s2Status = s2 != null ? $"{s2.Words?.Length ?? 0} words" : "missing";
         Logger.Trace($"Ensemble merge #{_mergeCount}: DG={primary.Words?.Length ?? 0} words, {Short(_s1Name)}={s1Status}, {Short(_s2Name)}={s2Status}");
@@ -322,6 +386,7 @@ public class SttEnsembleMerger
             var processed = SttTextProcessor.ProcessTranscript(primary.Transcript, _config);
             // Remove consecutive duplicate words
             processed = RemoveConsecutiveDuplicateWords(processed);
+            var processedWords = processed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
             var wc = primary.Words?.Length ?? 0;
             Interlocked.Add(ref _totalWords, wc);
             _studyWords += wc;
@@ -331,6 +396,9 @@ public class SttEnsembleMerger
                     AddConfidence(w.Confidence);
                     _studyConfSum += w.Confidence;
                 }
+            // Record word positions for accuracy validation (no secondaries)
+            foreach (var w in processedWords)
+                _studyWordRecords.Add(new WordRecord(w, w, null, null));
             MergedResultReady?.Invoke(primary with
             {
                 Transcript = processed,
@@ -340,16 +408,17 @@ public class SttEnsembleMerger
             return;
         }
 
-        // Post-process primary transcript for output
-        var primaryProcessed = SttTextProcessor.ProcessTranscript(primary.Transcript, _config);
-
-        // Build processed primary word array (determines output structure)
-        var primaryWords = TokenizeProcessed(primaryProcessed);
-
-        // Secondary word arrays for timestamp-based alignment (raw words with times)
+        // Use raw DG word array for merge — ProcessTranscript can change word count
+        // (spoken punctuation, radiology cleanup), which causes index misalignment between
+        // processed words and the raw word/timestamp arrays used for alignment and context anchors.
+        // Text processing is applied to the final merged result instead.
+        // DG's smart_format puts punctuation in the transcript but NOT in individual words,
+        // so we use transcript tokens for word text (preserving commas/periods) and the word
+        // array for timestamps, confidence, and alignment.
         var s1WordArr = s1?.Words ?? Array.Empty<SttWord>();
         var s2WordArr = s2?.Words ?? Array.Empty<SttWord>();
         var originalWords = primary.Words ?? Array.Empty<SttWord>();
+        var transcriptTokens = primary.Transcript.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
         // Filter out stale secondary words from previous merge segments.
         // The wall-clock purge can miss slow providers (e.g., SNX 3s behind real-time)
@@ -374,15 +443,17 @@ public class SttEnsembleMerger
 
         // Merge: use primary timing structure, replace low-confidence words via voting
         var mergedWords = new List<string>();
+        var mergedConfTier = new List<byte>(); // parallel to mergedWords: 0=normal, 1=medium, 2=low
         var correctionRecords = new List<CorrectionRecord>();
         int corrections = 0;
         int lowConf = 0;
 
-        for (int i = 0; i < primaryWords.Length; i++)
+        for (int i = 0; i < originalWords.Length; i++)
         {
-            var word = primaryWords[i];
-            var origWord = i < originalWords.Length ? originalWords[i] : null;
-            var confidence = origWord?.Confidence ?? 1f;
+            var origWord = originalWords[i];
+            // Use transcript token (has punctuation from smart_format), fall back to word array
+            var word = i < transcriptTokens.Length ? transcriptTokens[i] : origWord.Text;
+            var confidence = origWord.Confidence;
 
             Interlocked.Increment(ref _totalWords);
             _studyWords++;
@@ -402,6 +473,8 @@ public class SttEnsembleMerger
             if (!isLowConf && !hasSecondaries)
             {
                 mergedWords.Add(word);
+                mergedConfTier.Add(0);
+                _studyWordRecords.Add(new WordRecord(word, word, null, null));
                 continue;
             }
 
@@ -425,7 +498,7 @@ public class SttEnsembleMerger
 
             // Log word-level comparison with timestamps and anchor info
             var confTag = isLowConf ? "LOW" : "hi";
-            var timeTag = origWord != null && origWord.StartTime > 0 ? $" {origWord.StartTime:F2}-{origWord.EndTime:F2}s" : "";
+            var timeTag = origWord.StartTime > 0 ? $" {origWord.StartTime:F2}-{origWord.EndTime:F2}s" : "";
             Logger.Trace($"Ensemble word[{i}]: \"{word}\" ({confidence:F2} {confTag}{timeTag}) vs s1=\"{s1Match ?? "?"}\" s2=\"{s2Match ?? "?"}\" ctx[s1:{s1Anchors} s2:{s2Anchors}/{contextPositions}]");
 
             // For high-confidence words: only override if BOTH trusted secondaries agree
@@ -445,13 +518,13 @@ public class SttEnsembleMerger
                 // and DG is clearly guessing (0.50) while SM is confident (0.95).
                 if (string.Equals(winner, word, StringComparison.OrdinalIgnoreCase) && confidence < 0.70f)
                 {
-                    if (s1Trusted && s1Word != null && s1Word.Confidence >= 0.85f && s2Match == null &&
+                    if (s1Trusted && s1Word != null && s1Word.Confidence >= 0.85f && (s2Match == null || !s2Trusted) &&
                         !string.Equals(word, s1Match, StringComparison.OrdinalIgnoreCase))
                     {
                         Logger.Trace($"Ensemble single-secondary override: s1 \"{s1Match}\" ({s1Word.Confidence:F2}) vs DG \"{word}\" ({confidence:F2})");
                         winner = s1Match!;
                     }
-                    else if (s2Trusted && s2Word != null && s2Word.Confidence >= 0.85f && s1Match == null &&
+                    else if (s2Trusted && s2Word != null && s2Word.Confidence >= 0.85f && (s1Match == null || !s1Trusted) &&
                         !string.Equals(word, s2Match, StringComparison.OrdinalIgnoreCase))
                     {
                         Logger.Trace($"Ensemble single-secondary override: s2 \"{s2Match}\" ({s2Word.Confidence:F2}) vs DG \"{word}\" ({confidence:F2})");
@@ -473,6 +546,8 @@ public class SttEnsembleMerger
                 else
                 {
                     mergedWords.Add(word);
+                    mergedConfTier.Add(0);
+                    _studyWordRecords.Add(new WordRecord(word, word, s1Match, s2Match));
                     continue;
                 }
             }
@@ -481,6 +556,23 @@ public class SttEnsembleMerger
             // (DG has smart_format which handles punctuation correctly; secondaries often omit it)
             if (string.Equals(StripTrailingPunctuation(winner), StripTrailingPunctuation(word), StringComparison.OrdinalIgnoreCase))
                 winner = word;
+
+            // Defense-in-depth: before accepting any correction, verify that the provider
+            // supplying the replacement has at least one immediate neighbor (±1) matching.
+            // This catches shifted alignments that pass the wider ±2 context window.
+            if (!string.Equals(winner, word, StringComparison.OrdinalIgnoreCase) && contextPositions > 0)
+            {
+                bool fromS1 = s1Match != null && string.Equals(winner, s1Match, StringComparison.OrdinalIgnoreCase);
+                bool fromS2 = s2Match != null && string.Equals(winner, s2Match, StringComparison.OrdinalIgnoreCase);
+                bool neighborOk = false;
+                if (fromS1 && HasImmediateNeighborMatch(originalWords, s1Aligned, i)) neighborOk = true;
+                if (fromS2 && HasImmediateNeighborMatch(originalWords, s2Aligned, i)) neighborOk = true;
+                if (!neighborOk)
+                {
+                    Logger.Trace($"Ensemble: BLOCKED correction \"{word}\" → \"{winner}\" — no immediate neighbor match (shifted alignment)");
+                    winner = word;
+                }
+            }
 
             if (!string.Equals(winner, word, StringComparison.OrdinalIgnoreCase))
             {
@@ -505,6 +597,12 @@ public class SttEnsembleMerger
 
                 var source = fromS1 && fromS2 ? $"{Short(_s1Name)}+{Short(_s2Name)}" : fromS1 ? Short(_s1Name) : fromS2 ? Short(_s2Name) : "?";
                 _lastCorrectionDetail = $"\"{word}\" \u2192 \"{winner}\" ({source})";
+                lock (_recentCorrections)
+                {
+                    _recentCorrections.Add(_lastCorrectionDetail);
+                    if (_recentCorrections.Count > 3)
+                        _recentCorrections.RemoveAt(0);
+                }
                 correctionRecords.Add(new CorrectionRecord(word, winner, source));
 
                 Logger.Trace($"Ensemble CORRECTION: \"{word}\" ({confidence:F2} {confTag}) → \"{winner}\" [s1={s1Match ?? "?"}, s2={s2Match ?? "?"}] anchors[s1:{s1Anchors} s2:{s2Anchors}] source={source}");
@@ -512,13 +610,20 @@ public class SttEnsembleMerger
             else
             {
                 // Primary word kept — track which secondaries confirmed it
-                if (s1Match != null && string.Equals(word, s1Match, StringComparison.OrdinalIgnoreCase))
-                    Interlocked.Increment(ref _s1Confirms);
-                if (s2Match != null && string.Equals(word, s2Match, StringComparison.OrdinalIgnoreCase))
-                    Interlocked.Increment(ref _s2Confirms);
+                bool s1Confirmed = s1Match != null && string.Equals(word, s1Match, StringComparison.OrdinalIgnoreCase);
+                bool s2Confirmed = s2Match != null && string.Equals(word, s2Match, StringComparison.OrdinalIgnoreCase);
+                if (s1Confirmed) Interlocked.Increment(ref _s1Confirms);
+                if (s2Confirmed) Interlocked.Increment(ref _s2Confirms);
             }
 
+            // Confidence tier: 0=normal, 1=medium (0.60-threshold), 2=low (<0.60)
+            // Only mark uncertain if DG was low-confidence and ensemble couldn't correct it
+            byte confTier = 0;
+            if (isLowConf && string.Equals(winner, word, StringComparison.OrdinalIgnoreCase))
+                confTier = confidence < 0.60f ? (byte)2 : (byte)1;
             mergedWords.Add(winner);
+            mergedConfTier.Add(confTier);
+            _studyWordRecords.Add(new WordRecord(winner, word, s1Match, s2Match));
         }
 
         // Remove consecutive duplicate words (can happen when Deepgram sends overlapping finals)
@@ -528,10 +633,33 @@ public class SttEnsembleMerger
             {
                 Logger.Trace($"Ensemble: removed consecutive duplicate word \"{mergedWords[i]}\" at position {i}");
                 mergedWords.RemoveAt(i);
+                mergedConfTier.RemoveAt(i);
             }
         }
 
-        var mergedTranscript = string.Join(" ", mergedWords);
+        var mergedRaw = string.Join(" ", mergedWords);
+
+        // Apply text processing (spoken punctuation, radiology cleanup, custom replacements)
+        // to the final merged result, keeping merge indices aligned with raw word arrays.
+        var mergedTranscript = SttTextProcessor.ProcessTranscript(mergedRaw, _config);
+        mergedTranscript = RemoveConsecutiveDuplicateWords(mergedTranscript);
+
+        // Extract confidence-tier word indices (only if ProcessTranscript didn't change word count,
+        // otherwise indices would be misaligned — skip confidence marking in that case)
+        var finalWordCount = mergedTranscript.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+        int[]? mediumArr = null, lowArr = null;
+        if (finalWordCount == mergedWords.Count)
+        {
+            var medium = new List<int>();
+            var low = new List<int>();
+            for (int idx = 0; idx < mergedConfTier.Count; idx++)
+            {
+                if (mergedConfTier[idx] == 1) medium.Add(idx);
+                else if (mergedConfTier[idx] == 2) low.Add(idx);
+            }
+            if (medium.Count > 0) mediumArr = medium.ToArray();
+            if (low.Count > 0) lowArr = low.ToArray();
+        }
 
         if (corrections > 0)
             Logger.Trace($"Ensemble merge: {corrections} corrections out of {lowConf} low-confidence words");
@@ -539,7 +667,9 @@ public class SttEnsembleMerger
         MergedResultReady?.Invoke(primary with
         {
             Transcript = mergedTranscript,
-            ProviderName = "ensemble"
+            ProviderName = "ensemble",
+            MediumConfWordIndices = mediumArr,
+            LowConfWordIndices = lowArr
         });
         if (correctionRecords.Count > 0)
             CorrectionsEmitted?.Invoke(correctionRecords);
@@ -595,6 +725,28 @@ public class SttEnsembleMerger
                 anchors++;
         }
         return anchors;
+    }
+
+    /// <summary>
+    /// Strict alignment check: verify at least one immediate neighbor (±1) matches.
+    /// A 1-position shift always fails this because direct neighbors are wrong,
+    /// even if the wider ±2 window has coincidental matches.
+    /// </summary>
+    private static bool HasImmediateNeighborMatch(
+        SttWord[] originalWords, SttWord?[] secondaryAligned, int targetIdx)
+    {
+        for (int d = -1; d <= 1; d += 2)
+        {
+            int pi = targetIdx + d;
+            if (pi < 0 || pi >= originalWords.Length || pi >= secondaryAligned.Length) continue;
+            if (secondaryAligned[pi] == null) continue;
+            var pWord = StripTrailingPunctuation(originalWords[pi].Text);
+            var sWord = StripTrailingPunctuation(secondaryAligned[pi]?.Text);
+            if (pWord != null && sWord != null &&
+                string.Equals(pWord, sWord, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -736,6 +888,106 @@ public class SttEnsembleMerger
     }
 
     /// <summary>
+    /// Validate per-provider accuracy by bag-matching each provider's words against the signed report.
+    /// Returns (ensemble, deepgram, s1, s2) accuracy results.
+    /// </summary>
+    internal (ProviderAccuracyResult ens, ProviderAccuracyResult dg,
+              ProviderAccuracyResult s1, ProviderAccuracyResult s2)
+        ValidateAccuracyAgainstReport(string reportText)
+    {
+        var (findings, impression) = CorrelationService.ExtractSections(reportText);
+        var body = findings + " " + impression;
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            Logger.Trace($"Ensemble accuracy: ExtractSections returned empty (report={reportText.Length} chars)");
+            return (new(0, 0), new(0, 0), new(0, 0), new(0, 0));
+        }
+
+        // Build word-frequency bag from report
+        var reportBag = BuildWordBag(body);
+        Logger.Trace($"Ensemble accuracy: body={body.Length} chars, bag={reportBag.Count} unique words, records={_studyWordRecords.Count}");
+
+        // Need minimum data: at least 10 report words and 10 dictated word records
+        if (reportBag.Count < 10 || _studyWordRecords.Count < 10)
+        {
+            Logger.Trace($"Ensemble accuracy: skipped — insufficient data (bag={reportBag.Count}, records={_studyWordRecords.Count})");
+            return (new(0, 0), new(0, 0), new(0, 0), new(0, 0));
+        }
+
+        // Match each provider independently against a fresh copy of the bag
+        var ensResult = MatchAgainstBag(reportBag, _studyWordRecords, r => r.MergedWord);
+        var dgResult = MatchAgainstBag(reportBag, _studyWordRecords, r => r.DgWord);
+        var s1Result = MatchAgainstBag(reportBag, _studyWordRecords, r => r.S1Word);
+        var s2Result = MatchAgainstBag(reportBag, _studyWordRecords, r => r.S2Word);
+
+        // Sanity check: if ensemble match rate < 30%, the report probably doesn't
+        // correspond to the dictation (template text, stale report, or heavily edited).
+        if (ensResult.Total > 0 && (double)ensResult.Matched / ensResult.Total < 0.30)
+        {
+            Logger.Trace($"Ensemble accuracy: skipped — match rate too low ({ensResult.Matched}/{ensResult.Total} = {100.0 * ensResult.Matched / ensResult.Total:F0}%), report likely doesn't match dictation");
+            return (new(0, 0), new(0, 0), new(0, 0), new(0, 0));
+        }
+
+        return (ensResult, dgResult, s1Result, s2Result);
+    }
+
+    /// <summary>
+    /// Add validated accuracy results to session counters.
+    /// </summary>
+    internal void AddSessionAccuracy(ProviderAccuracyResult ens, ProviderAccuracyResult dg,
+        ProviderAccuracyResult s1, ProviderAccuracyResult s2)
+    {
+        _sessionEnsembleMatched += ens.Matched; _sessionEnsembleTotal += ens.Total;
+        _sessionDgMatched += dg.Matched; _sessionDgTotal += dg.Total;
+        _sessionS1Matched += s1.Matched; _sessionS1Total += s1.Total;
+        _sessionS2Matched += s2.Matched; _sessionS2Total += s2.Total;
+    }
+
+    private static Dictionary<string, int> BuildWordBag(string text)
+    {
+        var bag = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var token in text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var norm = NormalizeForMatch(token);
+            if (norm == null || norm.Length <= 1) continue;
+            bag.TryGetValue(norm, out int count);
+            bag[norm] = count + 1;
+        }
+        return bag;
+    }
+
+    private static ProviderAccuracyResult MatchAgainstBag(
+        Dictionary<string, int> reportBag, List<WordRecord> records,
+        Func<WordRecord, string?> wordSelector)
+    {
+        // Clone the bag so each provider gets independent matching
+        var bag = new Dictionary<string, int>(reportBag, StringComparer.OrdinalIgnoreCase);
+        int matched = 0, total = 0;
+        foreach (var rec in records)
+        {
+            var raw = wordSelector(rec);
+            if (raw == null) continue; // Provider didn't have this position
+            var norm = NormalizeForMatch(raw);
+            if (norm == null || norm.Length <= 1) continue;
+            total++;
+            if (bag.TryGetValue(norm, out int count) && count > 0)
+            {
+                matched++;
+                bag[norm] = count - 1;
+            }
+        }
+        return new ProviderAccuracyResult(matched, total);
+    }
+
+    private static string? NormalizeForMatch(string? word)
+    {
+        if (string.IsNullOrEmpty(word)) return null;
+        var trimmed = word.TrimEnd('.', ',', ';', ':', '!', '?', ')', '(', '"', '\'');
+        trimmed = trimmed.TrimStart('(', '"', '\'');
+        return string.IsNullOrEmpty(trimmed) ? null : trimmed.ToLowerInvariant();
+    }
+
+    /// <summary>
     /// Commit this study's stats to all-time totals (call at study change when report was signed).
     /// </summary>
     public void CommitStudyToAlltime()
@@ -766,6 +1018,7 @@ public class SttEnsembleMerger
         _studyCorrected = 0;
         _studyConfSum = 0;
         _studyMerges = 0;
+        _studyWordRecords.Clear();
     }
 
     /// <summary>
@@ -793,12 +1046,21 @@ public class SttEnsembleMerger
         StatsUpdated?.Invoke(new EnsembleStats(
             _totalWords, _lowConfidenceWords, _correctedWords,
             AverageConfidence, _mergeCount,
-            _s1Arrivals, _s2Arrivals,
+            _s1Arrivals, _s2Arrivals, _s1MergeParticipations, _s2MergeParticipations,
             _s1Corrections, _s2Corrections, _consensusCorrections,
             _s1Confirms, _s2Confirms,
             _lastCorrectionDetail,
+            new List<string>(_recentCorrections),
             atWords, atCorrected, atAvgConf, atMerges,
             SessionValidated, SessionRejected,
-            _config.SttEnsembleAlltimeValidated, _config.SttEnsembleAlltimeRejected));
+            _config.SttEnsembleAlltimeValidated, _config.SttEnsembleAlltimeRejected,
+            _sessionEnsembleMatched, _sessionEnsembleTotal,
+            _sessionDgMatched, _sessionDgTotal,
+            _sessionS1Matched, _sessionS1Total,
+            _sessionS2Matched, _sessionS2Total,
+            _config.SttEnsembleAlltimeAccEnsembleMatched, _config.SttEnsembleAlltimeAccEnsembleTotal,
+            _config.SttEnsembleAlltimeAccDgMatched, _config.SttEnsembleAlltimeAccDgTotal,
+            _config.SttEnsembleAlltimeAccS1Matched, _config.SttEnsembleAlltimeAccS1Total,
+            _config.SttEnsembleAlltimeAccS2Matched, _config.SttEnsembleAlltimeAccS2Total));
     }
 }

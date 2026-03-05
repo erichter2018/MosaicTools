@@ -51,13 +51,27 @@ public class EnsembleMetricsForm : Form
     private readonly Label _accuracyHeader;
     private readonly Label _sessionAccuracyLabel;
     private readonly Label _alltimeAccuracyLabel;
-    private readonly Label _precisionLabel;
+    private readonly Label _precisionHeader;
+    private readonly Label _sessionPrecisionLabel;
+    private readonly Label _alltimePrecisionLabel;
 
-    // All-time
-    private readonly Label _alltimeHeader;
-    private readonly Label _alltimeWordsLabel;
-    private readonly Label _alltimeCorrectedLabel;
-    private readonly Label _alltimeConfLabel;
+    // Provider accuracy (bag-matched vs signed report)
+    private readonly Label _provAccHeader;
+    private readonly Label _provAccColSession;
+    private readonly Label _provAccColAlltime;
+    private readonly Label _provAccEnsLabel;
+    private readonly Label _provAccEnsSession;
+    private readonly Label _provAccEnsAlltime;
+    private readonly Label _provAccDgLabel;
+    private readonly Label _provAccDgSession;
+    private readonly Label _provAccDgAlltime;
+    private readonly Label _provAccS1Label;
+    private readonly Label _provAccS1Session;
+    private readonly Label _provAccS1Alltime;
+    private readonly Label _provAccS2Label;
+    private readonly Label _provAccS2Session;
+    private readonly Label _provAccS2Alltime;
+
 
     private static readonly Color DimColor = Color.FromArgb(120, 120, 130);
     private static readonly Color BrightColor = Color.FromArgb(210, 210, 220);
@@ -72,10 +86,11 @@ public class EnsembleMetricsForm : Form
         _ => Color.FromArgb(150, 150, 200)
     };
 
-    private static string ShortName(string name) => name switch
+    private static string DisplayName(string name) => name switch
     {
-        "soniox" => "SNX", "speechmatics" => "SM", "assemblyai" => "AAI",
-        _ => name.ToUpperInvariant()[..Math.Min(3, name.Length)]
+        "soniox" => "Soniox", "speechmatics" => "Speechmatics", "assemblyai" => "AssemblyAI",
+        "deepgram" => "Deepgram",
+        _ => name
     };
 
     public EnsembleMetricsForm(Configuration config, string s1Name = "soniox", string s2Name = "speechmatics")
@@ -83,13 +98,13 @@ public class EnsembleMetricsForm : Form
         _config = config;
         var s1Color = ProviderColor(s1Name);
         var s2Color = ProviderColor(s2Name);
-        var s1Short = ShortName(s1Name);
-        var s2Short = ShortName(s2Name);
+        var s1Display = DisplayName(s1Name);
+        var s2Display = DisplayName(s2Name);
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
-        Size = new Size(260, 376);
+        Size = new Size(290, 495);
         BackColor = Color.FromArgb(22, 22, 28);
         Opacity = 0.93;
 
@@ -116,7 +131,7 @@ public class EnsembleMetricsForm : Form
         // ── Title + close ──
         _titleLabel = new Label
         {
-            Text = "ENSEMBLE",
+            Text = "ENSEMBLE (Deepgram + corrections)",
             Location = new Point(pad, y),
             AutoSize = true,
             Font = new Font("Segoe UI", 7f, FontStyle.Bold),
@@ -160,7 +175,7 @@ public class EnsembleMetricsForm : Form
         // ── Confidence + words row ──
         _confidenceLabel = new Label
         {
-            Text = "Conf: --",
+            Text = "Confidence: --",
             Location = new Point(pad, y),
             AutoSize = true,
             Font = bodyFont,
@@ -208,7 +223,7 @@ public class EnsembleMetricsForm : Form
         // ── Secondary 1 section ──
         _snxHeader = new Label
         {
-            Text = s1Short,
+            Text = s1Display,
             Location = new Point(pad, y),
             AutoSize = true,
             Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
@@ -219,7 +234,7 @@ public class EnsembleMetricsForm : Form
         _snxFinalsLabel = new Label
         {
             Text = "0 finals",
-            Location = new Point(pad + 35, y),
+            Location = new Point(pad + 80, y),
             AutoSize = true,
             Font = smallFont,
             ForeColor = DimColor
@@ -269,7 +284,7 @@ public class EnsembleMetricsForm : Form
         // ── Secondary 2 section ──
         _smHeader = new Label
         {
-            Text = s2Short,
+            Text = s2Display,
             Location = new Point(pad, y),
             AutoSize = true,
             Font = new Font("Segoe UI", 7.5f, FontStyle.Bold),
@@ -280,7 +295,7 @@ public class EnsembleMetricsForm : Form
         _smFinalsLabel = new Label
         {
             Text = "0 finals",
-            Location = new Point(pad + 35, y),
+            Location = new Point(pad + 100, y),
             AutoSize = true,
             Font = smallFont,
             ForeColor = DimColor
@@ -347,12 +362,12 @@ public class EnsembleMetricsForm : Form
         {
             Text = "",
             Location = new Point(pad, y),
-            Size = new Size(contentW, 28),
+            Size = new Size(contentW, 42),
             Font = tinyFont,
             ForeColor = Color.FromArgb(200, 170, 80)
         };
         Controls.Add(_lastCorrLabel);
-        y += 30;
+        y += 46;
 
         // ── Divider ──
         Controls.Add(new Panel { Location = new Point(pad, y), Size = new Size(contentW, 1), BackColor = Color.FromArgb(45, 45, 55) });
@@ -361,7 +376,7 @@ public class EnsembleMetricsForm : Form
         // ── Accuracy impact ──
         _accuracyHeader = new Label
         {
-            Text = "ACCURACY vs DG SOLO",
+            Text = "ENSEMBLE CORRECTION RATE",
             Location = new Point(pad, y),
             AutoSize = true,
             Font = new Font("Segoe UI", 7f, FontStyle.Bold),
@@ -392,62 +407,91 @@ public class EnsembleMetricsForm : Form
         Controls.Add(_alltimeAccuracyLabel);
         y += 16;
 
-        _precisionLabel = new Label
+        // ── Divider ──
+        Controls.Add(new Panel { Location = new Point(pad, y), Size = new Size(contentW, 1), BackColor = Color.FromArgb(45, 45, 55) });
+        y += 5;
+
+        // ── Correction accuracy ──
+        _precisionHeader = new Label
         {
-            Text = "Precision: \u2014",
+            Text = "CORRECTION ACCURACY",
+            Location = new Point(pad, y),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 7f, FontStyle.Bold),
+            ForeColor = Color.FromArgb(220, 190, 80)
+        };
+        Controls.Add(_precisionHeader);
+        y += 14;
+
+        _sessionPrecisionLabel = new Label
+        {
+            Text = "Session: \u2014",
             Location = new Point(pad + 4, y),
             AutoSize = true,
             Font = bodyFont,
             ForeColor = DimColor
         };
-        Controls.Add(_precisionLabel);
-        y += 20;
+        Controls.Add(_sessionPrecisionLabel);
+        y += 16;
+
+        _alltimePrecisionLabel = new Label
+        {
+            Text = "All-time: \u2014",
+            Location = new Point(pad + 4, y),
+            AutoSize = true,
+            Font = bodyFont,
+            ForeColor = DimColor
+        };
+        Controls.Add(_alltimePrecisionLabel);
+        y += 18;
 
         // ── Divider ──
         Controls.Add(new Panel { Location = new Point(pad, y), Size = new Size(contentW, 1), BackColor = Color.FromArgb(45, 45, 55) });
         y += 5;
 
-        // ── All-time stats ──
-        _alltimeHeader = new Label
+        // ── Provider accuracy (vs signed report) ──
+        _provAccHeader = new Label
         {
-            Text = "ALL-TIME",
+            Text = "PROVIDER ACCURACY (vs signed)",
             Location = new Point(pad, y),
             AutoSize = true,
             Font = new Font("Segoe UI", 7f, FontStyle.Bold),
-            ForeColor = Color.FromArgb(90, 90, 100)
+            ForeColor = Color.FromArgb(100, 180, 220)
         };
-        Controls.Add(_alltimeHeader);
+        Controls.Add(_provAccHeader);
         y += 14;
 
-        _alltimeWordsLabel = new Label
-        {
-            Text = "0 words",
-            Location = new Point(pad + 4, y),
-            AutoSize = true,
-            Font = tinyFont,
-            ForeColor = DimColor
-        };
-        Controls.Add(_alltimeWordsLabel);
+        int col1 = pad + 80;  // "Session" column
+        int col2 = pad + 165; // "All-time" column
 
-        _alltimeCorrectedLabel = new Label
-        {
-            Text = "0 corrected",
-            Location = new Point(pad + 80, y),
-            AutoSize = true,
-            Font = tinyFont,
-            ForeColor = DimColor
-        };
-        Controls.Add(_alltimeCorrectedLabel);
+        _provAccColSession = new Label { Text = "Session", Location = new Point(col1, y), AutoSize = true, Font = tinyFont, ForeColor = DimColor };
+        _provAccColAlltime = new Label { Text = "All-time", Location = new Point(col2, y), AutoSize = true, Font = tinyFont, ForeColor = DimColor };
+        Controls.Add(_provAccColSession);
+        Controls.Add(_provAccColAlltime);
+        y += 13;
 
-        _alltimeConfLabel = new Label
-        {
-            Text = "Conf: --",
-            Location = new Point(pad + 165, y),
-            AutoSize = true,
-            Font = tinyFont,
-            ForeColor = DimColor
-        };
-        Controls.Add(_alltimeConfLabel);
+        _provAccEnsLabel = new Label { Text = "Ensemble:", Location = new Point(pad + 4, y), AutoSize = true, Font = smallFont, ForeColor = BrightColor };
+        _provAccEnsSession = new Label { Text = "--", Location = new Point(col1, y), AutoSize = true, Font = smallFont, ForeColor = DimColor };
+        _provAccEnsAlltime = new Label { Text = "--", Location = new Point(col2, y), AutoSize = true, Font = smallFont, ForeColor = DimColor };
+        Controls.Add(_provAccEnsLabel); Controls.Add(_provAccEnsSession); Controls.Add(_provAccEnsAlltime);
+        y += 13;
+
+        _provAccDgLabel = new Label { Text = "Deepgram:", Location = new Point(pad + 4, y), AutoSize = true, Font = smallFont, ForeColor = BrightColor };
+        _provAccDgSession = new Label { Text = "--", Location = new Point(col1, y), AutoSize = true, Font = smallFont, ForeColor = DimColor };
+        _provAccDgAlltime = new Label { Text = "--", Location = new Point(col2, y), AutoSize = true, Font = smallFont, ForeColor = DimColor };
+        Controls.Add(_provAccDgLabel); Controls.Add(_provAccDgSession); Controls.Add(_provAccDgAlltime);
+        y += 13;
+
+        _provAccS1Label = new Label { Text = s1Display + ":", Location = new Point(pad + 4, y), AutoSize = true, Font = smallFont, ForeColor = s1Color };
+        _provAccS1Session = new Label { Text = "--", Location = new Point(col1, y), AutoSize = true, Font = smallFont, ForeColor = DimColor };
+        _provAccS1Alltime = new Label { Text = "--", Location = new Point(col2, y), AutoSize = true, Font = smallFont, ForeColor = DimColor };
+        Controls.Add(_provAccS1Label); Controls.Add(_provAccS1Session); Controls.Add(_provAccS1Alltime);
+        y += 13;
+
+        _provAccS2Label = new Label { Text = s2Display + ":", Location = new Point(pad + 4, y), AutoSize = true, Font = smallFont, ForeColor = s2Color };
+        _provAccS2Session = new Label { Text = "--", Location = new Point(col1, y), AutoSize = true, Font = smallFont, ForeColor = DimColor };
+        _provAccS2Alltime = new Label { Text = "--", Location = new Point(col2, y), AutoSize = true, Font = smallFont, ForeColor = DimColor };
+        Controls.Add(_provAccS2Label); Controls.Add(_provAccS2Session); Controls.Add(_provAccS2Alltime);
 
         // Make the form draggable — attach to all non-interactive controls
         MouseDown += OnFormMouseDown;
@@ -494,7 +538,7 @@ public class EnsembleMetricsForm : Form
 
     private void UpdateTitle()
     {
-        _titleLabel.Text = _recording ? "ENSEMBLE \u25cf REC" : "ENSEMBLE";
+        _titleLabel.Text = _recording ? "ENSEMBLE (Deepgram + corrections) \u25cf REC" : "ENSEMBLE (Deepgram + corrections)";
         _titleLabel.ForeColor = _recording ? Color.FromArgb(255, 100, 100) : Color.FromArgb(100, 160, 255);
     }
 
@@ -502,7 +546,7 @@ public class EnsembleMetricsForm : Form
     {
         // ── Confidence ──
         var conf = stats.AverageConfidence;
-        _confidenceLabel.Text = $"Conf: {conf:P1}";
+        _confidenceLabel.Text = $"Confidence: {conf:P1}";
         _confidenceLabel.ForeColor = conf >= 0.95 ? Color.FromArgb(100, 220, 100) :
             conf >= 0.85 ? Color.FromArgb(200, 200, 100) :
             conf >= 0.70 ? Color.FromArgb(255, 160, 60) :
@@ -522,25 +566,28 @@ public class EnsembleMetricsForm : Form
         _correctedLabel.ForeColor = stats.CorrectedWords > 0 ? FixColor : DimColor;
 
         // ── Soniox ──
-        _snxFinalsLabel.Text = $"{stats.S1Arrivals} finals";
-        _snxFixedLabel.Text = $"{stats.S1Corrections} fixed";
+        var s1Coverage = stats.MergeCount > 0 ? (double)stats.S1MergeParticipations / stats.MergeCount : 0;
+        _snxFinalsLabel.Text = stats.MergeCount > 0 ? $"In {s1Coverage:P0} of merges" : "—";
+        _snxFinalsLabel.ForeColor = s1Coverage >= 0.8 ? BrightColor : s1Coverage >= 0.5 ? ConfirmColor : DimColor;
+        _snxFixedLabel.Text = $"{stats.S1Corrections} corrections";
         _snxFixedLabel.ForeColor = stats.S1Corrections > 0 ? FixColor : DimColor;
-        _snxConfirmedLabel.Text = $"{stats.S1Confirms} confirmed";
+        _snxConfirmedLabel.Text = $"{stats.S1Confirms} validations";
         _snxConfirmedLabel.ForeColor = stats.S1Confirms > 0 ? ConfirmColor : DimColor;
 
-        // Soniox contribution bar: proportion of total corrections from this provider
-        var snxRatio = stats.CorrectedWords > 0 ? (double)stats.S1Corrections / stats.CorrectedWords : 0;
-        _snxBar.Width = (int)(_snxBarBg.Width * Math.Clamp(snxRatio, 0, 1));
+        // Soniox contribution bar: coverage rate (how often available for matching)
+        _snxBar.Width = (int)(_snxBarBg.Width * Math.Clamp(s1Coverage, 0, 1));
 
         // ── Speechmatics ──
-        _smFinalsLabel.Text = $"{stats.S2Arrivals} finals";
-        _smFixedLabel.Text = $"{stats.S2Corrections} fixed";
+        var s2Coverage = stats.MergeCount > 0 ? (double)stats.S2MergeParticipations / stats.MergeCount : 0;
+        _smFinalsLabel.Text = stats.MergeCount > 0 ? $"In {s2Coverage:P0} of merges" : "—";
+        _smFinalsLabel.ForeColor = s2Coverage >= 0.8 ? BrightColor : s2Coverage >= 0.5 ? ConfirmColor : DimColor;
+        _smFixedLabel.Text = $"{stats.S2Corrections} corrections";
         _smFixedLabel.ForeColor = stats.S2Corrections > 0 ? FixColor : DimColor;
-        _smConfirmedLabel.Text = $"{stats.S2Confirms} confirmed";
+        _smConfirmedLabel.Text = $"{stats.S2Confirms} validations";
         _smConfirmedLabel.ForeColor = stats.S2Confirms > 0 ? ConfirmColor : DimColor;
 
-        var smRatio = stats.CorrectedWords > 0 ? (double)stats.S2Corrections / stats.CorrectedWords : 0;
-        _smBar.Width = (int)(_smBarBg.Width * Math.Clamp(smRatio, 0, 1));
+        // Speechmatics contribution bar: coverage rate
+        _smBar.Width = (int)(_smBarBg.Width * Math.Clamp(s2Coverage, 0, 1));
 
         // ── Consensus ──
         if (stats.ConsensusCorrections > 0)
@@ -549,12 +596,13 @@ public class EnsembleMetricsForm : Form
             _consensusLabel.Text = "";
 
         // ── Last correction detail ──
-        if (!string.IsNullOrEmpty(stats.LastCorrectionDetail))
+        if (stats.RecentCorrections.Count > 0)
+            _lastCorrLabel.Text = string.Join("\n", stats.RecentCorrections);
+        else if (!string.IsNullOrEmpty(stats.LastCorrectionDetail))
             _lastCorrLabel.Text = stats.LastCorrectionDetail;
 
-        // ── Accuracy impact ──
-        // Correction rate = corrections / total words. Each correction is a word that DG
-        // got wrong (low confidence) and secondaries fixed, so this is the accuracy delta.
+        // ── Ensemble correction rate ──
+        // Correction rate = corrections / total words. How often the ensemble changed DG's output.
         var sessionImpact = stats.TotalWords > 0 ? (double)stats.CorrectedWords / stats.TotalWords * 100 : 0;
         _sessionAccuracyLabel.Text = $"Session: +{sessionImpact:F2}% ({stats.CorrectedWords} of {stats.TotalWords:N0})";
         _sessionAccuracyLabel.ForeColor = stats.CorrectedWords > 0 ? FixColor : DimColor;
@@ -563,36 +611,54 @@ public class EnsembleMetricsForm : Form
         _alltimeAccuracyLabel.Text = $"All-time: +{alltimeImpact:F2}% ({stats.AlltimeCorrected:N0} of {stats.AlltimeWords:N0})";
         _alltimeAccuracyLabel.ForeColor = stats.AlltimeCorrected > 0 ? FixColor : DimColor;
 
-        // ── Precision (validated corrections) ──
+        // ── Correction accuracy (validated corrections) ──
         var sessTotal = stats.SessionValidated + stats.SessionRejected;
         var atTotal = stats.AlltimeValidated + stats.AlltimeRejected;
-        if (sessTotal > 0 || atTotal > 0)
+        if (sessTotal > 0)
         {
-            var sessPart = sessTotal > 0
-                ? $"{stats.SessionValidated}/{sessTotal} ({(double)stats.SessionValidated / sessTotal:P0})"
-                : "\u2014";
-            var atPart = atTotal > 0
-                ? $"{stats.AlltimeValidated}/{atTotal} ({(double)stats.AlltimeValidated / atTotal:P0})"
-                : "\u2014";
-            _precisionLabel.Text = $"Precision: {sessPart} | All-time: {atPart}";
-            _precisionLabel.ForeColor = BrightColor;
+            _sessionPrecisionLabel.Text = $"Session: {stats.SessionValidated}/{sessTotal} ({(double)stats.SessionValidated / sessTotal:P0})";
+            _sessionPrecisionLabel.ForeColor = stats.SessionValidated > 0 ? FixColor : DimColor;
         }
         else
         {
-            _precisionLabel.Text = "Precision: \u2014";
-            _precisionLabel.ForeColor = DimColor;
+            _sessionPrecisionLabel.Text = "Session: \u2014";
+            _sessionPrecisionLabel.ForeColor = DimColor;
+        }
+        if (atTotal > 0)
+        {
+            _alltimePrecisionLabel.Text = $"All-time: {stats.AlltimeValidated}/{atTotal} ({(double)stats.AlltimeValidated / atTotal:P0})";
+            _alltimePrecisionLabel.ForeColor = stats.AlltimeValidated > 0 ? FixColor : DimColor;
+        }
+        else
+        {
+            _alltimePrecisionLabel.Text = "All-time: \u2014";
+            _alltimePrecisionLabel.ForeColor = DimColor;
         }
 
-        // ── All-time ──
-        _alltimeWordsLabel.Text = $"{stats.AlltimeWords:N0} words";
-        _alltimeCorrectedLabel.Text = $"{stats.AlltimeCorrected:N0} corrected";
-        if (stats.AlltimeWords > 0)
+        // ── Provider accuracy (vs signed report) ──
+        UpdateAccRow(_provAccEnsSession, stats.SessionEnsembleMatched, stats.SessionEnsembleTotal);
+        UpdateAccRow(_provAccEnsAlltime, stats.AlltimeEnsembleMatched, stats.AlltimeEnsembleTotal);
+        UpdateAccRow(_provAccDgSession, stats.SessionDgMatched, stats.SessionDgTotal);
+        UpdateAccRow(_provAccDgAlltime, stats.AlltimeDgMatched, stats.AlltimeDgTotal);
+        UpdateAccRow(_provAccS1Session, stats.SessionS1Matched, stats.SessionS1Total);
+        UpdateAccRow(_provAccS1Alltime, stats.AlltimeS1Matched, stats.AlltimeS1Total);
+        UpdateAccRow(_provAccS2Session, stats.SessionS2Matched, stats.SessionS2Total);
+        UpdateAccRow(_provAccS2Alltime, stats.AlltimeS2Matched, stats.AlltimeS2Total);
+    }
+
+    private static void UpdateAccRow(Label label, int matched, int total)
+    {
+        if (total < 10) // Minimum data threshold
         {
-            _alltimeConfLabel.Text = $"Conf: {stats.AlltimeAverageConfidence:P1}";
-            _alltimeConfLabel.ForeColor = stats.AlltimeAverageConfidence >= 0.95 ? Color.FromArgb(100, 220, 100) :
-                stats.AlltimeAverageConfidence >= 0.85 ? Color.FromArgb(200, 200, 100) : DimColor;
+            label.Text = "--";
+            label.ForeColor = DimColor;
+            return;
         }
-        _alltimeCorrectedLabel.ForeColor = stats.AlltimeCorrected > 0 ? FixColor : DimColor;
+        var pct = 100.0 * matched / total;
+        label.Text = $"{pct:F1}%";
+        label.ForeColor = pct >= 97 ? Color.FromArgb(100, 220, 100) :  // green
+                          pct >= 95 ? Color.FromArgb(200, 200, 100) :  // yellow
+                          DimColor;
     }
 
     // ── Dragging ──

@@ -181,6 +181,9 @@ public class SttService : IDisposable
             EnsembleCorrectionsEmitted?.Invoke(corrections);
         };
 
+        // Wire "Clear All-Time Stats" button callback to reset live merger counters
+        _config.OnClearAllEnsembleStats = () => _merger.ResetAllStats();
+
         // Primary (Deepgram): interims go to display, finals go to merger + raw event
         _primaryProvider.TranscriptionReceived += result =>
         {
@@ -335,7 +338,7 @@ public class SttService : IDisposable
 
         if (_ensembleMode)
         {
-            // End primary first
+            // End primary first (essential — triggers final transcript)
             try
             {
                 if (_primaryProvider is { IsConnected: true })
@@ -343,18 +346,22 @@ public class SttService : IDisposable
             }
             catch (Exception ex) { Logger.Trace($"SttService: Primary EndSession error: {ex.Message}"); }
 
-            // End secondaries in parallel with timeout
+            // End secondaries in background (non-blocking) — their cleanup isn't needed
+            // before the next recording can start, and waiting up to 2s blocks the action thread.
             var s1 = _secondaryProvider1;
             var s2 = _secondaryProvider2;
-            var t1 = Task.Run(async () =>
+            _ = Task.Run(async () =>
             {
-                try { if (s1 is { IsConnected: true }) await s1.EndSessionAsync(); } catch { }
+                var t1 = Task.Run(async () =>
+                {
+                    try { if (s1 is { IsConnected: true }) await s1.EndSessionAsync(); } catch { }
+                });
+                var t2 = Task.Run(async () =>
+                {
+                    try { if (s2 is { IsConnected: true }) await s2.EndSessionAsync(); } catch { }
+                });
+                await Task.WhenAny(Task.WhenAll(t1, t2), Task.Delay(2000));
             });
-            var t2 = Task.Run(async () =>
-            {
-                try { if (s2 is { IsConnected: true }) await s2.EndSessionAsync(); } catch { }
-            });
-            await Task.WhenAny(Task.WhenAll(t1, t2), Task.Delay(2000));
         }
         else
         {

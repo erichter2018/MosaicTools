@@ -1338,17 +1338,24 @@ html, body {{ overflow: hidden !important; }}
     /// Insert text content into a ProseMirror editor.
     /// editorIndex: 0=transcript, 1=final report.
     /// </summary>
-    public bool InsertContent(int editorIndex, string text, bool highlight = false)
+    public bool InsertContent(int editorIndex, string text, bool highlight = false, int[]? mediumConfIndices = null, int[]? lowConfIndices = null)
     {
         if (!IsIframeConnected) return false;
         var escaped = JsonSerializer.Serialize(text); // JSON-escapes the string
 
+        // Build JSON arrays for JS
+        var mediumJson = mediumConfIndices is { Length: > 0 }
+            ? "[" + string.Join(",", mediumConfIndices) + "]" : "[]";
+        var lowJson = lowConfIndices is { Length: > 0 }
+            ? "[" + string.Join(",", lowConfIndices) + "]" : "[]";
+
         string js;
         if (highlight)
         {
-            // Insert text then apply a CSS Custom Highlight over the inserted range.
+            // Insert text then apply CSS Custom Highlights over the inserted range.
             // Uses the CSS Custom Highlight API (CSS.highlights) — purely visual, zero DOM modification.
             // This is the only safe approach that won't trigger Mosaic's change tracking.
+            // Three tiers: mt-dictated (all), mt-medium (amber), mt-low (orange).
             js = $@"(() => {{
                 const editors = document.querySelectorAll('.ProseMirror');
                 if (editors.length <= {editorIndex} || !editors[{editorIndex}].editor) return 'no_editor';
@@ -1359,15 +1366,23 @@ html, body {{ overflow: hidden !important; }}
                 if (posAfter <= posBefore) return 'ok';
 
                 try {{
-                    // Ensure CSS rule for our custom highlight exists
-                    if (!document.getElementById('mt-dictated-style')) {{
-                        const style = document.createElement('style');
-                        style.id = 'mt-dictated-style';
-                        style.textContent = '::highlight(mt-dictated) {{ background-color: rgba(90, 85, 50, 0.4); }}';
-                        document.head.appendChild(style);
-                    }}
+                    // Get the editor's actual text color for normal words
+                    const editorEl = editors[{editorIndex}];
+                    const normalColor = getComputedStyle(editorEl).color || 'black';
 
-                    // Create a DOM Range covering the inserted text
+                    // Ensure CSS rules for our custom highlights exist (always update content)
+                    let hlStyle = document.getElementById('mt-dictated-style');
+                    if (!hlStyle) {{
+                        hlStyle = document.createElement('style');
+                        hlStyle.id = 'mt-dictated-style';
+                        document.head.appendChild(hlStyle);
+                    }}
+                    hlStyle.textContent = '::highlight(mt-dictated) {{ background-color: rgba(90, 85, 50, 0.4); }}'
+                        + ' ::highlight(mt-normal) {{ color: ' + normalColor + '; }}'
+                        + ' ::highlight(mt-medium) {{ color: rgb(200, 170, 80); }}'
+                        + ' ::highlight(mt-low) {{ color: rgb(210, 130, 70); }}';
+
+                    // Create a DOM Range covering the inserted text (background highlight)
                     const view = editor.view;
                     const startDOM = view.domAtPos(posBefore);
                     const endDOM = view.domAtPos(posAfter);
@@ -1375,11 +1390,35 @@ html, body {{ overflow: hidden !important; }}
                     range.setStart(startDOM.node, startDOM.offset);
                     range.setEnd(endDOM.node, endDOM.offset);
 
-                    // Add to our custom highlight (create if needed)
-                    if (!CSS.highlights.has('mt-dictated')) {{
-                        CSS.highlights.set('mt-dictated', new Highlight());
-                    }}
+                    if (!CSS.highlights.has('mt-dictated')) CSS.highlights.set('mt-dictated', new Highlight());
                     CSS.highlights.get('mt-dictated').add(range);
+
+                    // Assign every word an explicit text color (normal/medium/low)
+                    const medSet = new Set({mediumJson});
+                    const lowSet = new Set({lowJson});
+                    const insertedText = editor.state.doc.textBetween(posBefore, posAfter);
+                    let wordIndex = 0;
+                    let charPos = 0;
+                    const len = insertedText.length;
+                    while (charPos < len) {{
+                        while (charPos < len && insertedText[charPos] === ' ') charPos++;
+                        if (charPos >= len) break;
+                        const wordStart = charPos;
+                        while (charPos < len && insertedText[charPos] !== ' ') charPos++;
+                        const hlName = lowSet.has(wordIndex) ? 'mt-low'
+                            : medSet.has(wordIndex) ? 'mt-medium' : 'mt-normal';
+                        try {{
+                            const wStartDOM = view.domAtPos(posBefore + wordStart);
+                            const wEndDOM = view.domAtPos(posBefore + charPos);
+                            const wRange = new StaticRange({{
+                                startContainer: wStartDOM.node, startOffset: wStartDOM.offset,
+                                endContainer: wEndDOM.node, endOffset: wEndDOM.offset
+                            }});
+                            if (!CSS.highlights.has(hlName)) CSS.highlights.set(hlName, new Highlight());
+                            CSS.highlights.get(hlName).add(wRange);
+                        }} catch(e) {{}}
+                        wordIndex++;
+                    }}
                     return 'ok_highlight';
                 }} catch(e) {{ return 'ok_hl_err:' + e.message; }}
             }})()";
@@ -2717,9 +2756,20 @@ html, body {{ overflow: hidden !important; }}
                 return null;
             }
 
-            // Return first note (dialog note if open, otherwise best match)
-            // Sort by those containing EXAM NOTE first, then by length
-            var best = notes
+            // Filter to plausible exam notes: must contain a date/time pattern or "EXAM NOTE"
+            // This excludes status messages like "Opening exam(s) in VR..."
+            var plausible = notes.Where(n =>
+                n.Contains("EXAM NOTE", StringComparison.OrdinalIgnoreCase) ||
+                System.Text.RegularExpressions.Regex.IsMatch(n, @"\d{1,2}[:/]\d{2}")).ToList();
+
+            if (plausible.Count == 0)
+            {
+                Logger.Trace($"CDP Clario: Found {notes.Count} text(s) but none look like exam notes");
+                return null;
+            }
+
+            // Return best match (dialog note if open, otherwise EXAM NOTE first, then longest)
+            var best = plausible
                 .OrderByDescending(n => n.Contains("EXAM NOTE", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
                 .ThenByDescending(n => n.Length)
                 .First();

@@ -1,3 +1,12 @@
+4.2.1
+- Per-word confidence highlighting in Clario editor: 3-tier color system (normal/medium/low) via CSS Custom Highlight API
+- Per-provider accuracy tracking: compare Deepgram, Soniox, Speechmatics word output against signed reports (session + all-time)
+- Faster PTT restart: secondary provider EndSession is fire-and-forget, paste drain moved to background
+- Fix: ensemble false correction from stale secondary words (audio filter now uses word midpoint instead of EndTime)
+- Fix: punctuation lost in ensemble merge (DG word array lacks punctuation; now tokenizes transcript string)
+- Fix: confidence color bleeding into subsequent dictation (every word gets explicit color via per-word StaticRange)
+- Fix: Critical Findings CDP scrape picking up "Opening exam(s) in VR..." status messages (now requires date/time or EXAM NOTE)
+
 4.2.0
 - Findings/Impression mismatch alert: yellow pulsing border when FINDINGS and IMPRESSION contradict (e.g., "no bowel obstruction" vs "bowel obstruction"), click to dismiss
 - CDP flashing alert text: gender mismatch (red) and FIM mismatch (orange) flash matching text in the report editor until corrected

@@ -818,7 +818,18 @@ public class SttSection : SettingsSection
         config.SttEnsembleAlltimeMerges = 0;
         config.SttEnsembleAlltimeValidated = 0;
         config.SttEnsembleAlltimeRejected = 0;
+        config.SttEnsembleAlltimeAccEnsembleMatched = 0;
+        config.SttEnsembleAlltimeAccEnsembleTotal = 0;
+        config.SttEnsembleAlltimeAccDgMatched = 0;
+        config.SttEnsembleAlltimeAccDgTotal = 0;
+        config.SttEnsembleAlltimeAccS1Matched = 0;
+        config.SttEnsembleAlltimeAccS1Total = 0;
+        config.SttEnsembleAlltimeAccS2Matched = 0;
+        config.SttEnsembleAlltimeAccS2Total = 0;
         config.Save();
+
+        // Also reset live session counters in the merger (if running)
+        config.OnClearAllEnsembleStats?.Invoke();
     }
 
     private void OnGetKeyClick(object? sender, EventArgs e)

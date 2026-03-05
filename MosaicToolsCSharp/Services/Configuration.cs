@@ -446,6 +446,31 @@ public class Configuration
     [JsonPropertyName("stt_ensemble_alltime_rejected")]
     public int SttEnsembleAlltimeRejected { get; set; }
 
+    // Per-provider accuracy (bag-matched against signed reports)
+    [JsonPropertyName("stt_ensemble_alltime_acc_ensemble_matched")]
+    public int SttEnsembleAlltimeAccEnsembleMatched { get; set; }
+    [JsonPropertyName("stt_ensemble_alltime_acc_ensemble_total")]
+    public int SttEnsembleAlltimeAccEnsembleTotal { get; set; }
+    [JsonPropertyName("stt_ensemble_alltime_acc_dg_matched")]
+    public int SttEnsembleAlltimeAccDgMatched { get; set; }
+    [JsonPropertyName("stt_ensemble_alltime_acc_dg_total")]
+    public int SttEnsembleAlltimeAccDgTotal { get; set; }
+    [JsonPropertyName("stt_ensemble_alltime_acc_s1_matched")]
+    public int SttEnsembleAlltimeAccS1Matched { get; set; }
+    [JsonPropertyName("stt_ensemble_alltime_acc_s1_total")]
+    public int SttEnsembleAlltimeAccS1Total { get; set; }
+    [JsonPropertyName("stt_ensemble_alltime_acc_s2_matched")]
+    public int SttEnsembleAlltimeAccS2Matched { get; set; }
+    [JsonPropertyName("stt_ensemble_alltime_acc_s2_total")]
+    public int SttEnsembleAlltimeAccS2Total { get; set; }
+
+    /// <summary>
+    /// Callback invoked by "Clear All-Time Stats" button to reset live merger counters.
+    /// Wired by SttService after creating the merger.
+    /// </summary>
+    [JsonIgnore]
+    public Action? OnClearAllEnsembleStats { get; set; }
+
     [JsonPropertyName("stt_ensemble_metrics_x")]
     public int SttEnsembleMetricsX { get; set; } = int.MinValue;
 
