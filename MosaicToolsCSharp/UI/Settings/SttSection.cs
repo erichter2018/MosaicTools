@@ -93,6 +93,7 @@ public class SttSection : SettingsSection
     private string _speechmaticsRegion = "us";
     private int _previousProviderIndex;
     private bool _loading; // Suppress OnProviderChanged during LoadSettings
+    private Configuration? _config; // Cached for button handlers
 
     public SttSection(ToolTip toolTip) : base("Speech-to-Text", toolTip)
     {
@@ -325,6 +326,10 @@ public class SttSection : SettingsSection
 
         _ensembleShowMetricsCheck = AddCheckBox("Show live metrics popup", LeftMargin + 45, _nextY,
             "Show a draggable overlay with confidence, corrections, and provider stats during dictation.");
+        _nextY += SubRowHeight;
+
+        var clearAlltimeButton = AddButton("Clear All-Time Stats", LeftMargin + 45, _nextY, 140, 24, OnClearAlltimeStats,
+            "Reset all-time ensemble statistics (words, corrections, merges, validation counts).");
         _nextY += RowHeight;
 
         // Text Processing
@@ -797,6 +802,25 @@ public class SttSection : SettingsSection
         }
     }
 
+    private void OnClearAlltimeStats(object? sender, EventArgs e)
+    {
+        var result = MessageBox.Show(
+            "Clear all-time ensemble statistics?\n\nThis resets word counts, corrections, merges, and validation counts.",
+            "Clear All-Time Stats",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (result != DialogResult.Yes) return;
+
+        if (_config == null) return;
+        var config = _config;
+        config.SttEnsembleAlltimeWords = 0;
+        config.SttEnsembleAlltimeCorrected = 0;
+        config.SttEnsembleAlltimeConfidenceSum = 0;
+        config.SttEnsembleAlltimeMerges = 0;
+        config.SttEnsembleAlltimeValidated = 0;
+        config.SttEnsembleAlltimeRejected = 0;
+        config.Save();
+    }
+
     private void OnGetKeyClick(object? sender, EventArgs e)
     {
         var url = _providerCombo.SelectedIndex switch
@@ -877,6 +901,7 @@ public class SttSection : SettingsSection
 
     public override void LoadSettings(Configuration config)
     {
+        _config = config;
         _enabledCheck.Checked = config.CustomSttEnabled;
 
         // Load per-provider credentials into local storage

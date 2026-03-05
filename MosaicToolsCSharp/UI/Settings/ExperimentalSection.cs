@@ -20,6 +20,7 @@ public class ExperimentalSection : SettingsSection
     private readonly CheckBox _cdpScrollFixCheck;
     private readonly CheckBox _cdpAutoScrollCheck;
     private readonly CheckBox _cdpHideDragHandlesCheck;
+    private readonly CheckBox _cdpFlashingAlertTextCheck;
 
     public ExperimentalSection(ToolTip toolTip) : base("Experimental", toolTip)
     {
@@ -76,6 +77,21 @@ public class ExperimentalSection : SettingsSection
             "Hides the drag-to-reorder and delete icons on paragraphs in the report editor.");
         _nextY += RowHeight;
 
+        _cdpFlashingAlertTextCheck = AddCheckBox("Flashing Alert Text", LeftMargin + 25, _nextY,
+            "When gender mismatch or findings/impression mismatch is active, matching final report text flashes via CDP until corrected.");
+        _nextY += RowHeight;
+
+        AddHintLabel("Alert colors:", LeftMargin + 25);
+        var genderColorLabel = AddLabel("Gender mismatch = red (#DC0000 / #780000)", LeftMargin + 40, _nextY);
+        genderColorLabel.ForeColor = Color.FromArgb(255, 120, 120);
+        genderColorLabel.Font = new Font("Segoe UI", 8);
+        _nextY += 18;
+
+        var fimColorLabel = AddLabel("FIM mismatch = orange (#FFA000 / #B46E00)", LeftMargin + 40, _nextY);
+        fimColorLabel.ForeColor = Color.FromArgb(255, 190, 110);
+        fimColorLabel.Font = new Font("Segoe UI", 8);
+        _nextY += 18;
+
         UpdateHeight();
     }
 
@@ -91,6 +107,7 @@ public class ExperimentalSection : SettingsSection
         _cdpScrollFixCheck.Enabled = _cdpEnabledCheck.Checked;
         _cdpAutoScrollCheck.Enabled = _cdpEnabledCheck.Checked;
         _cdpHideDragHandlesCheck.Enabled = _cdpEnabledCheck.Checked;
+        _cdpFlashingAlertTextCheck.Enabled = _cdpEnabledCheck.Checked;
     }
 
     public override void LoadSettings(Configuration config)
@@ -104,6 +121,7 @@ public class ExperimentalSection : SettingsSection
         _cdpScrollFixCheck.Checked = config.CdpIndependentScrolling;
         _cdpAutoScrollCheck.Checked = config.CdpAutoScrollEnabled;
         _cdpHideDragHandlesCheck.Checked = config.CdpHideDragHandles;
+        _cdpFlashingAlertTextCheck.Checked = config.CdpFlashingAlertText;
 
         UpdateNetworkSettingsStates();
         UpdateCdpSettingsStates();
@@ -120,5 +138,6 @@ public class ExperimentalSection : SettingsSection
         config.CdpIndependentScrolling = _cdpScrollFixCheck.Checked;
         config.CdpAutoScrollEnabled = _cdpAutoScrollCheck.Checked;
         config.CdpHideDragHandles = _cdpHideDragHandlesCheck.Checked;
+        config.CdpFlashingAlertText = _cdpFlashingAlertTextCheck.Checked;
     }
 }

@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
+using System.Linq;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using MosaicTools.Services;
@@ -16,6 +17,7 @@ namespace MosaicTools.UI;
 public enum AlertType
 {
     PatientMismatch,
+    FindingsImpressionMismatch,
     TemplateMismatch,
     GenderMismatch,
     StrokeDetected,
@@ -58,6 +60,8 @@ public class ClinicalHistoryForm : Form
     private static readonly Color AidocBorderColor = Color.FromArgb(230, 160, 0); // Orange/amber - Aidoc finding
     private static readonly Color PatientMismatchBorderBright = Color.FromArgb(230, 200, 0); // Bright yellow - patient mismatch
     private static readonly Color PatientMismatchBorderDim = Color.FromArgb(160, 130, 0); // Dim yellow - patient mismatch pulse
+    private static readonly Color FimBorderBright = Color.FromArgb(255, 160, 0); // Bright orange - findings/impression mismatch
+    private static readonly Color FimBorderDim = Color.FromArgb(180, 110, 0); // Dim orange - findings/impression mismatch pulse
     private const int MismatchBorderWidth = 4; // Thicker than normal TransparentBorderWidth (2)
 
     // Text colors
@@ -126,6 +130,15 @@ public class ClinicalHistoryForm : Form
     private bool _genderWarningActive = false;
     private string? _genderWarningText;
     private string? _savedClinicalHistoryText;
+
+    // Findings/Impression mismatch state
+    private bool _fimActive = false;
+    private string? _fimText;
+    private HashSet<string> _activeMismatchKeys = new();
+    private HashSet<string> _dismissedMismatchKeys = new();
+    private System.Windows.Forms.Timer? _fimPulseTimer;
+    private bool _fimPulseState = false;
+    private Action? _onMismatchDismissed;
 
     // Periodic topmost reassertion — some apps (InteleViewer, Chrome) steal Z-order
     private System.Windows.Forms.Timer? _topMostTimer;
@@ -456,14 +469,14 @@ public class ClinicalHistoryForm : Form
 
         // Check if we need a gradient border (stroke + unaddressed aidoc)
         bool useGradientBorder = _strokeDetected && _aidocActive && !_aidocAllAddressed
-            && !_genderWarningActive && !_templateMismatch && !_patientMismatchActive;
+            && !_genderWarningActive && !_fimActive && !_templateMismatch && !_patientMismatchActive;
 
         // Layer 1: semi-transparent background
         using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(bmp))
         {
             g.Clear(Color.FromArgb(0, 0, 0, 0));
-            int bw = _patientMismatchActive ? MismatchBorderWidth : TransparentBorderWidth;
+            int bw = (_patientMismatchActive || _fimActive) ? MismatchBorderWidth : TransparentBorderWidth;
             // Inner area - semi-transparent (draw first, border drawn on top)
             using var innerBrush = new SolidBrush(Color.FromArgb(_backgroundAlpha, innerBg.R, innerBg.G, innerBg.B));
             g.FillRectangle(innerBrush, bw, bw, w - bw * 2, h - bw * 2);
@@ -634,6 +647,42 @@ public class ClinicalHistoryForm : Form
 
     private void HandleContentClick()
     {
+        // Findings/Impression mismatch: click to dismiss
+        if (_fimActive)
+        {
+            foreach (var key in _activeMismatchKeys)
+                _dismissedMismatchKeys.Add(key);
+            _fimActive = false;
+            _fimText = null;
+            _activeMismatchKeys.Clear();
+            StopFimPulse();
+
+            // Restore display
+            _contentLabel.BackColor = Color.Black;
+            if (!string.IsNullOrEmpty(_currentDisplayedText))
+            {
+                _contentLabel.Text = _currentDisplayedText;
+                _contentLabel.ForeColor = _currentTextWasFixed ? FixedTextColor : NormalTextColor;
+            }
+
+            // Fall through to next priority
+            if (_genderWarningActive)
+                StartBlinking();
+            else if (_templateMismatch)
+                BackColor = TemplateMismatchBorderColor;
+            else if (_strokeDetected)
+                BackColor = StrokeBorderColor;
+            else if (_aidocActive && !_aidocAllAddressed)
+                BackColor = AidocBorderColor;
+            else
+                BackColor = NormalBorderColor;
+
+            UpdateBorderTooltip();
+            RequestRender();
+            _onMismatchDismissed?.Invoke();
+            return;
+        }
+
         // Ctrl+Click = create critical note
         if (ModifierKeys.HasFlag(Keys.Control))
         {
@@ -683,7 +732,7 @@ public class ClinicalHistoryForm : Form
             _currentTextWasFixed = false;
 
             // Don't overwrite label when a warning overlay is active
-            if (!_patientMismatchActive && !_genderWarningActive)
+            if (!_patientMismatchActive && !_fimActive && !_genderWarningActive)
             {
                 _contentLabel.Text = "(No clinical history)";
                 _contentLabel.ForeColor = EmptyTextColor;
@@ -695,7 +744,7 @@ public class ClinicalHistoryForm : Form
             _currentTextWasFixed = wasFixed;
 
             // Don't overwrite label when a warning overlay is active
-            if (!_patientMismatchActive && !_genderWarningActive)
+            if (!_patientMismatchActive && !_fimActive && !_genderWarningActive)
             {
                 _contentLabel.Text = text;
                 _contentLabel.ForeColor = wasFixed ? FixedTextColor : NormalTextColor;
@@ -849,6 +898,11 @@ public class ClinicalHistoryForm : Form
         _autoFixPasteCount = 0;
         _patientMismatchActive = false;
         StopMismatchPulse();
+        _fimActive = false;
+        _fimText = null;
+        _activeMismatchKeys.Clear();
+        _dismissedMismatchKeys.Clear();
+        StopFimPulse();
         _templateMismatch = false;
         // Note: _strokeDetected NOT cleared here — PerformStrokeDetection sets it explicitly.
         // Clearing here caused a race condition: OnStudyChanged (double-BeginInvoke) would
@@ -891,7 +945,7 @@ public class ClinicalHistoryForm : Form
         }
 
         // Don't touch colors when a warning overlay controls the display
-        if (_patientMismatchActive || _genderWarningActive)
+        if (_patientMismatchActive || _fimActive || _genderWarningActive)
             return;
 
         if (string.IsNullOrWhiteSpace(_currentDisplayedText))
@@ -957,10 +1011,10 @@ public class ClinicalHistoryForm : Form
             _aidocLabel.ForeColor = _aidocAllAddressed ? Color.FromArgb(100, 200, 100) : AidocBorderColor;
         }
 
-        // Update border: orange for unaddressed Aidoc (lower priority than template/gender/stroke/mismatch)
-        if (_aidocActive && !_aidocAllAddressed && !_patientMismatchActive && !_genderWarningActive && !_templateMismatch && !_strokeDetected)
+        // Update border: orange for unaddressed Aidoc (lower priority than template/gender/stroke/mismatch/fim)
+        if (_aidocActive && !_aidocAllAddressed && !_patientMismatchActive && !_fimActive && !_genderWarningActive && !_templateMismatch && !_strokeDetected)
             BackColor = AidocBorderColor;
-        else if ((_aidocAllAddressed || !_aidocActive) && wasActive && !_patientMismatchActive && !_genderWarningActive && !_templateMismatch && !_strokeDetected)
+        else if ((_aidocAllAddressed || !_aidocActive) && wasActive && !_patientMismatchActive && !_fimActive && !_genderWarningActive && !_templateMismatch && !_strokeDetected)
             BackColor = NormalBorderColor;
 
         UpdateBorderTooltip();
@@ -975,7 +1029,7 @@ public class ClinicalHistoryForm : Form
             return;
         }
 
-        if (_patientMismatchActive || _genderWarningActive)
+        if (_patientMismatchActive || _fimActive || _genderWarningActive)
             { /* pulse/blink timer controls BackColor */ }
         else if (_templateMismatch)
             BackColor = TemplateMismatchBorderColor;
@@ -1008,7 +1062,7 @@ public class ClinicalHistoryForm : Form
         if (_fixTemplateMenuItemOpaque != null) _fixTemplateMenuItemOpaque.Visible = isMismatch;
         if (_fixTemplateSeparatorOpaque != null) _fixTemplateSeparatorOpaque.Visible = isMismatch;
 
-        if (isMismatch && !_patientMismatchActive && !_genderWarningActive)
+        if (isMismatch && !_patientMismatchActive && !_fimActive && !_genderWarningActive)
         {
             BackColor = TemplateMismatchBorderColor;
             UpdateBorderTooltip();
@@ -1027,7 +1081,7 @@ public class ClinicalHistoryForm : Form
 
         _strokeDetected = isStroke;
 
-        if (isStroke && !_patientMismatchActive && !_genderWarningActive && !_templateMismatch)
+        if (isStroke && !_patientMismatchActive && !_fimActive && !_genderWarningActive && !_templateMismatch)
             BackColor = StrokeBorderColor;
 
         UpdateBorderTooltip();
@@ -1113,7 +1167,9 @@ public class ClinicalHistoryForm : Form
                 }
 
                 // Restore to the next-highest priority alert
-                if (_genderWarningActive)
+                if (_fimActive)
+                    StartFimPulse();
+                else if (_genderWarningActive)
                     StartBlinking();
                 else if (_templateMismatch)
                     BackColor = TemplateMismatchBorderColor;
@@ -1191,9 +1247,177 @@ public class ClinicalHistoryForm : Form
         RequestRender();
     }
 
+    /// <summary>
+    /// Set findings/impression mismatch state. Yellow pulsing border, click to dismiss.
+    /// Priority: below PatientMismatch, above GenderMismatch.
+    /// </summary>
+    public void SetFindingsImpressionMismatch(bool active, List<MismatchResult>? mismatches)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => SetFindingsImpressionMismatch(active, mismatches));
+            return;
+        }
+
+        if (active && mismatches != null && mismatches.Count > 0)
+        {
+            // Filter out dismissed keys
+            var remaining = mismatches.Where(m => !_dismissedMismatchKeys.Contains(m.Key)).ToList();
+            if (remaining.Count == 0)
+            {
+                // All dismissed — deactivate
+                if (_fimActive)
+                {
+                    _fimActive = false;
+                    _fimText = null;
+                    _activeMismatchKeys.Clear();
+                    StopFimPulse();
+
+                    if (!_patientMismatchActive)
+                    {
+                        _contentLabel.BackColor = Color.Black;
+                        if (!string.IsNullOrEmpty(_currentDisplayedText))
+                        {
+                            _contentLabel.Text = _currentDisplayedText;
+                            _contentLabel.ForeColor = _currentTextWasFixed ? FixedTextColor : NormalTextColor;
+                        }
+
+                        if (_genderWarningActive)
+                            StartBlinking();
+                        else if (_templateMismatch)
+                            BackColor = TemplateMismatchBorderColor;
+                        else if (_strokeDetected)
+                            BackColor = StrokeBorderColor;
+                        else if (_aidocActive && !_aidocAllAddressed)
+                            BackColor = AidocBorderColor;
+                        else
+                            BackColor = NormalBorderColor;
+                    }
+
+                    UpdateBorderTooltip();
+                    RequestRender();
+                }
+                return;
+            }
+
+            if (!_fimActive)
+                _savedClinicalHistoryText ??= _contentLabel.Text;
+
+            _fimActive = true;
+            _activeMismatchKeys = new HashSet<string>(remaining.Select(m => m.Key));
+            var names = string.Join(", ", remaining.Select(m => m.DisplayName));
+            _fimText = $"FINDINGS/IMPRESSION: {names}";
+
+            if (!_patientMismatchActive)
+            {
+                StartFimPulse();
+                UpdateBorderTooltip();
+            }
+            RequestRender();
+        }
+        else
+        {
+            if (_fimActive)
+            {
+                _fimActive = false;
+                _fimText = null;
+                _activeMismatchKeys.Clear();
+                StopFimPulse();
+
+                if (!_patientMismatchActive)
+                {
+                    _contentLabel.BackColor = Color.Black;
+
+                    if (!string.IsNullOrEmpty(_currentDisplayedText))
+                    {
+                        _contentLabel.Text = _currentDisplayedText;
+                        _contentLabel.ForeColor = _currentTextWasFixed ? FixedTextColor : NormalTextColor;
+                    }
+
+                    if (_genderWarningActive)
+                        StartBlinking();
+                    else if (_templateMismatch)
+                        BackColor = TemplateMismatchBorderColor;
+                    else if (_strokeDetected)
+                        BackColor = StrokeBorderColor;
+                    else if (_aidocActive && !_aidocAllAddressed)
+                        BackColor = AidocBorderColor;
+                    else
+                        BackColor = NormalBorderColor;
+                }
+
+                UpdateBorderTooltip();
+                RequestRender();
+            }
+        }
+    }
+
+    public bool IsFimActive => _fimActive;
+
+    private void StartFimPulse()
+    {
+        if (_fimPulseTimer != null) return;
+
+        // Pause gender blink while FIM is active (FIM takes priority)
+        if (_blinkTimer != null)
+            _blinkTimer.Stop();
+
+        _fimPulseState = true;
+        UpdateFimPulseDisplay();
+
+        _fimPulseTimer = new System.Windows.Forms.Timer { Interval = 600 };
+        _fimPulseTimer.Tick += (_, _) =>
+        {
+            _fimPulseState = !_fimPulseState;
+            UpdateFimPulseDisplay();
+        };
+        _fimPulseTimer.Start();
+    }
+
+    private void StopFimPulse()
+    {
+        if (_fimPulseTimer != null)
+        {
+            _fimPulseTimer.Stop();
+            _fimPulseTimer.Dispose();
+            _fimPulseTimer = null;
+        }
+
+        // Resume gender blink if it was paused
+        if (_genderWarningActive && _blinkTimer != null)
+            _blinkTimer.Start();
+    }
+
+    private void UpdateFimPulseDisplay()
+    {
+        if (!_fimActive || _patientMismatchActive) return;
+
+        if (_fimPulseState)
+        {
+            BackColor = FimBorderBright;
+            _contentLabel.BackColor = Color.FromArgb(60, 35, 0);
+            _contentLabel.ForeColor = Color.FromArgb(255, 200, 80);
+            _contentLabel.Text = _fimText ?? "FINDINGS/IMPRESSION MISMATCH";
+        }
+        else
+        {
+            BackColor = FimBorderDim;
+            _contentLabel.BackColor = Color.FromArgb(40, 25, 0);
+            _contentLabel.ForeColor = Color.FromArgb(200, 150, 50);
+            _contentLabel.Text = _fimText ?? "FINDINGS/IMPRESSION MISMATCH";
+        }
+
+        RequestRender();
+    }
+
     #endregion
 
     #region Callback Setters
+
+    public void SetMismatchDismissedCallback(Action callback)
+    {
+        _onMismatchDismissed = callback;
+    }
 
     public void SetStrokeNoteClickCallback(Func<bool> callback)
     {
@@ -1256,6 +1480,13 @@ public class ClinicalHistoryForm : Form
 
         switch (type)
         {
+            case AlertType.FindingsImpressionMismatch:
+                BackColor = FimBorderBright;
+                _contentLabel.BackColor = Color.FromArgb(60, 35, 0);
+                _contentLabel.ForeColor = Color.FromArgb(255, 200, 80);
+                _contentLabel.Text = $"FINDINGS/IMPRESSION: {details}";
+                break;
+
             case AlertType.TemplateMismatch:
                 BackColor = TemplateMismatchBorderColor;
                 _contentLabel.BackColor = Color.Black;
@@ -1347,6 +1578,8 @@ public class ClinicalHistoryForm : Form
 
         if (_patientMismatchActive)
             tooltip = "Yellow (pulsing): Patient mismatch - InteleViewer shows a different patient than Mosaic";
+        else if (_fimActive)
+            tooltip = "Orange (pulsing): Findings/Impression mismatch - click to dismiss";
         else if (_genderWarningActive)
             tooltip = "Red (flashing): Gender mismatch - report contains terms that don't match patient gender";
         else if (_templateMismatch)
@@ -1570,6 +1803,8 @@ public class ClinicalHistoryForm : Form
         sb.AppendLine("=== Alerts Debug ===");
         sb.AppendLine($"Template mismatch: {_templateMismatch}");
         sb.AppendLine($"Patient mismatch: {_patientMismatchActive} ({_patientMismatchText ?? ""})");
+        sb.AppendLine($"FIM active: {_fimActive} ({_fimText ?? ""})");
+        sb.AppendLine($"FIM dismissed: [{string.Join(", ", _dismissedMismatchKeys)}]");
         sb.AppendLine($"Gender warning: {_genderWarningActive} ({_genderWarningText ?? ""})");
         sb.AppendLine($"Stroke detected: {_strokeDetected}, note created: {_noteCreated}");
         sb.AppendLine($"Aidoc active: {_aidocActive}, all addressed: {_aidocAllAddressed}");
@@ -2355,7 +2590,15 @@ public class ClinicalHistoryForm : Form
                         _contentLabel.ForeColor = NormalTextColor;
                     }
 
-                    if (!_templateMismatch)
+                    if (_fimActive)
+                        StartFimPulse();
+                    else if (_templateMismatch)
+                        BackColor = TemplateMismatchBorderColor;
+                    else if (_strokeDetected)
+                        BackColor = StrokeBorderColor;
+                    else if (_aidocActive && !_aidocAllAddressed)
+                        BackColor = AidocBorderColor;
+                    else
                         BackColor = NormalBorderColor;
                 }
 

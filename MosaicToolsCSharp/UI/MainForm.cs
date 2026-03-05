@@ -1820,6 +1820,14 @@ public class MainForm : Form
         _clinicalHistoryWindow.ClearAlert();
     }
 
+    public void UpdateFindingsImpressionMismatch(bool active, List<MismatchResult>? mismatches)
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        _clinicalHistoryWindow.SetFindingsImpressionMismatch(active, mismatches);
+    }
+
     public void SetAidocAppend(List<FindingVerification>? findings)
     {
         if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)

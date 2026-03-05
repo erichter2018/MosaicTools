@@ -31,6 +31,7 @@ public class AlertsSection : SettingsSection
     private readonly CheckBox _strokeDetectionUseClinicalHistoryCheck;
     private readonly CheckBox _strokeClickToCreateNoteCheck;
     private readonly CheckBox _strokeAutoCreateNoteCheck;
+    private readonly CheckBox _findingsImpressionMismatchCheck;
     private readonly CheckBox _aidocScrapeEnabledCheck;
     private readonly CheckBox _recoMdEnabledCheck;
     private readonly CheckBox _recoMdAutoOnProcessCheck;
@@ -130,6 +131,16 @@ public class AlertsSection : SettingsSection
         flashingRedLabel.ForeColor = Color.FromArgb(255, 100, 100);
         flashingRedLabel.Font = new Font("Segoe UI", 8);
         _nextY += SubRowHeight;
+
+        // Findings/Impression Mismatch
+        _findingsImpressionMismatchCheck = AddCheckBox("Findings/Impression mismatch", LeftMargin, _nextY,
+            "Pulsing yellow border when FINDINGS negates something\nthat IMPRESSION asserts (or vice versa).");
+        var fimOrangeLabel = AddLabel("(pulsing orange)", LeftMargin + 260, _nextY + 2);
+        fimOrangeLabel.ForeColor = Color.FromArgb(255, 160, 0);
+        fimOrangeLabel.Font = new Font("Segoe UI", 8);
+        _nextY += SubRowHeight;
+        AddHintLabel("Detects contradictions like 'no obstruction' in findings + 'obstruction' in impression", LeftMargin + 25);
+        _nextY += 3;
 
         // Aidoc AI Detection
         _aidocScrapeEnabledCheck = AddCheckBox("Aidoc AI detection", LeftMargin, _nextY,
@@ -288,6 +299,7 @@ public class AlertsSection : SettingsSection
         _showTemplateMismatchCheck.Checked = config.ShowTemplateMismatch;
         _attemptCorrectTemplateCheck.Checked = config.AttemptCorrectTemplate;
         _genderCheckEnabledCheck.Checked = config.GenderCheckEnabled;
+        _findingsImpressionMismatchCheck.Checked = config.FindingsImpressionMismatchEnabled;
         _aidocScrapeEnabledCheck.Checked = config.AidocScrapeEnabled;
         _recoMdEnabledCheck.Checked = config.RecoMdEnabled;
         _recoMdAutoOnProcessCheck.Checked = config.RecoMdAutoOnProcess;
@@ -317,6 +329,7 @@ public class AlertsSection : SettingsSection
         config.ShowTemplateMismatch = _showTemplateMismatchCheck.Checked;
         config.AttemptCorrectTemplate = _attemptCorrectTemplateCheck.Checked;
         config.GenderCheckEnabled = _genderCheckEnabledCheck.Checked;
+        config.FindingsImpressionMismatchEnabled = _findingsImpressionMismatchCheck.Checked;
         config.AidocScrapeEnabled = _aidocScrapeEnabledCheck.Checked;
         config.RecoMdEnabled = _recoMdEnabledCheck.Checked;
         config.RecoMdAutoOnProcess = _recoMdAutoOnProcessCheck.Checked;

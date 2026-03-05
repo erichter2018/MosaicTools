@@ -139,6 +139,9 @@ public class Configuration
     [JsonPropertyName("gender_check_enabled")]
     public bool GenderCheckEnabled { get; set; } = false;
 
+    [JsonPropertyName("findings_impression_mismatch_enabled")]
+    public bool FindingsImpressionMismatchEnabled { get; set; } = true;
+
     [JsonPropertyName("aidoc_scrape_enabled")]
     public bool AidocScrapeEnabled { get; set; } = false;  // Off by default (not everyone has Aidoc)
 
@@ -540,6 +543,9 @@ public class Configuration
 
     [JsonPropertyName("cdp_hide_drag_handles")]
     public bool CdpHideDragHandles { get; set; } = true;
+
+    [JsonPropertyName("cdp_flashing_alert_text")]
+    public bool CdpFlashingAlertText { get; set; } = false;
 
     // UI Options
     [JsonPropertyName("show_tooltips")]

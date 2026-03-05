@@ -1449,6 +1449,196 @@ html, body {{ overflow: hidden !important; }}
         return result == "true";
     }
 
+    /// <summary>
+    /// Flash matching final-report text for active alert terms.
+    /// Installs a persistent JS watchdog interval that re-applies ProseMirror highlight
+    /// marks whenever Mosaic's internal sync strips them (~every 2s).
+    /// CSS @keyframes animation on the resulting mark elements creates the visual flash.
+    /// </summary>
+    public bool UpdateAlertTextFlashing(IReadOnlyList<string>? genderTerms, IReadOnlyList<string>? fimTerms)
+    {
+        if (!IsIframeConnected) return false;
+
+        var gender = (genderTerms ?? Array.Empty<string>())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Select(t => t.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var fim = (fimTerms ?? Array.Empty<string>())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Select(t => t.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var genderJson = JsonSerializer.Serialize(gender);
+        var fimJson = JsonSerializer.Serialize(fim);
+
+        // Store terms on window.__mtFlash and install a watchdog setInterval that
+        // re-applies marks every 500ms when Mosaic's document sync strips them.
+        var js = $@"(() => {{
+            const GC = '#DC0000', FC = '#FF8C00', SID = 'mt-alert-flash-css';
+
+            // Find the report editor (highest scoring ProseMirror instance)
+            function findEditor() {{
+                const eds = Array.from(document.querySelectorAll('.ProseMirror'));
+                if (eds.length === 0) return null;
+                function sc(ed) {{
+                    const t = (ed.innerText || '').toUpperCase();
+                    let s = 0;
+                    if (ed.isConnected && ed.getClientRects().length > 0) s += 3;
+                    if (t.includes('IMPRESSION')) s += 5;
+                    if (t.includes('FINDINGS')) s += 4;
+                    if (t.includes('EXAM')) s += 2;
+                    if (t.length > 200) s += 1;
+                    return s;
+                }}
+                let best = eds[0], bestSc = sc(eds[0]);
+                for (let i = 1; i < eds.length; i++) {{
+                    const s = sc(eds[i]);
+                    if (s > bestSc) {{ bestSc = s; best = eds[i]; }}
+                }}
+                return best.editor || null;
+            }}
+
+            // Apply highlight marks for given terms with given color
+            function applyMarks(tip, hl, terms, color, tr) {{
+                let c = 0;
+                const doc = tr.doc;
+                terms.forEach(t => {{
+                    const re = new RegExp('\\b' + t.replace(/[.*+?^${{}}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+') + '\\b', 'gi');
+                    doc.descendants((n, p) => {{
+                        if (!n.isText) return;
+                        re.lastIndex = 0;
+                        let m;
+                        while ((m = re.exec(n.text)) !== null) {{
+                            tr.addMark(p + m.index, p + m.index + m[0].length, hl.create({{ color }}));
+                            c++;
+                        }}
+                    }});
+                }});
+                return c;
+            }}
+
+            // Check if our marks exist in the document
+            function hasOurMarks(tip, hl) {{
+                let found = false;
+                tip.state.doc.descendants(n => {{
+                    if (found || !n.isText) return;
+                    n.marks.forEach(mk => {{
+                        if (mk.type === hl && (mk.attrs.color === GC || mk.attrs.color === FC))
+                            found = true;
+                    }});
+                }});
+                return found;
+            }}
+
+            // Core: remove old marks then apply new ones
+            function refreshMarks() {{
+                const f = window.__mtFlash;
+                if (!f || !f.active) return;
+                const tip = findEditor();
+                if (!tip) return;
+                const hl = tip.schema.marks.highlight;
+                if (!hl) return;
+
+                // Skip if our marks are still present
+                if (hasOurMarks(tip, hl)) return;
+
+                const tr = tip.state.tr;
+                tr.setMeta('addToHistory', false);
+                applyMarks(tip, hl, f.gT, GC, tr);
+                applyMarks(tip, hl, f.fT, FC, tr);
+                if (tr.steps.length > 0) tip.view.dispatch(tr);
+            }}
+
+            // Update stored terms
+            if (!window.__mtFlash) window.__mtFlash = {{}};
+            const f = window.__mtFlash;
+            f.gT = {genderJson};
+            f.fT = {fimJson};
+            f.active = true;
+
+            // Ensure CSS flash animation exists
+            let sEl = document.getElementById(SID);
+            if (!sEl) {{ sEl = document.createElement('style'); sEl.id = SID; document.head.appendChild(sEl); }}
+            sEl.textContent =
+                '@keyframes mt-fg{{0%,50%{{background-color:' + GC + '}}51%,100%{{background-color:transparent}}}}' +
+                '@keyframes mt-ff{{0%,50%{{background-color:' + FC + '}}51%,100%{{background-color:transparent}}}}' +
+                'mark[data-color=""' + GC + '""],mark[data-color=""' + GC + '""] *{{animation:mt-fg 1s infinite!important;color:white!important;-webkit-text-fill-color:white!important}}' +
+                'mark[data-color=""' + FC + '""],mark[data-color=""' + FC + '""] *{{animation:mt-ff 1s infinite!important;color:white!important;-webkit-text-fill-color:white!important}}';
+
+            // Install watchdog interval (or keep existing one)
+            if (f.iv) clearInterval(f.iv);
+            f.iv = setInterval(refreshMarks, 500);
+
+            // Apply immediately on this call
+            const tip = findEditor();
+            if (!tip) return 'no_tiptap';
+            const hl = tip.schema.marks.highlight;
+            if (!hl) return 'no_highlight';
+            const tr = tip.state.tr;
+            tr.setMeta('addToHistory', false);
+
+            // Remove stale marks first
+            tip.state.doc.descendants((node, pos) => {{
+                if (!node.isText) return;
+                node.marks.forEach(mk => {{
+                    if (mk.type === hl && (mk.attrs.color === GC || mk.attrs.color === FC))
+                        tr.removeMark(pos, pos + node.nodeSize, mk);
+                }});
+            }});
+
+            const gC = applyMarks(tip, hl, f.gT, GC, tr);
+            const fC = applyMarks(tip, hl, f.fT, FC, tr);
+            if (tr.steps.length > 0) tip.view.dispatch(tr);
+
+            return JSON.stringify({{ g: gC, f: fC, watchdog: true }});
+        }})()";
+
+        var result = ExtractResultValue(SendToIframe(js));
+        if (result == null) return false;
+        Logger.Trace($"CDP: Alert text flashing update: {result}");
+        return !result.StartsWith("no_", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Remove alert-text flashing highlights and stop the watchdog interval.
+    /// </summary>
+    public void ClearAlertTextFlashing()
+    {
+        if (!IsIframeConnected) return;
+        var js = @"(() => {
+            const GC = '#DC0000', FC = '#FF8C00';
+            // Stop watchdog
+            if (window.__mtFlash) {
+                if (window.__mtFlash.iv) clearInterval(window.__mtFlash.iv);
+                window.__mtFlash = null;
+            }
+            // Remove marks from all editors
+            document.querySelectorAll('.ProseMirror').forEach(el => {
+                const tip = el.editor;
+                if (!tip) return;
+                const hl = tip.schema.marks.highlight;
+                if (!hl) return;
+                const doc = tip.state.doc;
+                const tr = tip.state.tr;
+                tr.setMeta('addToHistory', false);
+                doc.descendants((node, pos) => {
+                    if (!node.isText) return;
+                    node.marks.forEach(mk => {
+                        if (mk.type === hl && (mk.attrs.color === GC || mk.attrs.color === FC))
+                            tr.removeMark(pos, pos + node.nodeSize, mk);
+                    });
+                });
+                if (tr.steps.length > 0) tip.view.dispatch(tr);
+            });
+            const style = document.getElementById('mt-alert-flash-css');
+            if (style) style.remove();
+            return 'ok';
+        })()";
+        try { SendToIframe(js); } catch { }
+    }
+
     // ═══════ PUBLIC API: STRUCTURED REPORT ═══════
 
     // JS payload that walks ProseMirror JSON tree and returns structured sections.

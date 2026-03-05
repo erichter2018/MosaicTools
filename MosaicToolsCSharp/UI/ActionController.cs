@@ -202,6 +202,9 @@ public class ActionController : IDisposable
     private int _templateCorrectionAttempts = 0;
     private long _templateCorrectionNextRetryTick64 = 0;
     private bool _genderMismatchActive = false;
+    private bool _fimMismatchActive = false;
+    private string? _lastMismatchCheckReportText;
+    private List<MismatchResult>? _lastFimMismatches;
     private bool _strokeDetectedActive = false;
     private bool _pendingClarioPriorityRetry = false;
     private int _clarioPriorityRetryCount = 0;
@@ -216,6 +219,9 @@ public class ActionController : IDisposable
     private long _lastAidocScrapeTick64; // Throttle: minimum 5s between Aidoc scrapes
     private long _lastColumnRatioReadTick64; // Throttle: read back column ratio every ~30s
     private bool _scrollDiagLogged; // One-shot: dump DOM after scroll fix for debugging
+    private bool _cdpAlertFlashApplied; // Tracks whether flashing classes are currently applied
+    private string? _cdpAlertFlashSignature; // Last terms/report signature pushed to CDP
+    private long _lastCdpAlertFlashApplyTick64; // Periodic refresh in case Mosaic re-renders editor DOM
 
     // RecoMD state tracking — continuous send on every scrape tick
     private string? _recoMdOpenedForAccession; // accession currently opened in RecoMD
@@ -451,9 +457,12 @@ public class ActionController : IDisposable
             _cdpService.ColumnRatio = _config.CdpColumnRatio;
             _cdpService.AutoScrollEnabled = _config.CdpAutoScrollEnabled;
             _cdpService.HideDragHandles = _config.CdpHideDragHandles;
+            if (!_config.CdpFlashingAlertText)
+                ClearCdpAlertTextFlashing();
         }
         else if (_cdpService != null)
         {
+            ClearCdpAlertTextFlashing();
             _cdpService.Dispose();
             _cdpService = null;
             Logger.Trace("CDP: Disabled and disposed");
@@ -4402,6 +4411,10 @@ public class ActionController : IDisposable
         _templateCorrectionAttempts = 0;
         _templateCorrectionNextRetryTick64 = 0;
         _genderMismatchActive = false;
+        _fimMismatchActive = false;
+        ClearCdpAlertTextFlashing();
+        _lastMismatchCheckReportText = null;
+        _lastFimMismatches = null;
         _strokeDetectedActive = false;
         _pendingClarioPriorityRetry = false;
         _lastAidocFindings = null;
@@ -4825,12 +4838,18 @@ public class ActionController : IDisposable
     /// </summary>
     private void UpdateClinicalHistoryAndAlerts(string? currentAccession, string? reportText, long tickStartTick64 = 0)
     {
-        if (!_config.ShowClinicalHistory)
+        if (!_config.ShowClinicalHistory && (!_config.CdpEnabled || !_config.CdpFlashingAlertText))
+        {
+            ClearCdpAlertTextFlashing();
             return;
+        }
+
 
         // First, evaluate all alert conditions
         bool newTemplateMismatch = false;
         bool newGenderMismatch = false;
+        bool newFimMismatch = false;
+        List<MismatchResult>? fimMismatches = null;
         string? templateDescription = null;
         string? templateName = null;
         string? patientGender = _mosaicReader.LastPatientGender;
@@ -4884,6 +4903,46 @@ public class ActionController : IDisposable
         {
             genderMismatches = ClinicalHistoryForm.CheckGenderMismatch(reportText, patientGender);
             newGenderMismatch = genderMismatches.Count > 0;
+        }
+
+        // Check for findings/impression mismatch
+        if (_config.FindingsImpressionMismatchEnabled && !string.IsNullOrWhiteSpace(reportText)
+            && !string.Equals(reportText, _lastMismatchCheckReportText, StringComparison.Ordinal))
+        {
+            _lastMismatchCheckReportText = reportText;
+            try
+            {
+                // Prefer structured report (CDP) for clean section extraction, fall back to regex
+                var sr = (_cdpService?.IsIframeConnected == true) ? _cdpService.GetStructuredReport() : null;
+                var (findingsText, impressionText) = sr != null
+                    ? CorrelationService.ExtractSections(sr)
+                    : CorrelationService.ExtractSections(reportText);
+                fimMismatches = FindingsImpressionChecker.Check(findingsText, impressionText);
+                _lastFimMismatches = fimMismatches;
+                newFimMismatch = fimMismatches.Count > 0;
+                if (newFimMismatch != _fimMismatchActive || newFimMismatch)
+                    Logger.Trace($"FIM: {(fimMismatches.Count > 0 ? string.Join(", ", fimMismatches.Select(m => m.DisplayName)) : "clear")} (findings={findingsText.Length}c, impression={impressionText.Length}c)");
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"FIM: error: {ex.Message}");
+            }
+        }
+        else if (_config.FindingsImpressionMismatchEnabled && _lastFimMismatches != null)
+        {
+            fimMismatches = _lastFimMismatches;
+            newFimMismatch = fimMismatches.Count > 0;
+        }
+
+        UpdateCdpAlertTextFlashing(reportText, genderMismatches, fimMismatches);
+
+        // CDP flashing can run even when clinical history UI is hidden.
+        // Skip the rest of the clinical-history/Aidoc UI pipeline in that case.
+        if (!_config.ShowClinicalHistory)
+        {
+            _genderMismatchActive = newGenderMismatch;
+            _fimMismatchActive = newFimMismatch;
+            return;
         }
 
         // Tick budget: skip heavy cross-process UIA operations (Clario traversal, Aidoc scrape)
@@ -4988,7 +5047,7 @@ public class ActionController : IDisposable
         }
 
         // Determine if any alerts are active
-        bool anyAlertActive = newTemplateMismatch || newGenderMismatch || _strokeDetectedActive || effectiveAidocRelevant;
+        bool anyAlertActive = newTemplateMismatch || newGenderMismatch || newFimMismatch || _strokeDetectedActive || effectiveAidocRelevant;
 
         // Handle visibility based on always-show vs alerts-only mode
         if (_config.AlwaysShowClinicalHistory)
@@ -5012,6 +5071,17 @@ public class ActionController : IDisposable
             {
                 bool isDrafted = _mosaicReader.LastDraftedState;
                 BatchUI(() => _mainForm.UpdateClinicalHistoryDraftedState(isDrafted));
+            }
+
+            // Update findings/impression mismatch
+            if (_config.FindingsImpressionMismatchEnabled && fimMismatches != null)
+            {
+                var capturedFim = fimMismatches;
+                BatchUI(() => _mainForm.UpdateFindingsImpressionMismatch(capturedFim.Count > 0, capturedFim));
+            }
+            else if (!_config.FindingsImpressionMismatchEnabled && _fimMismatchActive)
+            {
+                BatchUI(() => _mainForm.UpdateFindingsImpressionMismatch(false, null));
             }
 
             // Update gender check
@@ -5053,7 +5123,12 @@ public class ActionController : IDisposable
             AlertType? alertToShow = null;
             string alertDetails = "";
 
-            if (newGenderMismatch && genderMismatches != null)
+            if (newFimMismatch && fimMismatches != null)
+            {
+                alertToShow = AlertType.FindingsImpressionMismatch;
+                alertDetails = string.Join(", ", fimMismatches.Select(m => m.DisplayName));
+            }
+            else if (newGenderMismatch && genderMismatches != null)
             {
                 alertToShow = AlertType.GenderMismatch;
                 alertDetails = string.Join(", ", genderMismatches);
@@ -5117,6 +5192,78 @@ public class ActionController : IDisposable
         // Update tracking for next iteration
         _templateMismatchActive = newTemplateMismatch;
         _genderMismatchActive = newGenderMismatch;
+        _fimMismatchActive = newFimMismatch;
+    }
+
+    private void UpdateCdpAlertTextFlashing(
+        string? reportText,
+        List<string>? genderMismatches,
+        List<MismatchResult>? fimMismatches)
+    {
+        if (_cdpService?.IsIframeConnected != true
+            || !_config.CdpEnabled
+            || !_config.CdpFlashingAlertText
+            || string.IsNullOrWhiteSpace(reportText))
+        {
+            ClearCdpAlertTextFlashing();
+            return;
+        }
+
+        var genderTerms = (_config.GenderCheckEnabled ? genderMismatches : null) ?? new List<string>();
+        var fimTerms = (_config.FindingsImpressionMismatchEnabled && fimMismatches != null)
+            ? fimMismatches.SelectMany(m => m.SearchTerms).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+            : new List<string>();
+
+        var normalizedGender = genderTerms
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Select(t => t.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var normalizedFim = fimTerms
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Select(t => t.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(t => t, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (normalizedGender.Length == 0 && normalizedFim.Length == 0)
+        {
+            ClearCdpAlertTextFlashing();
+            return;
+        }
+
+        var reportHash = StringComparer.Ordinal.GetHashCode(reportText);
+        var signature = $"{reportHash}|g:{string.Join("|", normalizedGender)}|f:{string.Join("|", normalizedFim)}";
+        var nowTick64 = Environment.TickCount64;
+        if (_cdpAlertFlashApplied
+            && string.Equals(signature, _cdpAlertFlashSignature, StringComparison.Ordinal)
+            && (nowTick64 - _lastCdpAlertFlashApplyTick64) < 60000)
+            return;
+
+        if (_cdpService.UpdateAlertTextFlashing(normalizedGender, normalizedFim))
+        {
+            _cdpAlertFlashApplied = true;
+            _cdpAlertFlashSignature = signature;
+            _lastCdpAlertFlashApplyTick64 = nowTick64;
+        }
+        else
+        {
+            ClearCdpAlertTextFlashing();
+        }
+    }
+
+    private void ClearCdpAlertTextFlashing()
+    {
+        if (_cdpService?.IsIframeConnected == true)
+        {
+            try { _cdpService.ClearAlertTextFlashing(); }
+            catch { }
+        }
+
+        _cdpAlertFlashApplied = false;
+        _cdpAlertFlashSignature = null;
+        _lastCdpAlertFlashApplyTick64 = 0;
     }
 
     /// <summary>
