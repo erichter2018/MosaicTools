@@ -58,6 +58,7 @@ public class ActionController : IDisposable
     private Dictionary<string, KeytermLearningService> _keytermLearningByProvider = new(); // [KeytermLearning] per-provider instances
     private EnsembleMetricsForm? _ensembleMetrics; // [Ensemble] live stats popup
     private readonly List<CorrectionRecord> _pendingCorrections = new(); // [Ensemble] corrections awaiting validation
+    private string? _lastNonEmptyReport; // [Ensemble] snapshot of last non-empty report for correction validation
     private bool _sttDirectPasteActive; // [CustomSTT] Track whether direct paste is active
     private IntPtr _sttPasteTargetWindow; // [CustomSTT] Window that had focus when recording started
     private readonly object _directPasteLock = new(); // [CustomSTT] Serialize direct paste operations
@@ -581,7 +582,10 @@ public class ActionController : IDisposable
         _sttService.EnsembleCorrectionsEmitted += corrections =>
         {
             lock (_pendingCorrections)
+            {
                 _pendingCorrections.AddRange(corrections);
+                Logger.Trace($"Ensemble: collected {corrections.Count} corrections (total pending: {_pendingCorrections.Count})");
+            }
         };
 
         // [Ensemble] Show/hide metrics popup and track recording state
@@ -993,7 +997,7 @@ public class ActionController : IDisposable
         if (_cdpService == null) return false;
         var ctx = _cdpService.GetCursorContext(editorIndex);
         if (ctx == null)
-            return _cdpService.InsertContent(editorIndex, text); // fallback to plain insert
+            return _cdpService.InsertContent(editorIndex, text, highlight: _config.SttHighlightDictated); // fallback to plain insert
 
         var (before, after, selectedText) = ctx.Value;
         bool hasSelection = selectedText.Length > 0;
@@ -1040,7 +1044,7 @@ public class ActionController : IDisposable
         if (!afterIsSpace && char.IsLetterOrDigit(after))
             text = text + " ";
 
-        return _cdpService.InsertContent(editorIndex, text);
+        return _cdpService.InsertContent(editorIndex, text, highlight: _config.SttHighlightDictated);
     }
 
     private void InsertTextToFocusedEditor(string text, int cdpEditorIndex = -1)
@@ -2418,7 +2422,7 @@ public class ActionController : IDisposable
             InvokeUI(() => _mainForm.ShowStatusToast("Debug mode: Scraping Clario...", 2000));
 
             {
-                var rawNote = _automationService.PerformClarioScrape(msg =>
+                var rawNote = ScrapeClarioExamNote(msg =>
                 {
                     InvokeUI(() => _mainForm.ShowStatusToast(msg));
                 });
@@ -2440,8 +2444,7 @@ public class ActionController : IDisposable
         InvokeUI(() => _mainForm.ShowStatusToast("Scraping Clario..."));
 
         {
-            // Scrape with repeating toast callback
-            var rawNote = _automationService.PerformClarioScrape(msg =>
+            var rawNote = ScrapeClarioExamNote(msg =>
             {
                 InvokeUI(() => _mainForm.ShowStatusToast(msg));
             });
@@ -2481,6 +2484,27 @@ public class ActionController : IDisposable
             InvokeUI(() => _mainForm.ShowStatusToast(
                 "Critical findings inserted.\nHold Win key and trigger again to debug.", 20000));
         }
+    }
+
+    /// <summary>
+    /// Scrape Clario exam note — tries CDP first if enabled, falls back to FlaUI.
+    /// </summary>
+    private string? ScrapeClarioExamNote(Action<string>? statusCallback = null)
+    {
+        // [Clario CDP] Try CDP first — instant JS eval
+        if (_config.ClarioCdpEnabled && _cdpService?.IsClarioConnected == true)
+        {
+            var cdpNote = _cdpService.ClarioScrapeExamNote();
+            if (cdpNote != null)
+            {
+                Logger.Trace($"Clario exam note via CDP (len={cdpNote.Length})");
+                return cdpNote;
+            }
+            Logger.Trace("Clario CDP exam note returned null, falling back to FlaUI");
+        }
+
+        // FlaUI fallback
+        return _automationService.PerformClarioScrape(statusCallback);
     }
 
     /// <summary>
@@ -2881,7 +2905,7 @@ public class ActionController : IDisposable
             return;
         }
 
-        bool success = _automationService.CreateCriticalCommunicationNote();
+        bool success = CreateClarioCriticalNoteWithFallback();
         if (success)
         {
             _criticalNoteCreatedForAccessions.TryAdd(accession, 0);
@@ -3638,7 +3662,7 @@ public class ActionController : IDisposable
             if (!string.IsNullOrEmpty(updatedReport) && _currentReportPopup != null && !_currentReportPopup.IsDisposed)
             {
                 var sr = (_cdpService?.IsIframeConnected == true) ? _cdpService.GetStructuredReport() : null;
-                _currentReportPopup.UpdateReport(updatedReport, structuredReport: sr);
+                _currentReportPopup.UpdateReport(updatedReport, structuredReport: sr, forceUpdate: true);
                 _lastPopupReportText = updatedReport;
             }
             // Also update impression window if visible (CDP-first)
@@ -3751,6 +3775,10 @@ public class ActionController : IDisposable
             {
                 if (!_cdpService.IsConnected)
                     try { _cdpService.TryConnect(); } catch { }
+
+                // [Clario CDP] Try to connect to Clario's Chrome instance
+                if (_config.ClarioCdpEnabled && !_cdpService.IsClarioConnected)
+                    try { _cdpService.TryConnectClario(); } catch { }
 
                 if (_cdpService.IsConnected)
                 {
@@ -3947,6 +3975,11 @@ public class ActionController : IDisposable
 
             // Scrape Mosaic for report data (skip UIA if CDP already handled it)
             var reportText = cdpHandled ? _mosaicReader.LastFinalReport : _mosaicReader.GetFinalReportFast();
+
+            // [Ensemble] Snapshot non-empty report for correction validation at study change.
+            // By the time study-change fires, the scrape may have already picked up the new (empty) study.
+            if (!string.IsNullOrEmpty(reportText))
+                _lastNonEmptyReport = reportText;
 
             // Bail out if user action started during the scrape
             if (_isUserActive) return;
@@ -4337,9 +4370,10 @@ public class ActionController : IDisposable
                         ? new List<CorrectionRecord>(_pendingCorrections)
                         : new List<CorrectionRecord>();
                 }
+                var validationReport = _lastNonEmptyReport;
+                Logger.Trace($"Ensemble validation: {correctionsToValidate.Count} pending corrections, report={validationReport?.Length ?? 0} chars");
                 if (correctionsToValidate.Count > 0)
                 {
-                    var validationReport = _mosaicReader.LastFinalReport;
                     if (!string.IsNullOrEmpty(validationReport))
                     {
                         int validated = 0, rejected = 0;
@@ -4377,6 +4411,7 @@ public class ActionController : IDisposable
                 _pendingCorrections.Clear();
         }
 
+        _lastNonEmptyReport = null;
         _mosaicReader.ClearLastReport();
 
         // UIA reset moved to periodic timer (CheckPeriodicUiaReset, every 10 min).
@@ -5340,15 +5375,35 @@ public class ActionController : IDisposable
 
     /// <summary>
     /// Extract Clario Priority/Class for pipe broadcasts. Called on every study change.
+    /// Tries CDP first if enabled and connected, falls back to FlaUI.
     /// </summary>
     private void ExtractClarioPriorityAndClass(string? accession)
     {
         try
         {
+            // [Clario CDP] Try CDP first — instant JS eval instead of depth-25 FlaUI tree walk
+            if (_config.ClarioCdpEnabled && _cdpService?.IsClarioConnected == true)
+            {
+                var cdpResult = _cdpService.ClarioExtractPriorityAndClass(accession);
+                if (cdpResult != null)
+                {
+                    // Populate AutomationService properties for downstream consumers
+                    _automationService.LastClarioPriority = cdpResult.Priority;
+                    _automationService.LastClarioClass = cdpResult.Class;
+                    _automationService.IsStrokeStudy =
+                        cdpResult.Priority.Contains("Stroke", StringComparison.OrdinalIgnoreCase) ||
+                        cdpResult.Class.Contains("Stroke", StringComparison.OrdinalIgnoreCase);
+                    Logger.Trace($"Extracted Clario Priority='{cdpResult.Priority}', Class='{cdpResult.Class}' [via CDP]");
+                    return;
+                }
+                Logger.Trace("Clario CDP extraction returned null, falling back to FlaUI");
+            }
+
+            // FlaUI fallback
             var priorityData = _automationService.ExtractClarioPriorityAndClass(accession);
             if (priorityData != null)
             {
-                Logger.Trace($"Extracted Clario Priority='{priorityData.Priority}', Class='{priorityData.Class}'");
+                Logger.Trace($"Extracted Clario Priority='{priorityData.Priority}', Class='{priorityData.Class}' [via FlaUI]");
             }
         }
         catch (Exception ex)
@@ -6254,7 +6309,7 @@ public class ActionController : IDisposable
             return false; // Already created
         }
 
-        var success = _automationService.CreateCriticalCommunicationNote();
+        var success = CreateClarioCriticalNoteWithFallback();
         if (success)
         {
             _criticalNoteCreatedForAccessions.TryAdd(accession, 0);
@@ -6277,6 +6332,27 @@ public class ActionController : IDisposable
     public bool HasCriticalNoteForAccession(string? accession)
     {
         return accession != null && _criticalNoteCreatedForAccessions.ContainsKey(accession);
+    }
+
+    /// <summary>
+    /// Create critical communication note in Clario — tries CDP first, falls back to FlaUI.
+    /// </summary>
+    private bool CreateClarioCriticalNoteWithFallback()
+    {
+        // [Clario CDP] Try CDP first
+        if (_config.ClarioCdpEnabled && _cdpService?.IsClarioConnected == true)
+        {
+            var success = _cdpService.ClarioCreateCriticalNote();
+            if (success)
+            {
+                Logger.Trace("Critical note created [via CDP]");
+                return true;
+            }
+            Logger.Trace("Clario CDP critical note creation failed, falling back to FlaUI");
+        }
+
+        // FlaUI fallback
+        return _automationService.CreateCriticalCommunicationNote();
     }
 
     #endregion

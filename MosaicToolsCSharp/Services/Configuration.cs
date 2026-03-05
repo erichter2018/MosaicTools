@@ -529,6 +529,15 @@ public class Configuration
     [JsonPropertyName("cdp_enabled")]
     public bool CdpEnabled { get; set; } = false;
 
+    [JsonPropertyName("clario_cdp_enabled")]
+    public bool ClarioCdpEnabled { get; set; } = false;
+
+    [JsonPropertyName("clario_cdp_url")]
+    public string ClarioCdpUrl { get; set; } = "https://wlsw.radpartners.com";
+
+    [JsonPropertyName("stt_highlight_dictated")]
+    public bool SttHighlightDictated { get; set; } = false;
+
     [JsonPropertyName("cdp_env_var_set")]
     public bool CdpEnvVarSet { get; set; } = false;
 

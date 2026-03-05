@@ -136,6 +136,7 @@ public class ReportPopupForm : Form
     private List<ImpressionFixerEntry> _impressionFixerEntries = new();
     private System.Windows.Forms.Timer? _debounceTimer;
     private bool _deletePending;
+    private long _deleteCooldownUntilTick64;
 
     /// <summary>
     /// Fired after debounce when user deletes impression points.
@@ -400,10 +401,12 @@ public class ReportPopupForm : Form
     /// Called when Process Report is pressed while popup is open.
     /// </summary>
     public void UpdateReport(string newReportText, string? baseline = null, bool baselineIsSectionOnly = false,
-        StructuredReport? structuredReport = null)
+        StructuredReport? structuredReport = null, bool forceUpdate = false)
     {
-        // Don't overwrite while user is actively deleting impression points
-        if (_deletePending) return;
+        // Don't overwrite while user is actively deleting impression points,
+        // or during cooldown after a delete completes (scrape may still have stale text)
+        if (!forceUpdate && _deletePending) return;
+        if (!forceUpdate && Environment.TickCount64 < _deleteCooldownUntilTick64) return;
 
         _structuredReport = structuredReport;
         _showingStaleContent = false; // Clear stale flag when we get new content
@@ -2298,6 +2301,9 @@ public class ReportPopupForm : Form
             return;
         }
         _deletePending = false;
+        // Suppress scrape-driven UpdateReport for 3s after delete completes.
+        // The scrape timer may still have stale pre-delete text cached.
+        _deleteCooldownUntilTick64 = Environment.TickCount64 + 3000;
     }
 
     #endregion

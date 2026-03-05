@@ -1,3 +1,15 @@
+4.2.0
+- Findings/Impression mismatch alert: yellow pulsing border when FINDINGS and IMPRESSION contradict (e.g., "no bowel obstruction" vs "bowel obstruction"), click to dismiss
+- CDP flashing alert text: gender mismatch (red) and FIM mismatch (orange) flash matching text in the report editor until corrected
+- STT dictation text highlighting: subtle background tint on dictated text via CSS Custom Highlight API to distinguish from template text
+- Clario CDP setup wizard: one-click Chrome CDP shortcut creation with directory junction (preserves Chrome profile/cookies/logins)
+- Clario CDP URL now configurable in settings (supports different Clario instances)
+- CDP status dashboard in Experimental settings: live connection status for Mosaic and Clario CDP
+- Ensemble precision validation fix: report snapshot preserved across study transitions (was lost when scrape timer overwrote with empty report)
+- Fix: duplicate consecutive words in ensemble merge (e.g., "inflammation inflammation")
+- Fix: report popup deleted impressions reappearing (3-second cooldown prevents scrape timer from pushing stale text)
+- Clario CDP: FlaUI fully replaced — Priority/Class, exam notes, critical notes all via CDP
+
 4.1.2
 - Fix: ensemble merge using stale secondary data from previous utterance (wall-clock arrival time tracking replaces provider timestamps)
 - Fix: all-time ensemble stats incrementing on every PTT stop instead of only on report sign

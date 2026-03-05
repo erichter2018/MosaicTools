@@ -22,6 +22,7 @@ public class CdpService : IDisposable
 {
     private const int CommandTimeoutMs = 3000;
     private const int ConnectThrottleMs = 10_000;
+    private const int ClarioCdpPort = 9224;
 
     private int _port;
     private ClientWebSocket? _slimHubWs;
@@ -29,6 +30,13 @@ public class CdpService : IDisposable
     private string? _slimHubWsUrl;
     private string? _iframeWsUrl;
     private string? _lastIframeUrl; // Track iframe URL to detect report changes
+
+    // Clario CDP (Chrome on port 9224)
+    private ClientWebSocket? _clarioWs;
+    private string? _clarioWsUrl;
+    private CancellationTokenSource? _clarioCts;
+    private readonly object _clarioSendLock = new();
+    private long _lastClarioConnectAttemptTick64;
 
     private int _nextMessageId;
     private readonly ConcurrentDictionary<int, TaskCompletionSource<JsonElement>> _pending = new();
@@ -53,6 +61,7 @@ public class CdpService : IDisposable
 
     public bool IsConnected => _slimHubWs?.State == WebSocketState.Open;
     public bool IsIframeConnected => _iframeWs?.State == WebSocketState.Open;
+    public bool IsClarioConnected => _clarioWs?.State == WebSocketState.Open;
     public bool ScrollFixActive => _scrollFixActive;
     public bool AutoScrollEnabled { get; set; } = true;
     public bool HideDragHandles { get => _hideDragHandles; set => _hideDragHandles = value; }
@@ -822,6 +831,101 @@ html, body {{ overflow: hidden !important; }}
         _slimHubWsUrl = null;
     }
 
+    // ═══════ CLARIO CDP CONNECTION (Chrome on port 9224) ═══════
+
+    /// <summary>
+    /// Try to connect to Clario's Chrome instance via CDP on port 9224.
+    /// Throttled to one attempt per 10 seconds.
+    /// </summary>
+    public bool TryConnectClario()
+    {
+        long now = Environment.TickCount64;
+        if (now - _lastClarioConnectAttemptTick64 < ConnectThrottleMs)
+            return IsClarioConnected;
+        _lastClarioConnectAttemptTick64 = now;
+
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            var json = http.GetStringAsync($"http://127.0.0.1:{ClarioCdpPort}/json/list").GetAwaiter().GetResult();
+            var targets = JsonSerializer.Deserialize<JsonElement>(json);
+
+            string? clarioWs = null;
+            foreach (var target in targets.EnumerateArray())
+            {
+                var title = target.TryGetProperty("title", out var titleEl) ? titleEl.GetString() ?? "" : "";
+                var wsUrl = target.TryGetProperty("webSocketDebuggerUrl", out var wsEl) ? wsEl.GetString() : null;
+
+                if (title.Contains("Clario", StringComparison.OrdinalIgnoreCase) &&
+                    title.Contains("Worklist", StringComparison.OrdinalIgnoreCase))
+                {
+                    clarioWs = wsUrl;
+                    break;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(clarioWs) && (clarioWs != _clarioWsUrl || !IsClarioConnected))
+            {
+                DisconnectClario();
+                _clarioWsUrl = clarioWs;
+                Logger.Trace($"CDP: Connecting to Clario: {clarioWs}");
+                ConnectClario();
+            }
+            else if (clarioWs == null && !IsClarioConnected)
+            {
+                Logger.Trace("CDP: Clario target not found on port 9224");
+            }
+
+            return IsClarioConnected;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP: TryConnectClario failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    private void ConnectClario()
+    {
+        try
+        {
+            _clarioCts?.Cancel();
+            _clarioCts = new CancellationTokenSource();
+            _clarioWs = new ClientWebSocket();
+            _clarioWs.ConnectAsync(new Uri(_clarioWsUrl!), CancellationToken.None).GetAwaiter().GetResult();
+
+            var ws = _clarioWs;
+            var ct = _clarioCts.Token;
+            var thread = new Thread(() => ReceiveLoopSync(ws, ct, "Clario"))
+            {
+                IsBackground = true,
+                Name = "CDP-Clario-Recv"
+            };
+            thread.Start();
+
+            Logger.Trace($"CDP: Connected to Clario (port {ClarioCdpPort})");
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP: Clario connect failed: {ex.Message}");
+            _clarioWs = null;
+        }
+    }
+
+    private void DisconnectClario()
+    {
+        try
+        {
+            _clarioCts?.Cancel();
+            if (_clarioWs?.State == WebSocketState.Open)
+                _clarioWs.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None)
+                    .GetAwaiter().GetResult();
+        }
+        catch { }
+        _clarioWs = null;
+        _clarioWsUrl = null;
+    }
+
     // ═══════ WEBSOCKET COMMUNICATION ═══════
 
     private JsonElement? SendCommand(ClientWebSocket? ws, object sendLock, string js, int timeoutMs = CommandTimeoutMs)
@@ -880,6 +984,7 @@ html, body {{ overflow: hidden !important; }}
 
     private JsonElement? SendToSlimHub(string js) => SendCommand(_slimHubWs, _slimHubSendLock, js);
     private JsonElement? SendToIframe(string js) => SendCommand(_iframeWs, _iframeSendLock, js);
+    private JsonElement? SendToClario(string js) => SendCommand(_clarioWs, _clarioSendLock, js);
 
     /// <summary>Send async JS (returns a Promise) to iframe with awaitPromise, longer timeout.</summary>
     private string? SendToIframeAsync(string js)
@@ -1233,18 +1338,70 @@ html, body {{ overflow: hidden !important; }}
     /// Insert text content into a ProseMirror editor.
     /// editorIndex: 0=transcript, 1=final report.
     /// </summary>
-    public bool InsertContent(int editorIndex, string text)
+    public bool InsertContent(int editorIndex, string text, bool highlight = false)
     {
         if (!IsIframeConnected) return false;
         var escaped = JsonSerializer.Serialize(text); // JSON-escapes the string
-        var js = $@"(() => {{
-            const editors = document.querySelectorAll('.ProseMirror');
-            if (editors.length <= {editorIndex} || !editors[{editorIndex}].editor) return 'no_editor';
-            editors[{editorIndex}].editor.commands.insertContent({escaped});
-            return 'ok';
-        }})()";
-        var ok = ExtractResultValue(SendToIframe(js)) == "ok";
-        if (ok) ScrollCursorIntoView(editorIndex);
+
+        string js;
+        if (highlight)
+        {
+            // Insert text then apply a CSS Custom Highlight over the inserted range.
+            // Uses the CSS Custom Highlight API (CSS.highlights) — purely visual, zero DOM modification.
+            // This is the only safe approach that won't trigger Mosaic's change tracking.
+            js = $@"(() => {{
+                const editors = document.querySelectorAll('.ProseMirror');
+                if (editors.length <= {editorIndex} || !editors[{editorIndex}].editor) return 'no_editor';
+                const editor = editors[{editorIndex}].editor;
+                const posBefore = editor.state.selection.from;
+                editor.commands.insertContent({escaped});
+                const posAfter = editor.state.selection.from;
+                if (posAfter <= posBefore) return 'ok';
+
+                try {{
+                    // Ensure CSS rule for our custom highlight exists
+                    if (!document.getElementById('mt-dictated-style')) {{
+                        const style = document.createElement('style');
+                        style.id = 'mt-dictated-style';
+                        style.textContent = '::highlight(mt-dictated) {{ background-color: rgba(90, 85, 50, 0.4); }}';
+                        document.head.appendChild(style);
+                    }}
+
+                    // Create a DOM Range covering the inserted text
+                    const view = editor.view;
+                    const startDOM = view.domAtPos(posBefore);
+                    const endDOM = view.domAtPos(posAfter);
+                    const range = new Range();
+                    range.setStart(startDOM.node, startDOM.offset);
+                    range.setEnd(endDOM.node, endDOM.offset);
+
+                    // Add to our custom highlight (create if needed)
+                    if (!CSS.highlights.has('mt-dictated')) {{
+                        CSS.highlights.set('mt-dictated', new Highlight());
+                    }}
+                    CSS.highlights.get('mt-dictated').add(range);
+                    return 'ok_highlight';
+                }} catch(e) {{ return 'ok_hl_err:' + e.message; }}
+            }})()";
+        }
+        else
+        {
+            js = $@"(() => {{
+                const editors = document.querySelectorAll('.ProseMirror');
+                if (editors.length <= {editorIndex} || !editors[{editorIndex}].editor) return 'no_editor';
+                editors[{editorIndex}].editor.commands.insertContent({escaped});
+                return 'ok';
+            }})()";
+        }
+
+        var result = ExtractResultValue(SendToIframe(js));
+        var ok = result != null && result.StartsWith("ok");
+        if (ok)
+        {
+            if (highlight)
+                Logger.Trace($"CDP: InsertContent highlight result: {result}");
+            ScrollCursorIntoView(editorIndex);
+        }
         return ok;
     }
 
@@ -2435,22 +2592,282 @@ html, body {{ overflow: hidden !important; }}
 
     // ═══════ DISPOSE ═══════
 
+    // ═══════ PUBLIC API: CLARIO CDP ═══════
+
+    /// <summary>
+    /// Extract Priority, Class, and Accession from Clario via CDP JS eval.
+    /// Returns null if not connected or fields not found.
+    /// </summary>
+    public ClarioPriorityResult? ClarioExtractPriorityAndClass(string? targetAccession = null)
+    {
+        if (!IsClarioConnected) return null;
+
+        var js = @"(() => {
+            const results = {};
+            const labels = document.querySelectorAll('label, .x-form-item-label');
+            for (const label of labels) {
+                const text = label.textContent.trim().replace(/:$/, '');
+                if (['Priority', 'Class', 'Accession'].includes(text)) {
+                    const parent = label.closest('.x-form-item, .x-field, tr, div');
+                    if (parent) {
+                        const input = parent.querySelector('input, .x-form-display-field, .x-form-text, td:last-child');
+                        if (input) {
+                            results[text] = (input.value || input.textContent || '').trim();
+                        }
+                    }
+                }
+            }
+            return JSON.stringify(results);
+        })()";
+
+        var raw = ExtractResultValue(SendToClario(js));
+        if (raw == null) return null;
+
+        try
+        {
+            var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+
+            var priority = root.TryGetProperty("Priority", out var p) ? p.GetString() ?? "" : "";
+            var cls = root.TryGetProperty("Class", out var c) ? c.GetString() ?? "" : "";
+            var accession = root.TryGetProperty("Accession", out var a) ? a.GetString() ?? "" : "";
+
+            // Verify accession if provided
+            if (targetAccession != null && !string.IsNullOrEmpty(accession) &&
+                !accession.Equals(targetAccession, StringComparison.OrdinalIgnoreCase))
+            {
+                Logger.Trace($"CDP Clario: Accession mismatch - expected '{targetAccession}', got '{accession}'");
+                return null;
+            }
+
+            if (string.IsNullOrEmpty(priority) && string.IsNullOrEmpty(cls))
+            {
+                Logger.Trace("CDP Clario: No Priority or Class found");
+                return null;
+            }
+
+            Logger.Trace($"CDP Clario: Priority='{priority}', Class='{cls}', Accession='{accession}'");
+            return new ClarioPriorityResult(priority, cls, accession);
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP Clario: Parse error: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Scrape exam note text from Clario via CDP JS eval.
+    /// Returns the best (newest/longest) exam note text, or null if none found.
+    /// </summary>
+    public string? ClarioScrapeExamNote()
+    {
+        if (!IsClarioConnected) return null;
+
+        var js = @"(() => {
+            const notes = [];
+
+            // Check textareas (most common container for exam notes)
+            document.querySelectorAll('textarea').forEach(ta => {
+                if (ta.value && ta.value.length > 10) {
+                    notes.push(ta.value);
+                }
+            });
+
+            // Check contenteditable elements
+            document.querySelectorAll('[contenteditable=true]').forEach(ce => {
+                const text = ce.textContent.trim();
+                if (text.length > 10) {
+                    notes.push(text);
+                }
+            });
+
+            // Check for EXAM NOTE DataItem-like elements (ExtJS grid rows)
+            document.querySelectorAll('.x-grid-cell-inner, .x-grid-row').forEach(el => {
+                const text = el.textContent.trim();
+                if (text.includes('EXAM NOTE') && text.length > 30) {
+                    notes.push(text);
+                }
+            });
+
+            // Check for note dialog if open
+            const noteDialog = document.getElementById('content_patient_note_dialog_Main');
+            if (noteDialog) {
+                const noteField = noteDialog.querySelector('[id*=""noteFieldMessage""]');
+                if (noteField) {
+                    const text = noteField.value || noteField.textContent || '';
+                    if (text.trim().length > 10) {
+                        notes.unshift(text.trim()); // dialog note takes priority
+                    }
+                }
+            }
+
+            return JSON.stringify(notes);
+        })()";
+
+        var raw = ExtractResultValue(SendToClario(js));
+        if (raw == null) return null;
+
+        try
+        {
+            var notes = JsonSerializer.Deserialize<List<string>>(raw);
+            if (notes == null || notes.Count == 0)
+            {
+                Logger.Trace("CDP Clario: No exam notes found");
+                return null;
+            }
+
+            // Return first note (dialog note if open, otherwise best match)
+            // Sort by those containing EXAM NOTE first, then by length
+            var best = notes
+                .OrderByDescending(n => n.Contains("EXAM NOTE", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+                .ThenByDescending(n => n.Length)
+                .First();
+
+            Logger.Trace($"CDP Clario: Found exam note (len={best.Length})");
+            return best;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP Clario: ExamNote parse error: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Create a Critical Results Communication Note in Clario via CDP.
+    /// Clicks: Create → Communication Note → Submit via ExtJS/DOM automation.
+    /// </summary>
+    public bool ClarioCreateCriticalNote()
+    {
+        if (!IsClarioConnected) return false;
+
+        // Step 1: Find and click the "Create" button
+        var jsClickCreate = @"(() => {
+            // Try ExtJS button query first
+            const buttons = document.querySelectorAll('.x-btn, a.x-btn, button, [role=""button""]');
+            for (const btn of buttons) {
+                const text = (btn.textContent || '').trim();
+                if (text === 'Create' || text.startsWith('Create')) {
+                    btn.click();
+                    return 'clicked';
+                }
+            }
+            // Try matching by inner span (ExtJS renders text in spans)
+            const spans = document.querySelectorAll('.x-btn-inner, .x-btn-text');
+            for (const span of spans) {
+                if (span.textContent.trim() === 'Create') {
+                    const btn = span.closest('.x-btn, a, button, [role=""button""]');
+                    if (btn) { btn.click(); return 'clicked'; }
+                    span.click();
+                    return 'clicked_span';
+                }
+            }
+            return 'not_found';
+        })()";
+
+        var createResult = ExtractResultValue(SendToClario(jsClickCreate));
+        if (createResult == null || createResult == "not_found")
+        {
+            Logger.Trace($"CDP Clario: Create button not found (result={createResult})");
+            return false;
+        }
+
+        Thread.Sleep(300); // Wait for menu to appear
+
+        // Step 2: Find and click "Communication Note" menu item
+        var jsClickCommNote = @"(() => {
+            // Search visible menu items
+            const items = document.querySelectorAll('.x-menu-item, .x-menu-item-text, [role=""menuitem""], .x-menu a');
+            for (const item of items) {
+                const text = (item.textContent || '').trim();
+                if (text === 'Communication Note' || text.includes('Communication Note')) {
+                    item.click();
+                    return 'clicked';
+                }
+            }
+            // Broader search for any clickable element with that text
+            const all = document.querySelectorAll('a, span, div, li');
+            for (const el of all) {
+                if (el.children.length === 0 && el.textContent.trim() === 'Communication Note') {
+                    el.click();
+                    return 'clicked_text';
+                }
+            }
+            return 'not_found';
+        })()";
+
+        var commResult = ExtractResultValue(SendToClario(jsClickCommNote));
+        if (commResult == null || commResult == "not_found")
+        {
+            Logger.Trace($"CDP Clario: Communication Note menu item not found (result={commResult})");
+            return false;
+        }
+
+        Thread.Sleep(400); // Wait for dialog to appear
+
+        // Step 3: Find and click "Submit" button (retry up to 3 times)
+        for (int retry = 0; retry < 3; retry++)
+        {
+            if (retry > 0) Thread.Sleep(200);
+
+            var jsClickSubmit = @"(() => {
+                const buttons = document.querySelectorAll('.x-btn, a.x-btn, button, [role=""button""]');
+                for (const btn of buttons) {
+                    const text = (btn.textContent || '').trim();
+                    if (text === 'Submit') {
+                        btn.click();
+                        return 'clicked';
+                    }
+                }
+                const spans = document.querySelectorAll('.x-btn-inner, .x-btn-text');
+                for (const span of spans) {
+                    if (span.textContent.trim() === 'Submit') {
+                        const btn = span.closest('.x-btn, a, button, [role=""button""]');
+                        if (btn) { btn.click(); return 'clicked'; }
+                        span.click();
+                        return 'clicked_span';
+                    }
+                }
+                return 'not_found';
+            })()";
+
+            var submitResult = ExtractResultValue(SendToClario(jsClickSubmit));
+            if (submitResult != null && submitResult != "not_found")
+            {
+                Logger.Trace("CDP Clario: CreateCriticalNote SUCCESS");
+                return true;
+            }
+        }
+
+        Logger.Trace("CDP Clario: Submit button not found after retries");
+        return false;
+    }
+
+    /// <summary>Result of Clario Priority/Class extraction via CDP.</summary>
+    public record ClarioPriorityResult(string Priority, string Class, string Accession);
+
     public void Dispose()
     {
         try
         {
             _slimHubCts?.Cancel();
             _iframeCts?.Cancel();
+            _clarioCts?.Cancel();
 
             if (_slimHubWs?.State == WebSocketState.Open)
                 try { _slimHubWs.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None).Wait(1000); } catch { }
             if (_iframeWs?.State == WebSocketState.Open)
                 try { _iframeWs.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None).Wait(1000); } catch { }
+            if (_clarioWs?.State == WebSocketState.Open)
+                try { _clarioWs.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None).Wait(1000); } catch { }
 
             _slimHubWs?.Dispose();
             _iframeWs?.Dispose();
+            _clarioWs?.Dispose();
             _slimHubCts?.Dispose();
             _iframeCts?.Dispose();
+            _clarioCts?.Dispose();
         }
         catch { }
 

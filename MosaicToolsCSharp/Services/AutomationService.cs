@@ -118,13 +118,13 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     public int? LastPatientAge { get; private set; }
 
     // Last extracted Clario Priority (e.g., "STAT", "Stroke", "Routine")
-    public string? LastClarioPriority { get; private set; }
+    public string? LastClarioPriority { get; set; }
 
     // Last extracted Clario Class (e.g., "Emergency", "Inpatient", "Outpatient")
-    public string? LastClarioClass { get; private set; }
+    public string? LastClarioClass { get; set; }
 
     // Whether the current study is detected as a Stroke study
-    public bool IsStrokeStudy { get; private set; }
+    public bool IsStrokeStudy { get; set; }
 
     // Last scraped patient name (title case, e.g., "Smith John")
     public string? LastPatientName { get; private set; }

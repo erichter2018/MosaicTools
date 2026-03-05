@@ -213,6 +213,35 @@ public class SttEnsembleMerger
         _timerCts = null; // Disposal handled by lambda's finally block
     }
 
+    /// <summary>
+    /// Remove secondary words whose audio EndTime is before the primary's start.
+    /// Handles slow providers (e.g., SNX 3s behind) whose wall-clock arrival passes
+    /// the purge but whose audio data belongs to a previous merge segment.
+    /// </summary>
+    private static SttWord[] FilterStaleAudioWords(SttWord[] words, double audioFloor, string providerName)
+    {
+        if (words.Length == 0) return words;
+
+        // Find first word that's within the primary's time range
+        int firstValid = 0;
+        for (int i = 0; i < words.Length; i++)
+        {
+            if (words[i].EndTime >= audioFloor)
+            {
+                firstValid = i;
+                break;
+            }
+            firstValid = i + 1;
+        }
+
+        if (firstValid > 0)
+        {
+            Logger.Trace($"Ensemble: audio-time filter removed {firstValid} stale {providerName} words (before {audioFloor:F2}s)");
+            return words[firstValid..];
+        }
+        return words;
+    }
+
     private static void PurgeStaleEntries(List<(SttResult Result, long ArrivedTicks)> buffer, long cutoffTicks)
     {
         var removed = buffer.RemoveAll(b => b.ArrivedTicks < cutoffTicks);
@@ -291,6 +320,8 @@ public class SttEnsembleMerger
         {
             Logger.Trace("Ensemble merge: no secondaries arrived, emitting primary only");
             var processed = SttTextProcessor.ProcessTranscript(primary.Transcript, _config);
+            // Remove consecutive duplicate words
+            processed = RemoveConsecutiveDuplicateWords(processed);
             var wc = primary.Words?.Length ?? 0;
             Interlocked.Add(ref _totalWords, wc);
             _studyWords += wc;
@@ -319,6 +350,21 @@ public class SttEnsembleMerger
         var s1WordArr = s1?.Words ?? Array.Empty<SttWord>();
         var s2WordArr = s2?.Words ?? Array.Empty<SttWord>();
         var originalWords = primary.Words ?? Array.Empty<SttWord>();
+
+        // Filter out stale secondary words from previous merge segments.
+        // The wall-clock purge can miss slow providers (e.g., SNX 3s behind real-time)
+        // whose data arrives "recently" but covers old audio timestamps.
+        if (originalWords.Length > 0)
+        {
+            var primaryStartTime = originalWords[0].StartTime;
+            if (primaryStartTime > 0)
+            {
+                // Allow 500ms overlap tolerance for boundary words
+                var audioFloor = primaryStartTime - 0.5;
+                s1WordArr = FilterStaleAudioWords(s1WordArr, audioFloor, _s1Name);
+                s2WordArr = FilterStaleAudioWords(s2WordArr, audioFloor, _s2Name);
+            }
+        }
 
         // Align secondary words to primary using monotonic nearest-midpoint matching.
         // This handles the ~200ms timestamp offset between providers (SM/AAI vs DG)
@@ -475,6 +521,16 @@ public class SttEnsembleMerger
             mergedWords.Add(winner);
         }
 
+        // Remove consecutive duplicate words (can happen when Deepgram sends overlapping finals)
+        for (int i = mergedWords.Count - 1; i > 0; i--)
+        {
+            if (string.Equals(mergedWords[i], mergedWords[i - 1], StringComparison.OrdinalIgnoreCase))
+            {
+                Logger.Trace($"Ensemble: removed consecutive duplicate word \"{mergedWords[i]}\" at position {i}");
+                mergedWords.RemoveAt(i);
+            }
+        }
+
         var mergedTranscript = string.Join(" ", mergedWords);
 
         if (corrections > 0)
@@ -493,6 +549,21 @@ public class SttEnsembleMerger
     private static string[] TokenizeProcessed(string text)
     {
         return text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    private static string RemoveConsecutiveDuplicateWords(string text)
+    {
+        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length <= 1) return text;
+        var result = new List<string> { words[0] };
+        for (int i = 1; i < words.Length; i++)
+        {
+            if (!string.Equals(words[i], words[i - 1], StringComparison.OrdinalIgnoreCase))
+                result.Add(words[i]);
+            else
+                Logger.Trace($"Ensemble: removed consecutive duplicate word \"{words[i]}\"");
+        }
+        return result.Count < words.Length ? string.Join(" ", result) : text;
     }
 
     private static string? StripTrailingPunctuation(string? word)
@@ -676,7 +747,14 @@ public class SttEnsembleMerger
         _config.SttEnsembleAlltimeConfidenceSum += _studyConfSum;
         _config.SttEnsembleAlltimeMerges += _studyMerges;
         _config.Save();
-        Logger.Trace($"Ensemble alltime committed: +{_studyWords} words, +{_studyCorrected} corrected, +{_studyMerges} merges");
+
+        var atWords = _config.SttEnsembleAlltimeWords;
+        var atCorrected = _config.SttEnsembleAlltimeCorrected;
+        var atAvgConf = atWords > 0 ? _config.SttEnsembleAlltimeConfidenceSum / atWords : 0;
+        var atVal = _config.SttEnsembleAlltimeValidated;
+        var atRej = _config.SttEnsembleAlltimeRejected;
+        var precStr = (atVal + atRej) > 0 ? $", precision={100.0 * atVal / (atVal + atRej):F0}% ({atVal}v/{atRej}r)" : "";
+        Logger.Trace($"Ensemble alltime committed: +{_studyWords} words, +{_studyCorrected} corrected, +{_studyMerges} merges (total: {atWords}w, {atCorrected}corr, avgConf={atAvgConf:F3}{precStr})");
     }
 
     /// <summary>

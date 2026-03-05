@@ -11,9 +11,9 @@
     <RootNamespace>MosaicTools</RootNamespace>
 
     <!-- Version -->
-    <Version>4.1.2</Version>
-    <AssemblyVersion>4.1.2.0</AssemblyVersion>
-    <FileVersion>4.1.2.0</FileVersion>
+    <Version>4.2.0</Version>
+    <AssemblyVersion>4.2.0.0</AssemblyVersion>
+    <FileVersion>4.2.0.0</FileVersion>
 
     <!-- Application Icon -->
     <ApplicationIcon>MosaicTools.ico</ApplicationIcon>
