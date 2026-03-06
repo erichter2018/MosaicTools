@@ -1785,9 +1785,11 @@ public class ActionController : IDisposable
         // 2. Use eagerly captured template (from scrape loop). Fallback: capture now if scrape missed it.
         //    On re-process, reuse the captured template so the LLM always works from the original.
         var currentAccession = _mosaicReader.LastAccession;
-        if (_llmCapturedTemplate == null || _llmCapturedTemplateAccession != currentAccession)
+        if (_llmCapturedTemplate == null
+            || (!string.IsNullOrEmpty(currentAccession) && _llmCapturedTemplateAccession != currentAccession))
         {
             // Scrape loop didn't capture yet — try now as fallback
+            // Guard: skip if currentAccession is null (transient during study transition) and we have a good capture
             var freshStructured = _cdpService.GetStructuredReport();
             if (freshStructured == null || freshStructured.Sections.Count == 0)
             {
@@ -1864,8 +1866,13 @@ public class ActionController : IDisposable
             if (!preserveSections.Contains(section.Name)) continue;
             prefixBuilder.AppendLine(section.Name + ":");
             var fullText = !string.IsNullOrWhiteSpace(section.FullText) ? section.FullText : section.TemplateText;
-            prefixBuilder.AppendLine(fullText);
-            prefixBuilder.AppendLine();
+            // Each line must be its own paragraph — blank lines between them signal paragraph
+            // breaks to collectBody() in ReplaceEditorContent (e.g., EXAM: study name + date)
+            foreach (var line in fullText.Split('\n'))
+            {
+                prefixBuilder.AppendLine(line.TrimEnd());
+                prefixBuilder.AppendLine();
+            }
         }
 
         var safeTemplate = builtTemplate.Trim();
@@ -1880,7 +1887,8 @@ public class ActionController : IDisposable
 
         Logger.Trace($"Custom Process Report: Transcript {scrubbedTranscript.Length} chars, Template {safeTemplate.Length} chars, Prefix {preservedPrefix.Length} chars");
 
-        // 4. Call Gemini
+        // 4. Call Gemini — dim the report editor while processing
+        _cdpService.SetEditorDim(1, true);
         string? result = null;
         try
         {
@@ -1896,6 +1904,10 @@ public class ActionController : IDisposable
         catch (Exception ex)
         {
             Logger.Trace($"Custom Process Report: Error — {ex.Message}");
+        }
+        finally
+        {
+            _cdpService.SetEditorDim(1, false);
         }
 
         if (string.IsNullOrWhiteSpace(result))
@@ -5290,27 +5302,41 @@ public class ActionController : IDisposable
             newGenderMismatch = genderMismatches.Count > 0;
         }
 
-        // Check for findings/impression mismatch
-        if (_config.FindingsImpressionMismatchEnabled && !string.IsNullOrWhiteSpace(reportText)
-            && !string.Equals(reportText, _lastMismatchCheckReportText, StringComparison.Ordinal))
+        // Shared structured report for FIM + consistency checks (one CDP call instead of two)
+        var currentDescription = _mosaicReader.LastDescription;
+        bool reportChanged = !string.Equals(reportText, _lastMismatchCheckReportText, StringComparison.Ordinal);
+        bool descriptionChanged = !string.Equals(currentDescription, _lastConsistencyCheckDescription, StringComparison.Ordinal);
+        StructuredReport? sharedStructured = null;
+        string? sharedFindings = null, sharedImpression = null;
+        bool needsSections = ((_config.FindingsImpressionMismatchEnabled && reportChanged)
+                           || (_config.ConsistencyCheckEnabled && (reportChanged || descriptionChanged)))
+                           && !string.IsNullOrWhiteSpace(reportText);
+        if (needsSections)
         {
-            _lastMismatchCheckReportText = reportText;
+            sharedStructured = (_cdpService?.IsIframeConnected == true) ? _cdpService.GetStructuredReport() : null;
+            var (f, i) = sharedStructured != null
+                ? CorrelationService.ExtractSections(sharedStructured)
+                : CorrelationService.ExtractSections(reportText);
+            sharedFindings = f;
+            sharedImpression = i;
+        }
+
+        // Check for findings/impression mismatch
+        if (_config.FindingsImpressionMismatchEnabled && !string.IsNullOrWhiteSpace(reportText) && reportChanged)
+        {
             try
             {
-                // Prefer structured report (CDP) for clean section extraction, fall back to regex
-                var sr = (_cdpService?.IsIframeConnected == true) ? _cdpService.GetStructuredReport() : null;
-                var (findingsText, impressionText) = sr != null
-                    ? CorrelationService.ExtractSections(sr)
-                    : CorrelationService.ExtractSections(reportText);
-                fimMismatches = FindingsImpressionChecker.Check(findingsText, impressionText);
+                fimMismatches = FindingsImpressionChecker.Check(sharedFindings!, sharedImpression!);
                 _lastFimMismatches = fimMismatches;
+                _lastMismatchCheckReportText = reportText;
                 newFimMismatch = fimMismatches.Count > 0;
                 if (newFimMismatch != _fimMismatchActive || newFimMismatch)
-                    Logger.Trace($"FIM: {(fimMismatches.Count > 0 ? string.Join(", ", fimMismatches.Select(m => m.DisplayName)) : "clear")} (findings={findingsText.Length}c, impression={impressionText.Length}c)");
+                    Logger.Trace($"FIM: {(fimMismatches.Count > 0 ? string.Join(", ", fimMismatches.Select(m => m.DisplayName)) : "clear")} (findings={sharedFindings!.Length}c, impression={sharedImpression!.Length}c)");
             }
             catch (Exception ex)
             {
                 Logger.Trace($"FIM: error: {ex.Message}");
+                _lastFimMismatches = null; // Don't cache stale results on error
             }
         }
         else if (_config.FindingsImpressionMismatchEnabled && _lastFimMismatches != null)
@@ -5320,21 +5346,15 @@ public class ActionController : IDisposable
         }
 
         // Check for measurement/laterality consistency
-        var currentDescription = _mosaicReader.LastDescription;
         if (_config.ConsistencyCheckEnabled && !string.IsNullOrWhiteSpace(reportText)
-            && (!string.Equals(reportText, _lastConsistencyCheckReportText, StringComparison.Ordinal)
-                || !string.Equals(currentDescription, _lastConsistencyCheckDescription, StringComparison.Ordinal)))
+            && (reportChanged || descriptionChanged))
         {
-            _lastConsistencyCheckReportText = reportText;
-            _lastConsistencyCheckDescription = currentDescription;
             try
             {
-                var sr = (_cdpService?.IsIframeConnected == true) ? _cdpService.GetStructuredReport() : null;
-                var (findingsText, impressionText) = sr != null
-                    ? CorrelationService.ExtractSections(sr)
-                    : CorrelationService.ExtractSections(reportText);
-                consistencyResults = ConsistencyChecker.Check(findingsText, impressionText, currentDescription);
+                consistencyResults = ConsistencyChecker.Check(sharedFindings!, sharedImpression!, currentDescription);
                 _lastConsistencyResults = consistencyResults;
+                _lastConsistencyCheckReportText = reportText;
+                _lastConsistencyCheckDescription = currentDescription;
                 newConsistencyMismatch = consistencyResults.Count > 0;
                 if (newConsistencyMismatch != _consistencyMismatchActive || newConsistencyMismatch)
                     Logger.Trace($"Consistency: {(consistencyResults.Count > 0 ? string.Join(", ", consistencyResults.Select(r => r.DisplayName)) : "clear")}");
@@ -5342,6 +5362,7 @@ public class ActionController : IDisposable
             catch (Exception ex)
             {
                 Logger.Trace($"Consistency: error: {ex.Message}");
+                _lastConsistencyResults = null; // Don't cache stale results on error
             }
         }
         else if (_config.ConsistencyCheckEnabled && _lastConsistencyResults != null)

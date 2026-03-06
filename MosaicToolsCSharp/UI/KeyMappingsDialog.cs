@@ -419,6 +419,18 @@ public class KeyMappingsDialog : Form
 
             if (hotkey != null || micButton != null)
             {
+                // Clear this mic button from any other action (each button can only map to one action)
+                if (!string.IsNullOrEmpty(micButton))
+                {
+                    foreach (var (otherAction, otherMapping) in targetMappings)
+                    {
+                        if (otherAction != action && otherMapping.MicButton == micButton)
+                        {
+                            otherMapping.MicButton = null;
+                        }
+                    }
+                }
+
                 targetMappings[action] = new ActionMapping { Hotkey = hotkey, MicButton = micButton };
             }
             else

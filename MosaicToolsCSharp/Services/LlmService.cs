@@ -56,7 +56,7 @@ RULES:
    - Use context, medical knowledge, and natural phrasing to infer sentence boundaries even when punctuation is missing. Pay close attention to shifts in anatomy, topic, or finding type as cues for sentence breaks.
    - If a clause or fragment is not clearly associated with a specific body part or subsection, assume it belongs to the PREVIOUS statement or subsection — do NOT orphan it or drop it.
    - NEVER ignore or omit any sentence, clause, or major fragment from the transcript. Every piece of dictated content must appear somewhere in the output. If you are unsure where something belongs, place it in the most logical subsection based on context.
-   - The word ""IMPRESSION"" (case-insensitive — could be ""impression"", ""Impression"", ""IMPRESSION"", etc.) acts as a divider. Text BEFORE it describes FINDINGS. Text AFTER it is the radiologist's own impression — USE those dictated impression items as-is (preserve the radiologist's wording and diagnoses), but still apply the grouping/simplification/significance-filtering rules above. If the radiologist did NOT dictate an impression at all, generate one following the rules in section 5.
+   - The word ""IMPRESSION"" (case-insensitive — could be ""impression"", ""Impression"", ""IMPRESSION"", etc.) acts as a divider. Text BEFORE it describes FINDINGS. Text AFTER it is the radiologist's own impression — USE those dictated impression items, preserving the radiologist's wording, diagnoses, and clinical reasoning. You may apply formatting cleanup (capitalization, punctuation, sentence structure) and group closely related items, but do NOT change diagnoses, add new impression items, remove dictated items, or override the radiologist's clinical judgment. If the radiologist did NOT dictate an impression at all, generate one following the rules in section 5.
 
 7. SENTENCE FORMATTING: Every sentence in the output — both in FINDINGS and IMPRESSION — must be a complete, properly formed sentence beginning with a capital letter and ending with a period (or appropriate punctuation). No sentence fragments, no dangling clauses.
 
@@ -89,7 +89,12 @@ RULES:
         // Pre-process transcript: normalize "impression" divider so the LLM sees a clear structural marker.
         // Handles: "...no pneumothorax impression increased opacity..." → "...\n\nIMPRESSION:\n\nincreased opacity..."
         // Also handles STT artifacts like "Impression, colon," or "impression colon"
+        Logger.Trace($"LLM: Raw transcript ({transcript.Length} chars): {transcript.Replace("\r", "\\r").Replace("\n", "\\n")}");
         transcript = NormalizeImpressionDivider(transcript);
+        Logger.Trace($"LLM: After normalization ({transcript.Length} chars): {transcript.Replace("\r", "\\r").Replace("\n", "\\n")}");
+        Logger.Trace($"LLM: Template ({template.Length} chars): {template[..Math.Min(template.Length, 200)].Replace("\r", "\\r").Replace("\n", "\\n")}...");
+        if (!string.IsNullOrWhiteSpace(clinicalHistory))
+            Logger.Trace($"LLM: Clinical history: {clinicalHistory}");
 
         var historyBlock = !string.IsNullOrWhiteSpace(clinicalHistory)
             ? $"\n\nCLINICAL HISTORY:\n{clinicalHistory}" : "";
@@ -137,7 +142,9 @@ RULES:
                 .GetProperty("text")
                 .GetString();
 
-            return text?.Trim();
+            var trimmed = text?.Trim();
+            Logger.Trace($"LLM: Response ({trimmed?.Length ?? 0} chars): {trimmed?.Replace("\r", "\\r").Replace("\n", "\\n")}");
+            return trimmed;
         }
         catch (OperationCanceledException)
         {
@@ -158,7 +165,7 @@ RULES:
     private static readonly Regex RxAccession = new(@"\b\d{8,}\w*\b", RegexOptions.Compiled);
     private static readonly Regex RxDob = new(@"DOB:\s*\S+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex RxDateSlash = new(@"\b\d{1,2}/\d{1,2}/\d{2,4}\b", RegexOptions.Compiled);
-    private static readonly Regex RxDateDash = new(@"\b\d{1,2}-\d{1,2}-\d{2,4}\b", RegexOptions.Compiled);
+    private static readonly Regex RxDateDash = new(@"\b(?:0?[1-9]|1[0-2])-(?:0?[1-9]|[12]\d|3[01])-\d{2,4}\b", RegexOptions.Compiled);
     private static readonly Regex RxDateWritten = new(
         @"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}\b",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -222,16 +229,19 @@ RULES:
 
     // ═══════ TRANSCRIPT PRE-PROCESSING ═══════
 
-    // Match "impression" as a standalone word, optionally followed by punctuation STT artifacts
-    // like ", colon," or "colon" or ":" — normalize all to a clear structural divider.
+    // Match "impression" as a standalone section divider word, optionally followed by STT artifacts
+    // like ", colon," or "colon" or ":". Excludes medical uses via lookbehind/lookahead:
+    // - Lookbehind: skip "clinical impression", "initial impression", "overall impression", "vascular impression"
+    // - Lookahead: skip "impression fracture/defect/on/of/from" (anatomical usage)
     private static readonly Regex RxImpressionDivider = new(
-        @"(?<!\w)(?i:impression)\s*(?:[,.]?\s*(?:colon|:)\s*[,.]?\s*|[,.:]\s*)?",
+        @"(?<!clinical\s)(?<!initial\s)(?<!overall\s)(?<!vascular\s)(?<!my\s)(?<!\w)(?i:impression)(?!\s*(?:fracture|defect|on\s+the|of\s+the|from\s+the))\s*(?:[,.]?\s*(?:colon|:)\s*[,.]?\s*|[,.:]\s*)?",
         RegexOptions.Compiled);
 
     /// <summary>
-    /// Find the word "impression" in the transcript and normalize it to a clear
-    /// structural marker so the LLM unambiguously recognizes the FINDINGS/IMPRESSION boundary.
-    /// Only normalizes the FIRST occurrence (the divider); subsequent uses are left as-is.
+    /// Find the word "impression" used as a section divider in the transcript and normalize it
+    /// to a clear structural marker so the LLM recognizes the FINDINGS/IMPRESSION boundary.
+    /// Skips medical uses like "impression fracture" or "clinical impression".
+    /// Only normalizes the FIRST matching occurrence.
     /// </summary>
     internal static string NormalizeImpressionDivider(string transcript)
     {

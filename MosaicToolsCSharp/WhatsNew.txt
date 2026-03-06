@@ -1,3 +1,6 @@
+4.2.3
+- LLM model selector redesign: Version + Tier dropdowns replace raw model ID list, with preview badges and per-study/per-shift cost estimates
+
 4.2.2
 - Measurement & laterality consistency checker: red pulsing alert when measurements differ between FINDINGS and IMPRESSION, wrong-side errors (left/right mismatch), or study description laterality conflicts
 - Unit-aware measurement comparison (1.8 cm = 18 mm), anatomy synonym matching (renal/kidney), bilateral suppression for midline studies

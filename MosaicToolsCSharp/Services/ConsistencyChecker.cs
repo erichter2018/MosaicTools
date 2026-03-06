@@ -28,13 +28,14 @@ public static class ConsistencyChecker
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     // Laterality terms with word boundary enforcement
-    // Single-letter L/R only match uppercase to avoid "l" in "liver" etc.
+    // Words (left/right/LT/RT) are case-insensitive to handle ALL CAPS study descriptions.
+    // Single-letter L/R only match uppercase and must NOT be followed by a digit (avoids L4, L5 spine levels).
     private static readonly Regex LeftRegex = new(
-        @"\b(?:left|LT)\b|(?<![a-zA-Z])L(?![a-zA-Z])",
-        RegexOptions.Compiled);
+        @"\b(?:left|LT)\b|(?<![a-zA-Z])L(?![a-zA-Z0-9])",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex RightRegex = new(
-        @"\b(?:right|RT)\b|(?<![a-zA-Z])R(?![a-zA-Z])",
-        RegexOptions.Compiled);
+        @"\b(?:right|RT)\b|(?<![a-zA-Z])R(?![a-zA-Z0-9])",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex BilateralRegex = new(
         @"\b(?:bilateral|bilaterally)\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -354,26 +355,35 @@ public static class ConsistencyChecker
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
+            // Build list of laterality positions in the sentence
+            var latPositions = new List<(int pos, string side)>();
+            foreach (Match m in LeftRegex.Matches(sentence))
+                if (!IsNegated(sentence, m.Index))
+                    latPositions.Add((m.Index, "left"));
+            foreach (Match m in RightRegex.Matches(sentence))
+                if (!IsNegated(sentence, m.Index))
+                    latPositions.Add((m.Index, "right"));
+            foreach (Match m in BilateralRegex.Matches(sentence))
+                latPositions.Add((m.Index, "bilateral"));
+
+            if (latPositions.Count == 0) continue;
+
+            // For each anatomy word, associate with the NEAREST laterality (avoids cross-contamination
+            // when a sentence mentions multiple anatomies with different sides)
+            var sentenceLower = sentence.ToLowerInvariant();
             foreach (var anatomy in anatomyWords)
             {
                 if (!result.ContainsKey(anatomy))
                     result[anatomy] = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-                // Check negation for each laterality mention
-                if (hasLeft)
-                {
-                    var leftMatch = LeftRegex.Match(sentence);
-                    if (leftMatch.Success && !IsNegated(sentence, leftMatch.Index))
-                        result[anatomy].Add("left");
-                }
-                if (hasRight)
-                {
-                    var rightMatch = RightRegex.Match(sentence);
-                    if (rightMatch.Success && !IsNegated(sentence, rightMatch.Index))
-                        result[anatomy].Add("right");
-                }
-                if (hasBilateral)
-                    result[anatomy].Add("bilateral");
+                // Find position of this anatomy word in the sentence
+                var anatomyMatch = Regex.Match(sentenceLower, $@"\b{Regex.Escape(anatomy)}\b");
+                if (!anatomyMatch.Success) continue;
+                int anatomyPos = anatomyMatch.Index;
+
+                // Associate with nearest laterality
+                var nearest = latPositions.OrderBy(lp => Math.Abs(lp.pos - anatomyPos)).First();
+                result[anatomy].Add(nearest.side);
             }
         }
 
@@ -429,6 +439,10 @@ public static class ConsistencyChecker
 
         if (!descHasLeft && !descHasRight)
             return; // No laterality in description
+
+        // If description has BOTH left and right (e.g., "LEFT AND RIGHT KNEE"), treat as bilateral
+        if (descHasLeft && descHasRight)
+            return;
 
         // Find body parts in description
         var descBodyParts = new List<string>();

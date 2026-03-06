@@ -957,6 +957,10 @@ public class ClinicalHistoryForm : Form
         _activeConsistencyKeys.Clear();
         _dismissedConsistencyKeys.Clear();
         StopConsistencyPulse();
+        _genderWarningActive = false;
+        _genderWarningText = null;
+        _savedClinicalHistoryText = null;
+        StopBlinking();
         _templateMismatch = false;
         // Note: _strokeDetected NOT cleared here — PerformStrokeDetection sets it explicitly.
         // Clearing here caused a race condition: OnStudyChanged (double-BeginInvoke) would
@@ -2931,6 +2935,10 @@ public class ClinicalHistoryForm : Form
             _topMostTimer?.Dispose();
             _mismatchPulseTimer?.Stop();
             _mismatchPulseTimer?.Dispose();
+            _consistencyPulseTimer?.Stop();
+            _consistencyPulseTimer?.Dispose();
+            _fimPulseTimer?.Stop();
+            _fimPulseTimer?.Dispose();
             _blinkTimer?.Stop();
             _blinkTimer?.Dispose();
             _transparentDragMenu?.Dispose();

@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -36,7 +37,20 @@ public class ExperimentalSection : SettingsSection
     private readonly Label _clarioCdpLabel;
     private readonly CheckBox _llmProcessEnabledCheck;
     private readonly TextBox _llmApiKeyBox;
-    private readonly ComboBox _llmModelCombo;
+    private readonly ComboBox _llmVersionCombo;
+    private readonly ComboBox _llmTierCombo;
+    private readonly Label _llmPreviewLabel;
+    private readonly Label _llmCostLabel;
+
+    private static readonly (string Version, string Tier, string ModelId, bool Preview,
+        decimal InputPer1M, decimal OutputPer1M)[] LlmModels = {
+        ("2.5", "Flash Lite", "gemini-2.5-flash-lite",          false, 0.10m, 0.40m),
+        ("2.5", "Flash",      "gemini-2.5-flash",               false, 0.30m, 2.50m),
+        ("2.5", "Pro",        "gemini-2.5-pro",                 false, 1.25m, 10.00m),
+        ("3.0", "Flash",      "gemini-3-flash-preview",         true,  0.50m, 3.00m),
+        ("3.1", "Flash Lite", "gemini-3.1-flash-lite-preview",  true,  0.25m, 1.50m),
+        ("3.1", "Pro",        "gemini-3.1-pro-preview",         true,  2.00m, 12.00m),
+    };
 
     public ExperimentalSection(ToolTip toolTip) : base("Experimental", toolTip)
     {
@@ -210,31 +224,60 @@ public class ExperimentalSection : SettingsSection
         AddHintLabel("1. Click 'Get Key' → sign in with Google → 'Create API Key'", LeftMargin + 50);
         AddHintLabel("2. Select 'Create API key in new project' → copy the key → paste above", LeftMargin + 50);
 
-        AddLabel("Model:", LeftMargin + 25, _nextY + 3);
-        _llmModelCombo = new ComboBox
+        AddLabel("Version:", LeftMargin + 25, _nextY + 3);
+        _llmVersionCombo = new ComboBox
         {
             Location = new Point(LeftMargin + 90, _nextY),
-            Width = 230,
+            Width = 55,
             Font = new Font("Segoe UI", 9),
             DropDownStyle = ComboBoxStyle.DropDownList,
             BackColor = Color.FromArgb(60, 60, 60),
             ForeColor = Color.White,
             FlatStyle = FlatStyle.Flat
         };
-        _llmModelCombo.Items.AddRange(new object[] {
-            "gemini-2.5-flash-lite",
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-            "gemini-3-flash-preview",
-            "gemini-3.1-flash-lite-preview",
-            "gemini-3.1-pro-preview",
-            "gemini-2.0-flash-lite",
-            "gemini-2.0-flash"
-        });
-        _llmModelCombo.SelectedIndex = 0;
-        _toolTip.SetToolTip(_llmModelCombo, "Gemini model. 2.5 Flash-Lite is fast/cheap. 3.x are newest (preview). Pro is most capable but slower.");
-        Controls.Add(_llmModelCombo);
-        _nextY += RowHeight;
+        _llmVersionCombo.Items.AddRange(LlmModels.Select(m => m.Version).Distinct().Cast<object>().ToArray());
+        _llmVersionCombo.SelectedIndex = 0;
+        _llmVersionCombo.SelectedIndexChanged += (s, e) => OnVersionChanged();
+        Controls.Add(_llmVersionCombo);
+
+        AddLabel("Tier:", LeftMargin + 160, _nextY + 3);
+        _llmTierCombo = new ComboBox
+        {
+            Location = new Point(LeftMargin + 195, _nextY),
+            Width = 100,
+            Font = new Font("Segoe UI", 9),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _llmTierCombo.SelectedIndexChanged += TierChangedHandler;
+        Controls.Add(_llmTierCombo);
+
+        _llmPreviewLabel = new Label
+        {
+            Text = "(preview)",
+            Location = new Point(LeftMargin + 300, _nextY + 3),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(140, 140, 140),
+            Font = new Font("Segoe UI", 8, FontStyle.Italic),
+            Visible = false
+        };
+        Controls.Add(_llmPreviewLabel);
+        _nextY += SubRowHeight;
+
+        _llmCostLabel = new Label
+        {
+            Location = new Point(LeftMargin + 50, _nextY),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(120, 120, 120),
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        };
+        Controls.Add(_llmCostLabel);
+        _nextY += 20;
+
+        // Initialize tier combo for the default version
+        OnVersionChanged();
 
         AddHintLabel("Map 'Custom Process Report' in Key Mappings after enabling", LeftMargin + 25);
 
@@ -411,8 +454,45 @@ public class ExperimentalSection : SettingsSection
 
     private void UpdateLlmSettingsStates()
     {
-        _llmApiKeyBox.Enabled = _llmProcessEnabledCheck.Checked;
-        _llmModelCombo.Enabled = _llmProcessEnabledCheck.Checked;
+        var enabled = _llmProcessEnabledCheck.Checked;
+        _llmApiKeyBox.Enabled = enabled;
+        _llmVersionCombo.Enabled = enabled;
+        _llmTierCombo.Enabled = enabled;
+    }
+
+    private void OnVersionChanged()
+    {
+        var version = _llmVersionCombo.SelectedItem?.ToString();
+        if (version == null) return;
+
+        var tiers = LlmModels.Where(m => m.Version == version).Select(m => m.Tier).ToArray();
+        _llmTierCombo.SelectedIndexChanged -= TierChangedHandler;
+        _llmTierCombo.Items.Clear();
+        _llmTierCombo.Items.AddRange(tiers.Cast<object>().ToArray());
+        if (_llmTierCombo.Items.Count > 0) _llmTierCombo.SelectedIndex = 0;
+        _llmTierCombo.SelectedIndexChanged += TierChangedHandler;
+        UpdateModelDisplay();
+    }
+
+    private void TierChangedHandler(object? s, EventArgs e) => UpdateModelDisplay();
+
+    private void UpdateModelDisplay()
+    {
+        var version = _llmVersionCombo.SelectedItem?.ToString();
+        var tier = _llmTierCombo.SelectedItem?.ToString();
+        if (version == null || tier == null) return;
+
+        var match = LlmModels.FirstOrDefault(m => m.Version == version && m.Tier == tier);
+        if (match.ModelId == null) return;
+
+        _llmPreviewLabel.Visible = match.Preview;
+
+        const decimal estInput = 1500m;
+        const decimal estOutput = 500m;
+        const int studiesPerShift = 200;
+        var perStudy = (match.InputPer1M * estInput + match.OutputPer1M * estOutput) / 1_000_000m;
+        var perShift = perStudy * studiesPerShift;
+        _llmCostLabel.Text = $"Est. cost: ~${perStudy:F4}/study \u00b7 ~${perShift:F2}/shift ({studiesPerShift} studies)";
     }
 
     public override void LoadSettings(Configuration config)
@@ -432,9 +512,15 @@ public class ExperimentalSection : SettingsSection
         _clarioCdpUrlBox.Text = config.ClarioCdpUrl;
         _llmProcessEnabledCheck.Checked = config.LlmProcessEnabled;
         _llmApiKeyBox.Text = config.LlmApiKey;
-        // Select matching model in combo, default to first
-        var modelIdx = _llmModelCombo.Items.IndexOf(config.LlmModel);
-        _llmModelCombo.SelectedIndex = modelIdx >= 0 ? modelIdx : 0;
+        // Select matching version + tier from model ID, default to 2.5 Flash Lite
+        var saved = LlmModels.FirstOrDefault(m => m.ModelId == config.LlmModel);
+        var version = saved.ModelId != null ? saved.Version : "2.5";
+        var tier = saved.ModelId != null ? saved.Tier : "Flash Lite";
+        var vIdx = _llmVersionCombo.Items.IndexOf(version);
+        _llmVersionCombo.SelectedIndex = vIdx >= 0 ? vIdx : 0;
+        OnVersionChanged();
+        var tIdx = _llmTierCombo.Items.IndexOf(tier);
+        _llmTierCombo.SelectedIndex = tIdx >= 0 ? tIdx : 0;
 
         UpdateNetworkSettingsStates();
         UpdateCdpSettingsStates();
@@ -461,6 +547,9 @@ public class ExperimentalSection : SettingsSection
             config.ClarioCdpUrl = url;
         config.LlmProcessEnabled = _llmProcessEnabledCheck.Checked;
         config.LlmApiKey = _llmApiKeyBox.Text.Trim();
-        config.LlmModel = _llmModelCombo.SelectedItem?.ToString() ?? "gemini-2.5-flash-lite";
+        var version = _llmVersionCombo.SelectedItem?.ToString();
+        var tier = _llmTierCombo.SelectedItem?.ToString();
+        var match = LlmModels.FirstOrDefault(m => m.Version == version && m.Tier == tier);
+        config.LlmModel = match.ModelId ?? "gemini-2.5-flash-lite";
     }
 }

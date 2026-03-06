@@ -1687,6 +1687,21 @@ html, body {{ overflow: hidden !important; }}
     }
 
     /// <summary>
+    /// Dim or restore an editor's opacity as a visual processing indicator.
+    /// </summary>
+    public void SetEditorDim(int editorIndex, bool dim)
+    {
+        if (!IsIframeConnected) return;
+        var opacity = dim ? "0.4" : "1";
+        var js = $@"(() => {{
+            const e = document.querySelectorAll('.ProseMirror')[{editorIndex}];
+            if (e) {{ e.style.opacity = '{opacity}'; e.style.transition = 'opacity 0.15s'; }}
+            return 'ok';
+        }})()";
+        SendToIframe(js);
+    }
+
+    /// <summary>
     /// Replace editor content preserving ProseMirror heading/section/orderedList structure.
     /// docStructureJson: output from GetDocStructure (heading levels, impression section flag).
     /// </summary>
@@ -2163,7 +2178,6 @@ html, body {{ overflow: hidden !important; }}
             if (sections == null) return null;
 
             var report = new StructuredReport { Sections = sections };
-            Logger.Trace($"CDP: GetStructuredReport — {sections.Count} sections: {string.Join(", ", sections.Select(s => s.Name))}");
             return report;
         }
         catch (Exception ex)
@@ -2261,7 +2275,6 @@ html, body {{ overflow: hidden !important; }}
                 if (check == "true") return true;
                 // Style tag gone — DOM was refreshed, re-inject
                 _scrollFixActive = false;
-                Logger.Trace("CDP: Scroll fix style tag gone — re-injecting");
             }
             catch { _scrollFixActive = false; }
         }
@@ -2288,12 +2301,9 @@ html, body {{ overflow: hidden !important; }}
                 var containerW = data.TryGetProperty("containerW", out var cw) ? cw.ToString() : "?";
                 var windowW = data.TryGetProperty("windowW", out var ww) ? ww.ToString() : "?";
                 var colWidths = data.TryGetProperty("colWidths", out var cwArr) ? cwArr.ToString() : "";
-                Logger.Trace($"CDP: Scroll fix injected — {layout}, {cols} columns, {areas} editor areas, topPx={top}, ratio={_columnRatio:F3}, containerW={containerW}, windowW={windowW}, colWidths={colWidths}, wrappers={wrappers}");
                 return true;
             }
             // Not ready yet (e.g., editors not loaded) — will retry next tick
-            var error = GetStr(data, "error") ?? "unknown";
-            Logger.Trace($"CDP: Scroll fix not ready: {error}");
             return false;
         }
         catch (Exception ex)
