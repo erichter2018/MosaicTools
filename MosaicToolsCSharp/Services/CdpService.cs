@@ -1646,6 +1646,193 @@ html, body {{ overflow: hidden !important; }}
     }
 
     /// <summary>
+    /// Capture the ProseMirror doc structure (heading levels, section/orderedList wrapping)
+    /// so we can reconstruct it when writing LLM output back.
+    /// Returns JSON: { headings: { "FINDINGS": 4, "IMPRESSION": 4, ... }, hasImpressionSection: true }
+    /// </summary>
+    public string? GetDocStructure(int editorIndex)
+    {
+        if (!IsIframeConnected) return null;
+        var js = $@"(() => {{
+            const editors = document.querySelectorAll('.ProseMirror');
+            if (editors.length <= {editorIndex} || !editors[{editorIndex}].editor) return null;
+            const doc = editors[{editorIndex}].editor.getJSON();
+            if (!doc || !doc.content) return null;
+            const headings = {{}};
+            let hasImpressionSection = false;
+            for (const node of doc.content) {{
+                if (node.type === 'heading') {{
+                    let text = '';
+                    if (node.content) node.content.forEach(c => {{ if (c.text) text += c.text; }});
+                    text = text.replace(/:$/, '').trim().toUpperCase();
+                    if (text) headings[text] = node.attrs?.level || 4;
+                }}
+                if (node.type === 'section') {{
+                    hasImpressionSection = true;
+                    if (node.content) {{
+                        for (const child of node.content) {{
+                            if (child.type === 'heading') {{
+                                let text = '';
+                                if (child.content) child.content.forEach(c => {{ if (c.text) text += c.text; }});
+                                text = text.replace(/:$/, '').trim().toUpperCase();
+                                if (text) headings[text] = child.attrs?.level || 4;
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+            return JSON.stringify({{ headings, hasImpressionSection }});
+        }})()";
+        return ExtractResultValue(SendToIframe(js));
+    }
+
+    /// <summary>
+    /// Replace editor content preserving ProseMirror heading/section/orderedList structure.
+    /// docStructureJson: output from GetDocStructure (heading levels, impression section flag).
+    /// </summary>
+    public bool ReplaceEditorContent(int editorIndex, string text, string? docStructureJson = null)
+    {
+        if (!IsIframeConnected) return false;
+        var escapedText = JsonSerializer.Serialize(text);
+        var escapedStructure = docStructureJson != null ? JsonSerializer.Serialize(docStructureJson) : "null";
+        var js = $@"(() => {{
+            const editors = document.querySelectorAll('.ProseMirror');
+            if (editors.length <= {editorIndex} || !editors[{editorIndex}].editor) return 'no_editor';
+            const editor = editors[{editorIndex}].editor;
+            const text = {escapedText};
+            const structStr = {escapedStructure};
+            const struct_ = structStr ? JSON.parse(structStr) : null;
+            const headingLevels = struct_?.headings || {{}};
+            const hasImpSection = struct_?.hasImpressionSection || false;
+
+            // Build set of ALL known headings from the original doc structure
+            const knownHeadings = new Set(Object.keys(headingLevels));
+
+            const lines = text.split('\n');
+            const content = [];
+            let i = 0;
+
+            function isHeading(line) {{
+                const trimmed = line.trim().replace(/:$/, '').trim().toUpperCase();
+                return knownHeadings.has(trimmed);
+            }}
+
+            function getHeadingLevel(name) {{
+                return headingLevels[name.toUpperCase()] || 4;
+            }}
+
+            function makeHeading(name, level) {{
+                return {{ type: 'heading', attrs: {{ level: level }}, content: [{{ type: 'text', text: name + ':' }}] }};
+            }}
+
+            function makeParagraph(line) {{
+                if (!line || !line.trim()) return {{ type: 'paragraph' }};
+                return {{ type: 'paragraph', content: [{{ type: 'text', text: line }}] }};
+            }}
+
+            // Collect consecutive body lines between headings into single paragraphs.
+            // In radiology reports, text under a subsection heading is one paragraph.
+            // Blank lines create paragraph breaks.
+            function collectBody() {{
+                const parts = [];
+                while (i < lines.length) {{
+                    const t = lines[i].trim();
+                    if (!t) {{ i++; if (parts.length > 0) break; continue; }} // blank line = paragraph break
+                    if (isHeading(t)) break; // next heading — stop collecting
+                    parts.push(t);
+                    i++;
+                }}
+                return parts.length > 0 ? parts.join(' ') : null;
+            }}
+
+            while (i < lines.length) {{
+                const line = lines[i];
+                const trimmed = line.trim();
+
+                // Skip blank lines at top level
+                if (!trimmed) {{ i++; continue; }}
+
+                if (isHeading(trimmed)) {{
+                    const headerName = trimmed.replace(/:$/, '').trim();
+                    const upperName = headerName.toUpperCase();
+                    const level = getHeadingLevel(headerName);
+
+                    // Add empty paragraph spacer before headings (not before the first one)
+                    if (content.length > 0) {{
+                        content.push({{ type: 'paragraph' }});
+                    }}
+
+                    // IMPRESSION with section wrapper + orderedList
+                    if (upperName === 'IMPRESSION' && hasImpSection) {{
+                        i++;
+                        const impItems = [];
+                        while (i < lines.length && !isHeading(lines[i])) {{
+                            const impLine = lines[i].trim();
+                            if (impLine) {{
+                                const stripped = impLine.replace(/^\d+\.\s*/, '');
+                                if (stripped) {{
+                                    impItems.push({{
+                                        type: 'listItem',
+                                        content: [{{ type: 'paragraph', content: [{{ type: 'text', text: stripped }}] }}]
+                                    }});
+                                }}
+                            }}
+                            i++;
+                        }}
+                        const sectionContent = [makeHeading(headerName, level)];
+                        if (impItems.length > 0) {{
+                            sectionContent.push({{
+                                type: 'orderedList',
+                                attrs: {{ start: 1 }},
+                                content: impItems
+                            }});
+                        }}
+                        content.push({{ type: 'section', content: sectionContent }});
+                        continue;
+                    }}
+
+                    // Regular heading (top-level or subsection)
+                    content.push(makeHeading(headerName, level));
+                    i++;
+
+                    // Collect body text after heading into single paragraph(s)
+                    let body;
+                    while ((body = collectBody()) !== null) {{
+                        content.push(makeParagraph(body));
+                    }}
+                    continue;
+                }}
+
+                // Body text not under a heading — collect into paragraph
+                const body = collectBody();
+                if (body) content.push(makeParagraph(body));
+            }}
+
+            if (content.length === 0) content.push({{ type: 'paragraph' }});
+            editor.commands.setContent({{ type: 'doc', content: content }});
+
+            // Nudge Mosaic's change detection — setContent() bypasses the normal editing
+            // pipeline. Insert a zero-width space then immediately delete it in a separate
+            // transaction, which triggers ProseMirror's plugin/listener machinery without
+            // leaving any trace. Use addToHistory:false so it doesn't pollute undo stack.
+            const view = editor.view;
+            const endPos = editor.state.doc.content.size - 1;
+            const tr1 = view.state.tr.insertText('\u200B', endPos);
+            tr1.setMeta('addToHistory', false);
+            view.dispatch(tr1);
+            const tr2 = view.state.tr.delete(endPos, endPos + 1);
+            tr2.setMeta('addToHistory', false);
+            view.dispatch(tr2);
+
+            return 'ok';
+        }})()";
+        var result = ExtractResultValue(SendToIframe(js));
+        if (result != "ok")
+            Logger.Trace($"CDP: ReplaceEditorContent({editorIndex}) failed: {result}");
+        return result == "ok";
+    }
+
+    /// <summary>
     /// Flash matching final-report text for active alert terms.
     /// Installs a persistent JS watchdog interval that re-applies ProseMirror highlight
     /// marks whenever Mosaic's internal sync strips them (~every 2s).

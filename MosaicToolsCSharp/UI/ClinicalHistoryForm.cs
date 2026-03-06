@@ -17,6 +17,7 @@ namespace MosaicTools.UI;
 public enum AlertType
 {
     PatientMismatch,
+    ConsistencyMismatch,
     FindingsImpressionMismatch,
     TemplateMismatch,
     GenderMismatch,
@@ -62,6 +63,8 @@ public class ClinicalHistoryForm : Form
     private static readonly Color PatientMismatchBorderDim = Color.FromArgb(160, 130, 0); // Dim yellow - patient mismatch pulse
     private static readonly Color FimBorderBright = Color.FromArgb(255, 160, 0); // Bright orange - findings/impression mismatch
     private static readonly Color FimBorderDim = Color.FromArgb(180, 110, 0); // Dim orange - findings/impression mismatch pulse
+    private static readonly Color ConsistencyBorderBright = Color.FromArgb(255, 60, 60); // Bright red - consistency mismatch
+    private static readonly Color ConsistencyBorderDim = Color.FromArgb(180, 40, 40); // Dim red - consistency mismatch pulse
     private const int MismatchBorderWidth = 4; // Thicker than normal TransparentBorderWidth (2)
 
     // Text colors
@@ -139,6 +142,14 @@ public class ClinicalHistoryForm : Form
     private System.Windows.Forms.Timer? _fimPulseTimer;
     private bool _fimPulseState = false;
     private Action? _onMismatchDismissed;
+
+    // Consistency mismatch state (measurement/laterality)
+    private bool _consistencyActive = false;
+    private string? _consistencyText;
+    private HashSet<string> _activeConsistencyKeys = new();
+    private HashSet<string> _dismissedConsistencyKeys = new();
+    private System.Windows.Forms.Timer? _consistencyPulseTimer;
+    private bool _consistencyPulseState = false;
 
     // Periodic topmost reassertion — some apps (InteleViewer, Chrome) steal Z-order
     private System.Windows.Forms.Timer? _topMostTimer;
@@ -469,14 +480,14 @@ public class ClinicalHistoryForm : Form
 
         // Check if we need a gradient border (stroke + unaddressed aidoc)
         bool useGradientBorder = _strokeDetected && _aidocActive && !_aidocAllAddressed
-            && !_genderWarningActive && !_fimActive && !_templateMismatch && !_patientMismatchActive;
+            && !_genderWarningActive && !_consistencyActive && !_fimActive && !_templateMismatch && !_patientMismatchActive;
 
         // Layer 1: semi-transparent background
         using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
         using (var g = Graphics.FromImage(bmp))
         {
             g.Clear(Color.FromArgb(0, 0, 0, 0));
-            int bw = (_patientMismatchActive || _fimActive) ? MismatchBorderWidth : TransparentBorderWidth;
+            int bw = (_patientMismatchActive || _consistencyActive || _fimActive) ? MismatchBorderWidth : TransparentBorderWidth;
             // Inner area - semi-transparent (draw first, border drawn on top)
             using var innerBrush = new SolidBrush(Color.FromArgb(_backgroundAlpha, innerBg.R, innerBg.G, innerBg.B));
             g.FillRectangle(innerBrush, bw, bw, w - bw * 2, h - bw * 2);
@@ -647,6 +658,44 @@ public class ClinicalHistoryForm : Form
 
     private void HandleContentClick()
     {
+        // Consistency mismatch: click to dismiss (higher priority than FIM)
+        if (_consistencyActive)
+        {
+            foreach (var key in _activeConsistencyKeys)
+                _dismissedConsistencyKeys.Add(key);
+            _consistencyActive = false;
+            _consistencyText = null;
+            _activeConsistencyKeys.Clear();
+            StopConsistencyPulse();
+
+            // Restore display
+            _contentLabel.BackColor = Color.Black;
+            if (!string.IsNullOrEmpty(_currentDisplayedText))
+            {
+                _contentLabel.Text = _currentDisplayedText;
+                _contentLabel.ForeColor = _currentTextWasFixed ? FixedTextColor : NormalTextColor;
+            }
+
+            // Fall through to next priority
+            if (_fimActive)
+                StartFimPulse();
+            else if (_genderWarningActive)
+                StartBlinking();
+            else if (_templateMismatch)
+                BackColor = TemplateMismatchBorderColor;
+            else if (_strokeDetected)
+                BackColor = StrokeBorderColor;
+            else if (_aidocActive && !_aidocAllAddressed)
+                BackColor = AidocBorderColor;
+            else
+                BackColor = NormalBorderColor;
+
+            UpdateBorderTooltip();
+            RequestRender();
+            _onMismatchDismissed?.Invoke();
+            return;
+        }
+
         // Findings/Impression mismatch: click to dismiss
         if (_fimActive)
         {
@@ -732,7 +781,7 @@ public class ClinicalHistoryForm : Form
             _currentTextWasFixed = false;
 
             // Don't overwrite label when a warning overlay is active
-            if (!_patientMismatchActive && !_fimActive && !_genderWarningActive)
+            if (!_patientMismatchActive && !_consistencyActive && !_fimActive && !_genderWarningActive)
             {
                 _contentLabel.Text = "(No clinical history)";
                 _contentLabel.ForeColor = EmptyTextColor;
@@ -744,7 +793,7 @@ public class ClinicalHistoryForm : Form
             _currentTextWasFixed = wasFixed;
 
             // Don't overwrite label when a warning overlay is active
-            if (!_patientMismatchActive && !_fimActive && !_genderWarningActive)
+            if (!_patientMismatchActive && !_consistencyActive && !_fimActive && !_genderWarningActive)
             {
                 _contentLabel.Text = text;
                 _contentLabel.ForeColor = wasFixed ? FixedTextColor : NormalTextColor;
@@ -903,6 +952,11 @@ public class ClinicalHistoryForm : Form
         _activeMismatchKeys.Clear();
         _dismissedMismatchKeys.Clear();
         StopFimPulse();
+        _consistencyActive = false;
+        _consistencyText = null;
+        _activeConsistencyKeys.Clear();
+        _dismissedConsistencyKeys.Clear();
+        StopConsistencyPulse();
         _templateMismatch = false;
         // Note: _strokeDetected NOT cleared here — PerformStrokeDetection sets it explicitly.
         // Clearing here caused a race condition: OnStudyChanged (double-BeginInvoke) would
@@ -945,7 +999,7 @@ public class ClinicalHistoryForm : Form
         }
 
         // Don't touch colors when a warning overlay controls the display
-        if (_patientMismatchActive || _fimActive || _genderWarningActive)
+        if (_patientMismatchActive || _consistencyActive || _fimActive || _genderWarningActive)
             return;
 
         if (string.IsNullOrWhiteSpace(_currentDisplayedText))
@@ -1012,9 +1066,9 @@ public class ClinicalHistoryForm : Form
         }
 
         // Update border: orange for unaddressed Aidoc (lower priority than template/gender/stroke/mismatch/fim)
-        if (_aidocActive && !_aidocAllAddressed && !_patientMismatchActive && !_fimActive && !_genderWarningActive && !_templateMismatch && !_strokeDetected)
+        if (_aidocActive && !_aidocAllAddressed && !_patientMismatchActive && !_consistencyActive && !_fimActive && !_genderWarningActive && !_templateMismatch && !_strokeDetected)
             BackColor = AidocBorderColor;
-        else if ((_aidocAllAddressed || !_aidocActive) && wasActive && !_patientMismatchActive && !_fimActive && !_genderWarningActive && !_templateMismatch && !_strokeDetected)
+        else if ((_aidocAllAddressed || !_aidocActive) && wasActive && !_patientMismatchActive && !_consistencyActive && !_fimActive && !_genderWarningActive && !_templateMismatch && !_strokeDetected)
             BackColor = NormalBorderColor;
 
         UpdateBorderTooltip();
@@ -1029,7 +1083,7 @@ public class ClinicalHistoryForm : Form
             return;
         }
 
-        if (_patientMismatchActive || _fimActive || _genderWarningActive)
+        if (_patientMismatchActive || _consistencyActive || _fimActive || _genderWarningActive)
             { /* pulse/blink timer controls BackColor */ }
         else if (_templateMismatch)
             BackColor = TemplateMismatchBorderColor;
@@ -1062,7 +1116,7 @@ public class ClinicalHistoryForm : Form
         if (_fixTemplateMenuItemOpaque != null) _fixTemplateMenuItemOpaque.Visible = isMismatch;
         if (_fixTemplateSeparatorOpaque != null) _fixTemplateSeparatorOpaque.Visible = isMismatch;
 
-        if (isMismatch && !_patientMismatchActive && !_fimActive && !_genderWarningActive)
+        if (isMismatch && !_patientMismatchActive && !_consistencyActive && !_fimActive && !_genderWarningActive)
         {
             BackColor = TemplateMismatchBorderColor;
             UpdateBorderTooltip();
@@ -1081,7 +1135,7 @@ public class ClinicalHistoryForm : Form
 
         _strokeDetected = isStroke;
 
-        if (isStroke && !_patientMismatchActive && !_fimActive && !_genderWarningActive && !_templateMismatch)
+        if (isStroke && !_patientMismatchActive && !_consistencyActive && !_fimActive && !_genderWarningActive && !_templateMismatch)
             BackColor = StrokeBorderColor;
 
         UpdateBorderTooltip();
@@ -1167,7 +1221,9 @@ public class ClinicalHistoryForm : Form
                 }
 
                 // Restore to the next-highest priority alert
-                if (_fimActive)
+                if (_consistencyActive)
+                    StartConsistencyPulse();
+                else if (_fimActive)
                     StartFimPulse();
                 else if (_genderWarningActive)
                     StartBlinking();
@@ -1193,7 +1249,11 @@ public class ClinicalHistoryForm : Form
     {
         if (_mismatchPulseTimer != null) return;
 
-        // Pause gender blink while mismatch is active (mismatch takes priority)
+        // Pause lower-priority pulse/blink timers while patient mismatch is active
+        if (_consistencyPulseTimer != null)
+            _consistencyPulseTimer.Stop();
+        if (_fimPulseTimer != null)
+            _fimPulseTimer.Stop();
         if (_blinkTimer != null)
         {
             _blinkTimer.Stop();
@@ -1220,8 +1280,12 @@ public class ClinicalHistoryForm : Form
             _mismatchPulseTimer = null;
         }
 
-        // Resume gender blink if it was paused
-        if (_genderWarningActive && _blinkTimer != null)
+        // Resume next-priority pulse/blink
+        if (_consistencyActive && _consistencyPulseTimer != null)
+            _consistencyPulseTimer.Start();
+        else if (_fimActive && _fimPulseTimer != null)
+            _fimPulseTimer.Start();
+        else if (_genderWarningActive && _blinkTimer != null)
             _blinkTimer.Start();
     }
 
@@ -1273,7 +1337,7 @@ public class ClinicalHistoryForm : Form
                     _activeMismatchKeys.Clear();
                     StopFimPulse();
 
-                    if (!_patientMismatchActive)
+                    if (!_patientMismatchActive && !_consistencyActive)
                     {
                         _contentLabel.BackColor = Color.Black;
                         if (!string.IsNullOrEmpty(_currentDisplayedText))
@@ -1308,7 +1372,7 @@ public class ClinicalHistoryForm : Form
             var names = string.Join(", ", remaining.Select(m => m.DisplayName));
             _fimText = $"FINDINGS/IMPRESSION: {names}";
 
-            if (!_patientMismatchActive)
+            if (!_patientMismatchActive && !_consistencyActive)
             {
                 StartFimPulse();
                 UpdateBorderTooltip();
@@ -1324,7 +1388,7 @@ public class ClinicalHistoryForm : Form
                 _activeMismatchKeys.Clear();
                 StopFimPulse();
 
-                if (!_patientMismatchActive)
+                if (!_patientMismatchActive && !_consistencyActive)
                 {
                     _contentLabel.BackColor = Color.Black;
 
@@ -1390,7 +1454,7 @@ public class ClinicalHistoryForm : Form
 
     private void UpdateFimPulseDisplay()
     {
-        if (!_fimActive || _patientMismatchActive) return;
+        if (!_fimActive || _patientMismatchActive || _consistencyActive) return;
 
         if (_fimPulseState)
         {
@@ -1405,6 +1469,180 @@ public class ClinicalHistoryForm : Form
             _contentLabel.BackColor = Color.FromArgb(40, 25, 0);
             _contentLabel.ForeColor = Color.FromArgb(200, 150, 50);
             _contentLabel.Text = _fimText ?? "FINDINGS/IMPRESSION MISMATCH";
+        }
+
+        RequestRender();
+    }
+
+    /// <summary>
+    /// Set consistency mismatch state. Red pulsing border, click to dismiss.
+    /// Priority: below PatientMismatch, above FIM.
+    /// </summary>
+    public void SetConsistencyMismatch(bool active, List<ConsistencyResult>? results)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => SetConsistencyMismatch(active, results));
+            return;
+        }
+
+        if (active && results != null && results.Count > 0)
+        {
+            // Filter out dismissed keys
+            var remaining = results.Where(r => !_dismissedConsistencyKeys.Contains(r.Key)).ToList();
+            if (remaining.Count == 0)
+            {
+                // All dismissed — deactivate
+                if (_consistencyActive)
+                {
+                    _consistencyActive = false;
+                    _consistencyText = null;
+                    _activeConsistencyKeys.Clear();
+                    StopConsistencyPulse();
+
+                    if (!_patientMismatchActive)
+                    {
+                        _contentLabel.BackColor = Color.Black;
+                        if (!string.IsNullOrEmpty(_currentDisplayedText))
+                        {
+                            _contentLabel.Text = _currentDisplayedText;
+                            _contentLabel.ForeColor = _currentTextWasFixed ? FixedTextColor : NormalTextColor;
+                        }
+
+                        if (_fimActive)
+                            StartFimPulse();
+                        else if (_genderWarningActive)
+                            StartBlinking();
+                        else if (_templateMismatch)
+                            BackColor = TemplateMismatchBorderColor;
+                        else if (_strokeDetected)
+                            BackColor = StrokeBorderColor;
+                        else if (_aidocActive && !_aidocAllAddressed)
+                            BackColor = AidocBorderColor;
+                        else
+                            BackColor = NormalBorderColor;
+                    }
+
+                    UpdateBorderTooltip();
+                    RequestRender();
+                }
+                return;
+            }
+
+            if (!_consistencyActive)
+                _savedClinicalHistoryText ??= _contentLabel.Text;
+
+            _consistencyActive = true;
+            _activeConsistencyKeys = new HashSet<string>(remaining.Select(r => r.Key));
+            var names = string.Join(", ", remaining.Select(r => r.DisplayName));
+            _consistencyText = $"CONSISTENCY: {names}";
+
+            if (!_patientMismatchActive)
+            {
+                // Pause FIM pulse while consistency is active
+                if (_fimPulseTimer != null)
+                    _fimPulseTimer.Stop();
+                StartConsistencyPulse();
+                UpdateBorderTooltip();
+            }
+            RequestRender();
+        }
+        else
+        {
+            if (_consistencyActive)
+            {
+                _consistencyActive = false;
+                _consistencyText = null;
+                _activeConsistencyKeys.Clear();
+                StopConsistencyPulse();
+
+                if (!_patientMismatchActive)
+                {
+                    _contentLabel.BackColor = Color.Black;
+
+                    if (!string.IsNullOrEmpty(_currentDisplayedText))
+                    {
+                        _contentLabel.Text = _currentDisplayedText;
+                        _contentLabel.ForeColor = _currentTextWasFixed ? FixedTextColor : NormalTextColor;
+                    }
+
+                    if (_fimActive)
+                        StartFimPulse();
+                    else if (_genderWarningActive)
+                        StartBlinking();
+                    else if (_templateMismatch)
+                        BackColor = TemplateMismatchBorderColor;
+                    else if (_strokeDetected)
+                        BackColor = StrokeBorderColor;
+                    else if (_aidocActive && !_aidocAllAddressed)
+                        BackColor = AidocBorderColor;
+                    else
+                        BackColor = NormalBorderColor;
+                }
+
+                UpdateBorderTooltip();
+                RequestRender();
+            }
+        }
+    }
+
+    public bool IsConsistencyActive => _consistencyActive;
+
+    private void StartConsistencyPulse()
+    {
+        if (_consistencyPulseTimer != null) return;
+
+        // Pause FIM pulse and gender blink while consistency is active
+        if (_fimPulseTimer != null)
+            _fimPulseTimer.Stop();
+        if (_blinkTimer != null)
+            _blinkTimer.Stop();
+
+        _consistencyPulseState = true;
+        UpdateConsistencyPulseDisplay();
+
+        _consistencyPulseTimer = new System.Windows.Forms.Timer { Interval = 600 };
+        _consistencyPulseTimer.Tick += (_, _) =>
+        {
+            _consistencyPulseState = !_consistencyPulseState;
+            UpdateConsistencyPulseDisplay();
+        };
+        _consistencyPulseTimer.Start();
+    }
+
+    private void StopConsistencyPulse()
+    {
+        if (_consistencyPulseTimer != null)
+        {
+            _consistencyPulseTimer.Stop();
+            _consistencyPulseTimer.Dispose();
+            _consistencyPulseTimer = null;
+        }
+
+        // Resume FIM pulse or gender blink if they were paused
+        if (_fimActive && _fimPulseTimer != null)
+            _fimPulseTimer.Start();
+        else if (_genderWarningActive && _blinkTimer != null)
+            _blinkTimer.Start();
+    }
+
+    private void UpdateConsistencyPulseDisplay()
+    {
+        if (!_consistencyActive || _patientMismatchActive) return;
+
+        if (_consistencyPulseState)
+        {
+            BackColor = ConsistencyBorderBright;
+            _contentLabel.BackColor = Color.FromArgb(60, 15, 15);
+            _contentLabel.ForeColor = Color.FromArgb(255, 150, 150);
+            _contentLabel.Text = _consistencyText ?? "CONSISTENCY MISMATCH";
+        }
+        else
+        {
+            BackColor = ConsistencyBorderDim;
+            _contentLabel.BackColor = Color.FromArgb(40, 10, 10);
+            _contentLabel.ForeColor = Color.FromArgb(200, 110, 110);
+            _contentLabel.Text = _consistencyText ?? "CONSISTENCY MISMATCH";
         }
 
         RequestRender();
@@ -1480,6 +1718,13 @@ public class ClinicalHistoryForm : Form
 
         switch (type)
         {
+            case AlertType.ConsistencyMismatch:
+                BackColor = ConsistencyBorderBright;
+                _contentLabel.BackColor = Color.FromArgb(60, 15, 15);
+                _contentLabel.ForeColor = Color.FromArgb(255, 150, 150);
+                _contentLabel.Text = $"CONSISTENCY: {details}";
+                break;
+
             case AlertType.FindingsImpressionMismatch:
                 BackColor = FimBorderBright;
                 _contentLabel.BackColor = Color.FromArgb(60, 35, 0);
@@ -1549,6 +1794,9 @@ public class ClinicalHistoryForm : Form
     {
         switch (type)
         {
+            case AlertType.ConsistencyMismatch:
+                return _consistencyText ?? "Measurement/laterality mismatch detected";
+
             case AlertType.TemplateMismatch:
                 if (_lastDescription != null && _lastTemplateName != null)
                     return $"Study: {_lastDescription}\nTemplate: {_lastTemplateName}";
@@ -1578,6 +1826,8 @@ public class ClinicalHistoryForm : Form
 
         if (_patientMismatchActive)
             tooltip = "Yellow (pulsing): Patient mismatch - InteleViewer shows a different patient than Mosaic";
+        else if (_consistencyActive)
+            tooltip = "Red (pulsing): Measurement/laterality mismatch - click to dismiss";
         else if (_fimActive)
             tooltip = "Orange (pulsing): Findings/Impression mismatch - click to dismiss";
         else if (_genderWarningActive)
@@ -1803,6 +2053,8 @@ public class ClinicalHistoryForm : Form
         sb.AppendLine("=== Alerts Debug ===");
         sb.AppendLine($"Template mismatch: {_templateMismatch}");
         sb.AppendLine($"Patient mismatch: {_patientMismatchActive} ({_patientMismatchText ?? ""})");
+        sb.AppendLine($"Consistency active: {_consistencyActive} ({_consistencyText ?? ""})");
+        sb.AppendLine($"Consistency dismissed: [{string.Join(", ", _dismissedConsistencyKeys)}]");
         sb.AppendLine($"FIM active: {_fimActive} ({_fimText ?? ""})");
         sb.AppendLine($"FIM dismissed: [{string.Join(", ", _dismissedMismatchKeys)}]");
         sb.AppendLine($"Gender warning: {_genderWarningActive} ({_genderWarningText ?? ""})");
@@ -2574,8 +2826,8 @@ public class ClinicalHistoryForm : Form
                 _genderWarningActive = false;
                 StopBlinking();
 
-                // Don't restore visuals if patient mismatch is active (it has priority)
-                if (!_patientMismatchActive)
+                // Don't restore visuals if higher-priority alert is active
+                if (!_patientMismatchActive && !_consistencyActive && !_fimActive)
                 {
                     _contentLabel.BackColor = Color.Black;
 
@@ -2590,7 +2842,9 @@ public class ClinicalHistoryForm : Form
                         _contentLabel.ForeColor = NormalTextColor;
                     }
 
-                    if (_fimActive)
+                    if (_consistencyActive)
+                        StartConsistencyPulse();
+                    else if (_fimActive)
                         StartFimPulse();
                     else if (_templateMismatch)
                         BackColor = TemplateMismatchBorderColor;
@@ -2637,7 +2891,7 @@ public class ClinicalHistoryForm : Form
 
     private void UpdateBlinkDisplay()
     {
-        if (!_genderWarningActive || _patientMismatchActive) return;
+        if (!_genderWarningActive || _patientMismatchActive || _consistencyActive || _fimActive) return;
 
         if (_blinkState)
         {

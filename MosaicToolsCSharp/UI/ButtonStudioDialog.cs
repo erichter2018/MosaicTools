@@ -316,7 +316,9 @@ public class ButtonStudioDialog : Form
         _actionCombo.Items.Add("(keystroke)");
         foreach (var a in Actions.All)
         {
-            if (a != Actions.None) _actionCombo.Items.Add(a);
+            if (a == Actions.None) continue;
+            if (a == Actions.CustomProcessReport && !_config.LlmProcessEnabled) continue;
+            _actionCombo.Items.Add(a);
         }
         _actionCombo.SelectedIndex = 0;
         _actionCombo.SelectedIndexChanged += (s, e) => { if (!_updatingEditor) ApplyEditorChanges(); };

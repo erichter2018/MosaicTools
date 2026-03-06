@@ -181,6 +181,7 @@ public class KeyMappingsDialog : Form
         {
             if (action == Actions.None) continue;
             if (_isHeadless && action == Actions.CycleWindowLevel) continue;
+            if (action == Actions.CustomProcessReport && !_config.LlmProcessEnabled) continue;
 
             var lbl = new Label
             {

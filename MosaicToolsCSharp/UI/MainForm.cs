@@ -1828,6 +1828,14 @@ public class MainForm : Form
         _clinicalHistoryWindow.SetFindingsImpressionMismatch(active, mismatches);
     }
 
+    public void UpdateConsistencyMismatch(bool active, List<ConsistencyResult>? results)
+    {
+        if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)
+            return;
+
+        _clinicalHistoryWindow.SetConsistencyMismatch(active, results);
+    }
+
     public void SetAidocAppend(List<FindingVerification>? findings)
     {
         if (_clinicalHistoryWindow == null || _clinicalHistoryWindow.IsDisposed)

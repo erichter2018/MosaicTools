@@ -34,6 +34,9 @@ public class ExperimentalSection : SettingsSection
     private readonly Label _mosaicCdpLabel;
     private readonly Label _clarioCdpDot;
     private readonly Label _clarioCdpLabel;
+    private readonly CheckBox _llmProcessEnabledCheck;
+    private readonly TextBox _llmApiKeyBox;
+    private readonly ComboBox _llmModelCombo;
 
     public ExperimentalSection(ToolTip toolTip) : base("Experimental", toolTip)
     {
@@ -165,6 +168,67 @@ public class ExperimentalSection : SettingsSection
         _clarioCdpLabel.ForeColor = Color.Gray;
         _clarioCdpLabel.AutoSize = true;
         _nextY += 20;
+
+        // Beyond Experimental — LLM Custom Process Report
+        _nextY += 10;
+        var separatorLabel = AddLabel("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", LeftMargin, _nextY);
+        separatorLabel.ForeColor = Color.FromArgb(255, 100, 60);
+        separatorLabel.Font = new Font("Segoe UI", 8);
+        _nextY += 18;
+        var beyondLabel = AddLabel("BEYOND EXPERIMENTAL", LeftMargin, _nextY);
+        beyondLabel.ForeColor = Color.FromArgb(255, 100, 60);
+        beyondLabel.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+        _nextY += 18;
+        var separatorLabel2 = AddLabel("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", LeftMargin, _nextY);
+        separatorLabel2.ForeColor = Color.FromArgb(255, 100, 60);
+        separatorLabel2.Font = new Font("Segoe UI", 8);
+        _nextY += RowHeight;
+
+        _llmProcessEnabledCheck = AddCheckBox("Custom Process Report (Gemini LLM)", LeftMargin, _nextY,
+            "Reads transcript + template via CDP, sends to Google Gemini, writes merged report back. " +
+            "Bypasses Mosaic's built-in LLM. Requires CDP enabled. PHI is scrubbed before sending.");
+        _llmProcessEnabledCheck.CheckedChanged += (s, e) => UpdateLlmSettingsStates();
+        _nextY += RowHeight;
+
+        AddLabel("API Key:", LeftMargin + 25, _nextY + 3);
+        _llmApiKeyBox = new TextBox
+        {
+            Location = new Point(LeftMargin + 90, _nextY),
+            Width = 230,
+            Font = new Font("Segoe UI", 9),
+            UseSystemPasswordChar = true
+        };
+        _toolTip.SetToolTip(_llmApiKeyBox, "Google Gemini API key (from aistudio.google.com)");
+        Controls.Add(_llmApiKeyBox);
+        _nextY += RowHeight;
+
+        AddLabel("Model:", LeftMargin + 25, _nextY + 3);
+        _llmModelCombo = new ComboBox
+        {
+            Location = new Point(LeftMargin + 90, _nextY),
+            Width = 230,
+            Font = new Font("Segoe UI", 9),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _llmModelCombo.Items.AddRange(new object[] {
+            "gemini-2.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3.1-pro-preview",
+            "gemini-2.0-flash-lite",
+            "gemini-2.0-flash"
+        });
+        _llmModelCombo.SelectedIndex = 0;
+        _toolTip.SetToolTip(_llmModelCombo, "Gemini model. 2.5 Flash-Lite is fast/cheap. 3.x are newest (preview). Pro is most capable but slower.");
+        Controls.Add(_llmModelCombo);
+        _nextY += RowHeight;
+
+        AddHintLabel("Map 'Custom Process Report' in Key Mappings after enabling", LeftMargin + 25);
 
         UpdateHeight();
     }
@@ -337,6 +401,12 @@ public class ExperimentalSection : SettingsSection
         _sttHighlightDictatedCheck.Enabled = _cdpEnabledCheck.Checked;
     }
 
+    private void UpdateLlmSettingsStates()
+    {
+        _llmApiKeyBox.Enabled = _llmProcessEnabledCheck.Checked;
+        _llmModelCombo.Enabled = _llmProcessEnabledCheck.Checked;
+    }
+
     public override void LoadSettings(Configuration config)
     {
         _connectivityMonitorEnabledCheck.Checked = config.ConnectivityMonitorEnabled;
@@ -352,9 +422,15 @@ public class ExperimentalSection : SettingsSection
         _sttHighlightDictatedCheck.Checked = config.SttHighlightDictated;
         _clarioCdpEnabledCheck.Checked = config.ClarioCdpEnabled;
         _clarioCdpUrlBox.Text = config.ClarioCdpUrl;
+        _llmProcessEnabledCheck.Checked = config.LlmProcessEnabled;
+        _llmApiKeyBox.Text = config.LlmApiKey;
+        // Select matching model in combo, default to first
+        var modelIdx = _llmModelCombo.Items.IndexOf(config.LlmModel);
+        _llmModelCombo.SelectedIndex = modelIdx >= 0 ? modelIdx : 0;
 
         UpdateNetworkSettingsStates();
         UpdateCdpSettingsStates();
+        UpdateLlmSettingsStates();
         ProbeCdpStatus();
     }
 
@@ -375,5 +451,8 @@ public class ExperimentalSection : SettingsSection
         var url = _clarioCdpUrlBox.Text.Trim();
         if (!string.IsNullOrEmpty(url))
             config.ClarioCdpUrl = url;
+        config.LlmProcessEnabled = _llmProcessEnabledCheck.Checked;
+        config.LlmApiKey = _llmApiKeyBox.Text.Trim();
+        config.LlmModel = _llmModelCombo.SelectedItem?.ToString() ?? "gemini-2.5-flash-lite";
     }
 }

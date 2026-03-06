@@ -55,6 +55,10 @@ public class ActionController : IDisposable
     private readonly RecoMdService _recoMdService;
     private CdpService? _cdpService;  // [CDP] — null if CDP not enabled
     private SttService? _sttService;  // [CustomSTT] — null if Custom STT not enabled
+    private LlmService? _llmService;  // [LLM] — null if LLM Process not enabled
+    private StructuredReport? _llmCapturedTemplate; // [LLM] Template captured on new accession for re-processing
+    private string? _llmCapturedTemplateAccession;  // [LLM] Accession the captured template belongs to
+    private string? _llmCapturedDocStructure;        // [LLM] Doc structure JSON captured alongside template
     private Dictionary<string, KeytermLearningService> _keytermLearningByProvider = new(); // [KeytermLearning] per-provider instances
     private EnsembleMetricsForm? _ensembleMetrics; // [Ensemble] live stats popup
     private readonly List<CorrectionRecord> _pendingCorrections = new(); // [Ensemble] corrections awaiting validation
@@ -206,6 +210,10 @@ public class ActionController : IDisposable
     private bool _fimMismatchActive = false;
     private string? _lastMismatchCheckReportText;
     private List<MismatchResult>? _lastFimMismatches;
+    private bool _consistencyMismatchActive = false;
+    private string? _lastConsistencyCheckReportText;
+    private string? _lastConsistencyCheckDescription;
+    private List<ConsistencyResult>? _lastConsistencyResults;
     private bool _strokeDetectedActive = false;
     private bool _pendingClarioPriorityRetry = false;
     private int _clarioPriorityRetryCount = 0;
@@ -309,6 +317,13 @@ public class ActionController : IDisposable
                 _config.CdpEnvVarSet = true;
                 _config.Save();
             }
+        }
+
+        // [LLM] Initialize LLM service for Custom Process Report
+        if (_config.LlmProcessEnabled && !string.IsNullOrEmpty(_config.LlmApiKey))
+        {
+            _llmService = new LlmService();
+            _llmService.Configure(_config.LlmApiKey, _config.LlmModel);
         }
 
         _actionThread = new Thread(ActionLoop) { IsBackground = true };
@@ -519,6 +534,20 @@ public class ActionController : IDisposable
             try { _sttService.Dispose(); } catch { }
             _sttService = null;
             Logger.Trace("SttService: Disabled and disposed");
+        }
+
+        // [LLM] Re-initialize on settings change
+        if (_config.LlmProcessEnabled && !string.IsNullOrEmpty(_config.LlmApiKey))
+        {
+            if (_llmService == null)
+                _llmService = new LlmService();
+            _llmService.Configure(_config.LlmApiKey, _config.LlmModel);
+            Logger.Trace($"LLM: Configured (model={_config.LlmModel})");
+        }
+        else
+        {
+            _llmService?.Dispose();
+            _llmService = null;
         }
     }
 
@@ -964,6 +993,9 @@ public class ActionController : IDisposable
                 break;
             case Actions.PasteRecoMd:
                 PerformPasteRecoMd();
+                break;
+            case Actions.CustomProcessReport:
+                PerformCustomProcessReport(req.Source);
                 break;
             case "__InsertMacros__":
                 PerformInsertMacros();
@@ -1704,6 +1736,222 @@ public class ActionController : IDisposable
         }
 
         // Popup will auto-update via scrape timer when report changes
+    }
+
+    // [LLM] Custom Process Report — reads transcript + template via CDP, sends to Gemini, writes result back
+    private void PerformCustomProcessReport(string source = "Manual")
+    {
+        Logger.Trace($"Custom Process Report (Source: {source})");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        // Validate prerequisites
+        if (_llmService == null || !_llmService.IsConfigured)
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("Custom Process: LLM not configured"));
+            Logger.Trace("Custom Process Report: LLM service not configured");
+            return;
+        }
+
+        if (_cdpService == null)
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("Custom Process: CDP not enabled"));
+            Logger.Trace("Custom Process Report: CDP service not available");
+            return;
+        }
+
+        // Stop STT recording if active (same preamble as PerformProcessReport)
+        if (_config.CustomSttEnabled && _sttService != null && _sttService.IsRecording)
+        {
+            Logger.Trace("Custom Process Report: Stopping STT recording...");
+            Task.Run(async () => await _sttService.StopRecordingAsync()).Wait(4000);
+            _dictationActive = false;
+            if (_config.SttStopBeepEnabled)
+                AudioService.PlayBeepAsync(500, 200, _config.SttStopBeepVolume);
+            Thread.Sleep(500);
+            _sttDirectPasteActive = false;
+            InvokeUI(() => _mainForm.HideTranscriptionForm());
+        }
+
+        // 1. Read transcript from editor 0
+        var transcript = _cdpService.GetEditorText(0);
+        if (string.IsNullOrWhiteSpace(transcript))
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("Custom Process: No transcript in editor"));
+            Logger.Trace("Custom Process Report: Empty transcript");
+            return;
+        }
+
+        // 2. Use eagerly captured template (from scrape loop). Fallback: capture now if scrape missed it.
+        //    On re-process, reuse the captured template so the LLM always works from the original.
+        var currentAccession = _mosaicReader.LastAccession;
+        if (_llmCapturedTemplate == null || _llmCapturedTemplateAccession != currentAccession)
+        {
+            // Scrape loop didn't capture yet — try now as fallback
+            var freshStructured = _cdpService.GetStructuredReport();
+            if (freshStructured == null || freshStructured.Sections.Count == 0)
+            {
+                InvokeUI(() => _mainForm.ShowStatusToast("Custom Process: No template in report editor"));
+                Logger.Trace("Custom Process Report: No structured report to capture");
+                return;
+            }
+            _llmCapturedTemplate = freshStructured;
+            _llmCapturedTemplateAccession = currentAccession;
+            _llmCapturedDocStructure = _cdpService.GetDocStructure(1);
+            Logger.Trace($"Custom Process Report: Fallback template capture for {currentAccession} ({freshStructured.Sections.Count} sections)");
+        }
+        else
+        {
+            Logger.Trace("Custom Process Report: Using eagerly captured template");
+        }
+
+        var structured = _llmCapturedTemplate;
+        var docStructure = _llmCapturedDocStructure;
+
+        // 3. Build template for LLM (FINDINGS subsections + IMPRESSION only)
+        //    Prefix sections (EXAM, TECHNIQUE, etc.) are read LIVE from editor 1 — user may have edited them.
+        var templateBuilder = new System.Text.StringBuilder();
+
+        // Sections the LLM should NOT touch
+        var preserveSections = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "EXAM", "EXAMINATION", "TECHNIQUE", "COMPARISON", "CLINICAL HISTORY", "CLINICAL INFORMATION", "HISTORY", "INDICATION", "INDICATIONS" };
+
+        foreach (var section in structured.Sections)
+        {
+            if (preserveSections.Contains(section.Name))
+                continue; // Skip — these are stitched from live editor later
+
+            // Send to LLM: FINDINGS (with subsections), IMPRESSION, etc.
+            templateBuilder.AppendLine(section.Name + ":");
+
+            if (section.Subsections.Count > 0)
+            {
+                foreach (var sub in section.Subsections)
+                {
+                    templateBuilder.AppendLine();
+                    templateBuilder.AppendLine(sub.Name + ":");
+                    var subText = !string.IsNullOrWhiteSpace(sub.TemplateText) ? sub.TemplateText : sub.FullText;
+                    templateBuilder.AppendLine(subText);
+                }
+            }
+            else
+            {
+                var text = !string.IsNullOrWhiteSpace(section.TemplateText) ? section.TemplateText : section.FullText;
+                templateBuilder.AppendLine(text);
+            }
+            templateBuilder.AppendLine();
+        }
+
+        // Read prefix sections LIVE from current editor 1 (user may have edited comparison, etc.)
+        var prefixBuilder = new System.Text.StringBuilder();
+        var liveStructured = _cdpService.GetStructuredReport();
+        // Fall back to captured template if live read fails or returns empty (e.g., editor was cleared)
+        var liveSource = (liveStructured != null && liveStructured.Sections.Count > 0) ? liveStructured : structured;
+        foreach (var section in liveSource.Sections)
+        {
+            if (!preserveSections.Contains(section.Name)) continue;
+            prefixBuilder.AppendLine(section.Name + ":");
+            var fullText = !string.IsNullOrWhiteSpace(section.FullText) ? section.FullText : section.TemplateText;
+            prefixBuilder.AppendLine(fullText);
+            prefixBuilder.AppendLine();
+        }
+
+        var safeTemplate = templateBuilder.ToString().Trim();
+        var scrubbedTranscript = LlmService.ScrubPhi(transcript);
+        var preservedPrefix = prefixBuilder.ToString().TrimEnd();
+
+        // Extract clinical history for LLM context (scrub PHI — only the reason/question matters)
+        string? clinicalHistory = null;
+        var histSection = liveSource.GetSection("CLINICAL HISTORY") ?? liveSource.GetSection("CLINICAL INFORMATION") ?? liveSource.GetSection("INDICATION");
+        if (histSection != null && !string.IsNullOrWhiteSpace(histSection.FullText))
+            clinicalHistory = LlmService.ScrubPhi(histSection.FullText);
+
+        Logger.Trace($"Custom Process Report: Transcript {scrubbedTranscript.Length} chars, Template {safeTemplate.Length} chars, Prefix {preservedPrefix.Length} chars");
+
+        // 4. Call Gemini
+        string? result = null;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            result = Task.Run(async () =>
+                await _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token),
+                cts.Token).GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException)
+        {
+            Logger.Trace("Custom Process Report: Timed out (20s)");
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Custom Process Report: Error — {ex.Message}");
+        }
+
+        if (string.IsNullOrWhiteSpace(result))
+        {
+            var elapsed = sw.Elapsed.TotalSeconds;
+            InvokeUI(() => _mainForm.ShowStatusToast($"Custom Process: LLM returned no result ({elapsed:F1}s)"));
+            Logger.Trace("Custom Process Report: LLM returned null/empty");
+            return;
+        }
+
+        // 5. Stitch preserved prefix sections + LLM result, write into editor 1
+        var fullReport = string.IsNullOrEmpty(preservedPrefix)
+            ? result
+            : preservedPrefix + "\n\n" + result;
+        if (!_cdpService.ReplaceEditorContent(1, fullReport, docStructure))
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("Custom Process: Failed to write to editor"));
+            Logger.Trace("Custom Process Report: ReplaceEditorContent failed");
+            return;
+        }
+
+        sw.Stop();
+        var elapsedSec = sw.Elapsed.TotalSeconds;
+        Logger.Trace($"Custom Process Report: Success in {elapsedSec:F1}s");
+        InvokeUI(() => _mainForm.ShowStatusToast($"Custom Report processed ({elapsedSec:F1}s)"));
+
+        // Mark process report pressed so change highlighting works
+        _processReportPressedForCurrentAccession = true;
+
+        // Auto-show report overlay if enabled (same logic as PerformProcessReport)
+        if (_config.ShowReportAfterProcess && !_autoShowReportDoneForAccession)
+        {
+            _autoShowReportDoneForAccession = true;
+            var popupRef = _currentReportPopup;
+            bool popupAlreadyOpen = popupRef != null && !popupRef.IsDisposed && popupRef.Visible;
+            if (popupAlreadyOpen)
+            {
+                Logger.Trace("Custom Process Report: Skipping auto-show (popup already open), marking as stale");
+                _staleSetTime = DateTime.UtcNow;
+                _staleTextStableTime = default;
+                InvokeUI(() => { if (popupRef != null && !popupRef.IsDisposed) popupRef.SetStaleState(true); });
+            }
+            else
+            {
+                Logger.Trace("Custom Process Report: Auto-showing report overlay");
+                PerformShowReport();
+            }
+        }
+        else
+        {
+            var popupRef2 = _currentReportPopup;
+            if (popupRef2 != null && !popupRef2.IsDisposed && popupRef2.Visible)
+            {
+                Logger.Trace("Custom Process Report: Marking popup as stale during processing");
+                _staleSetTime = DateTime.UtcNow;
+                _staleTextStableTime = default;
+                InvokeUI(() => { if (popupRef2 != null && !popupRef2.IsDisposed) popupRef2.SetStaleState(true); });
+            }
+        }
+
+        // Request burst for UI updates
+        RequestReportScrapeBurst(5000, "Custom Process Report");
+
+        // Auto-restart STT if configured
+        if (_config.CustomSttEnabled && _config.SttAutoStartOnCase && _sttService != null)
+        {
+            Thread.Sleep(300);
+            PerformToggleRecordStt(true);
+        }
     }
 
     private void StartImpressionSearch()
@@ -4110,8 +4358,35 @@ public class ActionController : IDisposable
                     _needsBaselineCapture = _config.ShowReportChanges || _config.CorrelationEnabled;
                     _processReportPressedForCurrentAccession = false;
                     _draftedAutoProcessDetected = false;
+                    _llmCapturedTemplate = null; // [LLM] Re-capture template after template switch
+                    _llmCapturedTemplateAccession = null;
+                    _llmCapturedDocStructure = null;
+                    Logger.Trace("LLM: Template changed — will re-capture on next scrape");
                 }
                 _lastSeenTemplateName = currentTemplateName;
+            }
+
+            // [LLM] Eager template capture — grab the clean template ASAP on new accession.
+            // Drafted studies briefly show the default template then auto-process, so we must
+            // capture before that happens. Only attempt when LLM feature is enabled and CDP is available.
+            if (_config.LlmProcessEnabled && _cdpService != null
+                && _llmCapturedTemplate == null && !string.IsNullOrEmpty(currentAccession))
+            {
+                try
+                {
+                    var earlyStructured = _cdpService.GetStructuredReport();
+                    if (earlyStructured != null && earlyStructured.Sections.Count > 0)
+                    {
+                        _llmCapturedTemplate = earlyStructured;
+                        _llmCapturedTemplateAccession = currentAccession;
+                        _llmCapturedDocStructure = _cdpService.GetDocStructure(1);
+                        Logger.Trace($"LLM: Eager template capture for {currentAccession} ({earlyStructured.Sections.Count} sections)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Trace($"LLM: Eager template capture failed — {ex.Message}");
+                }
             }
 
             // These always run (cheap, needed for popup updates):
@@ -4350,6 +4625,9 @@ public class ActionController : IDisposable
         _templateRecordedForStudy = false;
         _lastSeenTemplateName = null;
         _lastPopupReportText = null;
+        _llmCapturedTemplate = null; // [LLM] Reset template for new study
+        _llmCapturedTemplateAccession = null;
+        _llmCapturedDocStructure = null;
 
         // [KeytermLearning] Verify collected words against final report before clearing
         if (_keytermLearningByProvider.Count > 0 && !_discardDialogShownForCurrentAccession)
@@ -4478,9 +4756,13 @@ public class ActionController : IDisposable
         _templateCorrectionNextRetryTick64 = 0;
         _genderMismatchActive = false;
         _fimMismatchActive = false;
+        _consistencyMismatchActive = false;
         ClearCdpAlertTextFlashing();
         _lastMismatchCheckReportText = null;
         _lastFimMismatches = null;
+        _lastConsistencyCheckReportText = null;
+        _lastConsistencyCheckDescription = null;
+        _lastConsistencyResults = null;
         _strokeDetectedActive = false;
         _pendingClarioPriorityRetry = false;
         _lastAidocFindings = null;
@@ -4915,7 +5197,9 @@ public class ActionController : IDisposable
         bool newTemplateMismatch = false;
         bool newGenderMismatch = false;
         bool newFimMismatch = false;
+        bool newConsistencyMismatch = false;
         List<MismatchResult>? fimMismatches = null;
+        List<ConsistencyResult>? consistencyResults = null;
         string? templateDescription = null;
         string? templateName = null;
         string? patientGender = _mosaicReader.LastPatientGender;
@@ -5000,7 +5284,38 @@ public class ActionController : IDisposable
             newFimMismatch = fimMismatches.Count > 0;
         }
 
-        UpdateCdpAlertTextFlashing(reportText, genderMismatches, fimMismatches);
+        // Check for measurement/laterality consistency
+        var currentDescription = _mosaicReader.LastDescription;
+        if (_config.ConsistencyCheckEnabled && !string.IsNullOrWhiteSpace(reportText)
+            && (!string.Equals(reportText, _lastConsistencyCheckReportText, StringComparison.Ordinal)
+                || !string.Equals(currentDescription, _lastConsistencyCheckDescription, StringComparison.Ordinal)))
+        {
+            _lastConsistencyCheckReportText = reportText;
+            _lastConsistencyCheckDescription = currentDescription;
+            try
+            {
+                var sr = (_cdpService?.IsIframeConnected == true) ? _cdpService.GetStructuredReport() : null;
+                var (findingsText, impressionText) = sr != null
+                    ? CorrelationService.ExtractSections(sr)
+                    : CorrelationService.ExtractSections(reportText);
+                consistencyResults = ConsistencyChecker.Check(findingsText, impressionText, currentDescription);
+                _lastConsistencyResults = consistencyResults;
+                newConsistencyMismatch = consistencyResults.Count > 0;
+                if (newConsistencyMismatch != _consistencyMismatchActive || newConsistencyMismatch)
+                    Logger.Trace($"Consistency: {(consistencyResults.Count > 0 ? string.Join(", ", consistencyResults.Select(r => r.DisplayName)) : "clear")}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"Consistency: error: {ex.Message}");
+            }
+        }
+        else if (_config.ConsistencyCheckEnabled && _lastConsistencyResults != null)
+        {
+            consistencyResults = _lastConsistencyResults;
+            newConsistencyMismatch = consistencyResults.Count > 0;
+        }
+
+        UpdateCdpAlertTextFlashing(reportText, genderMismatches, fimMismatches, consistencyResults);
 
         // CDP flashing can run even when clinical history UI is hidden.
         // Skip the rest of the clinical-history/Aidoc UI pipeline in that case.
@@ -5008,6 +5323,7 @@ public class ActionController : IDisposable
         {
             _genderMismatchActive = newGenderMismatch;
             _fimMismatchActive = newFimMismatch;
+            _consistencyMismatchActive = newConsistencyMismatch;
             return;
         }
 
@@ -5113,7 +5429,7 @@ public class ActionController : IDisposable
         }
 
         // Determine if any alerts are active
-        bool anyAlertActive = newTemplateMismatch || newGenderMismatch || newFimMismatch || _strokeDetectedActive || effectiveAidocRelevant;
+        bool anyAlertActive = newTemplateMismatch || newGenderMismatch || newFimMismatch || newConsistencyMismatch || _strokeDetectedActive || effectiveAidocRelevant;
 
         // Handle visibility based on always-show vs alerts-only mode
         if (_config.AlwaysShowClinicalHistory)
@@ -5148,6 +5464,17 @@ public class ActionController : IDisposable
             else if (!_config.FindingsImpressionMismatchEnabled && _fimMismatchActive)
             {
                 BatchUI(() => _mainForm.UpdateFindingsImpressionMismatch(false, null));
+            }
+
+            // Update consistency mismatch
+            if (_config.ConsistencyCheckEnabled && consistencyResults != null)
+            {
+                var capturedConsistency = consistencyResults;
+                BatchUI(() => _mainForm.UpdateConsistencyMismatch(capturedConsistency.Count > 0, capturedConsistency));
+            }
+            else if (!_config.ConsistencyCheckEnabled && _consistencyMismatchActive)
+            {
+                BatchUI(() => _mainForm.UpdateConsistencyMismatch(false, null));
             }
 
             // Update gender check
@@ -5189,7 +5516,12 @@ public class ActionController : IDisposable
             AlertType? alertToShow = null;
             string alertDetails = "";
 
-            if (newFimMismatch && fimMismatches != null)
+            if (newConsistencyMismatch && consistencyResults != null)
+            {
+                alertToShow = AlertType.ConsistencyMismatch;
+                alertDetails = string.Join(", ", consistencyResults.Select(r => r.DisplayName));
+            }
+            else if (newFimMismatch && fimMismatches != null)
             {
                 alertToShow = AlertType.FindingsImpressionMismatch;
                 alertDetails = string.Join(", ", fimMismatches.Select(m => m.DisplayName));
@@ -5259,12 +5591,14 @@ public class ActionController : IDisposable
         _templateMismatchActive = newTemplateMismatch;
         _genderMismatchActive = newGenderMismatch;
         _fimMismatchActive = newFimMismatch;
+        _consistencyMismatchActive = newConsistencyMismatch;
     }
 
     private void UpdateCdpAlertTextFlashing(
         string? reportText,
         List<string>? genderMismatches,
-        List<MismatchResult>? fimMismatches)
+        List<MismatchResult>? fimMismatches,
+        List<ConsistencyResult>? consistencyResults = null)
     {
         if (_cdpService?.IsIframeConnected != true
             || !_config.CdpEnabled
@@ -5279,6 +5613,15 @@ public class ActionController : IDisposable
         var fimTerms = (_config.FindingsImpressionMismatchEnabled && fimMismatches != null)
             ? fimMismatches.SelectMany(m => m.SearchTerms).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
             : new List<string>();
+
+        // Merge consistency search terms into FIM terms (same visual treatment)
+        if (_config.ConsistencyCheckEnabled && consistencyResults != null)
+        {
+            var consistencyTerms = consistencyResults.SelectMany(r => r.SearchTerms)
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+            fimTerms.AddRange(consistencyTerms);
+        }
 
         var normalizedGender = genderTerms
             .Where(t => !string.IsNullOrWhiteSpace(t))
@@ -6512,6 +6855,7 @@ public class ActionController : IDisposable
         _pipeService?.Dispose();
         _sttService?.Dispose();  // [CustomSTT]
         _cdpService?.Dispose();  // [CDP]
+        _llmService?.Dispose();  // [LLM]
         _actionEvent.Dispose();
     }
 }

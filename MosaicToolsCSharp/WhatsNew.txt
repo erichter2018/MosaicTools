@@ -1,3 +1,11 @@
+4.2.2
+- Measurement & laterality consistency checker: red pulsing alert when measurements differ between FINDINGS and IMPRESSION, wrong-side errors (left/right mismatch), or study description laterality conflicts
+- Unit-aware measurement comparison (1.8 cm = 18 mm), anatomy synonym matching (renal/kidney), bilateral suppression for midline studies
+- Study description laterality: flags "right metacarpal" when study says "LEFT HAND", suppresses when study includes bilateral components (AP pelvis, chest, etc.)
+- Click-to-dismiss consistency alerts with per-key tracking, cleared on study change
+- Consistency search terms merged into CDP flashing alert text
+- LLM Process Report prompt improvements: better sentence boundary inference from unpunctuated transcripts, no content dropped, in-transcript formatting instructions supported, proper sentence capitalization/punctuation enforced, custom section creation (e.g., "RADIATION DOSE:")
+
 4.2.1
 - Per-word confidence highlighting in Clario editor: 3-tier color system (normal/medium/low) via CSS Custom Highlight API
 - Per-provider accuracy tracking: compare Deepgram, Soniox, Speechmatics word output against signed reports (session + all-time)

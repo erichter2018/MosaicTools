@@ -142,6 +142,9 @@ public class Configuration
     [JsonPropertyName("findings_impression_mismatch_enabled")]
     public bool FindingsImpressionMismatchEnabled { get; set; } = true;
 
+    [JsonPropertyName("consistency_check_enabled")]
+    public bool ConsistencyCheckEnabled { get; set; } = true;
+
     [JsonPropertyName("aidoc_scrape_enabled")]
     public bool AidocScrapeEnabled { get; set; } = false;  // Off by default (not everyone has Aidoc)
 
@@ -580,6 +583,16 @@ public class Configuration
 
     [JsonPropertyName("cdp_flashing_alert_text")]
     public bool CdpFlashingAlertText { get; set; } = false;
+
+    // LLM Custom Process Report
+    [JsonPropertyName("llm_process_enabled")]
+    public bool LlmProcessEnabled { get; set; } = false;
+
+    [JsonPropertyName("llm_api_key")]
+    public string LlmApiKey { get; set; } = "";
+
+    [JsonPropertyName("llm_model")]
+    public string LlmModel { get; set; } = "gemini-2.5-flash-lite";
 
     // UI Options
     [JsonPropertyName("show_tooltips")]
@@ -1223,10 +1236,11 @@ public static class Actions
     public const string RadAiImpression = "RadAI Impression";  // [RadAI] — remove when RadAI integration is retired
     public const string TriggerRecoMd = "Trigger RecoMD";
     public const string PasteRecoMd = "Paste RecoMD";
+    public const string CustomProcessReport = "Custom Process Report";
 
     public static readonly string[] All = {
         None, SystemBeep, GetPrior, CriticalFindings,
-        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression, DiscardStudy, ShowPickLists, CycleWindowLevel, CreateCriticalNote, RadAiImpression, TriggerRecoMd, PasteRecoMd
+        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression, DiscardStudy, ShowPickLists, CycleWindowLevel, CreateCriticalNote, RadAiImpression, TriggerRecoMd, PasteRecoMd, CustomProcessReport
     };
 }
 
