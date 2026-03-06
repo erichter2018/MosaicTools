@@ -194,13 +194,21 @@ public class ExperimentalSection : SettingsSection
         _llmApiKeyBox = new TextBox
         {
             Location = new Point(LeftMargin + 90, _nextY),
-            Width = 230,
+            Width = 200,
             Font = new Font("Segoe UI", 9),
             UseSystemPasswordChar = true
         };
         _toolTip.SetToolTip(_llmApiKeyBox, "Google Gemini API key (from aistudio.google.com)");
         Controls.Add(_llmApiKeyBox);
-        _nextY += RowHeight;
+
+        var getKeyBtn = AddButton("Get Key", LeftMargin + 295, _nextY - 1, 55, 22,
+            (_, _) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://aistudio.google.com/apikey") { UseShellExecute = true }); } catch { } },
+            "Open Google AI Studio to create an API key");
+        getKeyBtn.Font = new Font("Segoe UI", 7);
+        _nextY += SubRowHeight;
+
+        AddHintLabel("1. Click 'Get Key' → sign in with Google → 'Create API Key'", LeftMargin + 50);
+        AddHintLabel("2. Select 'Create API key in new project' → copy the key → paste above", LeftMargin + 50);
 
         AddLabel("Model:", LeftMargin + 25, _nextY + 3);
         _llmModelCombo = new ComboBox
