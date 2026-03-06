@@ -2155,6 +2155,7 @@ html, body {{ overflow: hidden !important; }}
         return JSON.stringify(sections);
     })()";
 
+
     /// <summary>
     /// Get the final report as a structured object with sections, dictated/template text separation,
     /// and IMPRESSION items. Uses ProseMirror's getJSON() for reliable parsing instead of regex.

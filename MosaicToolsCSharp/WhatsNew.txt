@@ -1,3 +1,10 @@
+4.2.4
+- LLM split flow for Lite models: findings-only LLM call + separate impression handling prevents Lite from adding unsolicited impression items
+- LLM prompt restructured with XML tags for better small-model compliance
+- Subsection routing hints: pulmonary findings go to LUNGS AND PLEURA (not HEART), etc.
+- LLM formatting: one contiguous line per subsection, anti-paraphrase rules preserve radiologist's exact words
+- Local impression formatting for short dictated impressions (multi-line support)
+
 4.2.3
 - LLM model selector redesign: Version + Tier dropdowns replace raw model ID list, with preview badges and per-study/per-shift cost estimates
 
