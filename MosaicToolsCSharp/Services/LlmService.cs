@@ -64,7 +64,7 @@ RULES:
 
 9. NEVER fabricate findings or add clinical information the radiologist didn't dictate.
 
-10. Fix obvious speech-to-text errors but do NOT change medical terminology. Spoken punctuation words are ALWAYS STT artifacts — replace them: ""period"" → ""."", ""comma"" → "","", ""colon"" → "":"", ""semicolon"" → "";"", ""question mark"" → ""?"", ""exclamation point"" → ""!"", ""new line"" / ""next line"" → line break, ""open paren"" / ""close paren"" → ""("" / "")"". Never leave these as literal words in the output.
+10. Fix obvious speech-to-text errors but do NOT change medical terminology. Spoken punctuation words are ALWAYS STT artifacts — replace them: ""period"" → ""."", ""comma"" → "","", ""semicolon"" → "";"", ""question mark"" → ""?"", ""exclamation point"" → ""!"", ""new line"" / ""next line"" → line break, ""open paren"" / ""close paren"" → ""("" / "")"". Never leave these as literal words in the output. Do NOT replace the word ""colon"" — it is a common anatomical term in radiology.
 
 11. Return ONLY FINDINGS (with all subsection headers) and IMPRESSION. No explanations, no markdown, no extra commentary.";
 
@@ -85,6 +85,11 @@ RULES:
         if (string.IsNullOrEmpty(_apiKey)) return null;
 
         var url = $"https://generativelanguage.googleapis.com/v1beta/models/{_model}:generateContent?key={_apiKey}";
+
+        // Pre-process transcript: normalize "impression" divider so the LLM sees a clear structural marker.
+        // Handles: "...no pneumothorax impression increased opacity..." → "...\n\nIMPRESSION:\n\nincreased opacity..."
+        // Also handles STT artifacts like "Impression, colon," or "impression colon"
+        transcript = NormalizeImpressionDivider(transcript);
 
         var historyBlock = !string.IsNullOrWhiteSpace(clinicalHistory)
             ? $"\n\nCLINICAL HISTORY:\n{clinicalHistory}" : "";
@@ -213,6 +218,32 @@ RULES:
         }
 
         return string.Join('\n', lines);
+    }
+
+    // ═══════ TRANSCRIPT PRE-PROCESSING ═══════
+
+    // Match "impression" as a standalone word, optionally followed by punctuation STT artifacts
+    // like ", colon," or "colon" or ":" — normalize all to a clear structural divider.
+    private static readonly Regex RxImpressionDivider = new(
+        @"(?<!\w)(?i:impression)\s*(?:[,.]?\s*(?:colon|:)\s*[,.]?\s*|[,.:]\s*)?",
+        RegexOptions.Compiled);
+
+    /// <summary>
+    /// Find the word "impression" in the transcript and normalize it to a clear
+    /// structural marker so the LLM unambiguously recognizes the FINDINGS/IMPRESSION boundary.
+    /// Only normalizes the FIRST occurrence (the divider); subsequent uses are left as-is.
+    /// </summary>
+    internal static string NormalizeImpressionDivider(string transcript)
+    {
+        if (string.IsNullOrEmpty(transcript)) return transcript;
+
+        var match = RxImpressionDivider.Match(transcript);
+        if (!match.Success) return transcript;
+
+        var before = transcript[..match.Index].TrimEnd();
+        var after = transcript[(match.Index + match.Length)..].TrimStart();
+
+        return $"{before}\n\nIMPRESSION:\n{after}";
     }
 
     public void Dispose()

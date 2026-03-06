@@ -59,6 +59,7 @@ public class ActionController : IDisposable
     private StructuredReport? _llmCapturedTemplate; // [LLM] Template captured on new accession for re-processing
     private string? _llmCapturedTemplateAccession;  // [LLM] Accession the captured template belongs to
     private string? _llmCapturedDocStructure;        // [LLM] Doc structure JSON captured alongside template
+    private string? _llmDbTemplateOverride;           // [LLM] Clean template from DB (used for drafted studies)
     private Dictionary<string, KeytermLearningService> _keytermLearningByProvider = new(); // [KeytermLearning] per-provider instances
     private EnsembleMetricsForm? _ensembleMetrics; // [Ensemble] live stats popup
     private readonly List<CorrectionRecord> _pendingCorrections = new(); // [Ensemble] corrections awaiting validation
@@ -1809,36 +1810,48 @@ public class ActionController : IDisposable
 
         // 3. Build template for LLM (FINDINGS subsections + IMPRESSION only)
         //    Prefix sections (EXAM, TECHNIQUE, etc.) are read LIVE from editor 1 — user may have edited them.
-        var templateBuilder = new System.Text.StringBuilder();
+        //    For drafted studies: prefer clean default template from TemplateDatabase over captured report.
 
         // Sections the LLM should NOT touch
         var preserveSections = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             { "EXAM", "EXAMINATION", "TECHNIQUE", "COMPARISON", "CLINICAL HISTORY", "CLINICAL INFORMATION", "HISTORY", "INDICATION", "INDICATIONS" };
 
-        foreach (var section in structured.Sections)
+        string builtTemplate;
+        if (!string.IsNullOrEmpty(_llmDbTemplateOverride))
         {
-            if (preserveSections.Contains(section.Name))
-                continue; // Skip — these are stitched from live editor later
-
-            // Send to LLM: FINDINGS (with subsections), IMPRESSION, etc.
-            templateBuilder.AppendLine(section.Name + ":");
-
-            if (section.Subsections.Count > 0)
+            // Drafted study: use clean default template from TemplateDatabase
+            builtTemplate = _llmDbTemplateOverride;
+            Logger.Trace("Custom Process Report: Using DB template override (drafted study)");
+        }
+        else
+        {
+            var templateBuilder = new System.Text.StringBuilder();
+            foreach (var section in structured.Sections)
             {
-                foreach (var sub in section.Subsections)
+                if (preserveSections.Contains(section.Name))
+                    continue; // Skip — these are stitched from live editor later
+
+                // Send to LLM: FINDINGS (with subsections), IMPRESSION, etc.
+                templateBuilder.AppendLine(section.Name + ":");
+
+                if (section.Subsections.Count > 0)
                 {
-                    templateBuilder.AppendLine();
-                    templateBuilder.AppendLine(sub.Name + ":");
-                    var subText = !string.IsNullOrWhiteSpace(sub.TemplateText) ? sub.TemplateText : sub.FullText;
-                    templateBuilder.AppendLine(subText);
+                    foreach (var sub in section.Subsections)
+                    {
+                        templateBuilder.AppendLine();
+                        templateBuilder.AppendLine(sub.Name + ":");
+                        var subText = !string.IsNullOrWhiteSpace(sub.TemplateText) ? sub.TemplateText : sub.FullText;
+                        templateBuilder.AppendLine(subText);
+                    }
                 }
+                else
+                {
+                    var text = !string.IsNullOrWhiteSpace(section.TemplateText) ? section.TemplateText : section.FullText;
+                    templateBuilder.AppendLine(text);
+                }
+                templateBuilder.AppendLine();
             }
-            else
-            {
-                var text = !string.IsNullOrWhiteSpace(section.TemplateText) ? section.TemplateText : section.FullText;
-                templateBuilder.AppendLine(text);
-            }
-            templateBuilder.AppendLine();
+            builtTemplate = templateBuilder.ToString();
         }
 
         // Read prefix sections LIVE from current editor 1 (user may have edited comparison, etc.)
@@ -1855,7 +1868,7 @@ public class ActionController : IDisposable
             prefixBuilder.AppendLine();
         }
 
-        var safeTemplate = templateBuilder.ToString().Trim();
+        var safeTemplate = builtTemplate.Trim();
         var scrubbedTranscript = LlmService.ScrubPhi(transcript);
         var preservedPrefix = prefixBuilder.ToString().TrimEnd();
 
@@ -4361,14 +4374,15 @@ public class ActionController : IDisposable
                     _llmCapturedTemplate = null; // [LLM] Re-capture template after template switch
                     _llmCapturedTemplateAccession = null;
                     _llmCapturedDocStructure = null;
+                    _llmDbTemplateOverride = null;
                     Logger.Trace("LLM: Template changed — will re-capture on next scrape");
                 }
                 _lastSeenTemplateName = currentTemplateName;
             }
 
-            // [LLM] Eager template capture — grab the clean template ASAP on new accession.
-            // Drafted studies briefly show the default template then auto-process, so we must
-            // capture before that happens. Only attempt when LLM feature is enabled and CDP is available.
+            // [LLM] Eager template capture — grab structured report + doc structure on new accession.
+            // For drafted studies, the captured report already has dictated content, so prefer
+            // the clean default template from TemplateDatabase instead for the LLM.
             if (_config.LlmProcessEnabled && _cdpService != null
                 && _llmCapturedTemplate == null && !string.IsNullOrEmpty(currentAccession))
             {
@@ -4381,6 +4395,26 @@ public class ActionController : IDisposable
                         _llmCapturedTemplateAccession = currentAccession;
                         _llmCapturedDocStructure = _cdpService.GetDocStructure(1);
                         Logger.Trace($"LLM: Eager template capture for {currentAccession} ({earlyStructured.Sections.Count} sections)");
+
+                        // Drafted studies: the captured report has prior dictation, not a clean template.
+                        // Try the TemplateDatabase for the real default template.
+                        if (_mosaicReader.LastDraftedState)
+                        {
+                            var desc = _mosaicReader.LastDescription;
+                            if (!string.IsNullOrEmpty(desc))
+                            {
+                                var dbTemplate = _templateDatabase.GetFallbackTemplate(desc);
+                                if (dbTemplate != null)
+                                {
+                                    _llmDbTemplateOverride = dbTemplate;
+                                    Logger.Trace($"LLM: Drafted study — using DB template for '{desc}' ({dbTemplate.Length} chars)");
+                                }
+                                else
+                                {
+                                    Logger.Trace($"LLM: Drafted study — no confident DB template for '{desc}', will use captured report");
+                                }
+                            }
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -4628,6 +4662,7 @@ public class ActionController : IDisposable
         _llmCapturedTemplate = null; // [LLM] Reset template for new study
         _llmCapturedTemplateAccession = null;
         _llmCapturedDocStructure = null;
+        _llmDbTemplateOverride = null;
 
         // [KeytermLearning] Verify collected words against final report before clearing
         if (_keytermLearningByProvider.Count > 0 && !_discardDialogShownForCurrentAccession)
