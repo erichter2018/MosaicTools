@@ -1382,9 +1382,16 @@ html, body {{ overflow: hidden !important; }}
                         + ' ::highlight(mt-medium) {{ color: rgb(200, 170, 80); }}'
                         + ' ::highlight(mt-low) {{ color: rgb(210, 130, 70); }}';
 
-                    // Create a DOM Range covering the inserted text (background highlight)
+                    // Clear all previous highlights — StaticRanges go stale when ProseMirror
+                    // rebuilds DOM nodes on subsequent inserts, causing wrong word colors.
+                    for (const name of ['mt-dictated', 'mt-normal', 'mt-medium', 'mt-low']) {{
+                        if (CSS.highlights.has(name)) CSS.highlights.get(name).clear();
+                    }}
+
+                    // Re-highlight ALL dictated text from the start of the editor to current position
                     const view = editor.view;
-                    const startDOM = view.domAtPos(posBefore);
+                    const docStart = 1; // ProseMirror doc starts at pos 1
+                    const startDOM = view.domAtPos(docStart);
                     const endDOM = view.domAtPos(posAfter);
                     const range = new Range();
                     range.setStart(startDOM.node, startDOM.offset);
@@ -1393,7 +1400,7 @@ html, body {{ overflow: hidden !important; }}
                     if (!CSS.highlights.has('mt-dictated')) CSS.highlights.set('mt-dictated', new Highlight());
                     CSS.highlights.get('mt-dictated').add(range);
 
-                    // Assign every word an explicit text color (normal/medium/low)
+                    // Assign every word in the NEW insertion an explicit text color (normal/medium/low)
                     const medSet = new Set({mediumJson});
                     const lowSet = new Set({lowJson});
                     const insertedText = editor.state.doc.textBetween(posBefore, posAfter);
@@ -1418,6 +1425,20 @@ html, body {{ overflow: hidden !important; }}
                             CSS.highlights.get(hlName).add(wRange);
                         }} catch(e) {{}}
                         wordIndex++;
+                    }}
+
+                    // Re-color older text (before this insertion) as normal
+                    if (posBefore > docStart) {{
+                        try {{
+                            const oldStartDOM = view.domAtPos(docStart);
+                            const oldEndDOM = view.domAtPos(posBefore);
+                            const oldRange = new StaticRange({{
+                                startContainer: oldStartDOM.node, startOffset: oldStartDOM.offset,
+                                endContainer: oldEndDOM.node, endOffset: oldEndDOM.offset
+                            }});
+                            if (!CSS.highlights.has('mt-normal')) CSS.highlights.set('mt-normal', new Highlight());
+                            CSS.highlights.get('mt-normal').add(oldRange);
+                        }} catch(e) {{}}
                     }}
                     return 'ok_highlight';
                 }} catch(e) {{ return 'ok_hl_err:' + e.message; }}
@@ -1824,6 +1845,12 @@ html, body {{ overflow: hidden !important; }}
             }}
 
             if (content.length === 0) content.push({{ type: 'paragraph' }});
+
+            // Clear dictation highlights before replacing content — StaticRanges go stale after setContent()
+            for (const name of ['mt-dictated', 'mt-normal', 'mt-medium', 'mt-low']) {{
+                if (CSS.highlights.has(name)) CSS.highlights.delete(name);
+            }}
+
             editor.commands.setContent({{ type: 'doc', content: content }});
 
             // Nudge Mosaic's change detection — setContent() bypasses the normal editing

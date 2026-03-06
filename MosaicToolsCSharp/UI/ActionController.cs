@@ -1471,14 +1471,17 @@ public class ActionController : IDisposable
             // Stop recording — primary finalize is fast (~500ms), secondary cleanup is background
             Task.Run(async () => await _sttService!.StopRecordingAsync()).Wait(2000);
             _dictationActive = false;
-            _sttDirectPasteActive = false;
+            // Keep _sttDirectPasteActive true — ensemble merge timer (500ms) may still be running.
+            // Clear it in the background task after giving the timer time to fire.
 
             // Drain any in-flight paste and restore focus in background so the STA
             // action thread is freed up quickly for the next button press.
             var restoreHwnd = _sttPasteTargetWindow;
             _ = Task.Run(() =>
             {
+                Thread.Sleep(600); // Wait for ensemble merge timer to fire
                 lock (_directPasteLock) { } // drain any in-flight paste
+                _sttDirectPasteActive = false;
                 InvokeUI(() => _mainForm.HideTranscriptionForm());
                 if (restoreHwnd != IntPtr.Zero && NativeWindows.IsWindow(restoreHwnd))
                 {
@@ -1885,37 +1888,117 @@ public class ActionController : IDisposable
         if (histSection != null && !string.IsNullOrWhiteSpace(histSection.FullText))
             clinicalHistory = LlmService.ScrubPhi(histSection.FullText);
 
+        // Extract prefix sections (clinical history, comparison) from transcript if radiologist dictated them.
+        // Replace the corresponding template sections in the preserved prefix.
+        var prefixExtractions = new[]
+        {
+            (rx: @"(?:^|\n)\s*(?:clinical\s+(?:history|information)|indications?)\s*[:\.]?\s*(.+)",
+             headers: new[] { "CLINICAL HISTORY:", "CLINICAL INFORMATION:", "INDICATION:", "INDICATIONS:" },
+             label: "Clinical history"),
+            (rx: @"(?:^|\n)\s*-*\s*comparison\s*[:\.]?\s*(.+)",
+             headers: new[] { "COMPARISON:" },
+             label: "Comparison"),
+        };
+
+        foreach (var (rx, headers, label) in prefixExtractions)
+        {
+            var regex = new System.Text.RegularExpressions.Regex(rx, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+            // Collect ALL matches (e.g. multiple comparison priors)
+            var matches = regex.Matches(transcript);
+            if (matches.Count == 0) continue;
+
+            var parts = new List<string>();
+            foreach (System.Text.RegularExpressions.Match m in matches)
+            {
+                var val = m.Groups[1].Value.Trim();
+                if (!string.IsNullOrWhiteSpace(val)) parts.Add(val);
+            }
+            if (parts.Count == 0) continue;
+
+            var rawText = string.Join("\n", parts);
+            Logger.Trace($"Custom Process Report: {label} from transcript ({parts.Count} match{(parts.Count > 1 ? "es" : "")}): {rawText}");
+
+            // Remove ALL matches from scrubbed transcript
+            var scrubbedResult = scrubbedTranscript;
+            var scrubbedMatches = regex.Matches(scrubbedResult);
+            for (int i = scrubbedMatches.Count - 1; i >= 0; i--) // reverse to preserve indices
+                scrubbedResult = scrubbedResult.Remove(scrubbedMatches[i].Index, scrubbedMatches[i].Length);
+            scrubbedTranscript = scrubbedResult.Trim();
+
+            // Replace section content in preserved prefix
+            string? foundHeader = null;
+            int headerIdx = -1;
+            foreach (var hdr in headers)
+            {
+                headerIdx = preservedPrefix.IndexOf(hdr, StringComparison.OrdinalIgnoreCase);
+                if (headerIdx >= 0) { foundHeader = hdr; break; }
+            }
+            if (headerIdx >= 0 && foundHeader != null)
+            {
+                int contentStart = headerIdx + foundHeader.Length;
+                while (contentStart < preservedPrefix.Length && preservedPrefix[contentStart] is '\r' or '\n')
+                    contentStart++;
+
+                int nextSection = preservedPrefix.Length;
+                foreach (var s in preserveSections)
+                {
+                    int idx = preservedPrefix.IndexOf(s + ":", contentStart, StringComparison.OrdinalIgnoreCase);
+                    if (idx >= 0 && idx < nextSection) nextSection = idx;
+                }
+
+                preservedPrefix = preservedPrefix[..contentStart] + rawText + "\n\n" + preservedPrefix[nextSection..];
+                preservedPrefix = preservedPrefix.TrimEnd();
+            }
+
+            // Use transcript clinical history as LLM context
+            if (label == "Clinical history")
+                clinicalHistory = LlmService.ScrubPhi(rawText);
+        }
+
         Logger.Trace($"Custom Process Report: Transcript {scrubbedTranscript.Length} chars, Template {safeTemplate.Length} chars, Prefix {preservedPrefix.Length} chars");
 
-        // 4. Call Gemini — dim the report editor while processing
-        _cdpService.SetEditorDim(1, true);
-        string? result = null;
-        try
-        {
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-            result = Task.Run(async () =>
-                await _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token),
-                cts.Token).GetAwaiter().GetResult();
-        }
-        catch (OperationCanceledException)
-        {
-            Logger.Trace("Custom Process Report: Timed out (20s)");
-        }
-        catch (Exception ex)
-        {
-            Logger.Trace($"Custom Process Report: Error — {ex.Message}");
-        }
-        finally
-        {
-            _cdpService.SetEditorDim(1, false);
-        }
+        string? result;
 
-        if (string.IsNullOrWhiteSpace(result))
+        if (string.IsNullOrWhiteSpace(scrubbedTranscript))
         {
-            var elapsed = sw.Elapsed.TotalSeconds;
-            InvokeUI(() => _mainForm.ShowStatusToast($"Custom Process: LLM returned no result ({elapsed:F1}s)"));
-            Logger.Trace("Custom Process Report: LLM returned null/empty");
-            return;
+            // Transcript was only prefix sections (comparison, clinical history) — no findings to process.
+            // Use template as-is, just stitch with updated prefix.
+            Logger.Trace("Custom Process Report: Empty transcript after extraction — using template as-is");
+            result = safeTemplate;
+        }
+        else
+        {
+            // 4. Call Gemini — dim the report editor while processing
+            _cdpService.SetEditorDim(1, true);
+            result = null;
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                result = Task.Run(async () =>
+                    await _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token),
+                    cts.Token).GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                Logger.Trace("Custom Process Report: Timed out (20s)");
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"Custom Process Report: Error — {ex.Message}");
+            }
+            finally
+            {
+                _cdpService.SetEditorDim(1, false);
+            }
+
+            if (string.IsNullOrWhiteSpace(result))
+            {
+                var elapsed = sw.Elapsed.TotalSeconds;
+                InvokeUI(() => _mainForm.ShowStatusToast($"Custom Process: LLM returned no result ({elapsed:F1}s)"));
+                Logger.Trace("Custom Process Report: LLM returned null/empty");
+                return;
+            }
         }
 
         // 5. Stitch preserved prefix sections + LLM result, write into editor 1

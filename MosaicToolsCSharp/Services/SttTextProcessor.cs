@@ -16,12 +16,12 @@ public static class SttTextProcessor
         {
             (@"\bnew\s+paragraph\b",  "\n\n"),
             (@"\bnew\s+line\b",       "\n"),
-            (@"\bexclamation\s+mark\b", "!"),
-            (@"\bquestion\s+mark\b",  "?"),
-            (@"\bperiod\b",           "."),
-            (@"\bcomma\b",            ","),
-            (@"\bsemicolon\b",        ";"),
-            (@"\bhyphen\b",           "-"),
+            (@"\bexclamation\s+mark\b[!.]?", "!"),
+            (@"\bquestion\s+mark\b[?.]?",   "?"),
+            (@"\bperiod\b\.?",        "."),   // consume trailing dot (auto-punctuator may add one)
+            (@"\bcomma\b,?",          ","),
+            (@"\bsemicolon\b;?",      ";"),
+            (@"\bhyphen\b-?",         "-"),
         };
 
         var result = text;
@@ -35,6 +35,10 @@ public static class SttTextProcessor
 
         // Clean up spaces before punctuation marks (e.g., "word . next" → "word. next")
         result = Regex.Replace(result, @"\s+([.,;!?])", "$1");
+
+        // Clean up redundant punctuation (e.g., ",." → "." from "something, period.")
+        result = Regex.Replace(result, @"[,;]\s*\.", ".");
+        result = Regex.Replace(result, @"\.{2,}", ".");
 
         return result;
     }
@@ -411,19 +415,17 @@ public static class SttTextProcessor
     /// </summary>
     public static string ProcessTranscript(string rawText, Configuration config)
     {
-        string transcript;
-        if (config.SttAutoPunctuate)
-        {
-            transcript = config.SttExpandContractions ? ExpandContractions(rawText) : rawText;
-            transcript = config.SttRadiologyCleanup ? ApplyRadiologyCleanup(transcript).Trim() : transcript.Trim();
-        }
-        else
-        {
-            transcript = ApplySpokenPunctuation(rawText, config.SttExpandContractions).Trim();
-            transcript = config.SttRadiologyCleanup ? ApplyRadiologyCleanup(transcript) : transcript;
-            if (transcript.Length > 0 && !(transcript.Length > 1 && char.IsDigit(transcript[1])))
-                transcript = char.ToLower(transcript[0]) + transcript[1..];
-        }
+        // Always replace spoken punctuation words ("period" → ".", "comma" → ",", etc.)
+        // Even with auto-punctuate, providers sometimes output these as literal words.
+        var transcript = ApplySpokenPunctuation(rawText, config.SttExpandContractions).Trim();
+
+        if (config.SttRadiologyCleanup)
+            transcript = ApplyRadiologyCleanup(transcript);
+
+        // In manual punctuation mode, lowercase first char (providers don't capitalize)
+        if (!config.SttAutoPunctuate && transcript.Length > 0 && !(transcript.Length > 1 && char.IsDigit(transcript[1])))
+            transcript = char.ToLower(transcript[0]) + transcript[1..];
+
         transcript = ApplyCustomReplacements(transcript, config.SttCustomReplacements);
 
         if (config.SttNewlineAfterSentence)
