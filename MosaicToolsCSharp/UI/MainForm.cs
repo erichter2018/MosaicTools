@@ -301,6 +301,14 @@ public class MainForm : Form
         contextMenu.Items.Add("Show Log", null, (_, _) => ShowLogFile());
         contextMenu.Items.Add("Reload", null, (_, _) => BeginInvoke(() => ReloadApp()));
         contextMenu.Items.Add(new ToolStripSeparator());
+        var debugMenu = new ToolStripMenuItem("Debug");
+        debugMenu.DropDownItems.Add("Copy Template Debug", null, (_, _) => InvokeClinicalHistoryDebug(w => w.CopyTemplateDebugToClipboard()));
+        debugMenu.DropDownItems.Add("Copy Clinical History Debug", null, (_, _) => InvokeClinicalHistoryDebug(w => w.CopyClinicalHistoryDebugToClipboard()));
+        debugMenu.DropDownItems.Add("Copy Get Prior Debug", null, (_, _) => InvokeClinicalHistoryDebug(w => w.CopyCallbackDebug(w.GetPriorDebugInfo, "Get Prior debug copied!")));
+        debugMenu.DropDownItems.Add("Copy Critical Findings Debug", null, (_, _) => InvokeClinicalHistoryDebug(w => w.CopyCallbackDebug(w.GetCriticalFindingsDebugInfo, "Critical Findings debug copied!")));
+        debugMenu.DropDownItems.Add("Copy Alerts Debug", null, (_, _) => InvokeClinicalHistoryDebug(w => w.CopyAlertsDebugToClipboard()));
+        contextMenu.Items.Add(debugMenu);
+        contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Exit", null, (_, _) => BeginInvoke(() => ExitApp()));
         ContextMenuStrip = contextMenu;
 
@@ -2094,6 +2102,14 @@ public class MainForm : Form
             System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{logPath}\"");
         else
             System.Diagnostics.Process.Start("explorer.exe", Path.GetDirectoryName(logPath)!);
+    }
+
+    private void InvokeClinicalHistoryDebug(Action<ClinicalHistoryForm> action)
+    {
+        if (_clinicalHistoryWindow != null && !_clinicalHistoryWindow.IsDisposed)
+            action(_clinicalHistoryWindow);
+        else
+            ShowStatusToast("Clinical history not active", 2000);
     }
 
     private void ExitApp()

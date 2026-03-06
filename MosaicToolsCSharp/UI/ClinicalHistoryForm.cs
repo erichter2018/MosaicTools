@@ -194,6 +194,8 @@ public class ClinicalHistoryForm : Form
     // Debug info callbacks (set by MainForm, fetched from ActionController)
     private Func<string>? _getPriorDebugInfo;
     private Func<string>? _getCriticalFindingsDebugInfo;
+    internal Func<string>? GetPriorDebugInfo => _getPriorDebugInfo;
+    internal Func<string>? GetCriticalFindingsDebugInfo => _getCriticalFindingsDebugInfo;
     private ToolStripItem? _fixTemplateMenuItem;
     private ToolStripItem? _fixTemplateSeparator;
     private ToolStripItem? _fixTemplateMenuItemOpaque;
@@ -2021,7 +2023,7 @@ public class ClinicalHistoryForm : Form
 
     #region Debug & Toast
 
-    private void CopyTemplateDebugToClipboard()
+    internal void CopyTemplateDebugToClipboard()
     {
         var debugInfo = $"=== Template Matching Debug ===\r\n" +
                         $"Description: {_lastDescription ?? "(none)"}\r\n" +
@@ -2030,7 +2032,7 @@ public class ClinicalHistoryForm : Form
         CopyToClipboard(debugInfo, "Template debug copied!");
     }
 
-    private void CopyClinicalHistoryDebugToClipboard()
+    internal void CopyClinicalHistoryDebugToClipboard()
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("=== Clinical History Debug ===");
@@ -2051,7 +2053,7 @@ public class ClinicalHistoryForm : Form
         CopyToClipboard(sb.ToString().TrimEnd(), "Clinical history debug copied!");
     }
 
-    private void CopyAlertsDebugToClipboard()
+    internal void CopyAlertsDebugToClipboard()
     {
         var sb = new System.Text.StringBuilder();
         sb.AppendLine("=== Alerts Debug ===");
@@ -2069,7 +2071,7 @@ public class ClinicalHistoryForm : Form
         CopyToClipboard(sb.ToString().TrimEnd(), "Alerts debug copied!");
     }
 
-    private void CopyCallbackDebug(Func<string>? callback, string toast)
+    internal void CopyCallbackDebug(Func<string>? callback, string toast)
     {
         var text = callback?.Invoke() ?? "(no data captured yet)";
         CopyToClipboard(text, toast);

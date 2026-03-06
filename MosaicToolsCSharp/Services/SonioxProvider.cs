@@ -24,11 +24,14 @@ public class SonioxProvider : ISttProvider
 
     // Pending word accumulation: BPE tokens need to be merged into whole words.
     // A token with a leading space starts a new word; tokens without continue the previous.
+    // Both the merged text AND raw token texts persist across messages so cross-message
+    // BPE splits like " inf"+"erior" → "inferior" reconstruct the full token text for paste.
     private string _pendingWordText = "";
     private float _pendingWordConfSum;
     private int _pendingWordTokenCount;
     private int _pendingWordStartMs;
     private int _pendingWordEndMs;
+    private readonly List<string> _pendingTokenTexts = new(); // Raw token text for current incomplete word
 
     public string Name => "Soniox";
     public bool RequiresApiKey => true;
@@ -104,6 +107,7 @@ public class SonioxProvider : ISttProvider
             _pendingWordText = "";
             _pendingWordConfSum = 0;
             _pendingWordTokenCount = 0;
+            _pendingTokenTexts.Clear();
             ConnectionStateChanged?.Invoke(true);
 
             _receiveCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -285,8 +289,10 @@ public class SonioxProvider : ISttProvider
 
             // Process tokens: final tokens are confirmed words, non-final are provisional.
             // We emit finals for paste and build a growing display transcript for the overlay.
+            // BPE tokens must be merged into whole words before pasting — partial tokens like
+            // " inf"+"erior" can arrive across different messages and must not be split.
             var finalWords = new List<SttWord>();
-            var finalTextParts = new List<string>();
+            var completedTokenTexts = new List<string>(); // Raw token text for completed words only
             string nonFinalText = "";
             bool gotFinMarker = false;
 
@@ -312,7 +318,6 @@ public class SonioxProvider : ISttProvider
                 {
                     // Accumulate final text into the persistent display buffer
                     _accumulatedText += text;
-                    finalTextParts.Add(text);
 
                     // Merge BPE subword tokens into whole words.
                     // A token with a leading space starts a new word; without continues previous.
@@ -322,7 +327,7 @@ public class SonioxProvider : ISttProvider
 
                         if (isWordStart && _pendingWordText.Length > 0)
                         {
-                            // Emit completed word
+                            // Word boundary: emit completed word and promote its token text
                             finalWords.Add(new SttWord(
                                 Text: _pendingWordText,
                                 PunctuatedText: _pendingWordText,
@@ -330,8 +335,12 @@ public class SonioxProvider : ISttProvider
                                 StartTime: _pendingWordStartMs / 1000.0,
                                 EndTime: _pendingWordEndMs / 1000.0
                             ));
+                            completedTokenTexts.AddRange(_pendingTokenTexts);
+                            _pendingTokenTexts.Clear();
                             _pendingWordText = "";
                         }
+
+                        _pendingTokenTexts.Add(text);
 
                         var trimmed = text.Trim();
                         if (_pendingWordText.Length == 0)
@@ -352,6 +361,11 @@ public class SonioxProvider : ISttProvider
                             _pendingWordEndMs = endMs;
                         }
                     }
+                    else
+                    {
+                        // Whitespace-only tokens (spaces, newlines) — include in completed text
+                        completedTokenTexts.Add(text);
+                    }
                 }
                 else
                 {
@@ -371,6 +385,8 @@ public class SonioxProvider : ISttProvider
                     StartTime: _pendingWordStartMs / 1000.0,
                     EndTime: _pendingWordEndMs / 1000.0
                 ));
+                completedTokenTexts.AddRange(_pendingTokenTexts);
+                _pendingTokenTexts.Clear();
                 _pendingWordText = "";
                 _pendingWordConfSum = 0;
                 _pendingWordTokenCount = 0;
@@ -379,10 +395,11 @@ public class SonioxProvider : ISttProvider
             if (gotFinMarker)
                 _finalizeComplete?.TrySetResult(true);
 
-            // Emit final words for paste
+            // Emit final words for paste — transcript built from completed words only,
+            // NOT from all final tokens (which may include partial BPE fragments of the next word)
             if (finalWords.Count > 0)
             {
-                var transcript = string.Join("", finalTextParts).Trim();
+                var transcript = string.Join("", completedTokenTexts).Trim();
                 var avgConf = finalWords.Average(w => w.Confidence);
                 var duration = finalWords.Max(w => w.EndTime) - finalWords.Min(w => w.StartTime);
                 TranscriptionReceived?.Invoke(new SttResult(transcript, finalWords.ToArray(), avgConf, true, false, duration));

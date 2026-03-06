@@ -1,3 +1,7 @@
+4.2.6
+- Fix: Soniox BPE token splitting — words like "inferior" no longer pasted as "inf erior" when subword tokens arrive across WebSocket messages
+- Debug menu added to main banner right-click (same options as clinical history popup)
+
 4.2.5
 - Extract clinical history and comparison from transcript: dictated prefix sections replace template fields instead of being swallowed by LLM
 - Multiple comparisons combined when dictated separately
