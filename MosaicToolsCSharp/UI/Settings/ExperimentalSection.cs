@@ -632,6 +632,7 @@ public class ExperimentalSection : SettingsSection
             }
             combo.Tag = sorted.Select(m => m.ModelId).ToArray();
             if (combo.Items.Count > 0) combo.SelectedIndex = 0;
+            combo.SelectedIndexChanged += (_, _) => UpdateCostDisplay();
             Controls.Add(combo);
             _quadControls.Add(combo);
             quadCombos[slot] = combo;
@@ -880,7 +881,7 @@ public class ExperimentalSection : SettingsSection
         foreach (var c in _groqControls) c.Visible = idx == 2;
         foreach (var c in _grokControls) c.Visible = idx == 3;
         foreach (var c in _quadControls) c.Visible = idx == 4;
-        _llmCostLabel.Visible = idx != 4;
+        _llmCostLabel.Visible = true;
         _llmPreviewLabel.Visible = idx == 0 && _llmPreviewLabel.Tag != null;
         if (idx == 0) UpdateModelDisplay();
         UpdateCostDisplay();
@@ -1003,7 +1004,7 @@ public class ExperimentalSection : SettingsSection
             }
             modeLabel = groqMode == 1 ? " [triple]" : "";
         }
-        else
+        else if (providerIdx == 3)
         {
             var grokMode = _grokModeCombo?.SelectedIndex ?? 0; // 0=Single, 1=Triple
             if (grokMode == 1)
@@ -1019,6 +1020,24 @@ public class ExperimentalSection : SettingsSection
                 perStudy = (model.InputPer1M * estInput + model.OutputPer1M * estOutput) / 1_000_000m;
             }
             modeLabel = grokMode == 1 ? " [triple]" : "";
+        }
+        else // Quad Compare
+        {
+            // Build a lookup of all model pricing by ModelId
+            var allPricing = new Dictionary<string, (decimal InputPer1M, decimal OutputPer1M)>();
+            foreach (var m in LlmModels) allPricing[m.ModelId] = (m.InputPer1M, m.OutputPer1M);
+            foreach (var m in GptModels) allPricing[m.ModelId] = (m.InputPer1M, m.OutputPer1M);
+            foreach (var m in GroqModels) allPricing[m.ModelId] = (m.InputPer1M, m.OutputPer1M);
+            foreach (var m in GrokModels) allPricing[m.ModelId] = (m.InputPer1M, m.OutputPer1M);
+
+            perStudy = 0;
+            foreach (var combo in new[] { _quadCombo1, _quadCombo2, _quadCombo3, _quadCombo4 })
+            {
+                var modelId = GetQuadModelId(combo);
+                if (allPricing.TryGetValue(modelId, out var p))
+                    perStudy += (p.InputPer1M * estInput + p.OutputPer1M * estOutput) / 1_000_000m;
+            }
+            modeLabel = " [quad]";
         }
 
         var perShift = perStudy * studiesPerShift;

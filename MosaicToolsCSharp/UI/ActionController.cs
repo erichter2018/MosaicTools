@@ -4903,6 +4903,9 @@ public class ActionController : IDisposable
                                 var vdiag = _cdpService.DumpVerticalLayoutDiag();
                                 if (vdiag != null)
                                     Logger.Trace($"CDP: Vertical layout diagnostic:\n{vdiag}");
+                                var blankDiag = _cdpService.DumpBlankLines();
+                                if (blankDiag != null)
+                                    Logger.Trace($"CDP: Blank line structure:\n{blankDiag}");
                             }
                             catch { }
                         }

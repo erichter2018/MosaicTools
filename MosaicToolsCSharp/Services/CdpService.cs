@@ -225,7 +225,7 @@ public class CdpService : IDisposable
         document.querySelectorAll('[data-mt-resize-handle]').forEach(h => h.remove());
         const mtAttrs = ['data-mt-cols','data-mt-horizontal','data-mt-vertical','data-mt-col',
             'data-mt-col-editor','data-mt-col-scroll','data-mt-editor-wrapper','data-mt-editor-area',
-            'data-mt-editor-inner','data-mt-scroll-area','data-mt-vr'];
+            'data-mt-editor-inner','data-mt-scroll-area','data-mt-vr','data-mt-major'];
         for (const attr of mtAttrs) {{
             document.querySelectorAll('[' + attr + ']').forEach(el => {{
                 el.removeAttribute(attr);
@@ -480,28 +480,89 @@ ${{visualEnhancements ? `
 /* ── Section headers: visually inline content after header ── */
 .ProseMirror > h3.tiptap-heading {{
     float: left !important;
+    clear: left !important;
     margin: 0 0.5em 0 0 !important;
-    padding: 0 !important;
+    padding: 2px 0 0 0 !important;
     line-height: 21px !important;
     font-size: 14px !important;
 }}
-.ProseMirror > h3.tiptap-heading + div {{
-    display: contents !important;
+/* ── Subsection headers: slightly grey ── */
+.ProseMirror > h3.tiptap-heading {{
+    color: rgba(255, 255, 255, 0.7) !important;
 }}
-.ProseMirror > h3.tiptap-heading + div [data-node-view-wrapper],
-.ProseMirror > h3.tiptap-heading + div .MuiBox-root,
-.ProseMirror > h3.tiptap-heading + div .tiptap-paragraph-content,
-.ProseMirror > h3.tiptap-heading + div .tiptap-paragraph-content > div {{
-    display: contents !important;
-}}
-.ProseMirror > h3.tiptap-heading + div + div {{
+/* ── Major section headers (FINDINGS, IMPRESSION, etc.): larger + spacing above + full white ── */
+.ProseMirror > h3.tiptap-heading[data-mt-major] {{
+    float: none !important;
     clear: left !important;
+    font-size: 15.5px !important;
+    margin-top: 6px !important;
+    margin-bottom: 0 !important;
+    color: white !important;
+}}
+.ProseMirror > [data-mt-major]:not(h3) {{
+    font-size: 15.5px !important;
+    font-weight: bold !important;
+    margin-top: 6px !important;
+    color: white !important;
+}}
+/* ── All content divs: display:contents for inline flow after floated headers ── */
+/* Both .node-draggableItem and .node-draggableInline share .react-renderer */
+/* Exclude .node-section (e.g. IMPRESSION) so it keeps its block box for margin/spacing */
+.ProseMirror > div.react-renderer:not(.node-section),
+.ProseMirror > div.react-renderer:not(.node-section) div {{
+    display: contents !important;
+}}
+/* Section nodes (IMPRESSION) stay block with spacing */
+.ProseMirror > div.react-renderer.node-section {{
+    display: block !important;
+    clear: left !important;
+    margin-top: 6px !important;
 }}
 /* ── All report content text: slightly smaller than headers ── */
 .ProseMirror p {{
     font-size: 13.5px !important;
     line-height: 21px !important;
-    margin-top: 0 !important;
+    margin: 0 !important;
+}}
+/* ── Content paragraphs flow inline for continuous text wrapping ── */
+.ProseMirror > div.react-renderer p {{
+    display: inline !important;
+    margin-right: 0.5em !important;
+}}
+/* ── Tighter spacing on content items in report editor (exclude .node-section for IMPRESSION spacing) ── */
+[data-mt-col=""1""] .ProseMirror > div.react-renderer:not(.node-section),
+[data-mt-vr=""1""] .ProseMirror > div.react-renderer:not(.node-section) {{
+    margin: 0 !important;
+    padding: 0 !important;
+}}
+/* ── Ordered/unordered lists (impression items): same tight spacing ── */
+[data-mt-col=""1""] .ProseMirror ol,
+[data-mt-col=""1""] .ProseMirror ul,
+[data-mt-vr=""1""] .ProseMirror ol,
+[data-mt-vr=""1""] .ProseMirror ul {{
+    margin: 0 !important;
+    padding-left: 1.5em !important;
+}}
+[data-mt-col=""1""] .ProseMirror li,
+[data-mt-vr=""1""] .ProseMirror li {{
+    margin: 0 !important;
+    padding: 0 !important;
+}}
+[data-mt-col=""1""] .ProseMirror li p,
+[data-mt-vr=""1""] .ProseMirror li p {{
+    margin: 0 !important;
+}}
+/* ── Compact blank lines in report editor only ── */
+/* With display:contents on wrappers, target the inner empty <p> directly */
+[data-mt-col=""1""] .ProseMirror > div.react-renderer p:empty,
+[data-mt-col=""1""] .ProseMirror > div.react-renderer p:has(> br:only-child),
+[data-mt-vr=""1""] .ProseMirror > div.react-renderer p:empty,
+[data-mt-vr=""1""] .ProseMirror > div.react-renderer p:has(> br:only-child) {{
+    display: block !important;
+    height: 3px !important;
+    line-height: 0 !important;
+    font-size: 0 !important;
+    clear: left !important;
 }}` : ''}}
 /* ── Horizontal mode ── */
 [data-mt-horizontal] > [data-mt-col-editor] {{
@@ -607,6 +668,77 @@ ${{visualEnhancements ? `
         styleEl.textContent = css;
         document.head.appendChild(styleEl);
 
+        // ── Disable browser spellcheck on report editors (visual enhancements changes display mode, triggering false positives) ──
+        if (visualEnhancements) {{
+            document.querySelectorAll('.ProseMirror').forEach(pm => {{ pm.spellcheck = false; }});
+        }}
+
+        // ── TAG: mark major section headers (FINDINGS, IMPRESSION) for distinct styling ──
+        const majorTagged = [];
+        if (visualEnhancements) {{
+            const majorSections = new Set(['FINDINGS','IMPRESSION']);
+            // Dynamic CSS for major sections — uses nth-child to target by position
+            // (React re-renders wipe inline styles/attributes, but CSS rules persist)
+            let mtMajorStyle = document.getElementById('mt-major-sections');
+            if (!mtMajorStyle) {{
+                mtMajorStyle = document.createElement('style');
+                mtMajorStyle.id = 'mt-major-sections';
+                document.head.appendChild(mtMajorStyle);
+            }}
+            function updateMajorSections() {{
+                const rules = [];
+                document.querySelectorAll('.ProseMirror').forEach(pm => {{
+                    const kids = Array.from(pm.children);
+                    kids.forEach((child, i) => {{
+                        const n = i + 1; // nth-child is 1-based
+                        const raw = (child.textContent || '').trim();
+                        let isMajor = false;
+                        if (child.tagName === 'H3') {{
+                            const txt = raw.replace(/:.*$/, '').trim().toUpperCase();
+                            isMajor = majorSections.has(txt);
+                        }} else if (child.tagName !== 'P') {{
+                            const colonIdx = raw.indexOf(':');
+                            if (colonIdx >= 0 && colonIdx <= 25) {{
+                                const prefix = raw.substring(0, colonIdx).trim().toUpperCase();
+                                isMajor = majorSections.has(prefix);
+                            }}
+                            // Fallback: check if text starts with major section name (colon may be CSS pseudo-element)
+                            if (!isMajor) {{
+                                const upper = raw.toUpperCase();
+                                for (const ms of majorSections) {{
+                                    if (upper.startsWith(ms)) {{ isMajor = true; break; }}
+                                }}
+                            }}
+                        }}
+                        if (isMajor) {{
+                            const isH3 = child.tagName === 'H3';
+                            rules.push(`.ProseMirror > ${{isH3 ? '' : 'div.react-renderer'}}:nth-child(${{n}})${{isH3 ? '.tiptap-heading' : ''}} {{
+                                font-size: 15.5px !important;
+                                color: white !important;
+                                margin-top: 6px !important;
+                                margin-bottom: 0 !important;
+                                ${{isH3 ? 'float: none !important; clear: left !important;' : 'display: block !important; clear: left !important; font-weight: bold !important;'}}
+                            }}`);
+                            // Undo display:contents on the div right after a major h3
+                            if (isH3) {{
+                                rules.push(`.ProseMirror > :nth-child(${{n}}).tiptap-heading + div {{ display: block !important; }}`);
+                            }}
+                        }}
+                    }});
+                }});
+                mtMajorStyle.textContent = rules.join('\n');
+            }}
+            updateMajorSections();
+            if (window.__mtMajorInterval) clearInterval(window.__mtMajorInterval);
+            window.__mtMajorInterval = setInterval(updateMajorSections, 500);
+            // Initial diagnostic
+            document.querySelectorAll('.ProseMirror > h3.tiptap-heading').forEach(h => {{
+                const raw = (h.textContent || '').trim();
+                const txt = raw.replace(/:.*$/, '').trim().toUpperCase();
+                majorTagged.push(raw.substring(0, 30) + ' → ' + txt + ' → ' + majorSections.has(txt));
+            }});
+        }}
+
         // ── DIAGNOSTICS ──
         const wrapperInfo = [];
         document.querySelectorAll('[data-mt-editor-wrapper]').forEach(w => {{
@@ -631,18 +763,21 @@ ${{visualEnhancements ? `
             windowW: window.innerWidth,
             colWidths: columns.map(c => c.offsetWidth),
             containerTag: colContainer.tagName,
-            containerClass: (colContainer.className || '').substring(0, 100)
+            containerClass: (colContainer.className || '').substring(0, 100),
+            majorTagged: majorTagged
         }});
     }})()";
 
     private const string JS_REMOVE_SCROLL_FIX = @"(() => {
         document.getElementById('mt-scroll-fix')?.remove();
         if (window.__mtTopObserver) { window.__mtTopObserver.disconnect(); window.__mtTopObserver = null; }
+        if (window.__mtMajorInterval) { clearInterval(window.__mtMajorInterval); window.__mtMajorInterval = null; }
+        document.getElementById('mt-major-sections')?.remove();
         document.getElementById('mt-subsection-fix')?.remove();
         document.querySelectorAll('[data-mt-resize-handle]').forEach(h => h.remove());
         const attrs = ['data-mt-cols','data-mt-horizontal','data-mt-vertical','data-mt-col',
             'data-mt-col-editor','data-mt-col-scroll','data-mt-editor-wrapper','data-mt-editor-area',
-            'data-mt-editor-inner','data-mt-scroll-area','data-mt-vr'];
+            'data-mt-editor-inner','data-mt-scroll-area','data-mt-vr','data-mt-major'];
         for (const attr of attrs) {
             document.querySelectorAll('[' + attr + ']').forEach(el => {
                 el.removeAttribute(attr);
@@ -1200,12 +1335,13 @@ ${{visualEnhancements ? `
 
         // Clear study-type cache on study change BEFORE iframe scrape
         // (prevents stale template name from previous study on first tick of new study)
-        if (_lastLoggedAccession != null && result.Accession != _lastLoggedAccession)
+        if (result.Accession != _lastLoggedAccession)
         {
             _lastKnownStudyType = null;
             _mosaicMacrosFetched = false; // Re-fetch macros on study change
             _lastIframeHash = null;       // Force full scrape on study change
             _lastCdpScrapeResult = null;
+            _scrollFixActive = false;     // Re-inject scroll fix — DOM structure changes between studies
         }
 
         // Scrape iframe (optional — iframe may not be connected if no report open)
@@ -2660,6 +2796,8 @@ ${{visualEnhancements ? `
                 var containerW = data.TryGetProperty("containerW", out var cw) ? cw.ToString() : "?";
                 var windowW = data.TryGetProperty("windowW", out var ww) ? ww.ToString() : "?";
                 var colWidths = data.TryGetProperty("colWidths", out var cwArr) ? cwArr.ToString() : "";
+                var majorInfo = data.TryGetProperty("majorTagged", out var mt) ? mt.ToString() : "none";
+                Logger.Trace($"CDP: ScrollFix injected — layout={layout}, cols={cols}, top={top}, areas={areas}, majorTagged={majorInfo}");
                 return true;
             }
             // Not ready yet (e.g., editors not loaded) — will retry next tick
@@ -2794,6 +2932,40 @@ ${{visualEnhancements ? `
                     });
                 });
             });
+            return JSON.stringify(results);
+        })()";
+        return ExtractResultValue(SendToIframe(js));
+    }
+
+    /// <summary>Dump blank-line and impression element structure in report editor for CSS targeting.</summary>
+    public string? DumpBlankLines()
+    {
+        if (!IsIframeConnected) return null;
+        var js = @"(() => {
+            const editors = document.querySelectorAll('.ProseMirror');
+            if (editors.length < 2) return 'no_editors';
+            const editor = editors[1];
+            const results = [];
+            let inImpression = false;
+            for (let i = 0; i < editor.children.length; i++) {
+                const el = editor.children[i];
+                const text = (el.textContent || '').trim();
+                if (text.startsWith('IMPRESSION')) inImpression = true;
+                const isBlank = text.length === 0;
+                if (!isBlank && !inImpression) continue;
+                const dump = (node, depth) => {
+                    if (depth > 5) return '...';
+                    const tag = node.tagName || '#text';
+                    const cls = (node.className && node.className.substring) ? node.className.substring(0,80) : '';
+                    const attrs = node.attributes ? Array.from(node.attributes)
+                        .filter(a => a.name !== 'class' && a.name !== 'style')
+                        .map(a => a.name + '=""' + (a.value||'').substring(0,30) + '""').join(' ') : '';
+                    const kids = node.childNodes ? Array.from(node.childNodes).map(c => dump(c, depth+1)) : [];
+                    return { tag, cls, attrs, h: node.offsetHeight || 0, kids };
+                };
+                results.push({ index: i, h: el.offsetHeight, text: text.substring(0,40), structure: dump(el, 0) });
+                if (results.length >= 10) break;
+            }
             return JSON.stringify(results);
         })()";
         return ExtractResultValue(SendToIframe(js));
