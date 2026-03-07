@@ -53,6 +53,8 @@ public class CdpService : IDisposable
     private int _lastKnownFocusedEditor = 0; // Default to transcript (0), updated by scrape ticks
     private bool _mosaicMacrosFetched; // Only fetch once per iframe connection
     private bool _scrollFixActive;     // Track whether CSS scroll fix is injected in current iframe
+    private bool _scrollFixVisualEnhancements; // Value of visualEnhancements when scroll fix was last injected
+    private bool _scrollFixHideDragHandles;    // Value of hideDragHandles when scroll fix was last injected
     private double _columnRatio = 0.333; // Transcript:Report ratio (persisted via config)
     private string? _lastIframeHash;   // Smart scrape: skip full iframe scrape when hash unchanged
     private CdpScrapeResult? _lastCdpScrapeResult; // Cached result for hash-match reuse
@@ -434,7 +436,7 @@ public class CdpService : IDisposable
         styleEl.id = 'mt-scroll-fix';
         let css = `/* MosaicTools: independent column scrolling + resize */
 html, body {{ overflow: hidden !important; }}
-${{visualEnhancements ? 'mark.tiptap-highlight { background-color: rgba(70, 160, 220, 0.8) !important; }' : ''}}
+${{visualEnhancements ? 'mark.tiptap-highlight {{ background-color: rgba(70, 160, 220, 0.8) !important; }}' : ''}}
 [data-mt-cols] {{
     height: calc(100vh - var(--mt-top, ${{topPx}}px)) !important;
     max-height: calc(100vh - var(--mt-top, ${{topPx}}px)) !important;
@@ -2610,16 +2612,27 @@ ${{visualEnhancements ? `
     {
         if (_scrollFixActive)
         {
-            // Verify the style tag still exists (DOM refreshes on study change)
-            try
+            // Check if CSS-affecting parameters changed since last inject
+            bool paramsChanged = _scrollFixVisualEnhancements != _visualEnhancements
+                              || _scrollFixHideDragHandles != _hideDragHandles;
+            if (paramsChanged)
             {
-                var check = ExtractResultValue(SendToIframe(
-                    "!!document.getElementById('mt-scroll-fix')"));
-                if (check == "true") return true;
-                // Style tag gone — DOM was refreshed, re-inject
-                _scrollFixActive = false;
+                Logger.Trace($"CDP: Scroll fix params changed (visual={_scrollFixVisualEnhancements}→{_visualEnhancements}, drag={_scrollFixHideDragHandles}→{_hideDragHandles}), re-injecting");
+                RemoveScrollFix();
             }
-            catch { _scrollFixActive = false; }
+            else
+            {
+                // Verify the style tag still exists (DOM refreshes on study change)
+                try
+                {
+                    var check = ExtractResultValue(SendToIframe(
+                        "!!document.getElementById('mt-scroll-fix')"));
+                    if (check == "true") return true;
+                    // Style tag gone — DOM was refreshed, re-inject
+                    _scrollFixActive = false;
+                }
+                catch { _scrollFixActive = false; }
+            }
         }
         if (!IsIframeConnected) return false;
 
@@ -2637,6 +2650,8 @@ ${{visualEnhancements ? `
             if (data.TryGetProperty("ok", out var ok) && ok.GetBoolean())
             {
                 _scrollFixActive = true;
+                _scrollFixVisualEnhancements = _visualEnhancements;
+                _scrollFixHideDragHandles = _hideDragHandles;
                 var layout = GetStr(data, "layout") ?? "?";
                 var cols = data.TryGetProperty("columns", out var c) ? c.ToString() : "?";
                 var top = data.TryGetProperty("topPx", out var t) ? t.ToString() : "?";

@@ -504,6 +504,11 @@ public class ActionController : IDisposable
         ToggleMosaicScraper(true);
 
         // [CDP] Re-initialize on settings change
+        // Check if CSS-affecting settings changed BEFORE updating properties (old != new triggers re-inject)
+        bool needsScrollReinject = _cdpService != null && _cdpService.ScrollFixActive &&
+            (_cdpService.VisualEnhancements != _config.CdpVisualEnhancements
+            || _cdpService.HideDragHandles != _config.CdpHideDragHandles);
+
         if (_config.CdpEnabled)
         {
             if (_cdpService == null)
@@ -532,16 +537,13 @@ public class ActionController : IDisposable
             Logger.Trace("CDP: Disabled and disposed");
         }
 
-        // [CDP] Remove scroll fix if setting was toggled off, or force re-inject on visual changes
+        // [CDP] Remove scroll fix if setting was toggled off, or force re-inject on visual/drag-handle changes
         if (_cdpService != null && _cdpService.ScrollFixActive)
         {
             if (!_config.CdpIndependentScrolling)
                 _cdpService.RemoveScrollFix();
-            else if (_cdpService.VisualEnhancements != _config.CdpVisualEnhancements)
-            {
-                _cdpService.VisualEnhancements = _config.CdpVisualEnhancements;
-                _cdpService.RemoveScrollFix(); // Force re-inject with new CSS
-            }
+            else if (needsScrollReinject)
+                _cdpService.RemoveScrollFix(); // Force re-inject with new CSS on next tick
         }
 
         // [KeytermLearning] Re-initialize on settings change
@@ -4886,7 +4888,8 @@ public class ActionController : IDisposable
                     // [CDP] Inject independent column scrolling CSS if enabled
                     if (_config.CdpIndependentScrolling && _cdpService.IsIframeConnected)
                     {
-                        try { _cdpService.InjectScrollFix(); } catch { }
+                        try { _cdpService.InjectScrollFix(); }
+                        catch (Exception ex) { Logger.Trace($"CDP: InjectScrollFix exception: {ex.Message}"); }
 
                         // One-shot diagnostic: dump DOM structure after scroll fix succeeds
                         if (_cdpService.ScrollFixActive && !_scrollDiagLogged)
