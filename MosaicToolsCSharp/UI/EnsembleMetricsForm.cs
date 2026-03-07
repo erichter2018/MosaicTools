@@ -73,6 +73,10 @@ public class EnsembleMetricsForm : Form
     private readonly Label _provAccS2Alltime;
 
 
+    private readonly Label _showCurrentBtn;
+    private readonly Label _showLastBtn;
+    private Action<bool>? _showTranscriptCallback; // bool = showLast
+
     private static readonly Color DimColor = Color.FromArgb(120, 120, 130);
     private static readonly Color BrightColor = Color.FromArgb(210, 210, 220);
     private static readonly Color FixColor = Color.FromArgb(100, 220, 100);  // green
@@ -86,7 +90,9 @@ public class EnsembleMetricsForm : Form
         _ => Color.FromArgb(150, 150, 200)
     };
 
-    private static string DisplayName(string name) => name switch
+    private static string DisplayName(string name) => DisplayNameStatic(name);
+
+    public static string DisplayNameStatic(string name) => name switch
     {
         "soniox" => "Soniox", "speechmatics" => "Speechmatics", "assemblyai" => "AssemblyAI",
         "deepgram" => "Deepgram",
@@ -492,6 +498,50 @@ public class EnsembleMetricsForm : Form
         _provAccS2Session = new Label { Text = "--", Location = new Point(col1, y), AutoSize = true, Font = smallFont, ForeColor = DimColor };
         _provAccS2Alltime = new Label { Text = "--", Location = new Point(col2, y), AutoSize = true, Font = smallFont, ForeColor = DimColor };
         Controls.Add(_provAccS2Label); Controls.Add(_provAccS2Session); Controls.Add(_provAccS2Alltime);
+        y += 16;
+
+        // ── Divider ──
+        Controls.Add(new Panel { Location = new Point(pad, y), Size = new Size(contentW, 1), BackColor = Color.FromArgb(45, 45, 55) });
+        y += 6;
+
+        // ── Transcript comparison buttons ──
+        var btnFont = new Font("Segoe UI", 7f);
+        var btnW = (contentW - 6) / 2;
+
+        _showCurrentBtn = new Label
+        {
+            Text = "Show Current Report",
+            Location = new Point(pad, y),
+            Size = new Size(btnW, 18),
+            Font = btnFont,
+            ForeColor = Color.FromArgb(140, 170, 210),
+            TextAlign = ContentAlignment.MiddleCenter,
+            Cursor = Cursors.Hand,
+            BackColor = Color.FromArgb(35, 40, 50)
+        };
+        _showCurrentBtn.Click += (_, _) => _showTranscriptCallback?.Invoke(false);
+        _showCurrentBtn.MouseEnter += (_, _) => _showCurrentBtn.BackColor = Color.FromArgb(50, 55, 70);
+        _showCurrentBtn.MouseLeave += (_, _) => _showCurrentBtn.BackColor = Color.FromArgb(35, 40, 50);
+        Controls.Add(_showCurrentBtn);
+
+        _showLastBtn = new Label
+        {
+            Text = "Show Last Report",
+            Location = new Point(pad + btnW + 6, y),
+            Size = new Size(btnW, 18),
+            Font = btnFont,
+            ForeColor = Color.FromArgb(140, 170, 210),
+            TextAlign = ContentAlignment.MiddleCenter,
+            Cursor = Cursors.Hand,
+            BackColor = Color.FromArgb(35, 40, 50)
+        };
+        _showLastBtn.Click += (_, _) => _showTranscriptCallback?.Invoke(true);
+        _showLastBtn.MouseEnter += (_, _) => _showLastBtn.BackColor = Color.FromArgb(50, 55, 70);
+        _showLastBtn.MouseLeave += (_, _) => _showLastBtn.BackColor = Color.FromArgb(35, 40, 50);
+        Controls.Add(_showLastBtn);
+        y += 24;
+
+        Size = new Size(290, y + 6);
 
         // Make the form draggable — attach to all non-interactive controls
         MouseDown += OnFormMouseDown;
@@ -499,7 +549,7 @@ public class EnsembleMetricsForm : Form
         MouseUp += OnFormMouseUp;
         foreach (Control c in Controls)
         {
-            if (c is Label lbl && lbl != closeBtn)
+            if (c is Label lbl && lbl != closeBtn && lbl != _showCurrentBtn && lbl != _showLastBtn)
             {
                 lbl.MouseDown += OnFormMouseDown;
                 lbl.MouseMove += OnFormMouseMove;
@@ -512,6 +562,11 @@ public class EnsembleMetricsForm : Form
                 p.MouseUp += OnFormMouseUp;
             }
         }
+    }
+
+    public void SetShowTranscriptCallback(Action<bool> callback)
+    {
+        _showTranscriptCallback = callback;
     }
 
     public void UpdateStats(EnsembleStats stats)

@@ -27,6 +27,7 @@ public class ExperimentalSection : SettingsSection
     private readonly CheckBox _cdpHideDragHandlesCheck;
     private readonly CheckBox _cdpFlashingAlertTextCheck;
     private readonly CheckBox _sttHighlightDictatedCheck;
+    private readonly CheckBox _cdpVisualEnhancementsCheck;
     private readonly CheckBox _clarioCdpEnabledCheck;
     private readonly TextBox _clarioCdpUrlBox;
     private readonly Button _clarioCdpSetupButton;
@@ -36,10 +37,36 @@ public class ExperimentalSection : SettingsSection
     private readonly Label _clarioCdpDot;
     private readonly Label _clarioCdpLabel;
     private readonly CheckBox _llmProcessEnabledCheck;
+    private readonly ComboBox _llmProviderCombo;
+    // Gemini controls
     private readonly TextBox _llmApiKeyBox;
     private readonly ComboBox _llmVersionCombo;
     private readonly ComboBox _llmTierCombo;
     private readonly Label _llmPreviewLabel;
+    private readonly ComboBox _llmModeCombo;
+    private readonly List<Control> _geminiControls = new();
+    // GPT controls
+    private readonly TextBox _gptApiKeyBox;
+    private readonly ComboBox _gptModelCombo;
+    private readonly ComboBox _gptModeCombo;
+    private readonly List<Control> _gptControls = new();
+    // Groq controls
+    private readonly TextBox _groqApiKeyBox;
+    private readonly ComboBox _groqModelCombo;
+    private readonly ComboBox _groqModeCombo;
+    private readonly List<Control> _groqControls = new();
+    // Grok (xAI) controls
+    private readonly TextBox _grokApiKeyBox;
+    private readonly ComboBox _grokModelCombo;
+    private readonly ComboBox _grokModeCombo;
+    private readonly List<Control> _grokControls = new();
+    // Quad Compare controls
+    private readonly ComboBox _quadCombo1;
+    private readonly ComboBox _quadCombo2;
+    private readonly ComboBox _quadCombo3;
+    private readonly ComboBox _quadCombo4;
+    private readonly List<Control> _quadControls = new();
+    // Shared
     private readonly Label _llmCostLabel;
 
     private static readonly (string Version, string Tier, string ModelId, bool Preview,
@@ -50,6 +77,23 @@ public class ExperimentalSection : SettingsSection
         ("3.0", "Flash",      "gemini-3-flash-preview",         true,  0.50m, 3.00m),
         ("3.1", "Flash Lite", "gemini-3.1-flash-lite-preview",  true,  0.25m, 1.50m),
         ("3.1", "Pro",        "gemini-3.1-pro-preview",         true,  2.00m, 12.00m),
+    };
+
+    private static readonly (string Name, string ModelId, decimal InputPer1M, decimal OutputPer1M)[] GptModels = {
+        ("GPT-4.1 Mini", "gpt-4.1-mini", 0.16m, 0.64m),
+        ("GPT-5 Nano",   "gpt-5-nano",   0.05m, 0.40m),
+        ("GPT-5 Mini",   "gpt-5-mini",   0.25m, 2.00m),
+    };
+
+    private static readonly (string Name, string ModelId, decimal InputPer1M, decimal OutputPer1M)[] GroqModels = {
+        ("GPT-OSS 120B",     "openai/gpt-oss-120b",                           0.15m, 0.75m),
+        ("Llama 4 Maverick", "meta-llama/llama-4-maverick-17b-128e-instruct",  0.50m, 0.77m),
+        ("Llama 3.3 70B",    "llama-3.3-70b-versatile",                        0.59m, 0.79m),
+    };
+
+    private static readonly (string Name, string ModelId, decimal InputPer1M, decimal OutputPer1M)[] GrokModels = {
+        ("Grok 3 Mini",      "grok-3-mini",                  0.30m, 0.50m),
+        ("Grok 4.1 Fast",    "grok-4-1-fast-non-reasoning",  0.20m, 0.50m),
     };
 
     public ExperimentalSection(ToolTip toolTip) : base("Experimental", toolTip)
@@ -126,6 +170,10 @@ public class ExperimentalSection : SettingsSection
             "Applies a subtle background tint to text inserted via custom STT, to distinguish it from template and typed text. Requires CDP.");
         _nextY += RowHeight;
 
+        _cdpVisualEnhancementsCheck = AddCheckBox("Visual report enhancements", LeftMargin + 25, _nextY,
+            "Carolina blue change-tracking highlight, inline subsection headers, and slightly smaller content text for visual hierarchy.");
+        _nextY += RowHeight;
+
         // Clario CDP
         AddSectionDivider("Clario CDP (Direct DOM Access)");
 
@@ -198,13 +246,36 @@ public class ExperimentalSection : SettingsSection
         separatorLabel2.Font = new Font("Segoe UI", 8);
         _nextY += RowHeight;
 
-        _llmProcessEnabledCheck = AddCheckBox("Custom Process Report (Gemini LLM)", LeftMargin, _nextY,
-            "Reads transcript + template via CDP, sends to Google Gemini, writes merged report back. " +
+        _llmProcessEnabledCheck = AddCheckBox("Custom Process Report (LLM)", LeftMargin, _nextY,
+            "Reads transcript + template via CDP, sends to LLM, writes merged report back. " +
             "Bypasses Mosaic's built-in LLM. Requires CDP enabled. PHI is scrubbed before sending.");
         _llmProcessEnabledCheck.CheckedChanged += (s, e) => UpdateLlmSettingsStates();
         _nextY += RowHeight;
 
-        AddLabel("API Key:", LeftMargin + 25, _nextY + 3);
+        // Provider selector
+        AddLabel("Provider:", LeftMargin + 25, _nextY + 3);
+        _llmProviderCombo = new ComboBox
+        {
+            Location = new Point(LeftMargin + 90, _nextY),
+            Width = 120,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(50, 50, 50),
+            ForeColor = Color.FromArgb(100, 200, 255),
+            FlatStyle = FlatStyle.Flat
+        };
+        _llmProviderCombo.Items.AddRange(new object[] { "Google Gemini", "OpenAI GPT", "Groq", "xAI Grok", "Quad Compare" });
+        _llmProviderCombo.SelectedIndex = 0;
+        _llmProviderCombo.SelectedIndexChanged += (_, _) => OnProviderChanged();
+        Controls.Add(_llmProviderCombo);
+        _nextY += RowHeight;
+
+        // We'll build Gemini and GPT controls at the same Y positions (overlapping), then toggle visibility.
+        int providerStartY = _nextY;
+
+        // ═══ GEMINI CONTROLS ═══
+        var gApiKeyLabel = AddLabel("API Key:", LeftMargin + 25, _nextY + 3);
+        _geminiControls.Add(gApiKeyLabel);
         _llmApiKeyBox = new TextBox
         {
             Location = new Point(LeftMargin + 90, _nextY),
@@ -214,17 +285,20 @@ public class ExperimentalSection : SettingsSection
         };
         _toolTip.SetToolTip(_llmApiKeyBox, "Google Gemini API key (from aistudio.google.com)");
         Controls.Add(_llmApiKeyBox);
+        _geminiControls.Add(_llmApiKeyBox);
 
-        var getKeyBtn = AddButton("Get Key", LeftMargin + 295, _nextY - 1, 55, 22,
+        var getGeminiKeyBtn = AddButton("Get Key", LeftMargin + 295, _nextY - 1, 55, 22,
             (_, _) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://aistudio.google.com/apikey") { UseShellExecute = true }); } catch { } },
             "Open Google AI Studio to create an API key");
-        getKeyBtn.Font = new Font("Segoe UI", 7);
+        getGeminiKeyBtn.Font = new Font("Segoe UI", 7);
+        _geminiControls.Add(getGeminiKeyBtn);
         _nextY += SubRowHeight;
 
-        AddHintLabel("1. Click 'Get Key' → sign in with Google → 'Create API Key'", LeftMargin + 50);
-        AddHintLabel("2. Select 'Create API key in new project' → copy the key → paste above", LeftMargin + 50);
+        _geminiControls.Add(CreateHintLabel("1. Click 'Get Key' → sign in with Google → 'Create API Key'", LeftMargin + 50));
+        _geminiControls.Add(CreateHintLabel("2. Select 'Create API key in new project' → copy the key → paste above", LeftMargin + 50));
 
-        AddLabel("Version:", LeftMargin + 25, _nextY + 3);
+        var gVersionLabel = AddLabel("Version:", LeftMargin + 25, _nextY + 3);
+        _geminiControls.Add(gVersionLabel);
         _llmVersionCombo = new ComboBox
         {
             Location = new Point(LeftMargin + 90, _nextY),
@@ -239,8 +313,10 @@ public class ExperimentalSection : SettingsSection
         _llmVersionCombo.SelectedIndex = 0;
         _llmVersionCombo.SelectedIndexChanged += (s, e) => OnVersionChanged();
         Controls.Add(_llmVersionCombo);
+        _geminiControls.Add(_llmVersionCombo);
 
-        AddLabel("Tier:", LeftMargin + 160, _nextY + 3);
+        var gTierLabel = AddLabel("Tier:", LeftMargin + 160, _nextY + 3);
+        _geminiControls.Add(gTierLabel);
         _llmTierCombo = new ComboBox
         {
             Location = new Point(LeftMargin + 195, _nextY),
@@ -253,6 +329,7 @@ public class ExperimentalSection : SettingsSection
         };
         _llmTierCombo.SelectedIndexChanged += TierChangedHandler;
         Controls.Add(_llmTierCombo);
+        _geminiControls.Add(_llmTierCombo);
 
         _llmPreviewLabel = new Label
         {
@@ -264,8 +341,313 @@ public class ExperimentalSection : SettingsSection
             Visible = false
         };
         Controls.Add(_llmPreviewLabel);
+        _geminiControls.Add(_llmPreviewLabel);
         _nextY += SubRowHeight;
 
+        // Skip a line for cost (shared — positioned later)
+        _nextY += 20;
+
+        // Initialize tier combo for the default version
+        OnVersionChanged();
+
+        var gModeLabel = AddLabel("Mode:", LeftMargin + 25, _nextY + 3);
+        _geminiControls.Add(gModeLabel);
+        _llmModeCombo = new ComboBox
+        {
+            Location = new Point(LeftMargin + 90, _nextY),
+            Width = 90,
+            Font = new Font("Segoe UI", 9),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _llmModeCombo.Items.AddRange(new object[] { "Single", "Dual", "Triple" });
+        _llmModeCombo.SelectedIndex = 0;
+        _llmModeCombo.SelectedIndexChanged += (_, _) => UpdateCostDisplay();
+        Controls.Add(_llmModeCombo);
+        _geminiControls.Add(_llmModeCombo);
+        _toolTip.SetToolTip(_llmModeCombo,
+            "Single: selected model only.\n" +
+            "Dual: 2.5 Lite + 3.1 Lite in parallel — 3.1 preferred if within 1s.\n" +
+            "Triple: Dual + 3.0 Flash — Flash replaces Lite if it arrives in time.");
+        _nextY += SubRowHeight;
+
+        int geminiEndY = _nextY;
+
+        // ═══ GPT CONTROLS ═══ (built at same Y range, toggled visibility)
+        _nextY = providerStartY;
+
+        var oApiKeyLabel = AddLabel("API Key:", LeftMargin + 25, _nextY + 3);
+        _gptControls.Add(oApiKeyLabel);
+        _gptApiKeyBox = new TextBox
+        {
+            Location = new Point(LeftMargin + 90, _nextY),
+            Width = 200,
+            Font = new Font("Segoe UI", 9),
+            UseSystemPasswordChar = true
+        };
+        _toolTip.SetToolTip(_gptApiKeyBox, "OpenAI API key (from platform.openai.com)");
+        Controls.Add(_gptApiKeyBox);
+        _gptControls.Add(_gptApiKeyBox);
+
+        var getGptKeyBtn = AddButton("Get Key", LeftMargin + 295, _nextY - 1, 55, 22,
+            (_, _) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://platform.openai.com/api-keys") { UseShellExecute = true }); } catch { } },
+            "Open OpenAI platform to create an API key");
+        getGptKeyBtn.Font = new Font("Segoe UI", 7);
+        _gptControls.Add(getGptKeyBtn);
+        _nextY += SubRowHeight;
+
+        _gptControls.Add(CreateHintLabel("1. Click 'Get Key' → sign in → 'Create new secret key'", LeftMargin + 50));
+        _gptControls.Add(CreateHintLabel("2. Copy the key → paste above (starts with sk-)", LeftMargin + 50));
+
+        var oModelLabel = AddLabel("Model:", LeftMargin + 25, _nextY + 3);
+        _gptControls.Add(oModelLabel);
+        _gptModelCombo = new ComboBox
+        {
+            Location = new Point(LeftMargin + 90, _nextY),
+            Width = 100,
+            Font = new Font("Segoe UI", 9),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _gptModelCombo.Items.AddRange(GptModels.Select(m => (object)m.Name).ToArray());
+        _gptModelCombo.SelectedIndex = 0;
+        _gptModelCombo.SelectedIndexChanged += (_, _) => UpdateCostDisplay();
+        Controls.Add(_gptModelCombo);
+        _gptControls.Add(_gptModelCombo);
+        _nextY += SubRowHeight;
+
+        // Skip a line for cost (shared)
+        _nextY += 20;
+
+        var oModeLabel = AddLabel("Mode:", LeftMargin + 25, _nextY + 3);
+        _gptControls.Add(oModeLabel);
+        _gptModeCombo = new ComboBox
+        {
+            Location = new Point(LeftMargin + 90, _nextY),
+            Width = 90,
+            Font = new Font("Segoe UI", 9),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _gptModeCombo.Items.AddRange(new object[] { "Single", "Triple" });
+        _gptModeCombo.SelectedIndex = 0;
+        _gptModeCombo.SelectedIndexChanged += (_, _) => UpdateCostDisplay();
+        Controls.Add(_gptModeCombo);
+        _gptControls.Add(_gptModeCombo);
+        _toolTip.SetToolTip(_gptModeCombo,
+            "Single: selected model only.\n" +
+            "Triple: 4.1 Mini + 5 Nano + 5 Mini — fastest wins, 5 Mini upgrade if it arrives within 8s.");
+        _nextY += SubRowHeight;
+
+        int gptEndY = _nextY;
+
+        // ═══ GROQ CONTROLS ═══ (built at same Y range, toggled visibility)
+        _nextY = providerStartY;
+
+        var qApiKeyLabel = AddLabel("API Key:", LeftMargin + 25, _nextY + 3);
+        _groqControls.Add(qApiKeyLabel);
+        _groqApiKeyBox = new TextBox
+        {
+            Location = new Point(LeftMargin + 90, _nextY),
+            Width = 200,
+            Font = new Font("Segoe UI", 9),
+            UseSystemPasswordChar = true
+        };
+        _toolTip.SetToolTip(_groqApiKeyBox, "Groq API key (from console.groq.com)");
+        Controls.Add(_groqApiKeyBox);
+        _groqControls.Add(_groqApiKeyBox);
+
+        var getGroqKeyBtn = AddButton("Get Key", LeftMargin + 295, _nextY - 1, 55, 22,
+            (_, _) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://console.groq.com/keys") { UseShellExecute = true }); } catch { } },
+            "Open Groq console to create an API key");
+        getGroqKeyBtn.Font = new Font("Segoe UI", 7);
+        _groqControls.Add(getGroqKeyBtn);
+        _nextY += SubRowHeight;
+
+        _groqControls.Add(CreateHintLabel("1. Click 'Get Key' → sign in → 'Create API Key'", LeftMargin + 50));
+        _groqControls.Add(CreateHintLabel("2. Copy the key → paste above (starts with gsk_)", LeftMargin + 50));
+
+        var qModelLabel = AddLabel("Model:", LeftMargin + 25, _nextY + 3);
+        _groqControls.Add(qModelLabel);
+        _groqModelCombo = new ComboBox
+        {
+            Location = new Point(LeftMargin + 90, _nextY),
+            Width = 140,
+            Font = new Font("Segoe UI", 9),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _groqModelCombo.Items.AddRange(GroqModels.Select(m => (object)m.Name).ToArray());
+        _groqModelCombo.SelectedIndex = 0;
+        _groqModelCombo.SelectedIndexChanged += (_, _) => UpdateCostDisplay();
+        Controls.Add(_groqModelCombo);
+        _groqControls.Add(_groqModelCombo);
+        _nextY += SubRowHeight;
+
+        // Skip a line for cost (shared)
+        _nextY += 20;
+
+        var qModeLabel = AddLabel("Mode:", LeftMargin + 25, _nextY + 3);
+        _groqControls.Add(qModeLabel);
+        _groqModeCombo = new ComboBox
+        {
+            Location = new Point(LeftMargin + 90, _nextY),
+            Width = 90,
+            Font = new Font("Segoe UI", 9),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _groqModeCombo.Items.AddRange(new object[] { "Single", "Triple" });
+        _groqModeCombo.SelectedIndex = 0;
+        _groqModeCombo.SelectedIndexChanged += (_, _) => UpdateCostDisplay();
+        Controls.Add(_groqModeCombo);
+        _groqControls.Add(_groqModeCombo);
+        _toolTip.SetToolTip(_groqModeCombo,
+            "Single: selected model only.\n" +
+            "Triple: GPT-OSS 20B + Maverick + 3.3 70B — fastest wins, 70B upgrade if it arrives within 8s.");
+        _nextY += SubRowHeight;
+
+        int groqEndY = _nextY;
+
+        // ═══ GROK (xAI) CONTROLS ═══ (built at same Y range, toggled visibility)
+        _nextY = providerStartY;
+
+        var kApiKeyLabel = AddLabel("API Key:", LeftMargin + 25, _nextY + 3);
+        _grokControls.Add(kApiKeyLabel);
+        _grokApiKeyBox = new TextBox
+        {
+            Location = new Point(LeftMargin + 90, _nextY),
+            Width = 200,
+            Font = new Font("Segoe UI", 9),
+            UseSystemPasswordChar = true
+        };
+        _toolTip.SetToolTip(_grokApiKeyBox, "xAI Grok API key (from console.x.ai)");
+        Controls.Add(_grokApiKeyBox);
+        _grokControls.Add(_grokApiKeyBox);
+
+        var getGrokKeyBtn = AddButton("Get Key", LeftMargin + 295, _nextY - 1, 55, 22,
+            (_, _) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://console.x.ai/") { UseShellExecute = true }); } catch { } },
+            "Open xAI console to create an API key");
+        getGrokKeyBtn.Font = new Font("Segoe UI", 7);
+        _grokControls.Add(getGrokKeyBtn);
+        _nextY += SubRowHeight;
+
+        _grokControls.Add(CreateHintLabel("1. Click 'Get Key' → sign in → 'Create API Key'", LeftMargin + 50));
+        _grokControls.Add(CreateHintLabel("2. Copy the key → paste above", LeftMargin + 50));
+
+        var kModelLabel = AddLabel("Model:", LeftMargin + 25, _nextY + 3);
+        _grokControls.Add(kModelLabel);
+        _grokModelCombo = new ComboBox
+        {
+            Location = new Point(LeftMargin + 90, _nextY),
+            Width = 140,
+            Font = new Font("Segoe UI", 9),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _grokModelCombo.Items.AddRange(GrokModels.Select(m => (object)m.Name).ToArray());
+        _grokModelCombo.SelectedIndex = 0;
+        _grokModelCombo.SelectedIndexChanged += (_, _) => UpdateCostDisplay();
+        Controls.Add(_grokModelCombo);
+        _grokControls.Add(_grokModelCombo);
+        _nextY += SubRowHeight;
+
+        // Skip a line for cost (shared)
+        _nextY += 20;
+
+        var kModeLabel = AddLabel("Mode:", LeftMargin + 25, _nextY + 3);
+        _grokControls.Add(kModeLabel);
+        _grokModeCombo = new ComboBox
+        {
+            Location = new Point(LeftMargin + 90, _nextY),
+            Width = 90,
+            Font = new Font("Segoe UI", 9),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = Color.FromArgb(60, 60, 60),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat
+        };
+        _grokModeCombo.Items.AddRange(new object[] { "Single", "Triple" });
+        _grokModeCombo.SelectedIndex = 0;
+        _grokModeCombo.SelectedIndexChanged += (_, _) => UpdateCostDisplay();
+        Controls.Add(_grokModeCombo);
+        _grokControls.Add(_grokModeCombo);
+        _toolTip.SetToolTip(_grokModeCombo,
+            "Single: selected model only.\n" +
+            "Triple: Grok 3 Mini + Grok 4.1 Fast — fastest wins, 4.1 Fast upgrade if it arrives within 8s.");
+        _nextY += SubRowHeight;
+
+        int grokEndY = _nextY;
+
+        _nextY = providerStartY;
+        // Quad Compare: 4 numbered dropdowns, each with all models from all providers
+        // Slot 1 leads with Gemini, Slot 2 with OpenAI, Slot 3 with Groq, Slot 4 with Grok
+        var allModels = new List<(string Group, string Name, string ModelId)>();
+        foreach (var m in LlmModels)
+            allModels.Add(("Gemini", $"Gemini {m.Version} {m.Tier}", m.ModelId));
+        foreach (var m in GptModels)
+            allModels.Add(("OpenAI", m.Name, m.ModelId));
+        foreach (var m in GroqModels)
+            allModels.Add(("Groq", m.Name, m.ModelId));
+        foreach (var m in GrokModels)
+            allModels.Add(("Grok", m.Name, m.ModelId));
+
+        string[] groupOrder = { "Gemini", "OpenAI", "Groq", "Grok" };
+        ComboBox[] quadCombos = new ComboBox[4];
+        for (int slot = 0; slot < 4; slot++)
+        {
+            var lead = groupOrder[slot];
+            var sorted = allModels.Where(m => m.Group == lead)
+                .Concat(allModels.Where(m => m.Group != lead))
+                .ToList();
+
+            var lbl = AddLabel($"Slot {slot + 1}:", LeftMargin + 25, _nextY + 3);
+            _quadControls.Add(lbl);
+
+            var combo = new ComboBox
+            {
+                Location = new Point(LeftMargin + 80, _nextY),
+                Width = 270,
+                Font = new Font("Segoe UI", 9),
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(60, 60, 60),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat
+            };
+            foreach (var m in sorted)
+            {
+                combo.Items.Add(m.Name);
+            }
+            combo.Tag = sorted.Select(m => m.ModelId).ToArray();
+            if (combo.Items.Count > 0) combo.SelectedIndex = 0;
+            Controls.Add(combo);
+            _quadControls.Add(combo);
+            quadCombos[slot] = combo;
+            _nextY += SubRowHeight;
+        }
+        _quadCombo1 = quadCombos[0];
+        _quadCombo2 = quadCombos[1];
+        _quadCombo3 = quadCombos[2];
+        _quadCombo4 = quadCombos[3];
+
+        int quadEndY = _nextY;
+
+        // Use the tallest of the provider sections
+        _nextY = Math.Max(Math.Max(Math.Max(Math.Max(geminiEndY, gptEndY), groqEndY), grokEndY), quadEndY);
+
+        // Shared cost label (positioned below both provider sections)
         _llmCostLabel = new Label
         {
             Location = new Point(LeftMargin + 50, _nextY),
@@ -274,12 +656,15 @@ public class ExperimentalSection : SettingsSection
             Font = new Font("Segoe UI", 8, FontStyle.Italic)
         };
         Controls.Add(_llmCostLabel);
-        _nextY += 20;
-
-        // Initialize tier combo for the default version
-        OnVersionChanged();
+        _nextY += SubRowHeight;
 
         AddHintLabel("Map 'Custom Process Report' in Key Mappings after enabling", LeftMargin + 25);
+
+        // Hide GPT, Groq, Grok, and Quad controls by default
+        foreach (var c in _gptControls) c.Visible = false;
+        foreach (var c in _groqControls) c.Visible = false;
+        foreach (var c in _grokControls) c.Visible = false;
+        foreach (var c in _quadControls) c.Visible = false;
 
         UpdateHeight();
     }
@@ -450,14 +835,55 @@ public class ExperimentalSection : SettingsSection
         _cdpHideDragHandlesCheck.Enabled = _cdpEnabledCheck.Checked;
         _cdpFlashingAlertTextCheck.Enabled = _cdpEnabledCheck.Checked;
         _sttHighlightDictatedCheck.Enabled = _cdpEnabledCheck.Checked;
+        _cdpVisualEnhancementsCheck.Enabled = _cdpEnabledCheck.Checked;
     }
 
     private void UpdateLlmSettingsStates()
     {
         var enabled = _llmProcessEnabledCheck.Checked;
+        _llmProviderCombo.Enabled = enabled;
         _llmApiKeyBox.Enabled = enabled;
         _llmVersionCombo.Enabled = enabled;
         _llmTierCombo.Enabled = enabled;
+        _llmModeCombo.Enabled = enabled;
+        _gptApiKeyBox.Enabled = enabled;
+        _gptModelCombo.Enabled = enabled;
+        _gptModeCombo.Enabled = enabled;
+        _groqApiKeyBox.Enabled = enabled;
+        _groqModelCombo.Enabled = enabled;
+        _groqModeCombo.Enabled = enabled;
+        _grokApiKeyBox.Enabled = enabled;
+        _grokModelCombo.Enabled = enabled;
+        _grokModeCombo.Enabled = enabled;
+    }
+
+    private Label CreateHintLabel(string text, int x)
+    {
+        var label = new Label
+        {
+            Text = text,
+            Location = new Point(x, _nextY),
+            AutoSize = true,
+            ForeColor = Color.FromArgb(120, 120, 120),
+            Font = new Font("Segoe UI", 8, FontStyle.Italic)
+        };
+        Controls.Add(label);
+        _nextY += 18;
+        return label;
+    }
+
+    private void OnProviderChanged()
+    {
+        int idx = _llmProviderCombo.SelectedIndex; // 0=Gemini, 1=GPT, 2=Groq, 3=Grok, 4=Quad
+        foreach (var c in _geminiControls) c.Visible = idx == 0;
+        foreach (var c in _gptControls) c.Visible = idx == 1;
+        foreach (var c in _groqControls) c.Visible = idx == 2;
+        foreach (var c in _grokControls) c.Visible = idx == 3;
+        foreach (var c in _quadControls) c.Visible = idx == 4;
+        _llmCostLabel.Visible = idx != 4;
+        _llmPreviewLabel.Visible = idx == 0 && _llmPreviewLabel.Tag != null;
+        if (idx == 0) UpdateModelDisplay();
+        UpdateCostDisplay();
     }
 
     private void OnVersionChanged()
@@ -486,13 +912,117 @@ public class ExperimentalSection : SettingsSection
         if (match.ModelId == null) return;
 
         _llmPreviewLabel.Visible = match.Preview;
+        UpdateCostDisplay();
+    }
+
+    private void SelectQuadCombo(ComboBox combo, string modelId)
+    {
+        var ids = combo.Tag as string[];
+        if (ids == null) return;
+        var idx = Array.IndexOf(ids, modelId);
+        combo.SelectedIndex = idx >= 0 ? idx : 0;
+    }
+
+    private string GetQuadModelId(ComboBox combo)
+    {
+        var ids = combo.Tag as string[];
+        var idx = combo.SelectedIndex;
+        if (ids != null && idx >= 0 && idx < ids.Length)
+            return ids[idx];
+        return "";
+    }
+
+    private void UpdateCostDisplay()
+    {
+        if (_llmCostLabel == null) return; // constructor not finished
 
         const decimal estInput = 1500m;
         const decimal estOutput = 500m;
         const int studiesPerShift = 200;
-        var perStudy = (match.InputPer1M * estInput + match.OutputPer1M * estOutput) / 1_000_000m;
+
+        int providerIdx = _llmProviderCombo?.SelectedIndex ?? 0; // 0=Gemini, 1=GPT, 2=Groq, 3=Grok
+        decimal perStudy;
+        string modeLabel;
+
+        if (providerIdx == 0)
+        {
+            var mode = _llmModeCombo?.SelectedIndex ?? 0; // 0=Single, 1=Dual, 2=Triple
+            if (mode >= 1)
+            {
+                var lite25 = LlmModels.First(m => m.ModelId == "gemini-2.5-flash-lite");
+                var lite31 = LlmModels.First(m => m.ModelId == "gemini-3.1-flash-lite-preview");
+                perStudy = (lite25.InputPer1M * estInput + lite25.OutputPer1M * estOutput) / 1_000_000m
+                         + (lite31.InputPer1M * estInput + lite31.OutputPer1M * estOutput) / 1_000_000m;
+                if (mode == 2)
+                {
+                    var flash = LlmModels.First(m => m.ModelId == "gemini-3-flash-preview");
+                    perStudy += (flash.InputPer1M * estInput + flash.OutputPer1M * estOutput) / 1_000_000m;
+                }
+            }
+            else
+            {
+                var version = _llmVersionCombo?.SelectedItem?.ToString();
+                var tier = _llmTierCombo?.SelectedItem?.ToString();
+                var match = LlmModels.FirstOrDefault(m => m.Version == version && m.Tier == tier);
+                if (match.ModelId == null) { _llmCostLabel.Text = ""; return; }
+                perStudy = (match.InputPer1M * estInput + match.OutputPer1M * estOutput) / 1_000_000m;
+            }
+            modeLabel = mode switch { 1 => " [dual]", 2 => " [triple]", _ => "" };
+        }
+        else if (providerIdx == 1)
+        {
+            var gptMode = _gptModeCombo?.SelectedIndex ?? 0; // 0=Single, 1=Triple
+            if (gptMode == 1)
+            {
+                perStudy = 0;
+                foreach (var m in GptModels)
+                    perStudy += (m.InputPer1M * estInput + m.OutputPer1M * estOutput) / 1_000_000m;
+            }
+            else
+            {
+                var idx = _gptModelCombo?.SelectedIndex ?? 0;
+                var model = GptModels[idx];
+                perStudy = (model.InputPer1M * estInput + model.OutputPer1M * estOutput) / 1_000_000m;
+            }
+            modeLabel = gptMode == 1 ? " [triple]" : "";
+        }
+        else if (providerIdx == 2)
+        {
+            var groqMode = _groqModeCombo?.SelectedIndex ?? 0; // 0=Single, 1=Triple
+            if (groqMode == 1)
+            {
+                perStudy = 0;
+                foreach (var m in GroqModels)
+                    perStudy += (m.InputPer1M * estInput + m.OutputPer1M * estOutput) / 1_000_000m;
+            }
+            else
+            {
+                var idx = _groqModelCombo?.SelectedIndex ?? 0;
+                var model = GroqModels[idx];
+                perStudy = (model.InputPer1M * estInput + model.OutputPer1M * estOutput) / 1_000_000m;
+            }
+            modeLabel = groqMode == 1 ? " [triple]" : "";
+        }
+        else
+        {
+            var grokMode = _grokModeCombo?.SelectedIndex ?? 0; // 0=Single, 1=Triple
+            if (grokMode == 1)
+            {
+                perStudy = 0;
+                foreach (var m in GrokModels)
+                    perStudy += (m.InputPer1M * estInput + m.OutputPer1M * estOutput) / 1_000_000m;
+            }
+            else
+            {
+                var idx = _grokModelCombo?.SelectedIndex ?? 0;
+                var model = GrokModels[idx];
+                perStudy = (model.InputPer1M * estInput + model.OutputPer1M * estOutput) / 1_000_000m;
+            }
+            modeLabel = grokMode == 1 ? " [triple]" : "";
+        }
+
         var perShift = perStudy * studiesPerShift;
-        _llmCostLabel.Text = $"Est. cost: ~${perStudy:F4}/study \u00b7 ~${perShift:F2}/shift ({studiesPerShift} studies)";
+        _llmCostLabel.Text = $"Est. cost{modeLabel}: ~${perStudy:F4}/study \u00b7 ~${perShift:F2}/shift ({studiesPerShift} studies)";
     }
 
     public override void LoadSettings(Configuration config)
@@ -508,11 +1038,16 @@ public class ExperimentalSection : SettingsSection
         _cdpHideDragHandlesCheck.Checked = config.CdpHideDragHandles;
         _cdpFlashingAlertTextCheck.Checked = config.CdpFlashingAlertText;
         _sttHighlightDictatedCheck.Checked = config.SttHighlightDictated;
+        _cdpVisualEnhancementsCheck.Checked = config.CdpVisualEnhancements;
         _clarioCdpEnabledCheck.Checked = config.ClarioCdpEnabled;
         _clarioCdpUrlBox.Text = config.ClarioCdpUrl;
         _llmProcessEnabledCheck.Checked = config.LlmProcessEnabled;
+
+        // Provider selector
+        _llmProviderCombo.SelectedIndex = config.LlmProvider switch { "openai" => 1, "groq" => 2, "grok" => 3, "quad" => 4, _ => 0 };
+
+        // Gemini settings
         _llmApiKeyBox.Text = config.LlmApiKey;
-        // Select matching version + tier from model ID, default to 2.5 Flash Lite
         var saved = LlmModels.FirstOrDefault(m => m.ModelId == config.LlmModel);
         var version = saved.ModelId != null ? saved.Version : "2.5";
         var tier = saved.ModelId != null ? saved.Tier : "Flash Lite";
@@ -521,6 +1056,40 @@ public class ExperimentalSection : SettingsSection
         OnVersionChanged();
         var tIdx = _llmTierCombo.Items.IndexOf(tier);
         _llmTierCombo.SelectedIndex = tIdx >= 0 ? tIdx : 0;
+        var modeIdx = (config.LlmProcessMode ?? "single") switch
+        {
+            "dual" => 1, "triple" => 2, _ => 0
+        };
+        _llmModeCombo.SelectedIndex = modeIdx;
+
+        // GPT settings
+        _gptApiKeyBox.Text = config.LlmOpenAiApiKey;
+        var gptSaved = GptModels.FirstOrDefault(m => m.ModelId == config.LlmOpenAiModel);
+        var gptIdx = Array.FindIndex(GptModels, m => m.ModelId == (gptSaved.ModelId ?? "gpt-5-nano"));
+        _gptModelCombo.SelectedIndex = gptIdx >= 0 ? gptIdx : 0;
+        _gptModeCombo.SelectedIndex = config.LlmOpenAiProcessMode == "triple" ? 1 : 0;
+
+        // Groq settings
+        _groqApiKeyBox.Text = config.LlmGroqApiKey;
+        var groqSaved = GroqModels.FirstOrDefault(m => m.ModelId == config.LlmGroqModel);
+        var groqIdx = Array.FindIndex(GroqModels, m => m.ModelId == (groqSaved.ModelId ?? GroqModels[0].ModelId));
+        _groqModelCombo.SelectedIndex = groqIdx >= 0 ? groqIdx : 0;
+        _groqModeCombo.SelectedIndex = config.LlmGroqProcessMode == "triple" ? 1 : 0;
+
+        // Grok (xAI) settings
+        _grokApiKeyBox.Text = config.LlmGrokApiKey;
+        var grokSaved = GrokModels.FirstOrDefault(m => m.ModelId == config.LlmGrokModel);
+        var grokIdx = Array.FindIndex(GrokModels, m => m.ModelId == (grokSaved.ModelId ?? GrokModels[0].ModelId));
+        _grokModelCombo.SelectedIndex = grokIdx >= 0 ? grokIdx : 0;
+        _grokModeCombo.SelectedIndex = config.LlmGrokProcessMode == "triple" ? 1 : 0;
+
+        // Quad Compare settings
+        SelectQuadCombo(_quadCombo1, config.LlmQuadModel1);
+        SelectQuadCombo(_quadCombo2, config.LlmQuadModel2);
+        SelectQuadCombo(_quadCombo3, config.LlmQuadModel3);
+        SelectQuadCombo(_quadCombo4, config.LlmQuadModel4);
+
+        OnProviderChanged();
 
         UpdateNetworkSettingsStates();
         UpdateCdpSettingsStates();
@@ -541,15 +1110,47 @@ public class ExperimentalSection : SettingsSection
         config.CdpHideDragHandles = _cdpHideDragHandlesCheck.Checked;
         config.CdpFlashingAlertText = _cdpFlashingAlertTextCheck.Checked;
         config.SttHighlightDictated = _sttHighlightDictatedCheck.Checked;
+        config.CdpVisualEnhancements = _cdpVisualEnhancementsCheck.Checked;
         config.ClarioCdpEnabled = _clarioCdpEnabledCheck.Checked;
         var url = _clarioCdpUrlBox.Text.Trim();
         if (!string.IsNullOrEmpty(url))
             config.ClarioCdpUrl = url;
         config.LlmProcessEnabled = _llmProcessEnabledCheck.Checked;
+        config.LlmProvider = _llmProviderCombo.SelectedIndex switch { 1 => "openai", 2 => "groq", 3 => "grok", 4 => "quad", _ => "gemini" };
+
+        // Gemini settings
         config.LlmApiKey = _llmApiKeyBox.Text.Trim();
         var version = _llmVersionCombo.SelectedItem?.ToString();
         var tier = _llmTierCombo.SelectedItem?.ToString();
         var match = LlmModels.FirstOrDefault(m => m.Version == version && m.Tier == tier);
         config.LlmModel = match.ModelId ?? "gemini-2.5-flash-lite";
+        config.LlmProcessMode = _llmModeCombo.SelectedIndex switch
+        {
+            1 => "dual", 2 => "triple", _ => "single"
+        };
+
+        // GPT settings
+        config.LlmOpenAiApiKey = _gptApiKeyBox.Text.Trim();
+        var gptIdx = _gptModelCombo.SelectedIndex;
+        config.LlmOpenAiModel = gptIdx >= 0 && gptIdx < GptModels.Length ? GptModels[gptIdx].ModelId : "gpt-5-nano";
+        config.LlmOpenAiProcessMode = _gptModeCombo.SelectedIndex == 1 ? "triple" : "single";
+
+        // Groq settings
+        config.LlmGroqApiKey = _groqApiKeyBox.Text.Trim();
+        var groqIdx = _groqModelCombo.SelectedIndex;
+        config.LlmGroqModel = groqIdx >= 0 && groqIdx < GroqModels.Length ? GroqModels[groqIdx].ModelId : GroqModels[0].ModelId;
+        config.LlmGroqProcessMode = _groqModeCombo.SelectedIndex == 1 ? "triple" : "single";
+
+        // Grok (xAI) settings
+        config.LlmGrokApiKey = _grokApiKeyBox.Text.Trim();
+        var grokIdx = _grokModelCombo.SelectedIndex;
+        config.LlmGrokModel = grokIdx >= 0 && grokIdx < GrokModels.Length ? GrokModels[grokIdx].ModelId : GrokModels[0].ModelId;
+        config.LlmGrokProcessMode = _grokModeCombo.SelectedIndex == 1 ? "triple" : "single";
+
+        // Quad Compare settings
+        config.LlmQuadModel1 = GetQuadModelId(_quadCombo1);
+        config.LlmQuadModel2 = GetQuadModelId(_quadCombo2);
+        config.LlmQuadModel3 = GetQuadModelId(_quadCombo3);
+        config.LlmQuadModel4 = GetQuadModelId(_quadCombo4);
     }
 }

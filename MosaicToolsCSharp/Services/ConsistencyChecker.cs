@@ -142,30 +142,30 @@ public static class ConsistencyChecker
         var findingsMeasurements = ExtractMeasurements(findings);
         var impressionMeasurements = ExtractMeasurements(impression);
 
-        // For each anatomy in impression that has a measurement, check against findings
+        // For each anatomy in impression that has a measurement, check against findings.
+        // Match 1-to-1: each impression measurement must have a close match in findings.
+        // This avoids false positives when multiple distinct items share an anatomy keyword
+        // (e.g. two different renal cysts with different sizes).
         foreach (var (anatomy, impMeasures) in impressionMeasurements)
         {
             if (!findingsMeasurements.TryGetValue(anatomy, out var findMeasures))
                 continue;
 
-            // Compare: flag if measurements differ
+            // For each impression measurement, check if ANY findings measurement is close
             foreach (var impM in impMeasures)
             {
-                foreach (var findM in findMeasures)
-                {
-                    // Both have explicit measurements — compare in mm
-                    if (Math.Abs(impM.ValueMm - findM.ValueMm) > 0.5)
-                    {
-                        var key = $"meas_{anatomy}_{FormatMm(findM.ValueMm)}_vs_{FormatMm(impM.ValueMm)}";
-                        if (results.Any(r => r.Key == key)) continue;
+                bool hasMatch = findMeasures.Any(fm => Math.Abs(fm.ValueMm - impM.ValueMm) <= 0.5);
+                if (hasMatch) continue;
 
-                        var display = $"{anatomy}: {FormatDisplay(findM)}→{FormatDisplay(impM)}";
-                        var searchTerms = new[] { findM.OriginalText, impM.OriginalText };
-                        results.Add(new ConsistencyResult(key, display, "measurement", searchTerms));
-                        break; // One flag per anatomy is enough
-                    }
-                }
-                if (results.Any(r => r.Key.StartsWith($"meas_{anatomy}_"))) break;
+                // No close match in findings — find the nearest for display
+                var nearest = findMeasures.OrderBy(fm => Math.Abs(fm.ValueMm - impM.ValueMm)).First();
+                var key = $"meas_{anatomy}_{FormatMm(nearest.ValueMm)}_vs_{FormatMm(impM.ValueMm)}";
+                if (results.Any(r => r.Key == key)) continue;
+
+                var display = $"{anatomy}: {FormatDisplay(nearest)}→{FormatDisplay(impM)}";
+                var searchTerms = new[] { nearest.OriginalText, impM.OriginalText };
+                results.Add(new ConsistencyResult(key, display, "measurement", searchTerms));
+                break; // One flag per anatomy is enough
             }
         }
     }

@@ -58,6 +58,7 @@ public class CdpService : IDisposable
     private CdpScrapeResult? _lastCdpScrapeResult; // Cached result for hash-match reuse
     private bool _autoScrollWatcherActive; // Whether auto-scroll watcher interval is injected
     private bool _hideDragHandles = true; // Hide Tiptap drag handles in editor
+    private bool _visualEnhancements = false; // Visual report enhancements (inline headers, etc.)
 
     public bool IsConnected => _slimHubWs?.State == WebSocketState.Open;
     public bool IsIframeConnected => _iframeWs?.State == WebSocketState.Open;
@@ -65,6 +66,7 @@ public class CdpService : IDisposable
     public bool ScrollFixActive => _scrollFixActive;
     public bool AutoScrollEnabled { get; set; } = true;
     public bool HideDragHandles { get => _hideDragHandles; set => _hideDragHandles = value; }
+    public bool VisualEnhancements { get => _visualEnhancements; set => _visualEnhancements = value; }
 
     /// <summary>Set column ratio from config on startup, and read back after drag.</summary>
     public double ColumnRatio
@@ -413,13 +415,29 @@ public class CdpService : IDisposable
 
         // ── CSS: all layout values embedded in stylesheet, no inline styles ──
         const hideDragHandles = {1};
+        const visualEnhancements = {2};
+        // Set CSS custom property for dynamic top offset (survives zoom changes)
+        colContainer.style.setProperty('--mt-top', topPx + 'px');
+
+        // Update --mt-top on resize/zoom so calc() stays accurate
+        if (!window.__mtTopObserver) {{
+            const updateTop = () => {{
+                const c = document.querySelector('[data-mt-cols]');
+                if (c) c.style.setProperty('--mt-top', Math.round(c.getBoundingClientRect().top) + 'px');
+            }};
+            window.addEventListener('resize', updateTop);
+            window.__mtTopObserver = new ResizeObserver(updateTop);
+        }}
+        window.__mtTopObserver.observe(colContainer);
+
         const styleEl = document.createElement('style');
         styleEl.id = 'mt-scroll-fix';
         let css = `/* MosaicTools: independent column scrolling + resize */
 html, body {{ overflow: hidden !important; }}
+${{visualEnhancements ? 'mark.tiptap-highlight { background-color: rgba(70, 160, 220, 0.8) !important; }' : ''}}
 [data-mt-cols] {{
-    height: calc(100vh - ${{topPx}}px) !important;
-    max-height: calc(100vh - ${{topPx}}px) !important;
+    height: calc(100vh - var(--mt-top, ${{topPx}}px)) !important;
+    max-height: calc(100vh - var(--mt-top, ${{topPx}}px)) !important;
     overflow: hidden !important;
 }}
 [data-mt-col] {{
@@ -456,6 +474,33 @@ html, body {{ overflow: hidden !important; }}
 [data-mt-editor-area] .ProseMirror {{
     overflow: visible !important;
 }}
+${{visualEnhancements ? `
+/* ── Section headers: visually inline content after header ── */
+.ProseMirror > h3.tiptap-heading {{
+    float: left !important;
+    margin: 0 0.5em 0 0 !important;
+    padding: 0 !important;
+    line-height: 21px !important;
+    font-size: 14px !important;
+}}
+.ProseMirror > h3.tiptap-heading + div {{
+    display: contents !important;
+}}
+.ProseMirror > h3.tiptap-heading + div [data-node-view-wrapper],
+.ProseMirror > h3.tiptap-heading + div .MuiBox-root,
+.ProseMirror > h3.tiptap-heading + div .tiptap-paragraph-content,
+.ProseMirror > h3.tiptap-heading + div .tiptap-paragraph-content > div {{
+    display: contents !important;
+}}
+.ProseMirror > h3.tiptap-heading + div + div {{
+    clear: left !important;
+}}
+/* ── All report content text: slightly smaller than headers ── */
+.ProseMirror p {{
+    font-size: 13.5px !important;
+    line-height: 21px !important;
+    margin-top: 0 !important;
+}}` : ''}}
 /* ── Horizontal mode ── */
 [data-mt-horizontal] > [data-mt-col-editor] {{
     box-sizing: border-box !important;
@@ -590,6 +635,8 @@ html, body {{ overflow: hidden !important; }}
 
     private const string JS_REMOVE_SCROLL_FIX = @"(() => {
         document.getElementById('mt-scroll-fix')?.remove();
+        if (window.__mtTopObserver) { window.__mtTopObserver.disconnect(); window.__mtTopObserver = null; }
+        document.getElementById('mt-subsection-fix')?.remove();
         document.querySelectorAll('[data-mt-resize-handle]').forEach(h => h.remove());
         const attrs = ['data-mt-cols','data-mt-horizontal','data-mt-vertical','data-mt-col',
             'data-mt-col-editor','data-mt-col-scroll','data-mt-editor-wrapper','data-mt-editor-area',
@@ -1722,6 +1769,271 @@ html, body {{ overflow: hidden !important; }}
         SendToIframe(js);
     }
 
+    public void FlashEditor(int editorIndex)
+    {
+        if (!IsIframeConnected) return;
+        var js = $@"(() => {{
+            const e = document.querySelectorAll('.ProseMirror')[{editorIndex}];
+            if (e) {{
+                e.style.transition = 'none';
+                e.style.boxShadow = '0 0 20px 4px rgba(100,200,255,0.6)';
+                setTimeout(() => {{
+                    e.style.transition = 'box-shadow 0.8s ease-out';
+                    e.style.boxShadow = 'none';
+                }}, 100);
+            }}
+            return 'ok';
+        }})()";
+        SendToIframe(js);
+    }
+
+    /// <summary>
+    /// Show or clear an LLM model badge next to the "Final Report" title in editor 1's header.
+    /// Finds the title by walking up from the ProseMirror editor to locate text containing "Final Report".
+    /// </summary>
+    public void SetEditorModelBadge(int editorIndex, string? modelName)
+    {
+        if (!IsIframeConnected) return;
+        var badgeId = $"mt-llm-badge-{editorIndex}";
+        if (string.IsNullOrEmpty(modelName))
+        {
+            // Clear badge
+            var clearJs = $@"(() => {{
+                const b = document.getElementById('{badgeId}');
+                if (b) b.remove();
+                return 'cleared';
+            }})()";
+            SendToIframe(clearJs);
+            return;
+        }
+
+        var escapedName = System.Text.Json.JsonSerializer.Serialize(modelName);
+        var js = $@"(() => {{
+            // Remove existing badge first
+            const existing = document.getElementById('{badgeId}');
+            if (existing) existing.remove();
+
+            const editor = document.querySelectorAll('.ProseMirror')[{editorIndex}];
+            if (!editor) return 'no_editor';
+
+            // Walk up from editor to find the title element containing 'Final Report'
+            let titleEl = null;
+            let el = editor.parentElement;
+            for (let i = 0; i < 15 && el; i++) {{
+                // Look for a text node or span containing 'Final Report' in this element's children
+                const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+                let node;
+                while (node = walker.nextNode()) {{
+                    if (node.textContent.includes('Final Report')) {{
+                        titleEl = node.parentElement;
+                        break;
+                    }}
+                }}
+                if (titleEl) break;
+                el = el.parentElement;
+            }}
+
+            if (!titleEl) return 'no_title';
+
+            // Create the badge
+            const badge = document.createElement('span');
+            badge.id = '{badgeId}';
+            badge.textContent = {escapedName};
+            badge.style.cssText = 'margin-left:8px;padding:1px 8px;border-radius:3px;font-size:11px;font-weight:600;' +
+                'background:linear-gradient(135deg,#1a3a5c,#2a5a8c);color:#7cb8f0;border:1px solid #3a6a9c;' +
+                'letter-spacing:0.3px;vertical-align:middle;opacity:0;transition:opacity 0.4s ease-in;';
+            titleEl.appendChild(badge);
+
+            // Fade in
+            requestAnimationFrame(() => requestAnimationFrame(() => badge.style.opacity = '1'));
+
+            return 'ok';
+        }})()";
+        SendToIframe(js);
+    }
+
+    /// <summary>
+    /// Show clickable model badges in the editor title bar. Each badge shows model name + time.
+    /// The active model has a glow. Clicking a non-failed badge swaps the editor content.
+    /// </summary>
+    public void SetEditorModelBadges(int editorIndex,
+        IReadOnlyList<(string Id, string Display, string? Output, bool Failed, bool Active, bool DroppedFindings, List<string>? DroppedClauses)> badges,
+        string? docStructureJson)
+    {
+        if (!IsIframeConnected) return;
+        var containerId = $"mt-llm-badges-{editorIndex}";
+
+        if (badges == null || badges.Count == 0)
+        {
+            var clearJs = $@"(() => {{ const c = document.getElementById('{containerId}'); if (c) c.remove(); return 'cleared'; }})()";
+            SendToIframe(clearJs);
+            return;
+        }
+
+        // Build JSON array of badge data
+        var badgeArray = new System.Text.Json.Nodes.JsonArray();
+        foreach (var b in badges)
+        {
+            var obj = new System.Text.Json.Nodes.JsonObject
+            {
+                ["id"] = b.Id,
+                ["display"] = b.Display,
+                ["output"] = b.Output,
+                ["failed"] = b.Failed,
+                ["active"] = b.Active,
+                ["dropped"] = b.DroppedFindings,
+                ["droppedClauses"] = b.DroppedClauses != null ? new System.Text.Json.Nodes.JsonArray(b.DroppedClauses.Select(c => (System.Text.Json.Nodes.JsonNode?)System.Text.Json.Nodes.JsonValue.Create(c)).ToArray()) : null
+            };
+            badgeArray.Add(obj);
+        }
+        var escapedModels = JsonSerializer.Serialize(badgeArray.ToJsonString());
+        var escapedStruct = docStructureJson != null ? JsonSerializer.Serialize(docStructureJson) : "null";
+
+        var js = $@"(() => {{
+            const existing = document.getElementById('{containerId}');
+            if (existing) existing.remove();
+
+            const editor = document.querySelectorAll('.ProseMirror')[{editorIndex}];
+            if (!editor) return 'no_editor';
+
+            let titleEl = null;
+            let el = editor.parentElement;
+            for (let i = 0; i < 15 && el; i++) {{
+                const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+                let node;
+                while (node = walker.nextNode()) {{
+                    if (node.textContent.includes('Final Report')) {{
+                        titleEl = node.parentElement;
+                        break;
+                    }}
+                }}
+                if (titleEl) break;
+                el = el.parentElement;
+            }}
+            if (!titleEl) return 'no_title';
+
+            const models = JSON.parse({escapedModels});
+            const structStr = {escapedStruct};
+            const struct_ = structStr ? JSON.parse(structStr) : null;
+
+            // Content swap function
+            window.__mtSwapModel = function(id) {{
+                const m = models.find(x => x.id === id);
+                if (!m || !m.output || m.failed) return;
+                const edEl = document.querySelectorAll('.ProseMirror')[{editorIndex}];
+                if (!edEl || !edEl.editor) return;
+                const ed = edEl.editor;
+                const text = m.output;
+                const headingLevels = struct_?.headings || {{}};
+                const hasImpSection = struct_?.hasImpressionSection || false;
+                const knownHeadings = new Set(Object.keys(headingLevels));
+                const lines = text.split('\n');
+                const content = [];
+                let idx = 0;
+                function isH(l) {{ const r=l.trim(); const u=r.replace(/:$/,'').trim().toUpperCase(); return knownHeadings.has(u) || (r.length>2 && r.endsWith(':') && /^[A-Z][A-Z &\/,\-]+:$/.test(r)); }}
+                function hLvl(n) {{ return headingLevels[n.toUpperCase()] || 4; }}
+                function mkH(n,l) {{ return {{type:'heading',attrs:{{level:l}},content:[{{type:'text',text:n+':'}}]}}; }}
+                function mkP(l) {{ return (!l||!l.trim()) ? {{type:'paragraph'}} : {{type:'paragraph',content:[{{type:'text',text:l}}]}}; }}
+                function cBody() {{
+                    const p=[];
+                    while(idx<lines.length) {{
+                        const t=lines[idx].trim();
+                        if(!t) {{ idx++; if(p.length>0) break; continue; }}
+                        if(isH(t)) break;
+                        p.push(t); idx++;
+                    }}
+                    return p.length>0 ? p.join(' ') : null;
+                }}
+                while(idx<lines.length) {{
+                    const t=lines[idx].trim();
+                    if(!t) {{ idx++; continue; }}
+                    if(isH(t)) {{
+                        const hn=t.replace(/:$/,'').trim();
+                        const un=hn.toUpperCase();
+                        const lv=hLvl(hn);
+                        if(content.length>0) content.push({{type:'paragraph'}});
+                        if(un==='IMPRESSION' && hasImpSection) {{
+                            idx++;
+                            const items=[];
+                            while(idx<lines.length && !isH(lines[idx])) {{
+                                const il=lines[idx].trim();
+                                if(il) {{ const s=il.replace(/^\d+\.\s*/,''); if(s) items.push({{type:'listItem',content:[{{type:'paragraph',content:[{{type:'text',text:s}}]}}]}}); }}
+                                idx++;
+                            }}
+                            const sc=[mkH(hn,lv)];
+                            if(items.length>0) sc.push({{type:'orderedList',attrs:{{start:1}},content:items}});
+                            content.push({{type:'section',content:sc}});
+                            continue;
+                        }}
+                        content.push(mkH(hn,lv)); idx++;
+                        let b; while((b=cBody())!==null) content.push(mkP(b));
+                        continue;
+                    }}
+                    const b=cBody(); if(b) content.push(mkP(b));
+                }}
+                if(!content.length) content.push({{type:'paragraph'}});
+                for(const n of ['mt-dictated','mt-normal','mt-medium','mt-low']) {{ if(CSS.highlights.has(n)) CSS.highlights.delete(n); }}
+                ed.commands.setContent({{type:'doc',content:content}});
+                const v=ed.view, ep=ed.state.doc.content.size-1;
+                const t1=v.state.tr.insertText('\u200B',ep); t1.setMeta('addToHistory',false); v.dispatch(t1);
+                const t2=v.state.tr.delete(ep,ep+1); t2.setMeta('addToHistory',false); v.dispatch(t2);
+
+                // Update badge glow
+                document.querySelectorAll('.mt-model-badge').forEach(b => {{
+                    const isAct = b.dataset.id === id;
+                    const isDrop = b.dataset.dropped === '1';
+                    let shadow = isAct ? '0 0 6px 2px rgba(100,180,255,0.5)' : 'none';
+                    if (isDrop && !b.dataset.failed) shadow = (shadow !== 'none' ? shadow + ',' : '') + '0 0 4px 1px rgba(200,60,60,0.4)';
+                    b.style.boxShadow = shadow;
+                    b.style.background = isAct ? 'linear-gradient(135deg,#1a3a5c,#2a5a8c)' : (b.dataset.failed==='1' ? 'linear-gradient(135deg,#2a2a2a,#3a3a3a)' : 'linear-gradient(135deg,#1a2a3c,#1a3050)');
+                    b.style.color = isAct ? '#7cb8f0' : (b.dataset.failed==='1' ? '#666' : '#5a8ab0');
+                    b.style.borderColor = isDrop && b.dataset.failed!=='1' ? '#cc4444' : (isAct ? '#3a6a9c' : (b.dataset.failed==='1' ? '#444' : '#2a4a6c'));
+                }});
+            }};
+
+            // Build badge container
+            const container = document.createElement('span');
+            container.id = '{containerId}';
+            container.style.cssText = 'margin-left:8px;display:inline-flex;gap:4px;vertical-align:middle;opacity:0;transition:opacity 0.4s ease-in;';
+
+            models.forEach(m => {{
+                const badge = document.createElement('span');
+                badge.className = 'mt-model-badge';
+                badge.dataset.id = m.id;
+                badge.dataset.failed = m.failed ? '1' : '0';
+                badge.dataset.dropped = m.dropped ? '1' : '0';
+                badge.textContent = m.display;
+                let s = 'padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:0.3px;transition:all 0.3s ease;';
+                if (m.failed) {{
+                    s += 'background:linear-gradient(135deg,#2a2a2a,#3a3a3a);color:#666;border:1px solid #444;cursor:default;opacity:0.5;';
+                }} else if (m.active) {{
+                    s += 'background:linear-gradient(135deg,#1a3a5c,#2a5a8c);color:#7cb8f0;border:1px solid #3a6a9c;box-shadow:0 0 6px 2px rgba(100,180,255,0.5);cursor:pointer;';
+                }} else {{
+                    s += 'background:linear-gradient(135deg,#1a2a3c,#1a3050);color:#5a8ab0;border:1px solid #2a4a6c;cursor:pointer;';
+                }}
+                badge.style.cssText = s;
+                if (!m.failed && m.dropped) {{
+                    badge.style.borderColor = '#cc4444';
+                    badge.style.boxShadow = (badge.style.boxShadow && badge.style.boxShadow !== 'none' ? badge.style.boxShadow + ',' : '') + '0 0 4px 1px rgba(200,60,60,0.4)';
+                    badge.title = m.droppedClauses && m.droppedClauses.length > 0
+                        ? 'Possibly omitted:\n' + m.droppedClauses.map(c => '\u2022 ' + c).join('\n')
+                        : 'Warning: Some dictated findings may not be present';
+                }}
+                if (!m.failed && m.output) {{
+                    badge.addEventListener('click', () => window.__mtSwapModel(m.id));
+                    badge.addEventListener('mouseenter', () => {{ badge.style.borderColor = badge.dataset.dropped === '1' ? '#cc4444' : '#4a7aac'; }});
+                    badge.addEventListener('mouseleave', () => {{ badge.style.borderColor = badge.dataset.dropped === '1' ? '#cc4444' : (badge.style.boxShadow !== 'none' ? '#3a6a9c' : '#2a4a6c'); }});
+                }}
+                container.appendChild(badge);
+            }});
+
+            titleEl.appendChild(container);
+            requestAnimationFrame(() => requestAnimationFrame(() => container.style.opacity = '1'));
+            return 'ok';
+        }})()";
+        SendToIframe(js);
+    }
+
     /// <summary>
     /// Replace editor content preserving ProseMirror heading/section/orderedList structure.
     /// docStructureJson: output from GetDocStructure (heading levels, impression section flag).
@@ -1750,7 +2062,10 @@ html, body {{ overflow: hidden !important; }}
 
             function isHeading(line) {{
                 const trimmed = line.trim().replace(/:$/, '').trim().toUpperCase();
-                return knownHeadings.has(trimmed);
+                if (knownHeadings.has(trimmed)) return true;
+                // Also recognize ALL-CAPS lines ending with ':' as headings (LLM-invented sections)
+                const raw = line.trim();
+                return raw.length > 2 && raw.endsWith(':') && /^[A-Z][A-Z &\/,\-]+:$/.test(raw);
             }}
 
             function getHeadingLevel(name) {{
@@ -2311,7 +2626,8 @@ html, body {{ overflow: hidden !important; }}
         // Format template with current column ratio and drag handle hiding flag
         var js = string.Format(JS_INJECT_SCROLL_FIX_TEMPLATE,
             _columnRatio.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            _hideDragHandles ? "true" : "false");
+            _hideDragHandles ? "true" : "false",
+            _visualEnhancements ? "true" : "false");
         var resultJson = ExtractResultValue(SendToIframe(js));
         if (resultJson == null) return false;
 
@@ -2464,6 +2780,35 @@ html, body {{ overflow: hidden !important; }}
                 });
             });
             return JSON.stringify(results);
+        })()";
+        return ExtractResultValue(SendToIframe(js));
+    }
+
+    /// <summary>Dump DOM structure of subsection headers in editor 1 for debugging.</summary>
+    public string? DumpSubsectionStructure()
+    {
+        if (!IsIframeConnected) return null;
+        var js = @"(() => {
+            const editors = document.querySelectorAll('.ProseMirror');
+            if (editors.length < 2) return 'no_editors';
+            const editor = editors[1]; // editor 1 = report
+            const results = [];
+            // Look for FINDINGS content and dump child node structure
+            const children = editor.children;
+            let inFindings = false;
+            for (let i = 0; i < Math.min(children.length, 60); i++) {
+                const el = children[i];
+                const text = (el.textContent || '').substring(0, 80);
+                if (text.includes('FINDINGS')) inFindings = true;
+                if (!inFindings) continue;
+                const childTags = Array.from(el.childNodes).map(c => {
+                    if (c.nodeType === 3) return 'TEXT:' + (c.textContent||'').substring(0,40);
+                    return c.tagName + (c.className ? '.' + (c.className.substring ? c.className.substring(0,30) : '') : '') + ':' + (c.textContent||'').substring(0,40);
+                });
+                results.push({ tag: el.tagName, text: text, children: childTags });
+                if (results.length > 15) break;
+            }
+            return JSON.stringify(results, null, 2);
         })()";
         return ExtractResultValue(SendToIframe(js));
     }

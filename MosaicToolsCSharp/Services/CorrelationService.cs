@@ -848,7 +848,7 @@ public static class CorrelationService
     /// "The kidney shows no hydronephrosis but a new 2 cm mass."
     /// Unanchored patterns match anywhere for unambiguous indicators.
     /// </summary>
-    private static readonly Regex NegativeSentencePattern = new(
+    internal static readonly Regex NegativeSentencePattern = new(
         @"^\s*(?:no\s|normal\b|negative\b|there\s+(?:is|are)\s+no\s|not\s)" +
         @"|\bunremarkable\b|\bwithin\s+normal\b" +
         @"|\b(?:was|has\s+been)\s+performed\b" +               // surgical history
@@ -901,6 +901,14 @@ public static class CorrelationService
                     filteredFindings.Add(sentence);
             }
             Logger.Trace($"CorrelateReversed: {filteredFindings.Count}/{findingsSentences.Count} findings are dictated");
+            // If dictated filter matches zero findings, the highlights are likely stale
+            // (e.g. after badge swap cleared ProseMirror marks). Retry without the filter.
+            if (filteredFindings.Count == 0)
+            {
+                Logger.Trace("CorrelateReversed: Dictated filter matched 0 findings — ignoring filter (stale highlights?)");
+                dictatedSentences = null;
+                filteredFindings = new List<string>(findingsSentences);
+            }
         }
         else
         {

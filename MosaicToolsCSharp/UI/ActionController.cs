@@ -62,7 +62,14 @@ public class ActionController : IDisposable
     private string? _llmDbTemplateOverride;           // [LLM] Clean template from DB (used for drafted studies)
     private Dictionary<string, KeytermLearningService> _keytermLearningByProvider = new(); // [KeytermLearning] per-provider instances
     private EnsembleMetricsForm? _ensembleMetrics; // [Ensemble] live stats popup
+    private SttTranscriptComparisonForm? _sttComparisonForm; // [Ensemble] transcript comparison popup
     private readonly List<CorrectionRecord> _pendingCorrections = new(); // [Ensemble] corrections awaiting validation
+
+    // [Ensemble] Per-provider transcript accumulation for comparison view
+    private readonly Dictionary<string, System.Text.StringBuilder> _currentProviderTranscripts = new();
+    private readonly Dictionary<string, System.Text.StringBuilder> _currentRawProviderTranscripts = new();
+    private Dictionary<string, string> _lastProviderTranscripts = new(); // Snapshot from previous dictation
+    private Dictionary<string, string> _lastRawProviderTranscripts = new();
     private string? _lastNonEmptyReport; // [Ensemble] snapshot of last non-empty report for correction validation
     private bool _sttDirectPasteActive; // [CustomSTT] Track whether direct paste is active
     private IntPtr _sttPasteTargetWindow; // [CustomSTT] Window that had focus when recording started
@@ -79,6 +86,44 @@ public class ActionController : IDisposable
         if (_mainForm.IsHandleCreated && !_mainForm.IsDisposed)
             _mainForm.BeginInvoke(action);
     }
+
+    private static string GrokDisplayName(string? modelId) => modelId switch
+    {
+        "grok-3-mini" => "Grok 3 Mini",
+        "grok-4-1-fast-non-reasoning" => "Grok 4.1 Fast",
+        "grok-4-1-fast-reasoning" => "Grok 4.1 Fast",
+        "grok-3" => "Grok 3",
+        "grok-4-0709" => "Grok 4",
+        _ => modelId ?? "Grok"
+    };
+
+    private string? QuadApiKeyFor(string modelId) => modelId switch
+    {
+        _ when modelId.StartsWith("gemini", StringComparison.OrdinalIgnoreCase) => _config.LlmApiKey,
+        _ when modelId.StartsWith("gpt-", StringComparison.OrdinalIgnoreCase) => _config.LlmOpenAiApiKey,
+        _ when modelId.StartsWith("grok-", StringComparison.OrdinalIgnoreCase) => _config.LlmGrokApiKey,
+        _ => _config.LlmGroqApiKey // Groq hosts llama, openai/ prefix models
+    };
+
+    private static string QuadDisplayName(string modelId)
+    {
+        if (modelId.StartsWith("gemini", StringComparison.OrdinalIgnoreCase))
+            return "Gemini " + modelId.Replace("gemini-", "").Replace("-preview", "").Replace("-", " ");
+        if (modelId.StartsWith("gpt-", StringComparison.OrdinalIgnoreCase))
+            return "GPT " + modelId.Replace("gpt-", "").Replace("-mini", " Mini").Replace("-nano", " Nano");
+        if (modelId.StartsWith("grok-", StringComparison.OrdinalIgnoreCase))
+            return GrokDisplayName(modelId);
+        return GroqDisplayName(modelId);
+    }
+
+    private static string GroqDisplayName(string? modelId) => modelId switch
+    {
+        "openai/gpt-oss-120b" => "GPT-OSS 120B",
+        "meta-llama/llama-4-scout-17b-16e-instruct" => "Llama Scout",
+        "meta-llama/llama-4-maverick-17b-128e-instruct" => "Llama Maverick",
+        "llama-3.3-70b-versatile" => "Llama 3.3 70B",
+        _ => modelId ?? "Llama"
+    };
 
     // Batched UI updates: collects multiple UI actions and executes them in a single
     // BeginInvoke call. This reduces WM_USER message spam on the UI thread, preventing
@@ -312,6 +357,7 @@ public class ActionController : IDisposable
             _cdpService.ColumnRatio = _config.CdpColumnRatio;
             _cdpService.AutoScrollEnabled = _config.CdpAutoScrollEnabled;
             _cdpService.HideDragHandles = _config.CdpHideDragHandles;
+            _cdpService.VisualEnhancements = _config.CdpVisualEnhancements;
             if (!_config.CdpEnvVarSet)
             {
                 CdpService.EnsureEnvVar();
@@ -324,7 +370,7 @@ public class ActionController : IDisposable
         if (_config.LlmProcessEnabled && !string.IsNullOrEmpty(_config.LlmApiKey))
         {
             _llmService = new LlmService();
-            _llmService.Configure(_config.LlmApiKey, _config.LlmModel);
+            _llmService.Configure(_config.LlmApiKey, _config.LlmModel, _config.LlmProvider, _config.LlmOpenAiApiKey, _config.LlmGroqApiKey, _config.LlmGrokApiKey);
         }
 
         _actionThread = new Thread(ActionLoop) { IsBackground = true };
@@ -474,6 +520,7 @@ public class ActionController : IDisposable
             _cdpService.ColumnRatio = _config.CdpColumnRatio;
             _cdpService.AutoScrollEnabled = _config.CdpAutoScrollEnabled;
             _cdpService.HideDragHandles = _config.CdpHideDragHandles;
+            _cdpService.VisualEnhancements = _config.CdpVisualEnhancements;
             if (!_config.CdpFlashingAlertText)
                 ClearCdpAlertTextFlashing();
         }
@@ -485,10 +532,16 @@ public class ActionController : IDisposable
             Logger.Trace("CDP: Disabled and disposed");
         }
 
-        // [CDP] Remove scroll fix if setting was toggled off
-        if (_cdpService != null && !_config.CdpIndependentScrolling && _cdpService.ScrollFixActive)
+        // [CDP] Remove scroll fix if setting was toggled off, or force re-inject on visual changes
+        if (_cdpService != null && _cdpService.ScrollFixActive)
         {
-            _cdpService.RemoveScrollFix();
+            if (!_config.CdpIndependentScrolling)
+                _cdpService.RemoveScrollFix();
+            else if (_cdpService.VisualEnhancements != _config.CdpVisualEnhancements)
+            {
+                _cdpService.VisualEnhancements = _config.CdpVisualEnhancements;
+                _cdpService.RemoveScrollFix(); // Force re-inject with new CSS
+            }
         }
 
         // [KeytermLearning] Re-initialize on settings change
@@ -542,8 +595,8 @@ public class ActionController : IDisposable
         {
             if (_llmService == null)
                 _llmService = new LlmService();
-            _llmService.Configure(_config.LlmApiKey, _config.LlmModel);
-            Logger.Trace($"LLM: Configured (model={_config.LlmModel})");
+            _llmService.Configure(_config.LlmApiKey, _config.LlmModel, _config.LlmProvider, _config.LlmOpenAiApiKey, _config.LlmGroqApiKey, _config.LlmGrokApiKey);
+            Logger.Trace($"LLM: Configured (provider={_config.LlmProvider}, model={(_config.LlmProvider == "openai" ? _config.LlmOpenAiModel : _config.LlmProvider == "groq" ? _config.LlmGroqModel : _config.LlmModel)})");
         }
         else
         {
@@ -600,6 +653,21 @@ public class ActionController : IDisposable
                 learning.CollectLowConfidenceWords(result.Words,
                     (float)_config.SttKeytermLearningConfidenceThreshold);
             }
+
+            // [Ensemble] Accumulate per-provider transcript for comparison view
+            if (result.IsFinal && !string.IsNullOrEmpty(result.Transcript) && !string.IsNullOrEmpty(result.ProviderName))
+            {
+                lock (_currentRawProviderTranscripts)
+                {
+                    if (!_currentRawProviderTranscripts.TryGetValue(result.ProviderName, out var sb))
+                    {
+                        sb = new System.Text.StringBuilder();
+                        _currentRawProviderTranscripts[result.ProviderName] = sb;
+                    }
+                    if (sb.Length > 0) sb.Append(' ');
+                    sb.Append(result.Transcript);
+                }
+            }
         };
 
         // [Ensemble] Live metrics popup
@@ -628,11 +696,35 @@ public class ActionController : IDisposable
                     if (_ensembleMetrics == null)
                     {
                         _ensembleMetrics = new EnsembleMetricsForm(_config, _config.SttEnsembleSecondary1, _config.SttEnsembleSecondary2);
+                        _ensembleMetrics.SetShowTranscriptCallback(ShowSttTranscriptComparison);
                     }
                     _ensembleMetrics.SetRecording(recording);
                     if (recording && !_ensembleMetrics.Visible)
                         _ensembleMetrics.Show();
                 });
+            }
+
+            // [Ensemble] Rotate current → last transcripts when a new recording starts
+            if (recording)
+            {
+                lock (_currentProviderTranscripts)
+                {
+                    // Only rotate if there's actual content
+                    if (_currentProviderTranscripts.Count > 0 || _currentRawProviderTranscripts.Count > 0)
+                    {
+                        _lastProviderTranscripts = new Dictionary<string, string>();
+                        foreach (var kv in _currentProviderTranscripts)
+                            _lastProviderTranscripts[kv.Key] = kv.Value.ToString();
+                        _lastRawProviderTranscripts = new Dictionary<string, string>();
+                        lock (_currentRawProviderTranscripts)
+                        {
+                            foreach (var kv in _currentRawProviderTranscripts)
+                                _lastRawProviderTranscripts[kv.Key] = kv.Value.ToString();
+                            _currentRawProviderTranscripts.Clear();
+                        }
+                        _currentProviderTranscripts.Clear();
+                    }
+                }
             }
         };
 
@@ -648,6 +740,21 @@ public class ActionController : IDisposable
                 if (_keytermLearningByProvider.TryGetValue(provName, out var learning))
                     learning.CollectLowConfidenceWords(result.Words,
                         (float)_config.SttKeytermLearningConfidenceThreshold);
+            }
+
+            // [Ensemble] Accumulate ensemble transcript for comparison view
+            if (result.IsFinal && !string.IsNullOrEmpty(result.Transcript) && result.ProviderName == "ensemble")
+            {
+                lock (_currentProviderTranscripts)
+                {
+                    if (!_currentProviderTranscripts.TryGetValue("ensemble", out var sb))
+                    {
+                        sb = new System.Text.StringBuilder();
+                        _currentProviderTranscripts["ensemble"] = sb;
+                    }
+                    if (sb.Length > 0) sb.Append(' ');
+                    sb.Append(result.Transcript);
+                }
             }
 
             // [CustomSTT] Direct paste: final results go straight into Mosaic's transcript box.
@@ -1421,6 +1528,45 @@ public class ActionController : IDisposable
         }
     }
 
+    // [Ensemble] Show transcript comparison popup
+    private void ShowSttTranscriptComparison(bool showLast)
+    {
+        Dictionary<string, string> ensemble, raw;
+        if (showLast)
+        {
+            ensemble = _lastProviderTranscripts;
+            raw = _lastRawProviderTranscripts;
+        }
+        else
+        {
+            ensemble = new Dictionary<string, string>();
+            lock (_currentProviderTranscripts)
+                foreach (var kv in _currentProviderTranscripts)
+                    ensemble[kv.Key] = kv.Value.ToString();
+            raw = new Dictionary<string, string>();
+            lock (_currentRawProviderTranscripts)
+                foreach (var kv in _currentRawProviderTranscripts)
+                    raw[kv.Key] = kv.Value.ToString();
+        }
+
+        var dgText = raw.GetValueOrDefault("deepgram", "");
+        var s1Name = _config.SttEnsembleSecondary1 ?? "soniox";
+        var s2Name = _config.SttEnsembleSecondary2 ?? "speechmatics";
+        var s1Text = raw.GetValueOrDefault(s1Name, "");
+        var s2Text = raw.GetValueOrDefault(s2Name, "");
+        var ensText = ensemble.GetValueOrDefault("ensemble", "");
+
+        var s1Display = EnsembleMetricsForm.DisplayNameStatic(s1Name);
+        var s2Display = EnsembleMetricsForm.DisplayNameStatic(s2Name);
+
+        InvokeUI(() =>
+        {
+            if (_sttComparisonForm == null || _sttComparisonForm.IsDisposed)
+                _sttComparisonForm = new SttTranscriptComparisonForm(_config);
+            _sttComparisonForm.ShowTranscripts(dgText, s1Text, s2Text, ensText, s1Display, s2Display);
+        });
+    }
+
     // [CustomSTT] Toggle recording via SttService instead of Mosaic's built-in dictation
     private void PerformToggleRecordStt(bool? desiredState)
     {
@@ -1763,6 +1909,10 @@ public class ActionController : IDisposable
             return;
         }
 
+        // Clear any previous model badges
+        _cdpService.SetEditorModelBadge(1, null);
+        _cdpService.SetEditorModelBadges(1, null!, null);
+
         // Stop STT recording if active (same preamble as PerformProcessReport)
         if (_config.CustomSttEnabled && _sttService != null && _sttService.IsRecording)
         {
@@ -1819,7 +1969,7 @@ public class ActionController : IDisposable
 
         // Sections the LLM should NOT touch
         var preserveSections = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            { "EXAM", "EXAMINATION", "TECHNIQUE", "COMPARISON", "CLINICAL HISTORY", "CLINICAL INFORMATION", "HISTORY", "INDICATION", "INDICATIONS" };
+            { "EXAM", "EXAMINATION", "TECHNIQUE", "CONTRAST", "RADIATION DOSE", "COMPARISON", "CLINICAL HISTORY", "CLINICAL INFORMATION", "HISTORY", "INDICATION", "INDICATIONS" };
 
         string builtTemplate;
         if (!string.IsNullOrEmpty(_llmDbTemplateOverride))
@@ -1898,6 +2048,16 @@ public class ActionController : IDisposable
             (rx: @"(?:^|\n)\s*-*\s*comparison\s*[:\.]?\s*(.+)",
              headers: new[] { "COMPARISON:" },
              label: "Comparison"),
+            // Contrast: "contrast 100 mL Omnipaque 300", "contrast: 95 mL of Isovue 370", "IV contrast 100 mL..."
+            // Allow period boundary (not just line start) — STT may produce "...technique. Contrast: 100 mL..." on one line
+            // Lookbehind for period so removal doesn't eat the preceding sentence's period
+            (rx: @"(?:(?:^|\n)\s*|(?<=\.)\s*)(?:iv\s+)?contrast\s*[:\.]?\s*(.+)",
+             headers: new[] { "CONTRAST:" },
+             label: "Contrast"),
+            // Radiation dose: "radiation dose DLP 450 mGy cm effective dose 6.3 mSv", "dose DLP 320"
+            (rx: @"(?:(?:^|\n)\s*|(?<=\.)\s*)(?:radiation\s+dose|dose)\s*[:\.]?\s*(.+)",
+             headers: new[] { "RADIATION DOSE:" },
+             label: "Radiation dose"),
         };
 
         foreach (var (rx, headers, label) in prefixExtractions)
@@ -1950,6 +2110,30 @@ public class ActionController : IDisposable
                 preservedPrefix = preservedPrefix[..contentStart] + rawText + "\n\n" + preservedPrefix[nextSection..];
                 preservedPrefix = preservedPrefix.TrimEnd();
             }
+            else if (label == "Contrast" || label == "Radiation dose")
+            {
+                // Section doesn't exist in prefix — insert after TECHNIQUE
+                var sectionHeader = headers[0]; // "CONTRAST:" or "RADIATION DOSE:"
+                var techIdx = preservedPrefix.IndexOf("TECHNIQUE:", StringComparison.OrdinalIgnoreCase);
+                if (techIdx >= 0)
+                {
+                    // Find the end of TECHNIQUE section (next section header)
+                    int insertPos = preservedPrefix.Length;
+                    foreach (var s in preserveSections)
+                    {
+                        int idx = preservedPrefix.IndexOf(s + ":", techIdx + 10, StringComparison.OrdinalIgnoreCase);
+                        if (idx >= 0 && idx < insertPos) insertPos = idx;
+                    }
+                    preservedPrefix = preservedPrefix[..insertPos].TrimEnd() + "\n\n" + sectionHeader + "\n" + rawText + "\n\n" + preservedPrefix[insertPos..];
+                    preservedPrefix = preservedPrefix.TrimEnd();
+                }
+                else
+                {
+                    // No TECHNIQUE section — append at end
+                    preservedPrefix = preservedPrefix.TrimEnd() + "\n\n" + sectionHeader + "\n" + rawText;
+                }
+                Logger.Trace($"Custom Process Report: Inserted {sectionHeader} section into prefix");
+            }
 
             // Use transcript clinical history as LLM context
             if (label == "Clinical history")
@@ -1959,6 +2143,15 @@ public class ActionController : IDisposable
         Logger.Trace($"Custom Process Report: Transcript {scrubbedTranscript.Length} chars, Template {safeTemplate.Length} chars, Prefix {preservedPrefix.Length} chars");
 
         string? result;
+        string? resultModel = null;
+        Task<string?>? pendingFlash = null; // Flash task still running after lite result
+        var provider = _config.LlmProvider ?? "gemini";
+
+        // Track all model results for badge display: (name, status) where status is time like "0.4s", "failed", or "…"
+        var modelResults = new List<(string Name, string Status, bool IsWinner)>();
+        var modelTimes = new System.Collections.Concurrent.ConcurrentDictionary<string, double>();
+        // Store each model's LLM output (findings+impression) for badge click-to-swap
+        var modelOutputs = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
 
         if (string.IsNullOrWhiteSpace(scrubbedTranscript))
         {
@@ -1969,19 +2162,406 @@ public class ActionController : IDisposable
         }
         else
         {
-            // 4. Call Gemini — dim the report editor while processing
+            // 4. Call LLM — dim the report editor while processing
             _cdpService.SetEditorDim(1, true);
             result = null;
+            var mode = provider switch
+            {
+                "openai" => _config.LlmOpenAiProcessMode ?? "single",
+                "groq" => _config.LlmGroqProcessMode ?? "single",
+                "grok" => _config.LlmGrokProcessMode ?? "single",
+                _ => _config.LlmProcessMode ?? "single"
+            };
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-                result = Task.Run(async () =>
-                    await _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token),
-                    cts.Token).GetAwaiter().GetResult();
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+                if (provider == "openai" && mode == "triple")
+                {
+                    // GPT triple: 4.1 mini + 5 nano + 5 mini — first success wins, 5 mini upgrades in background
+                    var gpt41 = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token, "gpt-4.1-mini");
+                    var gpt5nano = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token, "gpt-5-nano");
+                    var gpt5mini = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, CancellationToken.None, "gpt-5-mini");
+                    gpt41.ContinueWith(t => { modelTimes["GPT 4.1 Mini"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["GPT 4.1 Mini"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
+                    gpt5nano.ContinueWith(t => { modelTimes["GPT 5 Nano"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["GPT 5 Nano"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
+                    gpt5mini.ContinueWith(t => { modelTimes["GPT 5 Mini"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["GPT 5 Mini"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
+
+                    (result, resultModel) = Task.Run(async () =>
+                    {
+                        string? best = null;
+                        string? bestModel = null;
+                        var all = new[] { gpt41, gpt5nano, gpt5mini };
+
+                        // Take first successful non-null result — no grace period
+                        while (all.Length > 0)
+                        {
+                            var done = await Task.WhenAny(all);
+                            var name = done == gpt5mini ? "GPT 5 Mini" : done == gpt41 ? "GPT 4.1 Mini" : "GPT 5 Nano";
+                            if (done.IsCompletedSuccessfully && done.Result != null)
+                            {
+                                best = done.Result;
+                                bestModel = name;
+                                break;
+                            }
+                            var reason = done.IsFaulted ? $"error: {done.Exception?.InnerException?.Message}" : "empty response";
+                            Logger.Trace($"LLM: {name} failed ({reason})");
+                            all = all.Where(t => t != done).ToArray();
+                        }
+
+                        return (best, bestModel);
+                    }, cts.Token).GetAwaiter().GetResult();
+
+                    // Track all model statuses for badge
+                    foreach (var (task, name, isWinner) in new[] { (gpt41, "GPT 4.1 Mini", resultModel == "GPT 4.1 Mini"), (gpt5nano, "GPT 5 Nano", resultModel == "GPT 5 Nano"), (gpt5mini, "GPT 5 Mini", resultModel == "GPT 5 Mini") })
+                    {
+                        if (task.IsCompletedSuccessfully && task.Result != null)
+                        {
+                            var timeStr = modelTimes.TryGetValue(name, out var secs) ? $"{secs:F1}s" : "";
+                            modelResults.Add((name, timeStr, isWinner));
+                        }
+                        else if (!task.IsCompleted)
+                        {
+                            Logger.Trace($"LLM: {name} still running (will upgrade or timeout)");
+                            modelResults.Add((name, "\u2026", false));
+                        }
+                        else
+                        {
+                            Logger.Trace($"LLM: {name} failed");
+                            modelResults.Add((name, "failed", false));
+                        }
+                    }
+
+                    // If 5 Mini is still running, keep reference for background upgrade
+                    if (!gpt5mini.IsCompleted && result != null)
+                        pendingFlash = gpt5mini;
+                }
+                else if (provider == "gemini" && (mode == "dual" || mode == "triple"))
+                {
+                    // Gemini dual/triple: 2.5 Lite + 3.1 Lite, optional 3.0 Flash
+                    var lite25 = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token, "gemini-2.5-flash-lite");
+                    var lite31 = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token, "gemini-3.1-flash-lite-preview");
+                    Task<string?>? flash = mode == "triple"
+                        ? _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, CancellationToken.None, "gemini-3-flash-preview")
+                        : null;
+                    lite25.ContinueWith(t => { modelTimes["Gemini 2.5 Lite"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["Gemini 2.5 Lite"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
+                    lite31.ContinueWith(t => { modelTimes["Gemini 3.1 Lite"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["Gemini 3.1 Lite"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
+                    flash?.ContinueWith(t => { modelTimes["Gemini 3.0 Flash"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["Gemini 3.0 Flash"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
+
+                    (result, resultModel) = Task.Run(async () =>
+                    {
+                        string? best = null;
+                        string? bestModel = null;
+
+                        var first = await Task.WhenAny(lite25, lite31);
+
+                        if (first == lite31 && lite31.IsCompletedSuccessfully && lite31.Result != null)
+                        {
+                            best = lite31.Result;
+                            bestModel = "Gemini 3.1 Lite";
+                        }
+                        else if (first == lite25 && lite25.IsCompletedSuccessfully && lite25.Result != null)
+                        {
+                            try { await Task.WhenAny(lite31, Task.Delay(1000)); } catch { }
+                            if (lite31.IsCompletedSuccessfully && lite31.Result != null)
+                            {
+                                best = lite31.Result;
+                                bestModel = "Gemini 3.1 Lite";
+                            }
+                            else
+                            {
+                                best = lite25.Result;
+                                bestModel = "Gemini 2.5 Lite";
+                            }
+                        }
+                        else
+                        {
+                            var other = first == lite25 ? lite31 : lite25;
+                            try { await Task.WhenAny(other, Task.Delay(5000)); } catch { }
+                            if (other.IsCompletedSuccessfully && other.Result != null)
+                            {
+                                best = other.Result;
+                                bestModel = other == lite31 ? "Gemini 3.1 Lite" : "Gemini 2.5 Lite";
+                            }
+                        }
+
+                        if (flash != null)
+                        {
+                            if (flash.IsCompletedSuccessfully && flash.Result != null)
+                            {
+                                best = flash.Result;
+                                bestModel = "Gemini 3.0 Flash";
+                            }
+                            else if (best == null)
+                            {
+                                try { await Task.WhenAny(flash, Task.Delay(15000)); } catch { }
+                                if (flash.IsCompletedSuccessfully && flash.Result != null)
+                                {
+                                    best = flash.Result;
+                                    bestModel = "Gemini 3.0 Flash";
+                                }
+                            }
+                        }
+
+                        return (best, bestModel);
+                    }, cts.Token).GetAwaiter().GetResult();
+
+                    if (flash != null && !flash.IsCompleted && result != null)
+                        pendingFlash = flash;
+
+                    // Track all model statuses for badge
+                    foreach (var (task, name, isWinner) in new[] { (lite25, "Gemini 2.5 Lite", resultModel == "Gemini 2.5 Lite"), (lite31, "Gemini 3.1 Lite", resultModel == "Gemini 3.1 Lite") })
+                    {
+                        if (task.IsCompletedSuccessfully && task.Result != null)
+                        {
+                            var timeStr = modelTimes.TryGetValue(name, out var secs) ? $"{secs:F1}s" : "";
+                            modelResults.Add((name, timeStr, isWinner));
+                        }
+                        else
+                            modelResults.Add((name, "failed", false));
+                    }
+                    if (flash != null)
+                    {
+                        if (flash.IsCompleted && flash.IsCompletedSuccessfully && flash.Result != null)
+                        {
+                            var timeStr = modelTimes.TryGetValue("Gemini 3.0 Flash", out var secs) ? $"{secs:F1}s" : "";
+                            modelResults.Add(("Gemini 3.0 Flash", timeStr, resultModel == "Gemini 3.0 Flash"));
+                        }
+                        else if (flash.IsCompleted)
+                            modelResults.Add(("Gemini 3.0 Flash", "failed", false));
+                        else
+                            modelResults.Add(("Gemini 3.0 Flash", "\u2026", false)); // still running
+                    }
+                }
+                else if (provider == "groq" && mode == "triple")
+                {
+                    // Groq triple: GPT-OSS-20B + Maverick + 3.3 70B — first wins, 70B upgrades in background
+                    var gptOss = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token, "openai/gpt-oss-120b");
+                    var maverick = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token, "meta-llama/llama-4-maverick-17b-128e-instruct");
+                    var llama70b = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, CancellationToken.None, "llama-3.3-70b-versatile");
+                    gptOss.ContinueWith(t => { modelTimes["GPT-OSS 120B"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["GPT-OSS 120B"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
+                    maverick.ContinueWith(t => { modelTimes["Llama Maverick"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["Llama Maverick"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
+                    llama70b.ContinueWith(t => { modelTimes["Llama 3.3 70B"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["Llama 3.3 70B"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
+
+                    (result, resultModel) = Task.Run(async () =>
+                    {
+                        string? best = null;
+                        string? bestModel = null;
+                        var all = new[] { gptOss, maverick, llama70b };
+
+                        while (all.Length > 0)
+                        {
+                            var done = await Task.WhenAny(all);
+                            var name = done == gptOss ? "GPT-OSS 120B" : done == maverick ? "Llama Maverick" : "Llama 3.3 70B";
+                            if (done.IsCompletedSuccessfully && done.Result != null)
+                            {
+                                best = done.Result;
+                                bestModel = name;
+                                break;
+                            }
+                            var reason = done.IsFaulted ? $"error: {done.Exception?.InnerException?.Message}" : "empty response";
+                            Logger.Trace($"LLM: {name} failed ({reason})");
+                            all = all.Where(t => t != done).ToArray();
+                        }
+
+                        return (best, bestModel);
+                    }, cts.Token).GetAwaiter().GetResult();
+
+                    // Track all model statuses for badge
+                    foreach (var (task, name, isWinner) in new[] { (gptOss, "GPT-OSS 120B", resultModel == "GPT-OSS 120B"), (maverick, "Llama Maverick", resultModel == "Llama Maverick"), (llama70b, "Llama 3.3 70B", resultModel == "Llama 3.3 70B") })
+                    {
+                        if (task.IsCompletedSuccessfully && task.Result != null)
+                        {
+                            var timeStr = modelTimes.TryGetValue(name, out var secs) ? $"{secs:F1}s" : "";
+                            modelResults.Add((name, timeStr, isWinner));
+                        }
+                        else if (!task.IsCompleted)
+                        {
+                            Logger.Trace($"LLM: {name} still running (will upgrade or timeout)");
+                            modelResults.Add((name, "\u2026", false));
+                        }
+                        else
+                        {
+                            Logger.Trace($"LLM: {name} failed");
+                            modelResults.Add((name, "failed", false));
+                        }
+                    }
+
+                    // If 70B is still running, keep reference for background upgrade
+                    if (!llama70b.IsCompleted && result != null)
+                        pendingFlash = llama70b;
+                }
+                else if (provider == "grok" && mode == "triple")
+                {
+                    // Grok triple: 3-mini + 4.1 Fast — first wins, second upgrades
+                    var grokMini = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token, "grok-3-mini");
+                    var grok41 = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, CancellationToken.None, "grok-4-1-fast-non-reasoning");
+                    grokMini.ContinueWith(t => { modelTimes["Grok 3 Mini"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["Grok 3 Mini"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
+                    grok41.ContinueWith(t => { modelTimes["Grok 4.1 Fast"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["Grok 4.1 Fast"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
+
+                    (result, resultModel) = Task.Run(async () =>
+                    {
+                        string? best = null;
+                        string? bestModel = null;
+                        var all = new[] { grokMini, grok41 };
+
+                        while (all.Length > 0)
+                        {
+                            var done = await Task.WhenAny(all);
+                            var name = done == grokMini ? "Grok 3 Mini" : "Grok 4.1 Fast";
+                            if (done.IsCompletedSuccessfully && done.Result != null)
+                            {
+                                best = done.Result;
+                                bestModel = name;
+                                break;
+                            }
+                            var reason = done.IsFaulted ? $"error: {done.Exception?.InnerException?.Message}" : "empty response";
+                            Logger.Trace($"LLM: {name} failed ({reason})");
+                            all = all.Where(t => t != done).ToArray();
+                        }
+
+                        return (best, bestModel);
+                    }, cts.Token).GetAwaiter().GetResult();
+
+                    // Track all model statuses for badge
+                    foreach (var (task, name, isWinner) in new[] { (grokMini, "Grok 3 Mini", resultModel == "Grok 3 Mini"), (grok41, "Grok 4.1 Fast", resultModel == "Grok 4.1 Fast") })
+                    {
+                        if (task.IsCompletedSuccessfully && task.Result != null)
+                        {
+                            var timeStr = modelTimes.TryGetValue(name, out var secs) ? $"{secs:F1}s" : "";
+                            modelResults.Add((name, timeStr, isWinner));
+                        }
+                        else if (!task.IsCompleted)
+                        {
+                            Logger.Trace($"LLM: {name} still running (will upgrade or timeout)");
+                            modelResults.Add((name, "\u2026", false));
+                        }
+                        else
+                        {
+                            Logger.Trace($"LLM: {name} failed");
+                            modelResults.Add((name, "failed", false));
+                        }
+                    }
+
+                    // If 4.1 Fast is still running, keep reference for background upgrade
+                    if (!grok41.IsCompleted && result != null)
+                        pendingFlash = grok41;
+                }
+                else if (provider == "quad")
+                {
+                    // Quad Compare: fire one model per slot (up to 4), skip slots without API keys
+                    var quadSlots = new (string ModelId, string? ApiKey)[]
+                    {
+                        (_config.LlmQuadModel1, QuadApiKeyFor(_config.LlmQuadModel1)),
+                        (_config.LlmQuadModel2, QuadApiKeyFor(_config.LlmQuadModel2)),
+                        (_config.LlmQuadModel3, QuadApiKeyFor(_config.LlmQuadModel3)),
+                        (_config.LlmQuadModel4, QuadApiKeyFor(_config.LlmQuadModel4)),
+                    };
+                    var quadModels = quadSlots
+                        .Where(s => !string.IsNullOrEmpty(s.ModelId) && !string.IsNullOrEmpty(s.ApiKey))
+                        .Select(s => (s.ModelId, DisplayName: QuadDisplayName(s.ModelId)))
+                        .ToList();
+
+                    if (quadModels.Count == 0)
+                    {
+                        InvokeUI(() => _mainForm.ShowStatusToast("Quad Compare: No API keys configured"));
+                        return;
+                    }
+
+                    Logger.Trace($"LLM Quad: Firing {quadModels.Count} models: {string.Join(", ", quadModels.Select(m => m.DisplayName))}");
+
+                    // Fire all in parallel
+                    var quadTasks = quadModels.Select(m =>
+                    {
+                        var task = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token, m.ModelId);
+                        task.ContinueWith(t =>
+                        {
+                            modelTimes[m.DisplayName] = sw.Elapsed.TotalSeconds;
+                            if (t.IsCompletedSuccessfully && t.Result != null)
+                                modelOutputs[m.DisplayName] = t.Result;
+                        }, TaskContinuationOptions.ExecuteSynchronously);
+                        return (Task: task, m.DisplayName);
+                    }).ToList();
+
+                    // Race: first successful result wins
+                    (result, resultModel) = Task.Run(async () =>
+                    {
+                        string? best = null;
+                        string? bestModel = null;
+                        var remaining = quadTasks.Select(q => q.Task).ToList();
+
+                        while (remaining.Count > 0)
+                        {
+                            var done = await Task.WhenAny(remaining);
+                            var name = quadTasks.First(q => q.Task == done).DisplayName;
+                            if (done.IsCompletedSuccessfully && done.Result != null)
+                            {
+                                best = done.Result;
+                                bestModel = name;
+                                break;
+                            }
+                            var reason = done.IsFaulted ? $"error: {done.Exception?.InnerException?.Message}" : "empty response";
+                            Logger.Trace($"LLM Quad: {name} failed ({reason})");
+                            remaining.Remove(done);
+                        }
+
+                        return (best, bestModel);
+                    }, cts.Token).GetAwaiter().GetResult();
+
+                    // Wait a brief moment for any stragglers to finish (for badge display)
+                    try { Task.WhenAll(quadTasks.Select(q => q.Task)).Wait(2000); } catch { }
+
+                    // Track all model statuses for badge
+                    foreach (var (task, name) in quadTasks)
+                    {
+                        bool isWinner = name == resultModel;
+                        if (task.IsCompletedSuccessfully && task.Result != null)
+                        {
+                            var timeStr = modelTimes.TryGetValue(name, out var secs) ? $"{secs:F1}s" : "";
+                            modelResults.Add((name, timeStr, isWinner));
+                        }
+                        else if (!task.IsCompleted)
+                        {
+                            modelResults.Add((name, "\u2026", false));
+                        }
+                        else
+                        {
+                            Logger.Trace($"LLM Quad: {name} failed");
+                            modelResults.Add((name, "failed", false));
+                        }
+                    }
+                }
+                else
+                {
+                    // Single mode — use configured model
+                    var singleModel = provider switch
+                    {
+                        "openai" => _config.LlmOpenAiModel,
+                        "groq" => _config.LlmGroqModel,
+                        "grok" => _config.LlmGrokModel,
+                        _ => (string?)null
+                    };
+                    result = Task.Run(async () =>
+                        await _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token, singleModel),
+                        cts.Token).GetAwaiter().GetResult();
+                    if (result != null)
+                    {
+                        resultModel = provider switch
+                        {
+                            "openai" => "GPT " + (_config.LlmOpenAiModel ?? "").Replace("gpt-", "").Replace("-mini", " Mini").Replace("-nano", " Nano"),
+                            "groq" => GroqDisplayName(_config.LlmGroqModel),
+                            "grok" => GrokDisplayName(_config.LlmGrokModel),
+                            _ => "Gemini " + (_config.LlmModel ?? "").Replace("gemini-", "").Replace("-preview", "").Replace("-", " ")
+                        };
+                        // Track single model for badge
+                        var singleShort = resultModel ?? "LLM";
+                        modelResults.Add((singleShort, $"{sw.Elapsed.TotalSeconds:F1}s", true));
+                        modelOutputs[singleShort] = result;
+                    }
+                }
             }
             catch (OperationCanceledException)
             {
-                Logger.Trace("Custom Process Report: Timed out (20s)");
+                Logger.Trace($"Custom Process Report: Timed out (10s, provider={provider}, mode={mode})");
             }
             catch (Exception ex)
             {
@@ -1999,6 +2579,9 @@ public class ActionController : IDisposable
                 Logger.Trace("Custom Process Report: LLM returned null/empty");
                 return;
             }
+
+            if (resultModel != null)
+                Logger.Trace($"Custom Process Report: Using {resultModel} result");
         }
 
         // 5. Stitch preserved prefix sections + LLM result, write into editor 1
@@ -2014,8 +2597,160 @@ public class ActionController : IDisposable
 
         sw.Stop();
         var elapsedSec = sw.Elapsed.TotalSeconds;
-        Logger.Trace($"Custom Process Report: Success in {elapsedSec:F1}s");
+        var modelSuffix = resultModel != null ? $", {resultModel}" : "";
+        Logger.Trace($"Custom Process Report: Success in {elapsedSec:F1}s{modelSuffix}");
+
         InvokeUI(() => _mainForm.ShowStatusToast($"Custom Report processed ({elapsedSec:F1}s)"));
+
+        // Validate each model output against sent transcript for dropped findings
+        var droppedMap = new Dictionary<string, (bool HasDropped, List<string> Clauses)>();
+        foreach (var kv in modelOutputs)
+        {
+            var validation = LlmService.ValidateTranscriptCoverage(scrubbedTranscript, kv.Value);
+            droppedMap[kv.Key] = (validation.HasDroppedFindings, validation.DroppedClauses);
+            if (validation.HasDroppedFindings)
+                Logger.Trace($"Dropped findings [{kv.Key}]: {string.Join(" | ", validation.DroppedClauses)}");
+        }
+
+        // Helper: build badge list from modelResults and modelOutputs
+        var badgePrefix = provider == "gemini" ? "Gemini " : provider == "groq" ? "Llama " : "";
+        List<(string Id, string Display, string? Output, bool Failed, bool Active, bool DroppedFindings, List<string>? DroppedClauses)> BuildBadges()
+        {
+            var badges = new List<(string Id, string Display, string? Output, bool Failed, bool Active, bool DroppedFindings, List<string>? DroppedClauses)>();
+            foreach (var mr in modelResults)
+            {
+                if (mr.Status == "\u2026") continue; // skip pending
+                var display = $"{badgePrefix}{mr.Name} \u00b7 {(mr.Status == "failed" ? "failed" : mr.Status)}";
+                string? output = null;
+                if (mr.Status != "failed" && modelOutputs.TryGetValue(mr.Name, out var rawOutput))
+                    output = string.IsNullOrEmpty(preservedPrefix) ? rawOutput : preservedPrefix + "\n\n" + rawOutput;
+                var hasDropped = droppedMap.TryGetValue(mr.Name, out var dv) && dv.HasDropped;
+                var droppedClauses = hasDropped ? dv.Clauses : null;
+                badges.Add((mr.Name, display, output, mr.Status == "failed", mr.IsWinner, hasDropped, droppedClauses));
+            }
+            return badges;
+        }
+
+        // Show model badges in "Final Report" title bar
+        if (resultModel != null)
+            _cdpService.SetEditorModelBadges(1, BuildBadges(), docStructure);
+
+        // Triple mode: Flash upgrade — wait up to 8s for background flash task
+        if (pendingFlash != null)
+        {
+            Logger.Trace("Custom Process Report: Waiting for Flash upgrade...");
+            try { Task.WhenAny(pendingFlash, Task.Delay(8000)).GetAwaiter().GetResult(); } catch { }
+            if (pendingFlash.IsCompletedSuccessfully && pendingFlash.Result != null)
+            {
+                var flashFull = string.IsNullOrEmpty(preservedPrefix)
+                    ? pendingFlash.Result
+                    : preservedPrefix + "\n\n" + pendingFlash.Result;
+                if (_cdpService.ReplaceEditorContent(1, flashFull, docStructure))
+                {
+                    var totalSec = sw.Elapsed.TotalSeconds;
+                    var upgradeName = provider switch { "openai" => "GPT 5 Mini", "groq" => "Llama 3.3 70B", "grok" => "Grok 4.1 Fast", _ => "Gemini 3.0 Flash" };
+                    var upgradeShort = provider switch { "openai" => "GPT 5 Mini", "groq" => "Llama 3.3 70B", "grok" => "Grok 4.1 Fast", _ => "Gemini 3.0 Flash" };
+                    // Validate flash upgrade output
+                    var flashValidation = LlmService.ValidateTranscriptCoverage(scrubbedTranscript, pendingFlash.Result!);
+                    droppedMap[upgradeShort] = (flashValidation.HasDroppedFindings, flashValidation.DroppedClauses);
+                    if (flashValidation.HasDroppedFindings)
+                        Logger.Trace($"Dropped findings [{upgradeShort}]: {string.Join(" | ", flashValidation.DroppedClauses)}");
+                    // Mark upgrade model as winner, demote previous winner; resolve pending times
+                    for (int i = 0; i < modelResults.Count; i++)
+                    {
+                        var mr = modelResults[i];
+                        if (mr.Name == upgradeShort)
+                            modelResults[i] = (mr.Name, $"{totalSec:F1}s", true);
+                        else if (mr.IsWinner)
+                            modelResults[i] = (mr.Name, mr.Status, false);
+                        else if (mr.Status == "\u2026" && modelTimes.TryGetValue(mr.Name, out var pendingSecs))
+                            modelResults[i] = (mr.Name, $"{pendingSecs:F1}s", false);
+                    }
+                    if (!modelResults.Any(m => m.Name == upgradeShort))
+                        modelResults.Add((upgradeShort, $"{totalSec:F1}s", true));
+                    Logger.Trace($"Custom Process Report: Upgraded to {upgradeName} ({totalSec:F1}s)");
+                    _cdpService.SetEditorModelBadges(1, BuildBadges(), docStructure);
+                    _cdpService.FlashEditor(1);
+                }
+            }
+            else
+            {
+                Logger.Trace("Custom Process Report: Flash upgrade timed out or failed");
+                var timedOutShort = provider switch { "openai" => "GPT 5 Mini", "groq" => "Llama 3.3 70B", "grok" => "Grok 4.1 Fast", _ => "Gemini 3.0 Flash" };
+                for (int i = 0; i < modelResults.Count; i++)
+                {
+                    var mr = modelResults[i];
+                    if (mr.Name == timedOutShort)
+                        modelResults[i] = (timedOutShort, "failed", false);
+                    else if (mr.Status == "\u2026" && modelTimes.TryGetValue(mr.Name, out var pendingSecs))
+                        modelResults[i] = (mr.Name, $"{pendingSecs:F1}s", false);
+                }
+                if (!modelResults.Any(m => m.Name == timedOutShort))
+                    modelResults.Add((timedOutShort, "failed", false));
+                if (resultModel != null)
+                    _cdpService.SetEditorModelBadges(1, BuildBadges(), docStructure);
+            }
+        }
+
+        // Background badge update: watch for pending models to complete and refresh badges
+        if (resultModel != null && modelResults.Any(m => m.Status == "\u2026"))
+        {
+            var capturedResults = modelResults;
+            var capturedTimes = modelTimes;
+            var capturedOutputs = modelOutputs;
+            var capturedSw = sw;
+            var capturedCdp = _cdpService;
+            var capturedPrefix = preservedPrefix;
+            var capturedBadgePrefix = badgePrefix;
+            var capturedDocStructure = docStructure;
+            var capturedDroppedMap = droppedMap;
+            var capturedTranscript = scrubbedTranscript;
+            var timeoutSec = 10.0;
+            Task.Run(async () =>
+            {
+                try
+                {
+                    while (capturedResults.Any(m => m.Status == "\u2026") && capturedSw.Elapsed.TotalSeconds < timeoutSec)
+                    {
+                        await Task.Delay(200);
+                        bool changed = false;
+                        for (int i = 0; i < capturedResults.Count; i++)
+                        {
+                            if (capturedResults[i].Status == "\u2026" && capturedTimes.TryGetValue(capturedResults[i].Name, out var secs))
+                            {
+                                capturedResults[i] = (capturedResults[i].Name, $"{secs:F1}s", false);
+                                changed = true;
+                                // Validate newly completed model output
+                                if (capturedOutputs.TryGetValue(capturedResults[i].Name, out var newOut))
+                                {
+                                    var v = LlmService.ValidateTranscriptCoverage(capturedTranscript, newOut);
+                                    capturedDroppedMap[capturedResults[i].Name] = (v.HasDroppedFindings, v.DroppedClauses);
+                                    if (v.HasDroppedFindings)
+                                        Logger.Trace($"Dropped findings [{capturedResults[i].Name}]: {string.Join(" | ", v.DroppedClauses)}");
+                                }
+                            }
+                        }
+                        if (changed)
+                        {
+                            var badges = new List<(string Id, string Display, string? Output, bool Failed, bool Active, bool DroppedFindings, List<string>? DroppedClauses)>();
+                            foreach (var mr in capturedResults)
+                            {
+                                if (mr.Status == "\u2026") continue;
+                                var display = $"{capturedBadgePrefix}{mr.Name} \u00b7 {(mr.Status == "failed" ? "failed" : mr.Status)}";
+                                string? output = null;
+                                if (mr.Status != "failed" && capturedOutputs.TryGetValue(mr.Name, out var rawOut))
+                                    output = string.IsNullOrEmpty(capturedPrefix) ? rawOut : capturedPrefix + "\n\n" + rawOut;
+                                var hasDropped = capturedDroppedMap.TryGetValue(mr.Name, out var dv) && dv.HasDropped;
+                                var droppedClauses = hasDropped ? dv.Clauses : null;
+                                badges.Add((mr.Name, display, output, mr.Status == "failed", mr.IsWinner, hasDropped, droppedClauses));
+                            }
+                            capturedCdp.SetEditorModelBadges(1, badges, capturedDocStructure);
+                        }
+                    }
+                }
+                catch { /* best-effort */ }
+            });
+        }
 
         // Mark process report pressed so change highlighting works
         _processReportPressedForCurrentAccession = true;

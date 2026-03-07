@@ -1,3 +1,18 @@
+4.2.7
+- Multi-provider LLM: support for Google Gemini, OpenAI GPT, Groq, and xAI Grok — each with independent API keys, model selection, and processing modes
+- Quad Compare mode: fire up to 4 models in parallel, first result wins, click badges to swap between outputs
+- Model racing (Dual/Triple modes): parallel LLM calls with background upgrades — fast lite model shows immediately, stronger model replaces it when ready
+- Clickable model badges in editor title bar: show model name + response time, click to swap editor content, red glow warns of possibly dropped findings
+- LLM output normalization: fuzzy header matching fixes typos (e.g. BLADER→BLADDER), enforces template section order, strips fabricated boilerplate sections
+- Transcript coverage validation: warns (red badge border + tooltip) when LLM output may have dropped dictated findings
+- Contrast and radiation dose extraction: dictated "contrast 100 mL Omnipaque" or "dose DLP 450" extracted from transcript and placed in dedicated sections
+- Meta-instruction stripping: dictation commands like "please summarize and remove irrelevant" filtered before LLM processing
+- Visual report enhancements option: Carolina blue change-tracking highlights, inline subsection headers, content text hierarchy
+- Consistency checker fix: 1-to-1 measurement matching prevents false positives when multiple items share anatomy keywords
+- STT transcript comparison popup: side-by-side view of per-provider transcripts from ensemble metrics
+- Dynamic CSS top offset: column layout survives browser zoom changes via ResizeObserver
+- Correlation fix: fallback when dictated highlight filter matches zero findings after badge swap
+
 4.2.6
 - Fix: Soniox BPE token splitting — words like "inferior" no longer pasted as "inf erior" when subword tokens arrive across WebSocket messages
 - Debug menu added to main banner right-click (same options as clinical history popup)

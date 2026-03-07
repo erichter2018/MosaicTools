@@ -477,6 +477,16 @@ public class Configuration
     [JsonPropertyName("stt_ensemble_metrics_x")]
     public int SttEnsembleMetricsX { get; set; } = int.MinValue;
 
+    [JsonPropertyName("stt_transcript_comparison_x")]
+    public int SttTranscriptComparisonX { get; set; } = int.MinValue;
+    [JsonPropertyName("stt_transcript_comparison_y")]
+    public int SttTranscriptComparisonY { get; set; } = int.MinValue;
+    [JsonPropertyName("stt_transcript_comparison_w")]
+    public int SttTranscriptComparisonW { get; set; } = 0;
+    [JsonPropertyName("stt_transcript_comparison_h")]
+    public int SttTranscriptComparisonH { get; set; } = 0;
+
+
     [JsonPropertyName("stt_ensemble_metrics_y")]
     public int SttEnsembleMetricsY { get; set; } = int.MinValue;
 
@@ -581,6 +591,9 @@ public class Configuration
     [JsonPropertyName("cdp_hide_drag_handles")]
     public bool CdpHideDragHandles { get; set; } = true;
 
+    [JsonPropertyName("cdp_visual_enhancements")]
+    public bool CdpVisualEnhancements { get; set; } = false;
+
     [JsonPropertyName("cdp_flashing_alert_text")]
     public bool CdpFlashingAlertText { get; set; } = false;
 
@@ -588,11 +601,53 @@ public class Configuration
     [JsonPropertyName("llm_process_enabled")]
     public bool LlmProcessEnabled { get; set; } = false;
 
+    [JsonPropertyName("llm_provider")]
+    public string LlmProvider { get; set; } = "gemini"; // gemini, openai, groq, grok
+
     [JsonPropertyName("llm_api_key")]
     public string LlmApiKey { get; set; } = "";
 
     [JsonPropertyName("llm_model")]
     public string LlmModel { get; set; } = "gemini-2.5-flash-lite";
+
+    [JsonPropertyName("llm_process_mode")]
+    public string LlmProcessMode { get; set; } = "single"; // single, dual, triple
+
+    [JsonPropertyName("llm_openai_api_key")]
+    public string LlmOpenAiApiKey { get; set; } = "";
+
+    [JsonPropertyName("llm_openai_model")]
+    public string LlmOpenAiModel { get; set; } = "gpt-5-nano";
+
+    [JsonPropertyName("llm_openai_process_mode")]
+    public string LlmOpenAiProcessMode { get; set; } = "single"; // single, triple
+
+    [JsonPropertyName("llm_groq_api_key")]
+    public string LlmGroqApiKey { get; set; } = "";
+
+    [JsonPropertyName("llm_groq_model")]
+    public string LlmGroqModel { get; set; } = "meta-llama/llama-4-scout-17b-16e-instruct";
+
+    [JsonPropertyName("llm_groq_process_mode")]
+    public string LlmGroqProcessMode { get; set; } = "single"; // single, triple
+
+    [JsonPropertyName("llm_grok_api_key")]
+    public string LlmGrokApiKey { get; set; } = "";
+
+    [JsonPropertyName("llm_grok_model")]
+    public string LlmGrokModel { get; set; } = "grok-4-1-fast-non-reasoning";
+
+    [JsonPropertyName("llm_grok_process_mode")]
+    public string LlmGrokProcessMode { get; set; } = "single"; // single, triple
+
+    [JsonPropertyName("llm_quad_model_1")]
+    public string LlmQuadModel1 { get; set; } = "gemini-2.5-flash-lite";
+    [JsonPropertyName("llm_quad_model_2")]
+    public string LlmQuadModel2 { get; set; } = "gpt-4.1-mini";
+    [JsonPropertyName("llm_quad_model_3")]
+    public string LlmQuadModel3 { get; set; } = "meta-llama/llama-4-maverick-17b-128e-instruct";
+    [JsonPropertyName("llm_quad_model_4")]
+    public string LlmQuadModel4 { get; set; } = "grok-4-1-fast-non-reasoning";
 
     // UI Options
     [JsonPropertyName("show_tooltips")]

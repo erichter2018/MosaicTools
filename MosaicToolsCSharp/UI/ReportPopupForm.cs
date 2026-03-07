@@ -1112,7 +1112,8 @@ public class ReportPopupForm : Form
                 foreach (var section in _structuredReport.Sections)
                     AddDictatedFromSection(section);
                 Logger.Trace($"GetDictatedSentences (CDP): {dictated.Count} dictated sentences from highlights");
-                return dictated;
+                if (dictated.Count > 0)
+                    return dictated;
             }
             catch (Exception ex)
             {
@@ -2357,7 +2358,8 @@ public class ReportPopupForm : Form
         var majorSections = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "EXAM:", "COMPARISON:", "CLINICAL HISTORY:", "FINDINGS:", "IMPRESSION:",
-            "TECHNIQUE:", "INDICATION:", "PROCEDURE:", "CONCLUSION:", "RECOMMENDATION:"
+            "TECHNIQUE:", "CONTRAST:", "RADIATION DOSE:", "INDICATION:", "PROCEDURE:",
+            "CONCLUSION:", "RECOMMENDATION:"
         };
 
         string currentSection = "";
@@ -2382,7 +2384,40 @@ public class ReportPopupForm : Form
             if (string.IsNullOrWhiteSpace(line))
                 continue;
 
+            // Split out major section headers that appear mid-line (e.g. "achievable. CONTRAST: 100 mL...")
+            foreach (var hdr in majorSections)
+            {
+                int hdrIdx = line.IndexOf(hdr, StringComparison.OrdinalIgnoreCase);
+                if (hdrIdx > 0)
+                {
+                    var before = line[..hdrIdx].Trim();
+                    if (!string.IsNullOrWhiteSpace(before))
+                        pendingContent.Add(before);
+                    line = line[hdrIdx..].Trim();
+                    break;
+                }
+            }
+
+            // Check exact match or "HEADER: content" on same line
             bool isMajorSection = majorSections.Contains(line);
+            if (!isMajorSection)
+            {
+                foreach (var hdr in majorSections)
+                {
+                    if (line.StartsWith(hdr, StringComparison.OrdinalIgnoreCase) && line.Length > hdr.Length)
+                    {
+                        // Split "CONTRAST: 100 mL..." into header line + content line
+                        FlushContent();
+                        if (outputLines.Count > 0) outputLines.Add("");
+                        outputLines.Add(hdr.ToUpperInvariant().TrimEnd(':') + ":");
+                        currentSection = hdr.TrimEnd(':').ToUpperInvariant();
+                        pendingContent.Add(line[hdr.Length..].Trim());
+                        isMajorSection = true; // skip normal processing
+                        break;
+                    }
+                }
+                if (isMajorSection) continue; // already handled
+            }
             bool isSubsectionHeader = !isMajorSection && IsSubsectionHeader(line);
             bool isNumberedItem = Regex.IsMatch(line, @"^\d+\.");
 
