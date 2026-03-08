@@ -1298,10 +1298,11 @@ public static class Actions
     public const string TriggerRecoMd = "Trigger RecoMD";
     public const string PasteRecoMd = "Paste RecoMD";
     public const string CustomProcessReport = "Custom Process Report";
+    public const string AutoMeasure = "Auto Measure";
 
     public static readonly string[] All = {
         None, SystemBeep, GetPrior, CriticalFindings,
-        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression, DiscardStudy, ShowPickLists, CycleWindowLevel, CreateCriticalNote, RadAiImpression, TriggerRecoMd, PasteRecoMd, CustomProcessReport
+        ShowReport, CaptureSeries, ToggleRecord, ProcessReport, SignReport, CreateImpression, DiscardStudy, ShowPickLists, CycleWindowLevel, CreateCriticalNote, RadAiImpression, TriggerRecoMd, PasteRecoMd, CustomProcessReport, AutoMeasure
     };
 }
 

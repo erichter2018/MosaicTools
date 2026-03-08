@@ -61,6 +61,7 @@ public class CdpService : IDisposable
     private bool _autoScrollWatcherActive; // Whether auto-scroll watcher interval is injected
     private bool _hideDragHandles = true; // Hide Tiptap drag handles in editor
     private bool _visualEnhancements = false; // Visual report enhancements (inline headers, etc.)
+    private bool _highlightButtonsInjected; // Whether highlight mode buttons are injected in current iframe
 
     public bool IsConnected => _slimHubWs?.State == WebSocketState.Open;
     public bool IsIframeConnected => _iframeWs?.State == WebSocketState.Open;
@@ -999,6 +1000,7 @@ ${{visualEnhancements ? `
         _lastIframeHash = null;       // Reset hash cache on disconnect
         _lastCdpScrapeResult = null;
         _autoScrollWatcherActive = false;
+        _highlightButtonsInjected = false;
     }
 
     private void DisconnectSlimHub()
@@ -1342,6 +1344,7 @@ ${{visualEnhancements ? `
             _lastIframeHash = null;       // Force full scrape on study change
             _lastCdpScrapeResult = null;
             _scrollFixActive = false;     // Re-inject scroll fix — DOM structure changes between studies
+            _highlightButtonsInjected = false;
         }
 
         // Scrape iframe (optional — iframe may not be connected if no report open)
@@ -1549,6 +1552,9 @@ ${{visualEnhancements ? `
                 editor.commands.insertContent({escaped});
                 const posAfter = editor.state.selection.from;
                 if (posAfter <= posBefore) return 'ok';
+
+                // Respect highlight mode — skip highlighting when user chose 'none'
+                if (window.__mtHighlightMode === 'none') return 'ok_no_hl';
 
                 try {{
                     // Get the editor's actual text color for normal words
@@ -3248,6 +3254,314 @@ ${{visualEnhancements ? `
         _scrollFixActive = false;
         if (!IsIframeConnected) return;
         try { SendToIframe(JS_REMOVE_SCROLL_FIX); }
+        catch { }
+    }
+
+    // ═══════ PUBLIC API: HIGHLIGHT MODE BUTTONS ═══════
+
+    /// <summary>
+    /// Inject three small toggle buttons (OFF / STT / RAINBOW) in the bottom-right of the
+    /// final report editor. Uses setInterval for periodic re-injection (React re-renders).
+    /// </summary>
+    public void InjectHighlightModeButtons()
+    {
+        if (!IsIframeConnected || _highlightButtonsInjected) return;
+
+        var js = @"(() => {
+            const CID = 'mt-hl-mode-btns';
+            const IID = '__mtHlModeBtnInterval';
+
+            if (window[IID]) { clearInterval(window[IID]); window[IID] = null; }
+            const old = document.getElementById(CID);
+            if (old) old.remove();
+
+            if (!window.__mtHighlightMode) window.__mtHighlightMode = 'regular';
+
+            function injectBtns() {
+                if (document.getElementById(CID)) return;
+                // Try scroll-fix wrappers first, fall back to ProseMirror parent
+                let wrapper = null;
+                const wrappers = document.querySelectorAll('[data-mt-editor-wrapper]');
+                if (wrappers.length >= 2) { wrapper = wrappers[1]; }
+                else {
+                    const editors = document.querySelectorAll('.ProseMirror');
+                    if (editors.length >= 2) wrapper = editors[1].parentElement;
+                }
+                if (!wrapper) return;
+
+                const container = document.createElement('div');
+                container.id = CID;
+                container.style.cssText = 'position:absolute;bottom:4px;right:58px;display:inline-flex;gap:2px;z-index:20;pointer-events:auto;line-height:normal;';
+
+                const modes = [
+                    { key: 'none',    label: 'No Highlight', color: '#999',    activeColor: '#e0e0e0', activeBg: 'rgba(80,80,80,0.5)' },
+                    { key: 'regular', label: 'Regular',      color: '#6a9070', activeColor: '#90d0a0', activeBg: 'rgba(90,85,50,0.4)' },
+                    { key: 'rainbow', label: 'Rainbow',      color: '#8080b0', activeColor: '#b0b0ff', activeBg: 'rgba(70,60,120,0.4)' }
+                ];
+
+                function updateBtns() {
+                    const cur = window.__mtHighlightMode || 'regular';
+                    container.querySelectorAll('.mt-hl-btn').forEach(b => {
+                        const isActive = b.dataset.mode === cur;
+                        const m = modes.find(x => x.key === b.dataset.mode);
+                        b.style.color = isActive ? m.activeColor : m.color;
+                        b.style.background = isActive ? m.activeBg : 'rgba(0,0,0,0.2)';
+                        b.style.borderColor = isActive ? m.activeColor : 'rgba(255,255,255,0.08)';
+                    });
+                }
+
+                for (const m of modes) {
+                    const btn = document.createElement('span');
+                    btn.className = 'mt-hl-btn';
+                    btn.dataset.mode = m.key;
+                    btn.textContent = m.label;
+                    btn.style.cssText = 'cursor:pointer;font-size:9px;font-weight:600;padding:1px 4px;border-radius:3px;'
+                        + 'border:1px solid rgba(255,255,255,0.08);transition:all 0.15s;user-select:none;white-space:nowrap;letter-spacing:0.3px;';
+                    btn.addEventListener('click', (ev) => {
+                        ev.stopPropagation();
+                        ev.preventDefault();
+                        window.__mtHighlightMode = m.key;
+                        updateBtns();
+                    });
+                    btn.addEventListener('mouseenter', () => { btn.style.opacity = '0.8'; });
+                    btn.addEventListener('mouseleave', () => { btn.style.opacity = '1'; });
+                    container.appendChild(btn);
+                }
+
+                wrapper.style.position = 'relative';
+                wrapper.appendChild(container);
+                updateBtns();
+            }
+
+            injectBtns();
+            window[IID] = setInterval(injectBtns, 1000);
+            return 'ok';
+        })()";
+
+        var result = ExtractResultValue(SendToIframe(js));
+        if (result == "ok")
+            _highlightButtonsInjected = true;
+        Logger.Trace($"CDP: InjectHighlightModeButtons result={result}");
+    }
+
+    /// <summary>
+    /// Read the current highlight mode from the iframe (none/regular/rainbow).
+    /// Returns null if iframe not connected or eval fails.
+    /// </summary>
+    public string? GetHighlightMode()
+    {
+        if (!IsIframeConnected) return null;
+        try
+        {
+            return ExtractResultValue(SendToIframe("window.__mtHighlightMode || 'regular'"));
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Apply rainbow correlation highlights in the editor using CSS Custom Highlight API.
+    /// Each entry is (text, cssColor as "r,g,b", section "findings" or "impression").
+    /// </summary>
+    public void ApplyRainbowHighlights(List<(string Text, string CssColor, string Section)> entries)
+    {
+        if (!IsIframeConnected || entries.Count == 0) return;
+
+        // Build JSON array of entries
+        var jsonEntries = entries.Select(e => new { t = e.Text, c = e.CssColor, s = e.Section });
+        var entriesJson = JsonSerializer.Serialize(jsonEntries);
+
+        var js = $@"(() => {{
+            const entries = {entriesJson};
+            const editors = document.querySelectorAll('.ProseMirror');
+            if (editors.length < 2 || !editors[1].editor) return 'no_editor';
+            const pm = editors[1];
+            const view = pm.editor.view;
+
+            // Clear previous rainbow + STT highlights
+            for (const name of [...CSS.highlights.keys()]) {{
+                if (name.startsWith('mt-rainbow-') || name === 'mt-dictated' || name === 'mt-normal' || name === 'mt-medium' || name === 'mt-low')
+                    CSS.highlights.delete(name);
+            }}
+            // Also clear the STT style rules so they don't interfere
+            const sttStyle = document.getElementById('mt-dictated-style');
+            if (sttStyle) sttStyle.textContent = '';
+            // Hide Mosaic's native Tiptap highlights so only rainbow colors show
+            let noHlOvr = document.getElementById('mt-no-highlight-override');
+            if (noHlOvr) noHlOvr.remove();
+            noHlOvr = document.createElement('style');
+            noHlOvr.id = 'mt-no-highlight-override';
+            noHlOvr.textContent = '.ProseMirror mark[data-color], .ProseMirror mark.tiptap-highlight, .ProseMirror mark {{ background-color: transparent !important; }}';
+            document.head.appendChild(noHlOvr);
+
+            // Inject/update rainbow style
+            let style = document.getElementById('mt-rainbow-style');
+            if (!style) {{
+                style = document.createElement('style');
+                style.id = 'mt-rainbow-style';
+                document.head.appendChild(style);
+            }}
+            let css = '';
+            for (let i = 0; i < entries.length; i++) {{
+                css += '::highlight(mt-rainbow-' + i + ') {{ background-color: rgba(' + entries[i].c + ', 0.5); }} ';
+            }}
+            style.textContent = css;
+
+            // Find section boundaries via text content
+            const fullText = pm.textContent || '';
+            const findingsIdx = fullText.toUpperCase().indexOf('FINDINGS:');
+            let impressionIdx = fullText.toUpperCase().indexOf('IMPRESSION:');
+            if (impressionIdx < 0) impressionIdx = fullText.toUpperCase().indexOf('RADAI IMPRESSION:');
+
+            // Build text-node map for position mapping
+            const walker = document.createTreeWalker(pm, NodeFilter.SHOW_TEXT);
+            const textNodes = [];
+            let cumLen = 0;
+            let node;
+            while ((node = walker.nextNode())) {{
+                textNodes.push({{ node, start: cumLen, end: cumLen + node.textContent.length }});
+                cumLen += node.textContent.length;
+            }}
+
+            function findRanges(searchText, sectionHint) {{
+                // Constrain search region
+                let searchFrom = 0, searchTo = fullText.length;
+                if (sectionHint === 'findings' && findingsIdx >= 0) {{
+                    searchFrom = findingsIdx;
+                    if (impressionIdx > findingsIdx) searchTo = impressionIdx;
+                }}
+                if (sectionHint === 'impression' && impressionIdx >= 0) {{
+                    searchFrom = impressionIdx;
+                }}
+
+                const idx = fullText.indexOf(searchText, searchFrom);
+                if (idx < 0 || idx >= searchTo) return [];
+                const endIdx = idx + searchText.length;
+
+                // Map character offsets to DOM text nodes
+                const ranges = [];
+                for (const tn of textNodes) {{
+                    if (tn.end <= idx) continue;
+                    if (tn.start >= endIdx) break;
+                    const rangeStart = Math.max(0, idx - tn.start);
+                    const rangeEnd = Math.min(tn.node.textContent.length, endIdx - tn.start);
+                    try {{
+                        const r = new StaticRange({{
+                            startContainer: tn.node, startOffset: rangeStart,
+                            endContainer: tn.node, endOffset: rangeEnd
+                        }});
+                        ranges.push(r);
+                    }} catch(e) {{}}
+                }}
+                return ranges;
+            }}
+
+            let count = 0;
+            const missed = [];
+            for (let i = 0; i < entries.length; i++) {{
+                const ranges = findRanges(entries[i].t, entries[i].s);
+                if (ranges.length > 0) {{
+                    const hl = new Highlight(...ranges);
+                    CSS.highlights.set('mt-rainbow-' + i, hl);
+                    count++;
+                }} else {{
+                    // Debug: show where in fullText the search failed
+                    const sf = entries[i].s === 'impression' && impressionIdx >= 0 ? impressionIdx : (entries[i].s === 'findings' && findingsIdx >= 0 ? findingsIdx : 0);
+                    const snippet = fullText.substring(sf, sf + 120).replace(/\n/g, '\\n');
+                    missed.push(entries[i].s + '(from=' + sf + ',snippet=' + snippet + '):' + entries[i].t.substring(0, 50));
+                }}
+            }}
+
+            return 'ok:' + count + (missed.length ? '|miss:' + missed.join(';;') : '');
+        }})()";
+
+        var result = ExtractResultValue(SendToIframe(js));
+        Logger.Trace($"CDP: ApplyRainbowHighlights result={result} ({entries.Count} entries)");
+    }
+
+    /// <summary>
+    /// Clear all rainbow highlights from the editor.
+    /// </summary>
+    public void ClearRainbowHighlights()
+    {
+        if (!IsIframeConnected) return;
+        try
+        {
+            SendToIframe(@"(() => {
+                for (const name of [...CSS.highlights.keys()]) {
+                    if (name.startsWith('mt-rainbow-')) CSS.highlights.delete(name);
+                }
+                const style = document.getElementById('mt-rainbow-style');
+                if (style) style.textContent = '';
+                return 'ok';
+            })()");
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Hide all highlights by making Mosaic's highlight marks transparent
+    /// and clearing MT CSS highlight styles. Clean, non-destructive approach —
+    /// doesn't modify the document, just hides the visual effect.
+    /// </summary>
+    public void HideAllHighlights()
+    {
+        if (!IsIframeConnected) return;
+        try
+        {
+            SendToIframe(@"(() => {
+                // Hide Mosaic's Tiptap highlight marks via CSS override
+                // Always re-append to end of <head> to win over mt-scroll-fix !important rules
+                let noHl = document.getElementById('mt-no-highlight-override');
+                if (noHl) noHl.remove();
+                noHl = document.createElement('style');
+                noHl.id = 'mt-no-highlight-override';
+                noHl.textContent = '.ProseMirror mark[data-color], .ProseMirror mark.tiptap-highlight, .ProseMirror mark { background-color: transparent !important; }';
+                document.head.appendChild(noHl);
+                // Clear MT CSS highlights and styles
+                for (const name of [...CSS.highlights.keys()]) {
+                    if (name.startsWith('mt-')) CSS.highlights.delete(name);
+                }
+                const stt = document.getElementById('mt-dictated-style');
+                if (stt) stt.textContent = '';
+                const rb = document.getElementById('mt-rainbow-style');
+                if (rb) rb.textContent = '';
+                return 'ok';
+            })()");
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Show or hide the STT dictation highlights (mt-dictated, mt-normal, mt-medium, mt-low).
+    /// When hidden, the CSS rules are emptied but StaticRanges are preserved.
+    /// </summary>
+    public void SetRegularHighlightsVisible(bool visible)
+    {
+        if (!IsIframeConnected) return;
+        try
+        {
+            var js = visible
+                ? @"(() => {
+                    // Remove no-highlight override first (must happen even if STT style doesn't exist)
+                    const noHl = document.getElementById('mt-no-highlight-override');
+                    if (noHl) noHl.textContent = '';
+                    const s = document.getElementById('mt-dictated-style');
+                    if (!s) return 'no_style_but_override_cleared';
+                    const el = document.querySelectorAll('.ProseMirror')[0];
+                    const nc = el ? getComputedStyle(el).color || 'black' : 'black';
+                    s.textContent = '::highlight(mt-dictated) { background-color: rgba(90, 85, 50, 0.4); }'
+                        + ' ::highlight(mt-normal) { color: ' + nc + '; }'
+                        + ' ::highlight(mt-medium) { color: rgb(200, 170, 80); }'
+                        + ' ::highlight(mt-low) { color: rgb(210, 130, 70); }';
+                    return 'shown';
+                })()"
+                : @"(() => {
+                    const s = document.getElementById('mt-dictated-style');
+                    if (s) s.textContent = '';
+                    return 'hidden';
+                })()";
+            SendToIframe(js);
+        }
         catch { }
     }
 

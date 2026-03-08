@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -278,6 +279,11 @@ public class ActionController : IDisposable
     private bool _cdpAlertFlashApplied; // Tracks whether flashing classes are currently applied
     private string? _cdpAlertFlashSignature; // Last terms/report signature pushed to CDP
     private long _lastCdpAlertFlashApplyTick64; // Periodic refresh in case Mosaic re-renders editor DOM
+
+    // Highlight mode buttons (OFF / STT / RAINBOW) in editor
+    private string _currentHighlightMode = "regular";
+    private string? _lastRainbowReportText; // Track report text to recompute rainbow on changes
+    private long _rainbowTextChangedTick64; // Debounce: tick when report text last changed in rainbow mode
 
     // RecoMD state tracking — continuous send on every scrape tick
     private string? _recoMdOpenedForAccession; // accession currently opened in RecoMD
@@ -1111,6 +1117,9 @@ public class ActionController : IDisposable
                 break;
             case Actions.CustomProcessReport:
                 PerformCustomProcessReport(req.Source);
+                break;
+            case Actions.AutoMeasure:
+                PerformAutoMeasure();
                 break;
             case "__InsertMacros__":
                 PerformInsertMacros();
@@ -4003,6 +4012,57 @@ public class ActionController : IDisposable
         InvokeUI(() => RulerOverlayForm.CachedToolbarBounds = _mainForm.GetFloatingToolbarBounds());
     }
 
+    private void PerformAutoMeasure()
+    {
+        // Only works if InteleViewer is the active window
+        var foreground = NativeWindows.GetForegroundWindow();
+        var title = NativeWindows.GetWindowTitle(foreground);
+        if (!title.Contains("InteleViewer", StringComparison.OrdinalIgnoreCase))
+        {
+            Logger.Trace($"AutoMeasure: InteleViewer not active (title='{title.Substring(0, Math.Min(60, title.Length))}')");
+            return;
+        }
+
+        NativeWindows.GetCursorPos(out NativeWindows.POINT cursorPt);
+        var cursor = new Point(cursorPt.X, cursorPt.Y);
+
+        var viewport = _ocrService.FindYellowTarget();
+        if (!viewport.HasValue)
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("No viewport detected"));
+            return;
+        }
+
+        if (!viewport.Value.Contains(cursor))
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("Cursor outside viewport"));
+            return;
+        }
+
+        var scale = _ocrService.CalculatePixelsPerCm(viewport.Value);
+        if (scale == null)
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("Cannot calibrate ruler"));
+            return;
+        }
+
+        Logger.Trace($"AutoMeasure: scale={scale.Value.vertical:F1}v/{scale.Value.horizontal:F1}h px/cm at cursor=({cursor.X},{cursor.Y})");
+
+        var result = _ocrService.MeasureObjectAtPoint(cursor, viewport.Value, scale.Value.horizontal, scale.Value.vertical);
+        if (result == null)
+        {
+            InvokeUI(() => _mainForm.ShowStatusToast("No object detected at cursor"));
+            return;
+        }
+
+        Logger.Trace($"AutoMeasure: {result.MajorAxisCm:F1} \u00d7 {result.MinorAxisCm:F1} cm");
+
+        InvokeUI(() =>
+        {
+            MeasurementOverlayForm.ShowMeasurement(result);
+        });
+    }
+
     private void PerformCycleWindowLevel()
     {
         // Check if we have any keys configured
@@ -4997,6 +5057,46 @@ public class ActionController : IDisposable
                         }
                     }
 
+                    // [Highlight Mode] Inject buttons and poll mode when iframe is connected
+                    if (_cdpService.IsIframeConnected)
+                    {
+                        try { _cdpService.InjectHighlightModeButtons(); } catch { }
+
+                        try
+                        {
+                            var mode = _cdpService.GetHighlightMode();
+                            if (mode != null && mode != _currentHighlightMode)
+                            {
+                                Logger.Trace($"Highlight mode changed: {_currentHighlightMode} -> {mode}");
+                                _currentHighlightMode = mode;
+                                _lastRainbowReportText = null; // Force recompute on mode change
+                                switch (mode)
+                                {
+                                    case "none":
+                                        _cdpService.HideAllHighlights();
+                                        break;
+                                    case "regular":
+                                        _cdpService.ClearRainbowHighlights();
+                                        _cdpService.SetRegularHighlightsVisible(true);
+                                        break;
+                                    case "rainbow":
+                                        _cdpService.SetRegularHighlightsVisible(false);
+                                        // Apply rainbow immediately with last known report text
+                                        var currentReport = _mosaicReader.LastFinalReport;
+                                        if (!string.IsNullOrEmpty(currentReport))
+                                        {
+                                            try { ComputeAndApplyRainbow(currentReport); }
+                                            catch { }
+                                            _lastRainbowReportText = currentReport;
+                                            _rainbowTextChangedTick64 = 0; // No pending debounce
+                                        }
+                                        break;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+
                     try
                     {
                         var cdp = _cdpService.Scrape();
@@ -5011,6 +5111,24 @@ public class ActionController : IDisposable
                             {
                                 UpdateReportPopup(fastReportText);
                                 UpdateRecoMd(_lastNonEmptyAccession, fastReportText);
+
+                                // [Highlight Mode] Apply rainbow highlights with debounce
+                                // Wait for text to stabilize (2s) before recomputing — avoids
+                                // clearing+rebuilding highlights while user is actively typing
+                                if (_currentHighlightMode == "rainbow")
+                                {
+                                    if (fastReportText != _lastRainbowReportText)
+                                    {
+                                        _rainbowTextChangedTick64 = nowTick64;
+                                        _lastRainbowReportText = fastReportText;
+                                    }
+                                    if (_rainbowTextChangedTick64 > 0 && nowTick64 - _rainbowTextChangedTick64 >= 2000)
+                                    {
+                                        _rainbowTextChangedTick64 = 0;
+                                        try { ComputeAndApplyRainbow(fastReportText); }
+                                        catch (Exception ex) { Logger.Trace($"Rainbow highlight error: {ex.Message}"); }
+                                    }
+                                }
                             }
                         }
                     }
@@ -5575,6 +5693,8 @@ public class ActionController : IDisposable
         _templateRecordedForStudy = false;
         _lastSeenTemplateName = null;
         _lastPopupReportText = null;
+        _currentHighlightMode = "regular"; // Reset highlight mode for new study
+        _lastRainbowReportText = null;
         _llmCapturedTemplate = null; // [LLM] Reset template for new study
         _llmCapturedTemplateAccession = null;
         _llmCapturedDocStructure = null;
@@ -6045,7 +6165,74 @@ public class ActionController : IDisposable
     /// Auto-updating report popup with diff highlighting.
     /// Also detects auto-processing on drafted studies.
     /// Future API: replaced by report.changed event handler.
+    /// <summary>
+    /// Compute correlation highlights and apply them as rainbow CSS highlights in the editor.
+    /// Uses raw palette colors — CSS handles alpha blending against the dark editor background.
     /// </summary>
+    private void ComputeAndApplyRainbow(string reportText)
+    {
+        var seed = _lastNonEmptyAccession?.GetHashCode();
+        var result = CorrelationService.CorrelateReversed(reportText, null, seed);
+        if (result.Items.Count == 0) return;
+
+        // Find section boundaries
+        int findingsIdx = reportText.IndexOf("FINDINGS:", StringComparison.OrdinalIgnoreCase);
+        int impressionIdx = reportText.IndexOf("IMPRESSION:", StringComparison.OrdinalIgnoreCase);
+        if (impressionIdx < 0)
+            impressionIdx = reportText.IndexOf("RadAI IMPRESSION:", StringComparison.OrdinalIgnoreCase);
+
+        var entries = new List<(string Text, string CssColor, string Section)>();
+
+        foreach (var item in result.Items)
+        {
+            // Use raw palette color — no pre-blending. CSS rgba alpha handles the rest.
+            var color = item.HighlightColor ?? CorrelationService.Palette[item.ColorIndex];
+            var cssColor = $"{color.R},{color.G},{color.B}";
+
+            // Impression text — highlight for matched groups (non-orphans)
+            if (!string.IsNullOrWhiteSpace(item.ImpressionText))
+            {
+                // Strip impression fixer button text (e.g. "+no change=no change") that walkEditor
+                // captures as part of the impression item. These are injected DOM elements whose
+                // text bleeds into the reportText but appears at different positions in textContent.
+                var impText = item.ImpressionText;
+                var fixerIdx = impText.IndexOf("+", StringComparison.Ordinal);
+                if (fixerIdx > 0 && impText.IndexOf("change", fixerIdx, StringComparison.OrdinalIgnoreCase) > 0)
+                    impText = impText[..fixerIdx].TrimEnd();
+                // Also try trimming to last sentence-ending period if fixer text wasn't detected
+                if (impText == item.ImpressionText)
+                {
+                    var lastDot = impText.LastIndexOf('.');
+                    if (lastDot > 0 && lastDot < impText.Length - 1)
+                        impText = impText[..(lastDot + 1)];
+                }
+
+                int searchFrom = impressionIdx >= 0 ? impressionIdx : 0;
+                if (reportText.IndexOf(impText, searchFrom, StringComparison.Ordinal) >= 0)
+                    entries.Add((impText, cssColor, "impression"));
+            }
+
+            // Matched findings — search only within FINDINGS section
+            foreach (var finding in item.MatchedFindings)
+            {
+                if (string.IsNullOrWhiteSpace(finding)) continue;
+                int searchFrom = findingsIdx >= 0 ? findingsIdx : 0;
+                int searchEnd = impressionIdx >= 0 ? impressionIdx : reportText.Length;
+                if (searchFrom < searchEnd && reportText.IndexOf(finding, searchFrom, searchEnd - searchFrom, StringComparison.Ordinal) >= 0)
+                    entries.Add((finding, cssColor, "findings"));
+            }
+        }
+
+        if (entries.Count > 0)
+        {
+            _cdpService!.ApplyRainbowHighlights(entries);
+            foreach (var e in entries)
+                Logger.Trace($"  Rainbow entry [{e.Section}]: \"{(e.Text.Length > 60 ? e.Text[..60] + "..." : e.Text)}\" color=({e.CssColor})");
+        }
+
+        Logger.Trace($"Rainbow in-editor: {entries.Count} highlight entries from {result.Items.Count} correlations");
+    }
+
     private void UpdateReportPopup(string? reportText, bool immediate = false)
     {
         // Detect auto-processing on drafted studies: if baseline was captured and report changed, enable diff

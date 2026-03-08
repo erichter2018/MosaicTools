@@ -47,6 +47,10 @@ public class OcrService
     }
     
     public bool IsAvailable => _engine != null;
+
+    /// <summary>Cached px/cm from last ruler capture. Set by CaptureRulerStrip/CaptureHorizontalRulerStrip.</summary>
+    public static double? LastVerticalPxPerCm { get; private set; }
+    public static double? LastHorizontalPxPerCm { get; private set; }
     
     /// <summary>
     /// Run OCR on a bitmap and return recognized text.
@@ -456,6 +460,15 @@ public class OcrService
                         }
                     }
 
+                    // Calibration: count tick pixels per row to find tick spacing
+                    {
+                        int[] tickWidthPerRow = new int[h];
+                        for (int y = tickMinRow; y <= tickMaxRow; y++)
+                            for (int x = 0; x < w; x++)
+                                if (isTick[y * w + x]) tickWidthPerRow[y]++;
+                        LastVerticalPxPerCm = AnalyzeTickBands(tickWidthPerRow, h, "V");
+                    }
+
                     // Dilate: expand tick mask by 1px in all directions for bolder lines
                     bool[] dilated = new bool[w * h];
                     for (int y = 0; y < h; y++)
@@ -674,6 +687,15 @@ public class OcrService
                         }
                     }
 
+                    // Calibration: count tick pixels per column to find tick spacing
+                    {
+                        int[] tickHeightPerCol = new int[w];
+                        for (int x = tickMinCol; x <= tickMaxCol; x++)
+                            for (int y = 0; y <= rulerEndRow; y++)
+                                if (isTick[y * w + x]) tickHeightPerCol[x]++;
+                        LastHorizontalPxPerCm = AnalyzeTickBands(tickHeightPerCol, w, "H");
+                    }
+
                     // Dilate by 1px for bolder lines
                     bool[] dilated = new bool[w * h];
                     for (int y = 0; y < h; y++)
@@ -764,6 +786,476 @@ public class OcrService
 
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int nIndex);
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Auto-Measurement: calibration + segmentation + bidimensional sizing
+    // ────────────────────────────────────────────────────────────────────
+
+    /// <summary>Result of an automatic object measurement.</summary>
+    public record MeasurementResult(
+        double MajorAxisCm, double MinorAxisCm,
+        Point ScreenCenter,
+        Point MajorStart, Point MajorEnd,
+        Point MinorStart, Point MinorEnd);
+
+    /// <summary>
+    /// Returns cached px/cm from last ruler capture. Call CaptureRulerStrip /
+    /// CaptureHorizontalRulerStrip first (they compute this automatically).
+    /// If no rulers have been captured yet, triggers a fresh capture.
+    /// </summary>
+    public (double vertical, double horizontal)? CalculatePixelsPerCm(Rectangle viewportBounds)
+    {
+        // If not cached yet, trigger a capture to populate them
+        if (LastVerticalPxPerCm == null && LastHorizontalPxPerCm == null)
+        {
+            var vr = CaptureRulerStrip(viewportBounds);
+            vr?.bitmap.Dispose();
+            var hr = CaptureHorizontalRulerStrip(viewportBounds);
+            hr?.bitmap.Dispose();
+        }
+
+        if (LastVerticalPxPerCm == null && LastHorizontalPxPerCm == null) return null;
+
+        double v = LastVerticalPxPerCm ?? LastHorizontalPxPerCm!.Value;
+        double h = LastHorizontalPxPerCm ?? LastVerticalPxPerCm!.Value;
+
+        // Try OCR-based refinement on the horizontal ruler area
+        TryOcrRulerCalibration(viewportBounds, ref h, ref v);
+
+        return (v, h);
+    }
+
+    /// <summary>
+    /// OCR the horizontal ruler strip to find numeric labels and refine px/cm.
+    /// Looks for two numbers whose positions match major tick positions.
+    /// </summary>
+    private void TryOcrRulerCalibration(Rectangle viewportBounds, ref double hPxPerCm, ref double vPxPerCm)
+    {
+        try
+        {
+            // Capture the horizontal ruler area (wider than normal to include labels)
+            int stripHeight = Math.Max(80, (int)(viewportBounds.Height * 0.10));
+            int stripX = viewportBounds.Left;
+            int stripY = viewportBounds.Bottom - stripHeight;
+            int stripWidth = viewportBounds.Width;
+
+            var vScreenLeft = GetSystemMetrics(76);
+            var vScreenTop = GetSystemMetrics(77);
+            var vScreenWidth = GetSystemMetrics(78);
+            var vScreenHeight = GetSystemMetrics(79);
+
+            using var fullScreen = new Bitmap(vScreenWidth, vScreenHeight);
+            using (var g = Graphics.FromImage(fullScreen))
+                g.CopyFromScreen(vScreenLeft, vScreenTop, 0, 0, new Size(vScreenWidth, vScreenHeight));
+
+            int bmpX = stripX - vScreenLeft;
+            int bmpY = stripY - vScreenTop;
+            if (bmpX < 0 || bmpY < 0 || bmpX + stripWidth > vScreenWidth || bmpY + stripHeight > vScreenHeight)
+                return;
+
+            using var strip = fullScreen.Clone(
+                new Rectangle(bmpX, bmpY, stripWidth, stripHeight), PixelFormat.Format32bppArgb);
+
+            // Scale up 3x for better OCR
+            using var scaled = new Bitmap(strip.Width * 3, strip.Height * 3);
+            using (var g2 = Graphics.FromImage(scaled))
+            {
+                g2.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g2.DrawImage(strip, 0, 0, scaled.Width, scaled.Height);
+            }
+
+            // Run OCR
+            var task = RecognizeWithPositionsAsync(scaled);
+            task.Wait();
+            var words = task.Result;
+            if (words == null || words.Count == 0) return;
+
+            // Find numeric words and their X positions (in original strip coords)
+            var numbers = new List<(double value, double xCenter)>();
+            foreach (var (text, bounds) in words)
+            {
+                if (double.TryParse(text, out double val) && val >= 0 && val <= 100)
+                {
+                    // Convert scaled coords back to original strip coords
+                    double xCenter = (bounds.X + bounds.Width / 2) / 3.0;
+                    numbers.Add((val, xCenter));
+                }
+            }
+
+            if (numbers.Count < 2)
+            {
+                Logger.Trace($"OcrRulerCalibration: found {numbers.Count} numbers (need 2+), " +
+                    $"raw words: [{string.Join(", ", words.Select(w => w.text))}]");
+                return;
+            }
+
+            // Sort by X position and find two adjacent numbers with consistent spacing
+            numbers.Sort((a, b) => a.xCenter.CompareTo(b.xCenter));
+            for (int i = 1; i < numbers.Count; i++)
+            {
+                double valueDiff = Math.Abs(numbers[i].value - numbers[i - 1].value);
+                double pixelDiff = Math.Abs(numbers[i].xCenter - numbers[i - 1].xCenter);
+                if (valueDiff > 0 && pixelDiff > 20)
+                {
+                    double pxPerCm = pixelDiff / valueDiff;
+                    Logger.Trace($"OcrRulerCalibration: '{numbers[i-1].value}' at x={numbers[i-1].xCenter:F0} → " +
+                        $"'{numbers[i].value}' at x={numbers[i].xCenter:F0} → " +
+                        $"{pixelDiff:F0}px / {valueDiff}cm = {pxPerCm:F1} px/cm " +
+                        $"(was H={hPxPerCm:F1}, V={vPxPerCm:F1})");
+                    hPxPerCm = pxPerCm;
+                    vPxPerCm = pxPerCm; // assume isotropic unless vertical OCR says otherwise
+                    return;
+                }
+            }
+
+            Logger.Trace($"OcrRulerCalibration: no valid number pairs from {numbers.Count} numbers");
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"OcrRulerCalibration error: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Run OCR and return words with their bounding rectangles.
+    /// </summary>
+    public async Task<List<(string text, Windows.Foundation.Rect bounds)>?> RecognizeWithPositionsAsync(Bitmap bitmap)
+    {
+        if (_engine == null) return null;
+
+        try
+        {
+            using var ms = new MemoryStream();
+            bitmap.Save(ms, ImageFormat.Bmp);
+            ms.Position = 0;
+
+            var decoder = await BitmapDecoder.CreateAsync(ms.AsRandomAccessStream());
+            using var softwareBitmap = await decoder.GetSoftwareBitmapAsync(
+                BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+
+            var result = await _engine.RecognizeAsync(softwareBitmap);
+
+            var words = new List<(string text, Windows.Foundation.Rect bounds)>();
+            foreach (var line in result.Lines)
+                foreach (var word in line.Words)
+                    words.Add((word.Text, word.BoundingRect));
+
+            return words;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"RecognizeWithPositionsAsync error: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Common logic: given per-row (or per-column) tick pixel counts from the raw
+    /// tick mask, find tick positions and calculate px/cm.
+    /// Uses the spacing between ALL consecutive ticks (minor tick interval),
+    /// assumes that interval = 1cm.
+    /// </summary>
+    private static double? AnalyzeTickBands(int[] tickPixelCount, int count, string label)
+    {
+        // Find baseline (spine-only rows have ~1 pixel from the ruler line)
+        var nonZero = tickPixelCount.Where(c => c > 0).OrderBy(c => c).ToArray();
+        if (nonZero.Length < 10)
+        {
+            Logger.Trace($"TickSpacing({label}): only {nonZero.Length} non-zero positions");
+            return null;
+        }
+
+        int baseline = nonZero[nonZero.Length / 4];
+        int tickThreshold = baseline + Math.Max(2, baseline);
+
+        // Group consecutive positions above threshold into tick bands
+        var bands = new List<(int center, int maxWidth)>();
+        int bandStart = -1, bandMax = 0;
+        for (int i = 0; i <= count; i++)
+        {
+            bool isTick = i < count && tickPixelCount[i] > tickThreshold;
+            if (isTick)
+            {
+                if (bandStart < 0) bandStart = i;
+                bandMax = Math.Max(bandMax, tickPixelCount[i]);
+            }
+            else if (bandStart >= 0)
+            {
+                bands.Add(((bandStart + i - 1) / 2, bandMax));
+                bandStart = -1;
+                bandMax = 0;
+            }
+        }
+
+        if (bands.Count < 3)
+        {
+            Logger.Trace($"TickSpacing({label}): baseline={baseline}, thr={tickThreshold}, " +
+                $"max={nonZero.Last()}, only {bands.Count} bands (need 3+)");
+            return null;
+        }
+
+        // Calculate ALL consecutive spacings (minor tick interval)
+        var allSpacings = new List<double>();
+        for (int i = 1; i < bands.Count; i++)
+            allSpacings.Add(bands[i].center - bands[i - 1].center);
+        allSpacings.Sort();
+        double minorSpacing = allSpacings[allSpacings.Count / 2]; // median
+
+        // Identify major ticks by width and count subs between first two majors
+        int longest = bands.Max(b => b.maxWidth);
+        int majorThr = (int)(longest * 0.6);
+        var majors = bands.Where(b => b.maxWidth >= majorThr).OrderBy(b => b.center).ToList();
+        int subsBetween = majors.Count >= 2
+            ? bands.Count(b => b.maxWidth < majorThr
+                && b.center > majors[0].center && b.center < majors[1].center)
+            : -1;
+
+        // px/cm = minor tick spacing, assuming each minor tick = 1cm
+        double pxPerCm = minorSpacing;
+
+        Logger.Trace($"TickSpacing({label}): {bands.Count} bands, {majors.Count} major, " +
+            $"{subsBetween} subs, minorSpacing={minorSpacing:F1}px, majorSpacing=" +
+            $"{(majors.Count >= 2 ? (majors[1].center - majors[0].center).ToString("F1") : "?")}px " +
+            $"→ {pxPerCm:F1} px/cm");
+
+        return pxPerCm;
+    }
+
+    /// <summary>
+    /// Measure an object at a screen point using region-growing segmentation.
+    /// Captures a region around the point, segments by intensity similarity,
+    /// then calculates bidimensional measurements using the calibrated ruler scale.
+    /// </summary>
+    public MeasurementResult? MeasureObjectAtPoint(
+        Point screenPoint, Rectangle viewport, double pxPerCmH, double pxPerCmV)
+    {
+        try
+        {
+            int captureRadius = 200;
+            int captureX = Math.Max(viewport.Left, screenPoint.X - captureRadius);
+            int captureY = Math.Max(viewport.Top, screenPoint.Y - captureRadius);
+            int captureW = Math.Min(captureRadius * 2, viewport.Right - captureX);
+            int captureH = Math.Min(captureRadius * 2, viewport.Bottom - captureY);
+
+            int seedX = screenPoint.X - captureX;
+            int seedY = screenPoint.Y - captureY;
+            if (seedX < 0 || seedY < 0 || seedX >= captureW || seedY >= captureH) return null;
+
+            // Capture
+            var vScreenLeft = GetSystemMetrics(76);
+            var vScreenTop = GetSystemMetrics(77);
+            var vScreenWidth = GetSystemMetrics(78);
+            var vScreenHeight = GetSystemMetrics(79);
+
+            using var fullScreen = new Bitmap(vScreenWidth, vScreenHeight);
+            using (var g = Graphics.FromImage(fullScreen))
+                g.CopyFromScreen(vScreenLeft, vScreenTop, 0, 0, new Size(vScreenWidth, vScreenHeight));
+
+            int bmpX = captureX - vScreenLeft;
+            int bmpY = captureY - vScreenTop;
+            if (bmpX < 0 || bmpY < 0 || bmpX + captureW > vScreenWidth || bmpY + captureH > vScreenHeight)
+                return null;
+
+            using var region = fullScreen.Clone(
+                new Rectangle(bmpX, bmpY, captureW, captureH), PixelFormat.Format32bppArgb);
+
+            // Convert to grayscale
+            byte[,] gray = new byte[captureH, captureW];
+            var rData = region.LockBits(new Rectangle(0, 0, captureW, captureH),
+                ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                unsafe
+                {
+                    byte* scan0 = (byte*)rData.Scan0;
+                    int stride = rData.Stride;
+                    for (int y = 0; y < captureH; y++)
+                        for (int x = 0; x < captureW; x++)
+                        {
+                            byte* px = scan0 + y * stride + x * 4;
+                            gray[y, x] = (byte)((px[2] * 299 + px[1] * 587 + px[0] * 114) / 1000);
+                        }
+                }
+            }
+            finally { region.UnlockBits(rData); }
+
+            // Adaptive region growing — increase tolerance until region is large enough
+            byte seedIntensity = gray[seedY, seedX];
+            bool[,]? segmented = null;
+            int segCount = 0;
+            int maxPixels = captureW * captureH / 4;
+
+            for (int tol = 15; tol <= 80; tol += 10)
+            {
+                var (mask, count) = FloodFill(gray, captureW, captureH, seedX, seedY, seedIntensity, tol, maxPixels);
+                if (count >= 16)
+                {
+                    segmented = mask;
+                    segCount = count;
+                    if (count >= 50 || count > maxPixels) break;
+                }
+            }
+
+            if (segmented == null || segCount < 16)
+            {
+                Logger.Trace($"AutoMeasure: segmentation failed (count={segCount})");
+                return null;
+            }
+
+            Logger.Trace($"AutoMeasure: segmented {segCount} pixels, seed=({seedX},{seedY}), " +
+                $"seedIntensity={seedIntensity}, capture={captureW}x{captureH}");
+
+            // Save debug image
+            try
+            {
+                using var debugBmp = new Bitmap(captureW, captureH, PixelFormat.Format32bppArgb);
+                for (int y = 0; y < captureH; y++)
+                    for (int x = 0; x < captureW; x++)
+                    {
+                        if (segmented[y, x])
+                            debugBmp.SetPixel(x, y, Color.FromArgb(255, 0, 255, 0));
+                        else
+                            debugBmp.SetPixel(x, y, Color.FromArgb(255, gray[y, x], gray[y, x], gray[y, x]));
+                    }
+                // Mark seed
+                for (int d = -3; d <= 3; d++)
+                {
+                    if (seedX + d >= 0 && seedX + d < captureW) debugBmp.SetPixel(seedX + d, seedY, Color.Red);
+                    if (seedY + d >= 0 && seedY + d < captureH) debugBmp.SetPixel(seedX, seedY + d, Color.Red);
+                }
+                var debugPath = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "MosaicTools", "measure_debug.png");
+                debugBmp.Save(debugPath, ImageFormat.Png);
+            }
+            catch { }
+
+            // Collect edge pixels
+            var edgePixels = new List<(int x, int y)>();
+            for (int y = 0; y < captureH; y++)
+                for (int x = 0; x < captureW; x++)
+                {
+                    if (!segmented[y, x]) continue;
+                    bool isEdge = false;
+                    for (int dy = -1; dy <= 1 && !isEdge; dy++)
+                        for (int dx = -1; dx <= 1 && !isEdge; dx++)
+                        {
+                            int ny = y + dy, nx = x + dx;
+                            if (ny < 0 || ny >= captureH || nx < 0 || nx >= captureW || !segmented[ny, nx])
+                                isEdge = true;
+                        }
+                    if (isEdge) edgePixels.Add((x, y));
+                }
+
+            if (edgePixels.Count < 4) return null;
+
+            // Rotating calipers: find angle with maximum spread (= major axis direction)
+            double bestAngle = 0, maxSpread = 0;
+            for (int deg = 0; deg < 180; deg += 5)
+            {
+                double rad = deg * Math.PI / 180.0;
+                double cosA = Math.Cos(rad), sinA = Math.Sin(rad);
+                double minP = double.MaxValue, maxP = double.MinValue;
+                foreach (var (ex, ey) in edgePixels)
+                {
+                    double p = ex * cosA + ey * sinA;
+                    if (p < minP) minP = p;
+                    if (p > maxP) maxP = p;
+                }
+                double spread = maxP - minP;
+                if (spread > maxSpread) { maxSpread = spread; bestAngle = deg; }
+            }
+
+            // Minor axis = perpendicular
+            double perpRad = (bestAngle + 90) * Math.PI / 180.0;
+            double perpCos = Math.Cos(perpRad), perpSin = Math.Sin(perpRad);
+            double perpMin = double.MaxValue, perpMax = double.MinValue;
+            foreach (var (ex, ey) in edgePixels)
+            {
+                double p = ex * perpCos + ey * perpSin;
+                if (p < perpMin) perpMin = p;
+                if (p > perpMax) perpMax = p;
+            }
+            double minorSpread = perpMax - perpMin;
+
+            // Convert px → cm using direction-weighted px/cm (Pythagorean for anisotropic pixels)
+            double majorRad = bestAngle * Math.PI / 180.0;
+            double cosM = Math.Cos(majorRad), sinM = Math.Sin(majorRad);
+            double majorPxPerCm = Math.Sqrt(cosM * cosM * pxPerCmH * pxPerCmH + sinM * sinM * pxPerCmV * pxPerCmV);
+            double minorPxPerCm = Math.Sqrt(sinM * sinM * pxPerCmH * pxPerCmH + cosM * cosM * pxPerCmV * pxPerCmV);
+
+            double majorCm = maxSpread / majorPxPerCm;
+            double minorCm = minorSpread / minorPxPerCm;
+
+            Logger.Trace($"AutoMeasure: edges={edgePixels.Count}, majorSpread={maxSpread:F1}px@{bestAngle}°, " +
+                $"minorSpread={minorSpread:F1}px, pxPerCm={majorPxPerCm:F1}/{minorPxPerCm:F1}");
+
+            // Find actual endpoints for measurement lines
+            double majCos = Math.Cos(majorRad), majSin = Math.Sin(majorRad);
+            (int x, int y) majMinPt = edgePixels[0], majMaxPt = edgePixels[0];
+            double majMinProj = double.MaxValue, majMaxProj = double.MinValue;
+            (int x, int y) perMinPt = edgePixels[0], perMaxPt = edgePixels[0];
+            double perMinProj = double.MaxValue, perMaxProj = double.MinValue;
+
+            foreach (var (ex, ey) in edgePixels)
+            {
+                double mp = ex * majCos + ey * majSin;
+                if (mp < majMinProj) { majMinProj = mp; majMinPt = (ex, ey); }
+                if (mp > majMaxProj) { majMaxProj = mp; majMaxPt = (ex, ey); }
+                double pp = ex * perpCos + ey * perpSin;
+                if (pp < perMinProj) { perMinProj = pp; perMinPt = (ex, ey); }
+                if (pp > perMaxProj) { perMaxProj = pp; perMaxPt = (ex, ey); }
+            }
+
+            // Convert local → screen coords
+            return new MeasurementResult(majorCm, minorCm, screenPoint,
+                new Point(captureX + majMinPt.x, captureY + majMinPt.y),
+                new Point(captureX + majMaxPt.x, captureY + majMaxPt.y),
+                new Point(captureX + perMinPt.x, captureY + perMinPt.y),
+                new Point(captureX + perMaxPt.x, captureY + perMaxPt.y));
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"MeasureObjectAtPoint error: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static (bool[,] mask, int count) FloodFill(
+        byte[,] gray, int w, int h, int seedX, int seedY, byte seedIntensity, int tolerance, int maxPixels)
+    {
+        var mask = new bool[h, w];
+        int count = 0;
+        int lo = Math.Max(0, seedIntensity - tolerance);
+        int hi = Math.Min(255, seedIntensity + tolerance);
+
+        var queue = new Queue<(int x, int y)>();
+        queue.Enqueue((seedX, seedY));
+        mask[seedY, seedX] = true;
+
+        while (queue.Count > 0 && count < maxPixels)
+        {
+            var (cx, cy) = queue.Dequeue();
+            count++;
+
+            for (int dy = -1; dy <= 1; dy++)
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    if (dx == 0 && dy == 0) continue;
+                    int nx = cx + dx, ny = cy + dy;
+                    if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                    if (mask[ny, nx]) continue;
+                    int gv = gray[ny, nx];
+                    if (gv >= lo && gv <= hi)
+                    {
+                        mask[ny, nx] = true;
+                        queue.Enqueue((nx, ny));
+                    }
+                }
+        }
+
+        return (mask, count);
+    }
 
     /// <summary>
     /// Extract series/image numbers from OCR text.

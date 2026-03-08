@@ -1,3 +1,9 @@
+4.3.2
+- In-editor highlight mode toggle: three small buttons (No Highlight / Regular / Rainbow) in bottom-right of report editor to control text highlighting
+- No Highlight mode: hides all dictation highlights (Mosaic native and STT), works with visual enhancements
+- Rainbow mode: color-coded correlation between findings and impression — matching pairs share the same body-part-category color, directly in the editor
+- Rainbow highlights auto-update with 2s debounce as you edit the report
+
 4.3.1
 - Impression fixer buttons in Mosaic editor: quick-insert/replace buttons appear directly on the IMPRESSION heading in the report editor (new setting under Experimental)
 - Fix: custom processing TASK instructions containing the word "impression" caused false IMPRESSION split, putting dictated findings into the impression section
