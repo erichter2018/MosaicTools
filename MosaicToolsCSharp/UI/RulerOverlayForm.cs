@@ -43,6 +43,9 @@ public class RulerOverlayForm : Form
     private int _checkRunning;
     private volatile int _baselineYellowCount;
 
+    // Hidden because InteleViewer is minimized / no yellow target visible
+    private volatile bool _hiddenNoTarget;
+
     private static RulerOverlayForm? _instance;
 
     /// <summary>
@@ -236,7 +239,35 @@ public class RulerOverlayForm : Form
 
             // Check 1: Has the active viewport changed? (user clicked a different viewport)
             var currentViewport = _ocrService.FindYellowTarget();
-            bool viewportChanged = currentViewport.HasValue && currentViewport.Value != _lastViewport;
+
+            // Hide rulers when InteleViewer is minimized / no yellow target visible
+            if (!currentViewport.HasValue)
+            {
+                if (!_hiddenNoTarget)
+                {
+                    _hiddenNoTarget = true;
+                    SafeInvoke(() =>
+                    {
+                        if (!IsDisposed) Visible = false;
+                        if (_hRuler != null && !_hRuler.IsDisposed) _hRuler.Visible = false;
+                    });
+                }
+                return;
+            }
+
+            // Viewport reappeared — restore rulers
+            if (_hiddenNoTarget)
+            {
+                _hiddenNoTarget = false;
+                SafeInvoke(() =>
+                {
+                    if (!IsDisposed) Visible = true;
+                    if (_hRuler != null && !_hRuler.IsDisposed) _hRuler.Visible = true;
+                });
+                // Fall through to recapture (viewport may have changed)
+            }
+
+            bool viewportChanged = currentViewport.Value != _lastViewport;
 
             if (!viewportChanged)
             {

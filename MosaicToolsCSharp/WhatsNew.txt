@@ -1,6 +1,7 @@
 4.3.1
 - Impression fixer buttons in Mosaic editor: quick-insert/replace buttons appear directly on the IMPRESSION heading in the report editor (new setting under Experimental)
 - Fix: custom processing TASK instructions containing the word "impression" caused false IMPRESSION split, putting dictated findings into the impression section
+- Fix: ruler overlays persisted on screen when InteleViewer was minimized
 
 4.3.0
 - Visual report enhancements overhaul: inline paragraph flow (all sentences in a subsection flow continuously), compact blank lines, FINDINGS/IMPRESSION major headers (larger, white, spaced), grey subsection headers, baseline-aligned header text
