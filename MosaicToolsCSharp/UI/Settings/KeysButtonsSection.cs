@@ -13,6 +13,7 @@ public class KeysButtonsSection : SettingsSection
     public override string SectionId => "keys";
 
     private readonly CheckBox _floatingToolbarCheck;
+    private readonly CheckBox _rulerOverlayCheck;
     private readonly ComboBox _microphoneCombo;
     private readonly Label _micStatusLabel;
     private readonly Configuration _config;
@@ -69,11 +70,16 @@ public class KeysButtonsSection : SettingsSection
 
             var openButtonsBtn = AddButton("Open Button Studio...", LeftMargin, _nextY, 200, 28, OnOpenButtonsClick,
                 "Configure the InteleViewer floating button toolbar.");
+            _nextY += RowHeight + 5;
+
+            _rulerOverlayCheck = AddCheckBox("Show draggable ruler overlay", LeftMargin, _nextY,
+                "Shows a calibrated ruler on the InteleViewer scale bar.\nDrag to measure, release to snap back.");
             _nextY += RowHeight + 10;
         }
         else
         {
             _floatingToolbarCheck = new CheckBox { Visible = false };
+            _rulerOverlayCheck = new CheckBox { Visible = false };
         }
 
         // Hardcoded buttons info
@@ -167,6 +173,7 @@ public class KeysButtonsSection : SettingsSection
     public override void LoadSettings(Configuration config)
     {
         _floatingToolbarCheck.Checked = config.FloatingToolbarEnabled;
+        _rulerOverlayCheck.Checked = config.RulerOverlayEnabled;
 
         // Select microphone preference
         _microphoneCombo.SelectedIndex = config.PreferredMicrophone switch
@@ -182,6 +189,7 @@ public class KeysButtonsSection : SettingsSection
     public override void SaveSettings(Configuration config)
     {
         config.FloatingToolbarEnabled = _floatingToolbarCheck.Checked;
+        config.RulerOverlayEnabled = _rulerOverlayCheck.Checked;
 
         config.PreferredMicrophone = _microphoneCombo.SelectedIndex switch
         {

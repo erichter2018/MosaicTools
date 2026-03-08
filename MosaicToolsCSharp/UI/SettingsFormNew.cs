@@ -422,6 +422,10 @@ public class SettingsFormNew : Form, IMessageFilter
 
         // Apply UI changes
         _mainForm.ToggleFloatingToolbar(_config.FloatingToolbarEnabled);
+        if (_config.RulerOverlayEnabled)
+            RulerOverlayForm.Show(_controller.GetOcrService());
+        else
+            RulerOverlayForm.CloseIfOpen();
         _mainForm.UpdateIndicatorVisibility();
         _mainForm.UpdateClinicalHistoryVisibility();
         _mainForm.RefreshFloatingToolbar(_config.FloatingButtons);

@@ -1991,6 +1991,234 @@ ${{visualEnhancements ? `
     }
 
     /// <summary>
+    /// Inject impression fixer buttons into the Mosaic report editor (editor 1) next to the
+    /// IMPRESSION section heading. Buttons are DOM overlays — not part of the ProseMirror content.
+    /// Each button click inserts/replaces impression items via TipTap editor commands.
+    /// A periodic interval re-injects buttons if React re-renders wipe them.
+    /// Pass empty/null to clear buttons.
+    /// </summary>
+    public void SetImpressionFixerButtons(List<ImpressionFixerEntry>? entries)
+    {
+        if (!IsIframeConnected) return;
+
+        // Build JSON array of entry data for JS
+        var entriesJson = "[]";
+        if (entries != null && entries.Count > 0)
+        {
+            var arr = entries.Select(e => new
+            {
+                b = e.Blurb,
+                t = e.Text,
+                r = e.ReplaceMode,
+                rc = e.RequireComparison,
+                mw = e.MaxComparisonWeeks
+            });
+            entriesJson = JsonSerializer.Serialize(arr);
+        }
+
+        var js = $@"(() => {{
+            const ENTRIES = {entriesJson};
+            const CID = 'mt-imp-fixers';
+            const IID = '__mtImpFixerInterval';
+
+            // Clear previous interval and container
+            if (window[IID]) {{ clearInterval(window[IID]); window[IID] = null; }}
+            const old = document.getElementById(CID);
+            if (old) old.remove();
+
+            if (!ENTRIES.length) return 'cleared';
+
+            function escHtml(s) {{ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
+
+            function injectButtons() {{
+                if (document.getElementById(CID)) return; // already present
+
+                const editors = document.querySelectorAll('.ProseMirror');
+                if (editors.length < 2 || !editors[1].editor) return;
+                const pm = editors[1];
+                const editor = pm.editor;
+
+                // Find the IMPRESSION heading element in the DOM
+                // Strategy: look for h3 with IMPRESSION text (direct child or inside wrappers)
+                let impEl = null;
+                let impSection = null; // the .node-section parent if present
+                // First: check direct h3 children
+                for (const child of pm.children) {{
+                    if (child.tagName === 'H3' && (child.textContent || '').trim().toUpperCase().startsWith('IMPRESSION')) {{
+                        impEl = child;
+                        break;
+                    }}
+                }}
+                // Second: check inside .node-section / .react-renderer wrappers
+                if (!impEl) {{
+                    for (const child of pm.children) {{
+                        if (!child.classList) continue;
+                        const h = child.querySelector('h3');
+                        if (h && (h.textContent || '').trim().toUpperCase().startsWith('IMPRESSION')) {{
+                            impEl = h;
+                            impSection = child;
+                            break;
+                        }}
+                    }}
+                }}
+                // Third: broadest search — any descendant h3
+                if (!impEl) {{
+                    const allH3 = pm.querySelectorAll('h3');
+                    for (const h of allH3) {{
+                        if ((h.textContent || '').trim().toUpperCase().startsWith('IMPRESSION')) {{
+                            impEl = h;
+                            break;
+                        }}
+                    }}
+                }}
+                if (!impEl) return;
+
+                // Parse comparison date from editor for RequireComparison entries.
+                // COMPARISON is an h3 heading, date is in a subsequent paragraph text node.
+                let compDateMs = 0;
+                let hasComp = false;
+                const doc = editor.state.doc;
+                let foundCompHeader = false;
+                doc.descendants((node) => {{
+                    if (hasComp) return false;
+                    if (node.isText && node.text) {{
+                        const upper = node.text.toUpperCase();
+                        if (upper.includes('COMPARISON')) {{
+                            foundCompHeader = true;
+                            if (upper.includes('NONE AVAILABLE')) return; // explicit no-comp
+                        }}
+                        if (foundCompHeader) {{
+                            const m = node.text.match(/(\d{{1,2}})\/(\d{{1,2}})\/(\d{{2,4}})/);
+                            if (m) {{
+                                hasComp = true;
+                                const yr = m[3].length === 2 ? 2000 + parseInt(m[3]) : parseInt(m[3]);
+                                compDateMs = new Date(yr, parseInt(m[1]) - 1, parseInt(m[2])).getTime();
+                            }}
+                        }}
+                        // Stop searching after next section header
+                        if (foundCompHeader && !hasComp && /^[A-Z]{{2,}}/.test(node.text.trim()) && !upper.includes('COMPARISON')) {{
+                            foundCompHeader = false; // passed comparison section
+                        }}
+                    }}
+                }});
+                const nowMs = Date.now();
+
+                // Create container — positioned absolute to right of heading
+                const container = document.createElement('div');
+                container.id = CID;
+                container.style.cssText = 'position:absolute;top:0;right:0;display:inline-flex;gap:4px;line-height:normal;pointer-events:auto;z-index:10;';
+
+                for (const entry of ENTRIES) {{
+                    // RequireComparison filter
+                    if (entry.rc) {{
+                        if (!hasComp) continue;
+                        if (entry.mw > 0 && compDateMs > 0) {{
+                            const weekMs = entry.mw * 7 * 86400000;
+                            if (nowMs - compDateMs > weekMs) continue;
+                        }}
+                    }}
+
+                    const btn = document.createElement('span');
+                    const isReplace = entry.r;
+                    const prefix = isReplace ? '\u003D' : '+';
+                    btn.textContent = prefix + entry.b;
+                    const normalColor = isReplace ? '#ffb400' : '#00c8c8';
+                    const hoverColor = isReplace ? '#ffdc50' : '#64ffff';
+                    btn.style.cssText = 'cursor:pointer;font-size:11px;font-weight:600;padding:1px 5px;border-radius:3px;'
+                        + 'color:' + normalColor + ';background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);'
+                        + 'transition:color 0.15s,background 0.15s;user-select:none;white-space:nowrap;';
+                    btn.addEventListener('mouseenter', () => {{
+                        btn.style.color = hoverColor;
+                        btn.style.background = 'rgba(255,255,255,0.08)';
+                    }});
+                    btn.addEventListener('mouseleave', () => {{
+                        btn.style.color = normalColor;
+                        btn.style.background = 'rgba(0,0,0,0.3)';
+                    }});
+
+                    const entryText = entry.t;
+                    const replaceMode = entry.r;
+                    btn.addEventListener('click', (ev) => {{
+                        ev.stopPropagation();
+                        ev.preventDefault();
+                        const ed = editors[1]?.editor;
+                        if (!ed) return;
+                        const d = ed.state.doc;
+
+                        // Find impression content start (after IMPRESSION heading)
+                        let selStart = -1;
+                        d.descendants((node, pos) => {{
+                            if (selStart >= 0) return false;
+                            if (node.isText && node.text && node.text.includes('IMPRESSION')) {{
+                                const $p = d.resolve(pos);
+                                selStart = $p.end($p.depth) + 1;
+                                return false;
+                            }}
+                        }});
+                        if (selStart < 0) return;
+                        const docEnd = d.content.size - 1;
+                        if (selStart >= docEnd && replaceMode) {{
+                            // Empty impression — just insert
+                            ed.commands.setTextSelection(selStart);
+                            ed.commands.insertContent('<ol><li><p>' + escHtml(entryText) + '</p></li></ol>');
+                            return;
+                        }}
+
+                        if (replaceMode) {{
+                            // Replace: select all impression content, insert new
+                            ed.commands.setTextSelection({{ from: selStart, to: docEnd }});
+                            ed.commands.insertContent('<ol><li><p>' + escHtml(entryText) + '</p></li></ol>');
+                        }} else {{
+                            // Insert: read existing items, append new one
+                            const items = [];
+                            if (selStart < docEnd) {{
+                                d.nodesBetween(selStart, docEnd, (node) => {{
+                                    if (node.type.name === 'listItem') {{
+                                        const t = node.textContent.trim();
+                                        if (t) items.push(t);
+                                    }}
+                                }});
+                            }}
+                            items.push(entryText);
+                            const html = '<ol>' + items.map(t => '<li><p>' + escHtml(t) + '</p></li>').join('') + '</ol>';
+                            if (selStart < docEnd) {{
+                                ed.commands.setTextSelection({{ from: selStart, to: docEnd }});
+                            }} else {{
+                                ed.commands.setTextSelection(selStart);
+                            }}
+                            ed.commands.insertContent(html);
+                        }}
+
+                        // Brief flash feedback
+                        btn.style.background = 'rgba(100,255,100,0.2)';
+                        setTimeout(() => {{ btn.style.background = 'rgba(0,0,0,0.3)'; }}, 300);
+                    }});
+
+                    container.appendChild(btn);
+                }}
+
+                if (container.children.length === 0) return 'filtered';
+
+                // Insert container: make the anchor element position:relative, append container inside
+                // Prefer the section wrapper (wider, gives more room for right-aligned buttons)
+                const anchor = impSection || impEl;
+                anchor.style.position = 'relative';
+                anchor.appendChild(container);
+                return 'ok';
+            }}
+
+            // Inject now and set up periodic re-injection (React re-renders wipe injected DOM)
+            injectButtons();
+            window[IID] = setInterval(injectButtons, 1000);
+
+            return 'ok';
+        }})()";
+
+        var result = ExtractResultValue(SendToIframe(js));
+        Logger.Trace($"CDP: SetImpressionFixerButtons result={result} ({entries?.Count ?? 0} entries)");
+    }
+
+    /// <summary>
     /// Show clickable model badges in the editor title bar. Each badge shows model name + time.
     /// The active model has a glow. Clicking a non-failed badge swaps the editor content.
     /// </summary>

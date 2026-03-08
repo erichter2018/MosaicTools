@@ -72,7 +72,10 @@ public class Configuration
     // UI Options
     [JsonPropertyName("floating_toolbar_enabled")]
     public bool FloatingToolbarEnabled { get; set; } = false;
-    
+
+    [JsonPropertyName("ruler_overlay_enabled")]
+    public bool RulerOverlayEnabled { get; set; } = false;
+
     [JsonPropertyName("indicator_enabled")]
     public bool IndicatorEnabled { get; set; } = false;
     
@@ -269,6 +272,9 @@ public class Configuration
     // Impression Fixer
     [JsonPropertyName("impression_fixer_enabled")]
     public bool ImpressionFixerEnabled { get; set; } = true;
+
+    [JsonPropertyName("impression_fixer_in_editor")]
+    public bool ImpressionFixerInEditor { get; set; } = true;
 
     [JsonPropertyName("impression_fixers")]
     public List<ImpressionFixerEntry> ImpressionFixers { get; set; } = new();

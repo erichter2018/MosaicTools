@@ -311,9 +311,460 @@ public class OcrService
         }
     }
     
+    /// <summary>
+    /// Capture the left-edge ruler strip from the active IV viewport.
+    /// Returns the bitmap and its screen location, or null if no viewport found.
+    /// </summary>
+    public (Bitmap bitmap, Point location)? CaptureRulerStrip(Rectangle viewportBounds)
+    {
+        try
+        {
+            // Capture from viewport left edge, full height.
+            // We'll use pixel analysis to separate tick marks from borders and labels.
+            int stripWidth = Math.Max(60, (int)(viewportBounds.Width * 0.08));
+            int stripX = viewportBounds.Left;
+            int stripY = viewportBounds.Top;
+            int stripHeight = viewportBounds.Height;
+
+            Logger.Trace($"CaptureRulerStrip: viewport={viewportBounds.Width}x{viewportBounds.Height}, strip={stripWidth}x{stripHeight}");
+
+            var vScreenLeft = GetSystemMetrics(76);
+            var vScreenTop = GetSystemMetrics(77);
+            var vScreenWidth = GetSystemMetrics(78);
+            var vScreenHeight = GetSystemMetrics(79);
+
+            using var fullScreen = new Bitmap(vScreenWidth, vScreenHeight);
+            using var g = Graphics.FromImage(fullScreen);
+            g.CopyFromScreen(vScreenLeft, vScreenTop, 0, 0, new Size(vScreenWidth, vScreenHeight));
+
+            int bmpX = stripX - vScreenLeft;
+            int bmpY = stripY - vScreenTop;
+
+            if (bmpX < 0 || bmpY < 0 || bmpX + stripWidth > vScreenWidth || bmpY + stripHeight > vScreenHeight)
+                return null;
+
+            var cropRect = new Rectangle(bmpX, bmpY, stripWidth, stripHeight);
+            var strip = fullScreen.Clone(cropRect, PixelFormat.Format32bppArgb);
+
+            // Save raw strip before processing
+            try
+            {
+                var rawPath = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "MosaicTools", "ruler_raw.png");
+                strip.Save(rawPath, ImageFormat.Png);
+            }
+            catch { }
+
+            var stripData = strip.LockBits(new Rectangle(0, 0, strip.Width, strip.Height),
+                ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+            try
+            {
+                unsafe
+                {
+                    byte* scan0 = (byte*)stripData.Scan0;
+                    int stride = stripData.Stride;
+                    int w = strip.Width, h = strip.Height;
+
+                    // Pass 1: Count yellow pixels per column and per row
+                    int[] yellowPerCol = new int[w];
+                    int[] yellowPerRow = new int[h];
+                    for (int y = 0; y < h; y++)
+                    {
+                        for (int x = 0; x < w; x++)
+                        {
+                            byte* px = scan0 + y * stride + x * 4;
+                            if (px[2] > 180 && px[1] > 140 && px[0] < 120)
+                            {
+                                yellowPerCol[x]++;
+                                yellowPerRow[y]++;
+                            }
+                        }
+                    }
+
+                    // Vertical border columns: >80% of rows have yellow (full-height viewport border).
+                    // The ruler's vertical line only spans the tick area (~60-70% density).
+                    bool[] isBorderCol = new bool[w];
+                    int borderColThreshold = (int)(h * 0.80);
+                    for (int x = 0; x < w; x++)
+                        isBorderCol[x] = yellowPerCol[x] > borderColThreshold;
+
+                    // Horizontal border rows: yellow spans >60% of strip width
+                    bool[] isBorderRow = new bool[h];
+                    int borderRowThreshold = (int)(w * 0.6);
+                    for (int y = 0; y < h; y++)
+                        isBorderRow[y] = yellowPerRow[y] > borderRowThreshold;
+
+                    int midY = h / 2;
+
+                    // Debug: log border detection stats
+                    int borderColCount = 0, borderRowCount = 0;
+                    for (int x = 0; x < w; x++) if (isBorderCol[x]) borderColCount++;
+                    for (int y = 0; y < h; y++) if (isBorderRow[y]) borderRowCount++;
+                    // Log top 5 column densities and max row yellow count
+                    var colDensities = new System.Text.StringBuilder();
+                    for (int x = 0; x < Math.Min(10, w); x++)
+                        colDensities.Append($"c{x}={yellowPerCol[x]} ");
+                    int maxRowYellow = 0;
+                    for (int y = 0; y < h; y++) if (yellowPerRow[y] > maxRowYellow) maxRowYellow = yellowPerRow[y];
+                    Logger.Trace($"CaptureRulerStrip: borderCols={borderColCount}(thr={borderColThreshold}), borderRows={borderRowCount}(thr={borderRowThreshold}), maxRowYellow={maxRowYellow}, {colDensities}");
+
+                    // Pass 2: Find the vertical range of tick marks (not the vertical line).
+                    // The vertical ruler line is in the leftmost ~3 columns; ticks extend beyond.
+                    // We use columns 4+ to determine where ticks exist vertically.
+                    int tickMinRow = h, tickMaxRow = 0;
+                    for (int y = 0; y < h; y++)
+                    {
+                        if (isBorderRow[y]) continue;
+                        for (int x = 4; x < w; x++)
+                        {
+                            if (isBorderCol[x]) continue; // Skip ruler vertical line
+                            byte* px = scan0 + y * stride + x * 4;
+                            if (px[2] > 180 && px[1] > 140 && px[0] < 120)
+                            {
+                                if (y < tickMinRow) tickMinRow = y;
+                                if (y > tickMaxRow) tickMaxRow = y;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Find ruler line start: first non-border column with significant yellow.
+                    // Everything to the left (viewport border, R/L label) gets excluded.
+                    int rulerStartCol = 0;
+                    int significantThreshold = (int)(h * 0.3);
+                    for (int x = 0; x < w; x++)
+                    {
+                        if (!isBorderCol[x] && yellowPerCol[x] > significantThreshold)
+                        {
+                            rulerStartCol = x;
+                            break;
+                        }
+                    }
+                    Logger.Trace($"CaptureRulerStrip: rulerStartCol={rulerStartCol}");
+
+                    // Build tick mask: yellow pixels within tick range, at or right of ruler line
+                    bool[] isTick = new bool[w * h];
+                    for (int y = 0; y < h; y++)
+                    {
+                        bool inTickRange = (y >= tickMinRow && y <= tickMaxRow);
+                        for (int x = 0; x < w; x++)
+                        {
+                            byte* px = scan0 + y * stride + x * 4;
+                            bool isYellow = (px[2] > 180 && px[1] > 140 && px[0] < 120);
+                            isTick[y * w + x] = isYellow && x >= rulerStartCol && !isBorderRow[y] && inTickRange;
+                        }
+                    }
+
+                    // Dilate: expand tick mask by 1px in all directions for bolder lines
+                    bool[] dilated = new bool[w * h];
+                    for (int y = 0; y < h; y++)
+                    {
+                        for (int x = 0; x < w; x++)
+                        {
+                            if (isTick[y * w + x])
+                            {
+                                for (int dy = -1; dy <= 1; dy++)
+                                    for (int dx = -1; dx <= 1; dx++)
+                                    {
+                                        int ny = y + dy, nx = x + dx;
+                                        if (ny >= 0 && ny < h && nx >= 0 && nx < w)
+                                            dilated[ny * w + nx] = true;
+                                    }
+                            }
+                        }
+                    }
+
+                    // Apply colors using dilated mask
+                    int minCol = w, maxCol = 0, minRow = h, maxRow = 0;
+                    int tickCount = 0;
+
+                    for (int y = 0; y < h; y++)
+                    {
+                        for (int x = 0; x < w; x++)
+                        {
+                            byte* px = scan0 + y * stride + x * 4;
+                            if (dilated[y * w + x])
+                            {
+                                px[0] = 255; px[1] = 200; px[2] = 0; px[3] = 255; // Electric blue
+                                tickCount++;
+                                if (x < minCol) minCol = x;
+                                if (x > maxCol) maxCol = x;
+                                if (y < minRow) minRow = y;
+                                if (y > maxRow) maxRow = y;
+                            }
+                            else
+                            {
+                                px[0] = 0; px[1] = 0; px[2] = 0; px[3] = 3;
+                            }
+                        }
+                    }
+
+                    Logger.Trace($"CaptureRulerStrip: {w}x{h}, tickRange={tickMinRow}-{tickMaxRow}, ticks={tickCount}");
+
+                    // Auto-crop to tick extent + padding
+                    if (minRow <= maxRow && minCol <= maxCol)
+                    {
+                        strip.UnlockBits(stripData);
+                        int pad = 5;
+                        int cL = Math.Max(0, minCol - pad);
+                        int cT = Math.Max(0, minRow - pad);
+                        int cR = Math.Min(w - 1, maxCol + pad);
+                        int cB = Math.Min(h - 1, maxRow + pad);
+
+                        var cropped = strip.Clone(
+                            new Rectangle(cL, cT, cR - cL + 1, cB - cT + 1),
+                            PixelFormat.Format32bppArgb);
+                        strip.Dispose();
+                        return (cropped, new Point(stripX + cL, stripY + cT));
+                    }
+                }
+            }
+            finally
+            {
+                try { strip.UnlockBits(stripData); } catch { }
+            }
+
+            return (strip, new Point(stripX, stripY));
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CaptureRulerStrip error: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Captures and processes the horizontal ruler strip from the bottom edge of the viewport.
+    /// The horizontal ruler line runs near the bottom; ticks extend upward from it.
+    /// Below the ruler line: labels (P/A), text info, viewport border — all excluded.
+    /// </summary>
+    public (Bitmap bitmap, Point location)? CaptureHorizontalRulerStrip(Rectangle viewportBounds)
+    {
+        try
+        {
+            int stripHeight = Math.Max(60, (int)(viewportBounds.Height * 0.08));
+            int stripX = viewportBounds.Left;
+            int stripY = viewportBounds.Bottom - stripHeight;
+            int stripWidth = viewportBounds.Width;
+
+            Logger.Trace($"CaptureHorizontalRulerStrip: viewport={viewportBounds.Width}x{viewportBounds.Height}, strip={stripWidth}x{stripHeight}");
+
+            var vScreenLeft = GetSystemMetrics(76);
+            var vScreenTop = GetSystemMetrics(77);
+            var vScreenWidth = GetSystemMetrics(78);
+            var vScreenHeight = GetSystemMetrics(79);
+
+            using var fullScreen = new Bitmap(vScreenWidth, vScreenHeight);
+            using var g = Graphics.FromImage(fullScreen);
+            g.CopyFromScreen(vScreenLeft, vScreenTop, 0, 0, new Size(vScreenWidth, vScreenHeight));
+
+            int bmpX = stripX - vScreenLeft;
+            int bmpY = stripY - vScreenTop;
+
+            if (bmpX < 0 || bmpY < 0 || bmpX + stripWidth > vScreenWidth || bmpY + stripHeight > vScreenHeight)
+                return null;
+
+            var cropRect = new Rectangle(bmpX, bmpY, stripWidth, stripHeight);
+            var strip = fullScreen.Clone(cropRect, PixelFormat.Format32bppArgb);
+
+            try
+            {
+                var rawPath = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "MosaicTools", "hruler_raw.png");
+                strip.Save(rawPath, ImageFormat.Png);
+            }
+            catch { }
+
+            var stripData = strip.LockBits(new Rectangle(0, 0, strip.Width, strip.Height),
+                ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+            try
+            {
+                unsafe
+                {
+                    byte* scan0 = (byte*)stripData.Scan0;
+                    int stride = stripData.Stride;
+                    int w = strip.Width, h = strip.Height;
+
+                    // Pass 1: Count yellow pixels per column and per row
+                    int[] yellowPerCol = new int[w];
+                    int[] yellowPerRow = new int[h];
+                    for (int y = 0; y < h; y++)
+                    {
+                        for (int x = 0; x < w; x++)
+                        {
+                            byte* px = scan0 + y * stride + x * 4;
+                            if (px[2] > 180 && px[1] > 140 && px[0] < 120)
+                            {
+                                yellowPerCol[x]++;
+                                yellowPerRow[y]++;
+                            }
+                        }
+                    }
+
+                    // Border rows: >80% of columns have yellow (full-width viewport border)
+                    bool[] isBorderRow = new bool[h];
+                    int borderRowThreshold = (int)(w * 0.80);
+                    for (int y = 0; y < h; y++)
+                        isBorderRow[y] = yellowPerRow[y] > borderRowThreshold;
+
+                    // Border columns: yellow spans >60% of strip height (vertical viewport borders)
+                    bool[] isBorderCol = new bool[w];
+                    int borderColThreshold = (int)(h * 0.6);
+                    for (int x = 0; x < w; x++)
+                        isBorderCol[x] = yellowPerCol[x] > borderColThreshold;
+
+                    int borderRowCount = 0, borderColCount = 0;
+                    for (int y = 0; y < h; y++) if (isBorderRow[y]) borderRowCount++;
+                    for (int x = 0; x < w; x++) if (isBorderCol[x]) borderColCount++;
+
+                    // Find the ruler end row: search bottom-up for the last non-border row
+                    // with significant yellow density. This is the horizontal ruler line itself.
+                    // Everything BELOW it (P label, text, viewport border) gets excluded.
+                    int rulerEndRow = h - 1;
+                    int significantThreshold = (int)(w * 0.3);
+                    for (int y = h - 1; y >= 0; y--)
+                    {
+                        if (!isBorderRow[y] && yellowPerRow[y] > significantThreshold)
+                        {
+                            rulerEndRow = y;
+                            break;
+                        }
+                    }
+
+                    // Find tick range: scan non-border rows ABOVE the ruler line for yellow in non-border columns
+                    int tickMinCol = w, tickMaxCol = 0;
+                    int tickMinRow = h, tickMaxRow = 0;
+                    for (int y = 0; y <= rulerEndRow; y++)
+                    {
+                        if (isBorderRow[y]) continue;
+                        for (int x = 0; x < w; x++)
+                        {
+                            if (isBorderCol[x]) continue;
+                            byte* px = scan0 + y * stride + x * 4;
+                            if (px[2] > 180 && px[1] > 140 && px[0] < 120)
+                            {
+                                if (x < tickMinCol) tickMinCol = x;
+                                if (x > tickMaxCol) tickMaxCol = x;
+                                if (y < tickMinRow) tickMinRow = y;
+                                if (y > tickMaxRow) tickMaxRow = y;
+                            }
+                        }
+                    }
+
+                    // Log row densities near the ruler for debugging
+                    var rowDensities = new System.Text.StringBuilder();
+                    for (int y = Math.Max(0, rulerEndRow - 5); y <= Math.Min(h - 1, rulerEndRow + 5); y++)
+                        rowDensities.Append($"r{y}={yellowPerRow[y]}{(isBorderRow[y] ? "B" : "")} ");
+                    Logger.Trace($"CaptureHorizontalRulerStrip: borderRows={borderRowCount}(thr={borderRowThreshold}), borderCols={borderColCount}(thr={borderColThreshold}), rulerEndRow={rulerEndRow}, tickRows={tickMinRow}-{tickMaxRow}, tickCols={tickMinCol}-{tickMaxCol}, {rowDensities}");
+
+                    // Build tick mask: yellow at or above rulerEndRow, in tick column range, not border
+                    bool[] isTick = new bool[w * h];
+                    for (int y = 0; y <= rulerEndRow; y++)
+                    {
+                        if (isBorderRow[y]) continue;
+                        for (int x = 0; x < w; x++)
+                        {
+                            if (isBorderCol[x]) continue;
+                            bool inTickRange = (x >= tickMinCol && x <= tickMaxCol);
+                            byte* px = scan0 + y * stride + x * 4;
+                            bool isYellow = (px[2] > 180 && px[1] > 140 && px[0] < 120);
+                            isTick[y * w + x] = isYellow && inTickRange;
+                        }
+                    }
+
+                    // Dilate by 1px for bolder lines
+                    bool[] dilated = new bool[w * h];
+                    for (int y = 0; y < h; y++)
+                    {
+                        for (int x = 0; x < w; x++)
+                        {
+                            if (isTick[y * w + x])
+                            {
+                                for (int dy = -1; dy <= 1; dy++)
+                                    for (int dx = -1; dx <= 1; dx++)
+                                    {
+                                        int ny = y + dy, nx = x + dx;
+                                        if (ny >= 0 && ny < h && nx >= 0 && nx < w)
+                                            dilated[ny * w + nx] = true;
+                                    }
+                            }
+                        }
+                    }
+
+                    // Apply colors
+                    int minCol = w, maxCol = 0, minRow = h, maxRow = 0;
+                    int tickCount = 0;
+
+                    for (int y = 0; y < h; y++)
+                    {
+                        for (int x = 0; x < w; x++)
+                        {
+                            byte* px = scan0 + y * stride + x * 4;
+                            if (dilated[y * w + x])
+                            {
+                                px[0] = 255; px[1] = 200; px[2] = 0; px[3] = 255; // Electric blue
+                                tickCount++;
+                                if (x < minCol) minCol = x;
+                                if (x > maxCol) maxCol = x;
+                                if (y < minRow) minRow = y;
+                                if (y > maxRow) maxRow = y;
+                            }
+                            else
+                            {
+                                px[0] = 0; px[1] = 0; px[2] = 0; px[3] = 3;
+                            }
+                        }
+                    }
+
+                    Logger.Trace($"CaptureHorizontalRulerStrip: {w}x{h}, ticks={tickCount}");
+
+                    // Auto-crop to tick extent + padding
+                    if (minRow <= maxRow && minCol <= maxCol)
+                    {
+                        strip.UnlockBits(stripData);
+                        int pad = 5;
+                        int cL = Math.Max(0, minCol - pad);
+                        int cT = Math.Max(0, minRow - pad);
+                        int cR = Math.Min(w - 1, maxCol + pad);
+                        int cB = Math.Min(h - 1, maxRow + pad);
+
+                        var cropped = strip.Clone(
+                            new Rectangle(cL, cT, cR - cL + 1, cB - cT + 1),
+                            PixelFormat.Format32bppArgb);
+                        strip.Dispose();
+
+                        try
+                        {
+                            var debugPath = System.IO.Path.Combine(
+                                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                "MosaicTools", "hruler_debug.png");
+                            cropped.Save(debugPath, ImageFormat.Png);
+                        }
+                        catch { }
+
+                        return (cropped, new Point(stripX + cL, stripY + cT));
+                    }
+                }
+            }
+            finally
+            {
+                try { strip.UnlockBits(stripData); } catch { }
+            }
+
+            return (strip, new Point(stripX, stripY));
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CaptureHorizontalRulerStrip error: {ex.Message}");
+            return null;
+        }
+    }
+
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int nIndex);
-    
+
     /// <summary>
     /// Extract series/image numbers from OCR text.
     /// Focus on the LAST Se: and Im: entries (the first Se: is usually a date).

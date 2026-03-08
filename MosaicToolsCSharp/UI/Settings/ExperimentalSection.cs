@@ -28,6 +28,7 @@ public class ExperimentalSection : SettingsSection
     private readonly CheckBox _cdpFlashingAlertTextCheck;
     private readonly CheckBox _sttHighlightDictatedCheck;
     private readonly CheckBox _cdpVisualEnhancementsCheck;
+    private readonly CheckBox _impressionFixerInEditorCheck;
     private readonly CheckBox _clarioCdpEnabledCheck;
     private readonly TextBox _clarioCdpUrlBox;
     private readonly Button _clarioCdpSetupButton;
@@ -172,6 +173,10 @@ public class ExperimentalSection : SettingsSection
 
         _cdpVisualEnhancementsCheck = AddCheckBox("Visual report enhancements", LeftMargin + 25, _nextY,
             "Carolina blue change-tracking highlight, inline subsection headers, and slightly smaller content text for visual hierarchy.");
+        _nextY += RowHeight;
+
+        _impressionFixerInEditorCheck = AddCheckBox("Impression fixer buttons in editor", LeftMargin + 25, _nextY,
+            "Show impression fixer quick-insert/replace buttons directly in the Mosaic report editor next to IMPRESSION.");
         _nextY += RowHeight;
 
         // Clario CDP
@@ -837,6 +842,7 @@ public class ExperimentalSection : SettingsSection
         _cdpFlashingAlertTextCheck.Enabled = _cdpEnabledCheck.Checked;
         _sttHighlightDictatedCheck.Enabled = _cdpEnabledCheck.Checked;
         _cdpVisualEnhancementsCheck.Enabled = _cdpEnabledCheck.Checked;
+        _impressionFixerInEditorCheck.Enabled = _cdpEnabledCheck.Checked;
     }
 
     private void UpdateLlmSettingsStates()
@@ -1058,6 +1064,7 @@ public class ExperimentalSection : SettingsSection
         _cdpFlashingAlertTextCheck.Checked = config.CdpFlashingAlertText;
         _sttHighlightDictatedCheck.Checked = config.SttHighlightDictated;
         _cdpVisualEnhancementsCheck.Checked = config.CdpVisualEnhancements;
+        _impressionFixerInEditorCheck.Checked = config.ImpressionFixerInEditor;
         _clarioCdpEnabledCheck.Checked = config.ClarioCdpEnabled;
         _clarioCdpUrlBox.Text = config.ClarioCdpUrl;
         _llmProcessEnabledCheck.Checked = config.LlmProcessEnabled;
@@ -1130,6 +1137,7 @@ public class ExperimentalSection : SettingsSection
         config.CdpFlashingAlertText = _cdpFlashingAlertTextCheck.Checked;
         config.SttHighlightDictated = _sttHighlightDictatedCheck.Checked;
         config.CdpVisualEnhancements = _cdpVisualEnhancementsCheck.Checked;
+        config.ImpressionFixerInEditor = _impressionFixerInEditorCheck.Checked;
         config.ClarioCdpEnabled = _clarioCdpEnabledCheck.Checked;
         var url = _clarioCdpUrlBox.Text.Trim();
         if (!string.IsNullOrEmpty(url))

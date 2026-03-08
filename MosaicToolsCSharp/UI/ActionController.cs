@@ -207,6 +207,7 @@ public class ActionController : IDisposable
 
     // Accession tracking - only track non-empty accessions
     private string? _lastNonEmptyAccession;
+    private string? _impFixerEditorAccession; // Track which accession has editor fixer buttons
 
     // Accession flap debounce - prevent false "study closed" events
     // When accession goes empty, we defer the close and wait for it to stabilize
@@ -440,6 +441,9 @@ public class ActionController : IDisposable
         
         // Start Mosaic scrape timer (always on)
         StartMosaicScrapeTimer();
+
+        // Ruler overlay: start if enabled (its own timer handles detection)
+        TryShowRulerOverlay();
 
         // [CDP] Toast only on first-time enable (env var just set in constructor above)
         // Don't nag every startup — the scrape loop will silently connect when Mosaic is ready
@@ -878,6 +882,7 @@ public class ActionController : IDisposable
     /// Get the name of the currently connected microphone, or null if not connected.
     /// </summary>
     public string? GetConnectedMicrophoneName() => _hidService.ConnectedDeviceName;
+    public OcrService GetOcrService() => _ocrService;
     
     private void RegisterHotkeys()
     {
@@ -3869,6 +3874,57 @@ public class ActionController : IDisposable
         popup.SetImpressionFixers(deduped);
     }
 
+    /// <summary>
+    /// Inject impression fixer buttons into the Mosaic report editor via CDP.
+    /// Filters entries by study description and comparison requirements,
+    /// same logic as ApplyImpressionFixersToPopup.
+    /// </summary>
+    private void ApplyImpressionFixersToEditor()
+    {
+        if (_cdpService?.IsIframeConnected != true) return;
+        if (!_config.ImpressionFixerEnabled || !_config.ImpressionFixerInEditor)
+        {
+            _cdpService.SetImpressionFixerButtons(null);
+            return;
+        }
+
+        var studyDesc = _mosaicReader.LastDescription;
+        var matching = _config.ImpressionFixers
+            .Where(f => f.Enabled && f.MatchesStudy(studyDesc))
+            .ToList();
+        Logger.Trace($"ImpressionFixerEditor: {matching.Count} matching entries for '{studyDesc}'");
+
+        // Specificity dedup (same as popup logic)
+        var deduped = new List<ImpressionFixerEntry>();
+        var seen = new Dictionary<(string, bool), ImpressionFixerEntry>(
+            EqualityComparer<(string, bool)>.Default);
+        foreach (var entry in matching)
+        {
+            var key = (entry.Blurb.ToUpperInvariant(), entry.ReplaceMode);
+            bool hasSpecificCriteria = !string.IsNullOrWhiteSpace(entry.CriteriaRequired)
+                || !string.IsNullOrWhiteSpace(entry.CriteriaAnyOf)
+                || !string.IsNullOrWhiteSpace(entry.CriteriaExclude);
+            if (seen.TryGetValue(key, out var existing))
+            {
+                bool existingIsSpecific = !string.IsNullOrWhiteSpace(existing.CriteriaRequired)
+                    || !string.IsNullOrWhiteSpace(existing.CriteriaAnyOf)
+                    || !string.IsNullOrWhiteSpace(existing.CriteriaExclude);
+                if (hasSpecificCriteria && !existingIsSpecific)
+                {
+                    deduped[deduped.IndexOf(existing)] = entry;
+                    seen[key] = entry;
+                }
+            }
+            else
+            {
+                deduped.Add(entry);
+                seen[key] = entry;
+            }
+        }
+
+        _cdpService.SetImpressionFixerButtons(deduped);
+    }
+
     private void PerformCaptureSeries()
     {
         if (IsAddendumOpen())
@@ -3931,6 +3987,20 @@ public class ActionController : IDisposable
             Logger.Trace($"CaptureSeries error: {ex.Message}");
             InvokeUI(() => _mainForm.ShowStatusToast($"OCR Error: {ex.Message}"));
         }
+    }
+
+    private void TryShowRulerOverlay()
+    {
+        if (!_config.RulerOverlayEnabled || RulerOverlayForm.IsOpen) return;
+        RulerOverlayForm.HideOtherOverlays = hide =>
+            InvokeUI(() => _mainForm.SetFloatingToolbarVisible(!hide));
+        UpdateCachedToolbarBounds();
+        InvokeUI(() => RulerOverlayForm.Show(_ocrService));
+    }
+
+    private void UpdateCachedToolbarBounds()
+    {
+        InvokeUI(() => RulerOverlayForm.CachedToolbarBounds = _mainForm.GetFloatingToolbarBounds());
     }
 
     private void PerformCycleWindowLevel()
@@ -5265,6 +5335,16 @@ public class ActionController : IDisposable
             // Skip popup update if fast path already pushed the same text this tick
             if (fastReportText == null || reportText != fastReportText)
                 UpdateReportPopup(reportText);
+
+            // Inject impression fixer buttons into editor (once per accession — JS interval handles persistence)
+            if (_config.ImpressionFixerEnabled && _config.ImpressionFixerInEditor
+                && !string.IsNullOrEmpty(currentAccession) && currentAccession != _impFixerEditorAccession
+                && _cdpService?.IsIframeConnected == true)
+            {
+                _impFixerEditorAccession = currentAccession;
+                ApplyImpressionFixersToEditor();
+            }
+
             // Flush popup update to UI now, before expensive Clario/metadata work below
             FlushUI();
 
@@ -5690,6 +5770,9 @@ public class ActionController : IDisposable
                 _pendingMacroDescription = studyDescription;
             }
 
+            // Inject impression fixer buttons into editor for new study
+            ApplyImpressionFixersToEditor();
+
             // Reset clinical history state on study change
             BatchUI(() => _mainForm.OnClinicalHistoryStudyChanged());
             // Hide impression window on new study
@@ -5720,6 +5803,7 @@ public class ActionController : IDisposable
             {
                 PerformToggleRecordStt(true);
             }
+
         }
         else
         {
@@ -5727,6 +5811,10 @@ public class ActionController : IDisposable
             _lastNonEmptyAccession = null;
             _needsBaselineCapture = false;
             Logger.Trace("Study closed, no new study opened");
+
+            // Clear impression fixer buttons from editor
+            _impFixerEditorAccession = null;
+            _cdpService?.SetImpressionFixerButtons(null);
 
             // Keep normal scrape rate after study close — a new study typically opens within
             // seconds. The idle backoff (3 empty scrapes → 10s, 10 → 30s) will kick in

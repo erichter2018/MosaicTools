@@ -658,7 +658,12 @@ pacemaker, defibrillator, hardware, prosthesis, surgical clips → DEVICES
     {
         if (string.IsNullOrEmpty(transcript)) return transcript;
 
-        var match = RxImpressionDivider.Match(transcript);
+        // Mask TASK: instruction lines — they may contain "impression" as a regular English word
+        // (e.g., "the first impression should read...") which is NOT a section divider.
+        // Masking with spaces preserves string positions so the match index maps back correctly.
+        var masked = Regex.Replace(transcript, @"(?m)^\s*TASK:.*$", m => new string(' ', m.Length));
+
+        var match = RxImpressionDivider.Match(masked);
         if (!match.Success) return transcript;
 
         var before = transcript[..match.Index].TrimEnd();

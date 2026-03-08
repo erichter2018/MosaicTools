@@ -1558,6 +1558,19 @@ public class MainForm : Form
         }
     }
     
+    public void SetFloatingToolbarVisible(bool visible)
+    {
+        if (_toolbarWindow != null && !_toolbarWindow.IsDisposed)
+            _toolbarWindow.Visible = visible;
+    }
+
+    public Rectangle? GetFloatingToolbarBounds()
+    {
+        if (_toolbarWindow != null && !_toolbarWindow.IsDisposed && _toolbarWindow.Visible)
+            return _toolbarWindow.Bounds;
+        return null;
+    }
+
     public void RefreshFloatingToolbar(FloatingButtonsConfig newConfig)
     {
         if (_toolbarWindow != null && !_toolbarWindow.IsDisposed)
