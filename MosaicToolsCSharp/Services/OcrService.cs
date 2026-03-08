@@ -7,6 +7,9 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
+using OpenCvSharp;
+using Point = System.Drawing.Point;
+using Size = System.Drawing.Size;
 
 namespace MosaicTools.Services;
 
@@ -1022,9 +1025,8 @@ public class OcrService
     }
 
     /// <summary>
-    /// Measure an object at a screen point using region-growing segmentation.
-    /// Captures a region around the point, segments by intensity similarity,
-    /// then calculates bidimensional measurements using the calibrated ruler scale.
+    /// Measure an object at a screen point using full OpenCV pipeline:
+    /// bilateral filter → CLAHE → Cv2.FloodFill → morphological close → FindContours → FitEllipse.
     /// </summary>
     public MeasurementResult? MeasureObjectAtPoint(
         Point screenPoint, Rectangle viewport, double pxPerCmH, double pxPerCmV)
@@ -1041,7 +1043,7 @@ public class OcrService
             int seedY = screenPoint.Y - captureY;
             if (seedX < 0 || seedY < 0 || seedX >= captureW || seedY >= captureH) return null;
 
-            // Capture
+            // Capture screen region
             var vScreenLeft = GetSystemMetrics(76);
             var vScreenTop = GetSystemMetrics(77);
             var vScreenWidth = GetSystemMetrics(78);
@@ -1059,202 +1061,175 @@ public class OcrService
             using var region = fullScreen.Clone(
                 new Rectangle(bmpX, bmpY, captureW, captureH), PixelFormat.Format32bppArgb);
 
-            // Convert to grayscale
-            byte[,] gray = new byte[captureH, captureW];
+            // === OpenCV preprocessing: grayscale → bilateral filter → CLAHE ===
             var rData = region.LockBits(new Rectangle(0, 0, captureW, captureH),
                 ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-            try
+            using var src = Mat.FromPixelData(captureH, captureW, MatType.CV_8UC4, rData.Scan0, rData.Stride);
+            using var grayMat = new Mat();
+            Cv2.CvtColor(src, grayMat, ColorConversionCodes.BGRA2GRAY);
+            region.UnlockBits(rData);
+
+            // Bilateral filter: denoise while preserving edges (no CLAHE — it equalizes
+            // intensity differences that flood-fill needs to detect boundaries)
+            using var enhanced = new Mat();
+            Cv2.BilateralFilter(grayMat, enhanced, d: 9, sigmaColor: 75, sigmaSpace: 75);
+
+            // === OpenCV FloodFill with adaptive tolerance ===
+            // FloodFill mask must be 2px larger than image in each dimension
+            var seedPt = new OpenCvSharp.Point(seedX, seedY);
+            int maxArea = captureW * captureH / 4;
+
+            // Try increasing tolerance; stop when region overflows OR grows too fast
+            // (sudden jump = leaked through boundary into adjacent structure)
+            int bestTol = 0;
+            Mat? bestMask = null;
+            int bestCount = 0;
+            int prevCount = 0;
+
+            for (int tol = 5; tol <= 60; tol += 5)
             {
-                unsafe
+                using var tryMask = new Mat(captureH + 2, captureW + 2, MatType.CV_8UC1, Scalar.All(0));
+                using var tryImg = enhanced.Clone();
+                Cv2.FloodFill(tryImg, tryMask, seedPt, new Scalar(255),
+                    out _,
+                    new Scalar(tol), new Scalar(tol),
+                    FloodFillFlags.FixedRange | FloodFillFlags.Link8 | (FloodFillFlags)(255 << 8));
+
+                int filled = Cv2.CountNonZero(tryMask[new Rect(1, 1, captureW, captureH)]);
+                Logger.Trace($"AutoMeasure: tol={tol} → {filled}px");
+
+                if (filled >= maxArea)
+                    break; // overflowed
+
+                // Detect leak: if region grows >50% in one step AND is already substantial,
+                // we've likely breached a boundary into adjacent tissue.
+                // Only check once region is large enough — small regions naturally double as tolerance opens up.
+                if (prevCount >= 5000 && filled > prevCount * 1.5)
                 {
-                    byte* scan0 = (byte*)rData.Scan0;
-                    int stride = rData.Stride;
-                    for (int y = 0; y < captureH; y++)
-                        for (int x = 0; x < captureW; x++)
-                        {
-                            byte* px = scan0 + y * stride + x * 4;
-                            gray[y, x] = (byte)((px[2] * 299 + px[1] * 587 + px[0] * 114) / 1000);
-                        }
+                    Logger.Trace($"AutoMeasure: leak detected at tol={tol} ({prevCount}→{filled}, +{(filled - prevCount) * 100 / prevCount}%)");
+                    break;
                 }
-            }
-            finally { region.UnlockBits(rData); }
 
-            // Adaptive region growing — increase tolerance until region is large enough
-            byte seedIntensity = gray[seedY, seedX];
-            bool[,]? segmented = null;
-            int segCount = 0;
-            int maxPixels = captureW * captureH / 4;
-
-            for (int tol = 15; tol <= 80; tol += 10)
-            {
-                var (mask, count) = FloodFill(gray, captureW, captureH, seedX, seedY, seedIntensity, tol, maxPixels);
-                if (count >= 16)
+                if (filled >= 50)
                 {
-                    segmented = mask;
-                    segCount = count;
-                    if (count >= 50 || count > maxPixels) break;
+                    bestMask?.Dispose();
+                    bestMask = tryMask.Clone();
+                    bestTol = tol;
+                    bestCount = filled;
                 }
+                prevCount = filled;
             }
 
-            if (segmented == null || segCount < 16)
+            if (bestMask == null || bestCount < 50)
             {
-                Logger.Trace($"AutoMeasure: segmentation failed (count={segCount})");
+                bestMask?.Dispose();
+                Logger.Trace($"AutoMeasure: FloodFill failed (bestCount={bestCount})");
                 return null;
             }
 
-            Logger.Trace($"AutoMeasure: segmented {segCount} pixels, seed=({seedX},{seedY}), " +
-                $"seedIntensity={seedIntensity}, capture={captureW}x{captureH}");
+            // Extract the mask ROI (strip the 1px border FloodFill adds)
+            using var roiMask = bestMask[new Rect(1, 1, captureW, captureH)].Clone();
+            bestMask.Dispose();
+            int segCount = bestCount;
 
-            // Save debug image
-            try
+            // === Morphological close to fill small gaps ===
+            using var kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(7, 7));
+            Cv2.MorphologyEx(roiMask, roiMask, MorphTypes.Close, kernel);
+
+            Logger.Trace($"AutoMeasure: FloodFill {segCount}px, tol={bestTol}, seed=({seedX},{seedY})");
+
+            // === FindContours on the mask → pick largest → FitEllipse ===
+            Cv2.FindContours(roiMask, out OpenCvSharp.Point[][] contours, out _,
+                RetrievalModes.External, ContourApproximationModes.ApproxSimple);
+
+            if (contours.Length == 0)
             {
-                using var debugBmp = new Bitmap(captureW, captureH, PixelFormat.Format32bppArgb);
-                for (int y = 0; y < captureH; y++)
-                    for (int x = 0; x < captureW; x++)
-                    {
-                        if (segmented[y, x])
-                            debugBmp.SetPixel(x, y, Color.FromArgb(255, 0, 255, 0));
-                        else
-                            debugBmp.SetPixel(x, y, Color.FromArgb(255, gray[y, x], gray[y, x], gray[y, x]));
-                    }
-                // Mark seed
-                for (int d = -3; d <= 3; d++)
-                {
-                    if (seedX + d >= 0 && seedX + d < captureW) debugBmp.SetPixel(seedX + d, seedY, Color.Red);
-                    if (seedY + d >= 0 && seedY + d < captureH) debugBmp.SetPixel(seedX, seedY + d, Color.Red);
-                }
-                var debugPath = System.IO.Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "MosaicTools", "measure_debug.png");
-                debugBmp.Save(debugPath, ImageFormat.Png);
-            }
-            catch { }
-
-            // Collect edge pixels
-            var edgePixels = new List<(int x, int y)>();
-            for (int y = 0; y < captureH; y++)
-                for (int x = 0; x < captureW; x++)
-                {
-                    if (!segmented[y, x]) continue;
-                    bool isEdge = false;
-                    for (int dy = -1; dy <= 1 && !isEdge; dy++)
-                        for (int dx = -1; dx <= 1 && !isEdge; dx++)
-                        {
-                            int ny = y + dy, nx = x + dx;
-                            if (ny < 0 || ny >= captureH || nx < 0 || nx >= captureW || !segmented[ny, nx])
-                                isEdge = true;
-                        }
-                    if (isEdge) edgePixels.Add((x, y));
-                }
-
-            if (edgePixels.Count < 4) return null;
-
-            // Rotating calipers: find angle with maximum spread (= major axis direction)
-            double bestAngle = 0, maxSpread = 0;
-            for (int deg = 0; deg < 180; deg += 5)
-            {
-                double rad = deg * Math.PI / 180.0;
-                double cosA = Math.Cos(rad), sinA = Math.Sin(rad);
-                double minP = double.MaxValue, maxP = double.MinValue;
-                foreach (var (ex, ey) in edgePixels)
-                {
-                    double p = ex * cosA + ey * sinA;
-                    if (p < minP) minP = p;
-                    if (p > maxP) maxP = p;
-                }
-                double spread = maxP - minP;
-                if (spread > maxSpread) { maxSpread = spread; bestAngle = deg; }
+                Logger.Trace("AutoMeasure: no contours from FloodFill mask");
+                return null;
             }
 
-            // Minor axis = perpendicular
-            double perpRad = (bestAngle + 90) * Math.PI / 180.0;
-            double perpCos = Math.Cos(perpRad), perpSin = Math.Sin(perpRad);
-            double perpMin = double.MaxValue, perpMax = double.MinValue;
-            foreach (var (ex, ey) in edgePixels)
+            // Pick the largest contour (should be the flood-filled region)
+            var bestContour = contours.OrderByDescending(c => Cv2.ContourArea(c)).First();
+            if (bestContour.Length < 5)
             {
-                double p = ex * perpCos + ey * perpSin;
-                if (p < perpMin) perpMin = p;
-                if (p > perpMax) perpMax = p;
+                Logger.Trace($"AutoMeasure: contour too small ({bestContour.Length} pts)");
+                return null;
             }
-            double minorSpread = perpMax - perpMin;
 
-            // Convert px → cm using direction-weighted px/cm (Pythagorean for anisotropic pixels)
-            double majorRad = bestAngle * Math.PI / 180.0;
-            double cosM = Math.Cos(majorRad), sinM = Math.Sin(majorRad);
+            // === FitEllipse for precise axes ===
+            var ellipse = Cv2.FitEllipse(bestContour);
+            float majorPx = Math.Max(ellipse.Size.Width, ellipse.Size.Height);
+            float minorPx = Math.Min(ellipse.Size.Width, ellipse.Size.Height);
+
+            // Angle of major axis
+            double angleDeg = ellipse.Angle;
+            if (ellipse.Size.Height > ellipse.Size.Width)
+                angleDeg += 90;
+            double angleRad = angleDeg * Math.PI / 180.0;
+
+            // Convert px → cm using direction-weighted scale
+            double cosM = Math.Cos(angleRad), sinM = Math.Sin(angleRad);
             double majorPxPerCm = Math.Sqrt(cosM * cosM * pxPerCmH * pxPerCmH + sinM * sinM * pxPerCmV * pxPerCmV);
             double minorPxPerCm = Math.Sqrt(sinM * sinM * pxPerCmH * pxPerCmH + cosM * cosM * pxPerCmV * pxPerCmV);
 
-            double majorCm = maxSpread / majorPxPerCm;
-            double minorCm = minorSpread / minorPxPerCm;
+            double majorCm = majorPx / majorPxPerCm;
+            double minorCm = minorPx / minorPxPerCm;
 
-            Logger.Trace($"AutoMeasure: edges={edgePixels.Count}, majorSpread={maxSpread:F1}px@{bestAngle}°, " +
-                $"minorSpread={minorSpread:F1}px, pxPerCm={majorPxPerCm:F1}/{minorPxPerCm:F1}");
+            Logger.Trace($"AutoMeasure: contour={bestContour.Length}pts, " +
+                $"ellipse={majorPx:F1}x{minorPx:F1}px@{angleDeg:F0}°, " +
+                $"center=({ellipse.Center.X:F0},{ellipse.Center.Y:F0}), " +
+                $"{majorCm:F1}x{minorCm:F1}cm");
 
-            // Find actual endpoints for measurement lines
-            double majCos = Math.Cos(majorRad), majSin = Math.Sin(majorRad);
-            (int x, int y) majMinPt = edgePixels[0], majMaxPt = edgePixels[0];
-            double majMinProj = double.MaxValue, majMaxProj = double.MinValue;
-            (int x, int y) perMinPt = edgePixels[0], perMaxPt = edgePixels[0];
-            double perMinProj = double.MaxValue, perMaxProj = double.MinValue;
+            // Calculate endpoint coords from ellipse
+            double cx = ellipse.Center.X, cy = ellipse.Center.Y;
+            double majCos = Math.Cos(angleRad), majSin = Math.Sin(angleRad);
+            double perpRad = angleRad + Math.PI / 2;
+            double perCos = Math.Cos(perpRad), perSin = Math.Sin(perpRad);
 
-            foreach (var (ex, ey) in edgePixels)
+            int majX1 = (int)(cx - majCos * majorPx / 2);
+            int majY1 = (int)(cy - majSin * majorPx / 2);
+            int majX2 = (int)(cx + majCos * majorPx / 2);
+            int majY2 = (int)(cy + majSin * majorPx / 2);
+
+            int minX1 = (int)(cx - perCos * minorPx / 2);
+            int minY1 = (int)(cy - perSin * minorPx / 2);
+            int minX2 = (int)(cx + perCos * minorPx / 2);
+            int minY2 = (int)(cy + perSin * minorPx / 2);
+
+            // Save debug image: grayscale bg + green mask + yellow ellipse + lines + seed
+            try
             {
-                double mp = ex * majCos + ey * majSin;
-                if (mp < majMinProj) { majMinProj = mp; majMinPt = (ex, ey); }
-                if (mp > majMaxProj) { majMaxProj = mp; majMaxPt = (ex, ey); }
-                double pp = ex * perpCos + ey * perpSin;
-                if (pp < perMinProj) { perMinProj = pp; perMinPt = (ex, ey); }
-                if (pp > perMaxProj) { perMaxProj = pp; perMaxPt = (ex, ey); }
+                using var debugMat = new Mat();
+                Cv2.CvtColor(grayMat, debugMat, ColorConversionCodes.GRAY2BGR);
+                // Overlay mask in green
+                for (int y = 0; y < captureH; y++)
+                    for (int x = 0; x < captureW; x++)
+                        if (roiMask.At<byte>(y, x) > 0)
+                            debugMat.Set(y, x, new Vec3b(0, 180, 0));
+                Cv2.DrawContours(debugMat, new[] { bestContour }, 0, new Scalar(0, 255, 0), 1);
+                Cv2.Ellipse(debugMat, ellipse, new Scalar(0, 255, 255), 1);
+                Cv2.Line(debugMat, new OpenCvSharp.Point(majX1, majY1), new OpenCvSharp.Point(majX2, majY2), new Scalar(200, 255, 0), 2);
+                Cv2.Line(debugMat, new OpenCvSharp.Point(minX1, minY1), new OpenCvSharp.Point(minX2, minY2), new Scalar(0, 200, 255), 2);
+                Cv2.Circle(debugMat, seedPt, 4, new Scalar(0, 0, 255), -1);
+                var debugPath = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "MosaicTools", "measure_debug.png");
+                debugMat.SaveImage(debugPath);
             }
+            catch { }
 
             // Convert local → screen coords
             return new MeasurementResult(majorCm, minorCm, screenPoint,
-                new Point(captureX + majMinPt.x, captureY + majMinPt.y),
-                new Point(captureX + majMaxPt.x, captureY + majMaxPt.y),
-                new Point(captureX + perMinPt.x, captureY + perMinPt.y),
-                new Point(captureX + perMaxPt.x, captureY + perMaxPt.y));
+                new Point(captureX + majX1, captureY + majY1),
+                new Point(captureX + majX2, captureY + majY2),
+                new Point(captureX + minX1, captureY + minY1),
+                new Point(captureX + minX2, captureY + minY2));
         }
         catch (Exception ex)
         {
             Logger.Trace($"MeasureObjectAtPoint error: {ex.Message}");
             return null;
         }
-    }
-
-    private static (bool[,] mask, int count) FloodFill(
-        byte[,] gray, int w, int h, int seedX, int seedY, byte seedIntensity, int tolerance, int maxPixels)
-    {
-        var mask = new bool[h, w];
-        int count = 0;
-        int lo = Math.Max(0, seedIntensity - tolerance);
-        int hi = Math.Min(255, seedIntensity + tolerance);
-
-        var queue = new Queue<(int x, int y)>();
-        queue.Enqueue((seedX, seedY));
-        mask[seedY, seedX] = true;
-
-        while (queue.Count > 0 && count < maxPixels)
-        {
-            var (cx, cy) = queue.Dequeue();
-            count++;
-
-            for (int dy = -1; dy <= 1; dy++)
-                for (int dx = -1; dx <= 1; dx++)
-                {
-                    if (dx == 0 && dy == 0) continue;
-                    int nx = cx + dx, ny = cy + dy;
-                    if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
-                    if (mask[ny, nx]) continue;
-                    int gv = gray[ny, nx];
-                    if (gv >= lo && gv <= hi)
-                    {
-                        mask[ny, nx] = true;
-                        queue.Enqueue((nx, ny));
-                    }
-                }
-        }
-
-        return (mask, count);
     }
 
     /// <summary>

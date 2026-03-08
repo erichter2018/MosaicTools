@@ -41,6 +41,8 @@
     <!-- UI Automation (FlaUI is more modern than System.Windows.Automation) -->
     <PackageReference Include="FlaUI.UIA3" Version="4.0.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.2" />
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260308" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260302" />
 
     <!-- Global Keyboard Hooks -->
 

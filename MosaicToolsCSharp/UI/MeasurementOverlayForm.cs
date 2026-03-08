@@ -95,9 +95,15 @@ public class MeasurementOverlayForm : Form
             using var font = new Font("Segoe UI", 12, FontStyle.Bold);
             var textSize = g.MeasureString(text, font);
 
+            // Position label above the lines with clear separation
+            int linesTopY = Math.Min(Math.Min(result.MajorStart.Y, result.MajorEnd.Y),
+                Math.Min(result.MinorStart.Y, result.MinorEnd.Y)) + oy;
+            int linesBottomY = Math.Max(Math.Max(result.MajorStart.Y, result.MajorEnd.Y),
+                Math.Max(result.MinorStart.Y, result.MinorEnd.Y)) + oy;
             int textX = result.ScreenCenter.X + ox - (int)(textSize.Width / 2);
-            int textY = result.ScreenCenter.Y + oy - (int)(textSize.Height) - 20;
-            // Keep text inside the bitmap
+            int textY = linesTopY - (int)textSize.Height - 14;
+            // If no room above, place below the lines
+            if (textY < 4) textY = linesBottomY + 14;
             textX = Math.Max(4, Math.Min(formW - (int)textSize.Width - 4, textX));
             textY = Math.Max(4, Math.Min(formH - (int)textSize.Height - 4, textY));
 
