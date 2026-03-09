@@ -5060,7 +5060,7 @@ public class ActionController : IDisposable
                     // [Highlight Mode] Inject buttons and poll mode when iframe is connected
                     if (_cdpService.IsIframeConnected)
                     {
-                        try { _cdpService.InjectHighlightModeButtons(); } catch { }
+                        try { _cdpService.InjectHighlightModeButtons(_currentHighlightMode); } catch { }
 
                         try
                         {
@@ -5104,9 +5104,18 @@ public class ActionController : IDisposable
                         {
                             _automationService.PopulateFromCdpData(cdp);
                             fastReportText = cdp.ReportText;
-                            cdpHandled = true;
-                            _slowPathEverCompleted = true;
-                            _fastReadFailCount = 0;
+                            // Only mark CDP as authoritative if it returned meaningful data.
+                            // Empty accession means the iframe DOM read failed — fall through to FlaUI.
+                            cdpHandled = !string.IsNullOrEmpty(cdp.Accession);
+                            if (cdpHandled)
+                            {
+                                _slowPathEverCompleted = true;
+                                _fastReadFailCount = 0;
+                            }
+                            else
+                            {
+                                Logger.Trace("CDP scrape returned empty accession — falling through to FlaUI");
+                            }
                             if (!string.IsNullOrEmpty(fastReportText))
                             {
                                 UpdateReportPopup(fastReportText);
@@ -5693,7 +5702,7 @@ public class ActionController : IDisposable
         _templateRecordedForStudy = false;
         _lastSeenTemplateName = null;
         _lastPopupReportText = null;
-        _currentHighlightMode = "regular"; // Reset highlight mode for new study
+        // _currentHighlightMode intentionally NOT reset — persists across accession changes
         _lastRainbowReportText = null;
         _llmCapturedTemplate = null; // [LLM] Reset template for new study
         _llmCapturedTemplateAccession = null;

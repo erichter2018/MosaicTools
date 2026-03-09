@@ -7,6 +7,7 @@ namespace MosaicTools.Services;
 
 /// <summary>
 /// Global keyboard hook service using Win32 WH_KEYBOARD_LL.
+/// Hook runs on a dedicated thread with its own message pump for maximum reliability.
 /// </summary>
 public class KeyboardService : IDisposable
 {
@@ -14,6 +15,7 @@ public class KeyboardService : IDisposable
     private const int WH_KEYBOARD_LL = 13;
     private const int WM_KEYDOWN = 0x0100;
     private const int WM_SYSKEYDOWN = 0x0104;
+    private const int WM_QUIT = 0x0012;
 
     private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
@@ -36,6 +38,28 @@ public class KeyboardService : IDisposable
     [DllImport("user32.dll")]
     private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
 
+    [DllImport("user32.dll")]
+    private static extern bool PostThreadMessage(uint idThread, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
+    private static extern int GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+
+    [DllImport("user32.dll")]
+    private static extern bool TranslateMessage(ref MSG lpMsg);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr DispatchMessage(ref MSG lpMsg);
+
+    // Session change notification
+    [DllImport("wtsapi32.dll")]
+    private static extern bool WTSRegisterSessionNotification(IntPtr hWnd, int dwFlags);
+
+    [DllImport("wtsapi32.dll")]
+    private static extern bool WTSUnRegisterSessionNotification(IntPtr hWnd);
+
     [StructLayout(LayoutKind.Sequential)]
     private struct LASTINPUTINFO
     {
@@ -53,10 +77,27 @@ public class KeyboardService : IDisposable
         public IntPtr dwExtraInfo;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSG
+    {
+        public IntPtr hwnd;
+        public uint message;
+        public IntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public System.Drawing.Point pt;
+    }
+
     private const int VK_LCONTROL = 0xA2, VK_RCONTROL = 0xA3;
     private const int VK_LSHIFT = 0xA0, VK_RSHIFT = 0xA1;
     private const int VK_LMENU = 0xA4, VK_RMENU = 0xA5;
     private const int VK_LWIN = 0x5B, VK_RWIN = 0x5C;
+
+    // Custom message ID for reinstall request
+    private const uint WM_USER_REINSTALL = 0x0400 + 1;
+    private const int WM_WTSSESSION_CHANGE = 0x02B1;
+    private const int WTS_SESSION_UNLOCK = 0x8;
+    private const int NOTIFY_FOR_THIS_SESSION = 0;
 
     private IntPtr _hookId = IntPtr.Zero;
     private LowLevelKeyboardProc? _hookProc; // prevent GC of delegate
@@ -68,13 +109,65 @@ public class KeyboardService : IDisposable
     private Action<string>? _recordCallback;
     private readonly ConcurrentDictionary<string, DateTime> _lastTriggers = new();
 
-    // UI thread synchronization: hook must be reinstalled on a thread with a message pump.
-    // Set this from the main form to enable safe reinstall from the health timer.
+    // Dedicated hook thread
+    private Thread? _hookThread;
+    private uint _hookThreadId;
+    private volatile bool _hookThreadRunning;
+    private readonly ManualResetEventSlim _hookThreadReady = new(false);
+
+    // UI thread synchronization (kept for session unlock listener)
     public System.Windows.Forms.Control? UiSyncTarget { get; set; }
 
     public void Start()
     {
-        if (_hookId != IntPtr.Zero) return;
+        if (_hookThreadRunning) return;
+
+        LogLowLevelHooksTimeout();
+        StartHookThread();
+
+        // Health timer: check every 5s, reinstall if no callbacks for 15s while user is active
+        _hookHealthTimer ??= new System.Threading.Timer(CheckHookHealth, null, 5_000, 5_000);
+    }
+
+    /// <summary>
+    /// Log the LowLevelHooksTimeout registry value at startup for diagnostics.
+    /// </summary>
+    private static void LogLowLevelHooksTimeout()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"Control Panel\Desktop");
+            var val = key?.GetValue("LowLevelHooksTimeout");
+            Logger.Trace(val != null
+                ? $"Keyboard hook: LowLevelHooksTimeout registry = {val}ms"
+                : "Keyboard hook: LowLevelHooksTimeout not set (default ~300ms)");
+        }
+        catch { }
+    }
+
+    private void StartHookThread()
+    {
+        _hookThreadReady.Reset();
+        _hookThread = new Thread(HookThreadProc)
+        {
+            Name = "KeyboardHookThread",
+            IsBackground = true
+        };
+        _hookThread.SetApartmentState(ApartmentState.STA);
+        _hookThread.Start();
+
+        // Wait up to 3s for hook thread to be ready
+        if (!_hookThreadReady.Wait(3000))
+        {
+            Logger.Trace("Keyboard hook: WARNING - hook thread did not become ready in 3s");
+        }
+    }
+
+    private void HookThreadProc()
+    {
+        _hookThreadId = GetCurrentThreadId();
+        _hookThreadRunning = true;
 
         try
         {
@@ -87,29 +180,147 @@ public class KeyboardService : IDisposable
             {
                 var error = Marshal.GetLastWin32Error();
                 Logger.Trace($"Keyboard hook failed: SetWindowsHookEx error={error}");
+                _hookThreadRunning = false;
+                _hookThreadReady.Set();
+                return;
             }
-            else
+
+            Logger.Trace("Keyboard hook started on dedicated thread");
+            Interlocked.Exchange(ref _lastHookCallbackTicks, DateTime.UtcNow.Ticks);
+            _hookThreadReady.Set();
+
+            // Set up session unlock listener on UI thread
+            SetupSessionNotification();
+
+            // Message pump — keeps the hook alive
+            while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
             {
-                Logger.Trace("Keyboard hook started (Win32)");
-                Interlocked.Exchange(ref _lastHookCallbackTicks, DateTime.UtcNow.Ticks);
-                // Start hook health monitor - reinstall if OS silently removed it
-                // Check every 15s for fast recovery; uses GetLastInputInfo to avoid false positives
-                _hookHealthTimer ??= new System.Threading.Timer(CheckHookHealth, null, 15_000, 15_000);
+                if (msg.message == WM_USER_REINSTALL)
+                {
+                    // Reinstall request from health timer
+                    ReinstallHookOnThread();
+                    continue;
+                }
+                TranslateMessage(ref msg);
+                DispatchMessage(ref msg);
             }
         }
         catch (Exception ex)
         {
-            Logger.Trace($"Keyboard hook failed: {ex.Message}");
+            Logger.Trace($"Keyboard hook thread error: {ex.Message}");
+        }
+        finally
+        {
+            if (_hookId != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(_hookId);
+                _hookId = IntPtr.Zero;
+            }
+            _hookThreadRunning = false;
+            _hookThreadReady.Set(); // unblock anyone waiting
+        }
+    }
+
+    /// <summary>
+    /// Reinstall the hook on the hook thread (called from within the message pump).
+    /// </summary>
+    private void ReinstallHookOnThread()
+    {
+        try
+        {
+            if (_hookId != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(_hookId);
+                _hookId = IntPtr.Zero;
+            }
+
+            _hookProc = HookCallback;
+            using var curProcess = Process.GetCurrentProcess();
+            using var curModule = curProcess.MainModule!;
+            _hookId = SetWindowsHookEx(WH_KEYBOARD_LL, _hookProc, GetModuleHandle(curModule.ModuleName), 0);
+
+            if (_hookId == IntPtr.Zero)
+            {
+                var error = Marshal.GetLastWin32Error();
+                Logger.Trace($"Keyboard hook reinstall failed: error={error}");
+            }
+            else
+            {
+                Interlocked.Exchange(ref _lastHookCallbackTicks, DateTime.UtcNow.Ticks);
+                Logger.Trace("Keyboard hook reinstalled successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Keyboard hook reinstall error: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Set up session unlock detection. When the workstation unlocks, proactively reinstall the hook.
+    /// </summary>
+    private void SetupSessionNotification()
+    {
+        try
+        {
+            var syncTarget = UiSyncTarget;
+            if (syncTarget == null || !syncTarget.IsHandleCreated || syncTarget.IsDisposed) return;
+
+            syncTarget.BeginInvoke(() =>
+            {
+                try
+                {
+                    Microsoft.Win32.SystemEvents.SessionSwitch += OnSessionSwitch;
+                    Logger.Trace("Keyboard hook: session unlock listener registered");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Trace($"Session notification setup error: {ex.Message}");
+                }
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Session notification setup error: {ex.Message}");
+        }
+    }
+
+    private void OnSessionSwitch(object? sender, Microsoft.Win32.SessionSwitchEventArgs e)
+    {
+        if (e.Reason == Microsoft.Win32.SessionSwitchReason.SessionUnlock)
+        {
+            Logger.Trace("Session unlocked — proactively reinstalling keyboard hook");
+            RequestReinstall();
+        }
+    }
+
+    /// <summary>
+    /// Request hook reinstall by posting a message to the hook thread's message pump.
+    /// Thread-safe — can be called from any thread.
+    /// </summary>
+    private void RequestReinstall()
+    {
+        if (_hookThreadRunning && _hookThreadId != 0)
+        {
+            PostThreadMessage(_hookThreadId, WM_USER_REINSTALL, IntPtr.Zero, IntPtr.Zero);
         }
     }
 
     public void Stop()
     {
+        if (_hookThreadRunning && _hookThreadId != 0)
+        {
+            // Post WM_QUIT to exit the message pump
+            PostThreadMessage(_hookThreadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+            _hookThread?.Join(2000);
+        }
+
         if (_hookId != IntPtr.Zero)
         {
             UnhookWindowsHookEx(_hookId);
             _hookId = IntPtr.Zero;
         }
+        _hookThreadRunning = false;
     }
 
     public void RegisterHotkey(string hotkey, Action action)
@@ -159,39 +370,25 @@ public class KeyboardService : IDisposable
     {
         try
         {
-            if (_hookId == IntPtr.Zero) return;
+            if (!_hookThreadRunning)
+            {
+                // Hook thread died — restart it
+                Logger.Trace("Hook health: hook thread not running — restarting");
+                StartHookThread();
+                return;
+            }
+
             if (_hotkeyActions.Count == 0 && _directHotkeyActions.Count == 0) return;
 
             var secondsSinceCallback = (DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastHookCallbackTicks))
                                         / (double)TimeSpan.TicksPerSecond;
             var idleSeconds = GetIdleSeconds();
 
-            // Only reinstall if: user has been active (mouse/keyboard input within 30s)
-            // but our hook hasn't received any callbacks for 30s.
-            // This distinguishes "hook is dead" from "user isn't typing".
-            if (secondsSinceCallback > 30 && idleSeconds < 30)
+            // Reinstall if: user has been active (input within 15s) but hook hasn't fired for 15s
+            if (secondsSinceCallback > 15 && idleSeconds < 15)
             {
-                Logger.Trace($"Hook health: User active (idle {idleSeconds:F0}s) but no hook callbacks for {secondsSinceCallback:F0}s — reinstalling");
-
-                // CRITICAL: Must reinstall on a thread with a message pump (UI thread).
-                // WH_KEYBOARD_LL hooks installed on ThreadPool threads (no message pump) cause
-                // system-wide keyboard lag — Windows waits for LowLevelHooksTimeout (300ms) on
-                // every keystroke when the hook thread can't process callbacks.
-                var syncTarget = UiSyncTarget;
-                if (syncTarget != null && syncTarget.IsHandleCreated && !syncTarget.IsDisposed)
-                {
-                    syncTarget.BeginInvoke(() =>
-                    {
-                        Stop();
-                        Start();
-                    });
-                }
-                else
-                {
-                    Logger.Trace("Hook health: WARNING - no UI sync target, reinstalling on timer thread");
-                    Stop();
-                    Start();
-                }
+                Logger.Trace($"Hook health: User active (idle {idleSeconds:F0}s) but no hook callbacks for {secondsSinceCallback:F0}s — requesting reinstall");
+                RequestReinstall();
             }
         }
         catch (Exception ex)
@@ -338,8 +535,10 @@ public class KeyboardService : IDisposable
 
     public void Dispose()
     {
+        try { Microsoft.Win32.SystemEvents.SessionSwitch -= OnSessionSwitch; } catch { }
         _hookHealthTimer?.Dispose();
         _hookHealthTimer = null;
         Stop();
+        _hookThreadReady.Dispose();
     }
 }

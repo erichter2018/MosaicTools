@@ -1,3 +1,10 @@
+4.3.5
+- Fix: macros and accession detection failing when CDP returns empty data — now falls through to FlaUI backup scrape
+- Fix: keyboard hotkeys/toggle dying mid-session — hook now runs on dedicated thread with its own message pump (like AutoHotkey)
+- Keyboard hook health check tightened: 5s interval / 15s threshold (was 15s / 30s)
+- Keyboard hook proactively reinstalls on workstation unlock (session unlock detection)
+- Highlight mode (No Highlight / Regular / Rainbow) now persists across accession changes
+
 4.3.4
 - Fix: ruler overlay and auto-measurement not working when InteleViewer rulers are orange instead of yellow (broadened color detection)
 - Reduced log noise: viewport scanning no longer floods log with per-cycle cluster data
