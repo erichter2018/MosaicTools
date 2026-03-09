@@ -11,9 +11,9 @@
     <RootNamespace>MosaicTools</RootNamespace>
 
     <!-- Version -->
-    <Version>4.3.2</Version>
-    <AssemblyVersion>4.3.2.0</AssemblyVersion>
-    <FileVersion>4.3.2.0</FileVersion>
+    <Version>4.3.3</Version>
+    <AssemblyVersion>4.3.3.0</AssemblyVersion>
+    <FileVersion>4.3.3.0</FileVersion>
 
     <!-- Application Icon -->
     <ApplicationIcon>MosaicTools.ico</ApplicationIcon>
@@ -43,6 +43,9 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.2" />
     <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260308" />
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260302" />
+
+    <!-- MobileSAM click-to-segment via ONNX Runtime (DirectML for GPU acceleration) -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.21.1" />
 
     <!-- Global Keyboard Hooks -->
 

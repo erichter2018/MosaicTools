@@ -1,3 +1,6 @@
+4.3.3
+- Auto-measurement segmentation overhaul: adaptive region growing with bilateral filtering, gradient-based edge stopping, and Canny edge-snap refinement for more accurate lesion boundary detection
+
 4.3.2
 - In-editor highlight mode toggle: three small buttons (No Highlight / Regular / Rainbow) in bottom-right of report editor to control text highlighting
 - No Highlight mode: hides all dictation highlights (Mosaic native and STT), works with visual enhancements

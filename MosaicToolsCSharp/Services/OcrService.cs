@@ -20,6 +20,7 @@ namespace MosaicTools.Services;
 public class OcrService
 {
     private readonly OcrEngine? _engine;
+    private readonly MobileSamService _mobileSam = new();
     
     public OcrService()
     {
@@ -1025,15 +1026,17 @@ public class OcrService
     }
 
     /// <summary>
-    /// Measure an object at a screen point using OpenCV pipeline:
-    /// bilateral filter → FloodFill (seed) → GrabCut (refine) → morphological close → FindContours → FitEllipse.
+    /// Measure an object at a screen point using MobileSAM (ONNX) for segmentation,
+    /// then OpenCV FitEllipse for axis measurements.
     /// </summary>
     public MeasurementResult? MeasureObjectAtPoint(
         Point screenPoint, Rectangle viewport, double pxPerCmH, double pxPerCmV)
     {
         try
         {
-            int captureRadius = 200;
+            // Use a small crop so the lesion dominates the frame — SAM segments
+            // "the object" so the lesion needs to be the largest thing visible.
+            int captureRadius = 80;
             int captureX = Math.Max(viewport.Left, screenPoint.X - captureRadius);
             int captureY = Math.Max(viewport.Top, screenPoint.Y - captureRadius);
             int captureW = Math.Min(captureRadius * 2, viewport.Right - captureX);
@@ -1061,172 +1064,175 @@ public class OcrService
             using var region = fullScreen.Clone(
                 new Rectangle(bmpX, bmpY, captureW, captureH), PixelFormat.Format32bppArgb);
 
-            // === OpenCV preprocessing: grayscale → bilateral filter → CLAHE ===
-            var rData = region.LockBits(new Rectangle(0, 0, captureW, captureH),
+            // === Region Growing + Edge-Snap Refinement ===
+            // Region growing was "almost there" — slightly over-measures.
+            // Fix: grow the region, then trim boundary pixels that sit on strong edges.
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            // Convert region to grayscale
+            var rDataRg = region.LockBits(new Rectangle(0, 0, captureW, captureH),
                 ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-            using var src = Mat.FromPixelData(captureH, captureW, MatType.CV_8UC4, rData.Scan0, rData.Stride);
+            using var regionMat = Mat.FromPixelData(captureH, captureW, MatType.CV_8UC4, rDataRg.Scan0, rDataRg.Stride);
             using var grayMat = new Mat();
-            Cv2.CvtColor(src, grayMat, ColorConversionCodes.BGRA2GRAY);
-            region.UnlockBits(rData);
+            Cv2.CvtColor(regionMat, grayMat, ColorConversionCodes.BGRA2GRAY);
+            region.UnlockBits(rDataRg);
 
-            // Bilateral filter: denoise while preserving edges
-            using var enhanced = new Mat();
-            Cv2.BilateralFilter(grayMat, enhanced, d: 9, sigmaColor: 75, sigmaSpace: 75);
+            // 1. Bilateral filter — edge-preserving smoothing
+            using var filtered = new Mat();
+            Cv2.BilateralFilter(grayMat, filtered, 9, 75, 75);
 
-            // === Hybrid segmentation: intensity threshold → GrabCut refinement ===
-            var seedPt = new OpenCvSharp.Point(seedX, seedY);
-            int maxArea = captureW * captureH / 4;
-
-            // Step 1: Sample click neighborhood to get intensity statistics
-            int patchR = 7;
-            var patchRect = new Rect(
-                Math.Max(0, seedX - patchR), Math.Max(0, seedY - patchR),
-                Math.Min(patchR * 2 + 1, captureW - Math.Max(0, seedX - patchR)),
-                Math.Min(patchR * 2 + 1, captureH - Math.Max(0, seedY - patchR)));
-            using var patch = new Mat(enhanced, patchRect);
-            Cv2.MeanStdDev(patch, out Scalar patchMean, out Scalar patchStdDev);
-            double seedMean = patchMean.Val0;
-            double seedStd = Math.Max(patchStdDev.Val0, 8); // floor at 8
-
-            Logger.Trace($"AutoMeasure: seed intensity={seedMean:F0}±{seedStd:F0}");
-
-            // Step 2: Intensity-based rough segmentation (±2σ from click intensity)
-            using var roughMask = new Mat();
-            Cv2.InRange(enhanced, new Scalar(seedMean - 2.0 * seedStd),
-                new Scalar(seedMean + 2.0 * seedStd), roughMask);
-
-            // Morphological cleanup of threshold result
-            using var threshKernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(5, 5));
-            Cv2.MorphologyEx(roughMask, roughMask, MorphTypes.Close, threshKernel);
-            Cv2.MorphologyEx(roughMask, roughMask, MorphTypes.Open, threshKernel);
-
-            // Keep only the connected component containing the click point
-            using var labels = new Mat();
-            using var stats = new Mat();
-            using var centroids = new Mat();
-            int nLabels = Cv2.ConnectedComponentsWithStats(roughMask, labels, stats, centroids);
-            int seedLabel = labels.At<int>(seedY, seedX);
-            if (seedLabel == 0)
-            {
-                Logger.Trace("AutoMeasure: click point not on any thresholded region");
-                return null;
-            }
-            using var connectedMask = new Mat();
-            Cv2.Compare(labels, new Scalar(seedLabel), connectedMask, CmpTypes.EQ);
-            int roughCount = Cv2.CountNonZero(connectedMask);
-            Logger.Trace($"AutoMeasure: rough threshold region {roughCount}px");
-
-            if (roughCount < 30 || roughCount >= maxArea)
-            {
-                Logger.Trace($"AutoMeasure: rough region invalid ({roughCount}px)");
-                return null;
-            }
-
-            // Step 3: Build multi-channel image for GrabCut (intensity + gradient + Laplacian)
+            // 2. Gradient magnitude for edge stopping during grow
             using var gradX = new Mat();
             using var gradY = new Mat();
-            Cv2.Sobel(enhanced, gradX, MatType.CV_32F, 1, 0, ksize: 3);
-            Cv2.Sobel(enhanced, gradY, MatType.CV_32F, 0, 1, ksize: 3);
             using var gradMag = new Mat();
+            Cv2.Sobel(filtered, gradX, MatType.CV_64F, 1, 0, 3);
+            Cv2.Sobel(filtered, gradY, MatType.CV_64F, 0, 1, 3);
             Cv2.Magnitude(gradX, gradY, gradMag);
-            Cv2.MinMaxLoc(gradMag, out _, out double gradMax);
             using var gradNorm = new Mat();
-            gradMag.ConvertTo(gradNorm, MatType.CV_8U, gradMax > 0 ? 255.0 / gradMax : 1.0);
+            Cv2.Normalize(gradMag, gradNorm, 0, 255, NormTypes.MinMax);
+            gradNorm.ConvertTo(gradNorm, MatType.CV_8UC1);
 
-            using var laplacian = new Mat();
-            Cv2.Laplacian(enhanced, laplacian, MatType.CV_8U, ksize: 3);
+            // 3. Sample seed neighborhood for adaptive threshold
+            int nhRadius = 3;
+            int nhX1 = Math.Max(0, seedX - nhRadius), nhY1 = Math.Max(0, seedY - nhRadius);
+            int nhX2 = Math.Min(captureW - 1, seedX + nhRadius), nhY2 = Math.Min(captureH - 1, seedY + nhRadius);
+            using var seedRegion = new Mat(filtered, new OpenCvSharp.Rect(nhX1, nhY1, nhX2 - nhX1 + 1, nhY2 - nhY1 + 1));
+            Cv2.MeanStdDev(seedRegion, out Scalar meanVal, out Scalar stddevVal);
 
-            using var multiChannel = new Mat();
-            Cv2.Merge(new[] { enhanced, gradNorm, laplacian }, multiChannel);
+            double seedMean = meanVal[0];
+            double seedStddev = Math.Max(stddevVal[0], 5.0);
+            double multiplier = 2.5;
+            double lo = seedMean - multiplier * seedStddev;
+            double hi = seedMean + multiplier * seedStddev;
+            double gradThreshold = 40;
 
-            // Step 4: Build GrabCut mask with 4 zones
-            using var gcMask = new Mat(captureH, captureW, MatType.CV_8UC1, new Scalar(0)); // BGD
+            Logger.Trace($"AutoMeasure: grow seed=({seedX},{seedY}), mean={seedMean:F1}, " +
+                $"std={seedStddev:F1}, range=[{lo:F0},{hi:F0}]");
 
-            // Probable background: dilated region around the object
-            using var dilated = new Mat();
-            using var dilateKernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(25, 25));
-            Cv2.Dilate(connectedMask, dilated, dilateKernel);
-            gcMask.SetTo(new Scalar(2), dilated); // PR_BGD
+            // 4. Region growing with 8-connectivity
+            var visited = new bool[captureH, captureW];
+            var member = new bool[captureH, captureW];
+            var queue = new Queue<(int x, int y)>();
+            queue.Enqueue((seedX, seedY));
+            visited[seedY, seedX] = true;
+            member[seedY, seedX] = true;
+            int totalPixels = 1;
+            int checkpointCount = 0;
+            int[] dx = { -1, 1, 0, 0, -1, -1, 1, 1 };
+            int[] dy = { 0, 0, -1, 1, -1, 1, -1, 1 };
 
-            // Probable foreground: the rough threshold region
-            gcMask.SetTo(new Scalar(3), connectedMask); // PR_FGD
+            while (queue.Count > 0)
+            {
+                var (px, py) = queue.Dequeue();
+                for (int d = 0; d < 8; d++)
+                {
+                    int nx = px + dx[d], ny = py + dy[d];
+                    if (nx < 0 || ny < 0 || nx >= captureW || ny >= captureH) continue;
+                    if (visited[ny, nx]) continue;
+                    visited[ny, nx] = true;
 
-            // Definite foreground: eroded core of the region
-            using var eroded = new Mat();
-            using var erodeKernelSmall = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(7, 7));
-            Cv2.Erode(connectedMask, eroded, erodeKernelSmall, iterations: 2);
-            int erodedCount = Cv2.CountNonZero(eroded);
-            if (erodedCount > 10)
-                gcMask.SetTo(new Scalar(1), eroded); // FGD
+                    byte val = filtered.At<byte>(ny, nx);
+                    byte grad = gradNorm.At<byte>(ny, nx);
 
-            // Step 5: Edge constraints — mark strong edges as definite background
+                    if (val >= lo && val <= hi && grad < gradThreshold)
+                    {
+                        member[ny, nx] = true;
+                        queue.Enqueue((nx, ny));
+                        totalPixels++;
+                    }
+                }
+
+                if (totalPixels - checkpointCount >= 500)
+                {
+                    if (checkpointCount > 200)
+                    {
+                        double growthRate = (double)totalPixels / checkpointCount;
+                        if (growthRate > 3.0) break;
+                    }
+                    checkpointCount = totalPixels;
+                    if (totalPixels > captureW * captureH * 0.6) break;
+                }
+            }
+
+            Logger.Trace($"AutoMeasure: grew to {totalPixels}px in {sw.ElapsedMilliseconds}ms");
+
+            if (totalPixels < 50)
+            {
+                Logger.Trace("AutoMeasure: region too small");
+                return null;
+            }
+
+            // 5. Convert to mask
+            using var growMask = new Mat(captureH, captureW, MatType.CV_8UC1, Scalar.All(0));
+            for (int y = 0; y < captureH; y++)
+                for (int x = 0; x < captureW; x++)
+                    if (member[y, x])
+                        growMask.Set(y, x, (byte)255);
+
+            // 6. Edge-snap refinement: erode, then trim pixels near strong edges
+            //    This tightens the boundary to the actual lesion edge.
             using var edges = new Mat();
-            Cv2.Canny(enhanced, edges, 30, 90);
-            using var edgeDilated = new Mat();
-            Cv2.Dilate(edges, edgeDilated, Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(3, 3)));
-            // Only override probable regions, not definite foreground
-            using var prFgdZone = new Mat();
-            using var prBgdZone = new Mat();
-            Cv2.Compare(gcMask, new Scalar(3), prFgdZone, CmpTypes.EQ);
-            Cv2.Compare(gcMask, new Scalar(2), prBgdZone, CmpTypes.EQ);
-            using var probableZone = new Mat();
-            Cv2.BitwiseOr(prFgdZone, prBgdZone, probableZone);
-            using var edgeInProbable = new Mat();
-            Cv2.BitwiseAnd(edgeDilated, probableZone, edgeInProbable);
-            gcMask.SetTo(new Scalar(0), edgeInProbable); // BGD
+            Cv2.Canny(filtered, edges, 30, 90);
+            using var edgeDilK = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(3, 3));
+            Cv2.Dilate(edges, edges, edgeDilK);
 
-            // Step 6: Run GrabCut
-            using var bgModel = new Mat();
-            using var fgModel = new Mat();
-            var gcRect = Cv2.BoundingRect(dilated);
-            Cv2.GrabCut(multiChannel, gcMask, gcRect, bgModel, fgModel, 5, GrabCutModes.InitWithMask);
-
-            // Extract foreground (FGD=1 or PR_FGD=3)
+            // Subtract edge pixels from the grown region (snaps boundary inward)
             using var roiMask = new Mat();
-            using var fgdMask = new Mat();
-            using var prFgdMask = new Mat();
-            Cv2.Compare(gcMask, new Scalar(1), fgdMask, CmpTypes.EQ);
-            Cv2.Compare(gcMask, new Scalar(3), prFgdMask, CmpTypes.EQ);
-            Cv2.BitwiseOr(fgdMask, prFgdMask, roiMask);
+            Cv2.Subtract(growMask, edges, roiMask);
 
-            // Morphological close to fill small gaps
+            // 7. Keep only the connected component containing the seed
+            using var ccLabels = new Mat();
+            int nLabels = Cv2.ConnectedComponents(roiMask, ccLabels);
+            int seedLabel = ccLabels.At<int>(seedY, seedX);
+
+            if (seedLabel > 0)
+            {
+                using var seedMask = new Mat(captureH, captureW, MatType.CV_8UC1, Scalar.All(0));
+                int finalCount = 0;
+                for (int y = 0; y < captureH; y++)
+                    for (int x = 0; x < captureW; x++)
+                        if (ccLabels.At<int>(y, x) == seedLabel)
+                        {
+                            seedMask.Set(y, x, (byte)255);
+                            finalCount++;
+                        }
+                seedMask.CopyTo(roiMask);
+                Logger.Trace($"AutoMeasure: edge-snap refined to {finalCount}px");
+            }
+
+            // 8. Morphological cleanup: close holes from edge subtraction, smooth boundary
             using var closeKernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(5, 5));
-            Cv2.MorphologyEx(roiMask, roiMask, MorphTypes.Close, closeKernel);
+            Cv2.MorphologyEx(roiMask, roiMask, MorphTypes.Close, closeKernel, iterations: 2);
+            using var openKernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(3, 3));
+            Cv2.MorphologyEx(roiMask, roiMask, MorphTypes.Open, openKernel);
 
             int segCount = Cv2.CountNonZero(roiMask);
-            Logger.Trace($"AutoMeasure: GrabCut refined {segCount}px, seed=({seedX},{seedY})");
-
             if (segCount < 50)
             {
-                Logger.Trace("AutoMeasure: GrabCut segmentation too small");
-                return null;
-            }
-            if (segCount >= maxArea)
-            {
-                Logger.Trace("AutoMeasure: GrabCut segmentation overflowed");
+                Logger.Trace("AutoMeasure: final mask too small after edge-snap");
                 return null;
             }
 
-            // === FindContours on the mask → pick largest → FitEllipse ===
-            Cv2.FindContours(roiMask, out OpenCvSharp.Point[][] contours, out _,
+            // === FindContours → pick largest → FitEllipse ===
+            Cv2.FindContours(roiMask, out OpenCvSharp.Point[][] finalContours, out _,
                 RetrievalModes.External, ContourApproximationModes.ApproxSimple);
 
-            if (contours.Length == 0)
+            if (finalContours.Length == 0)
             {
-                Logger.Trace("AutoMeasure: no contours from GrabCut mask");
+                Logger.Trace("AutoMeasure: no contours from mask");
                 return null;
             }
 
-            // Pick the largest contour (should be the flood-filled region)
-            var bestContour = contours.OrderByDescending(c => Cv2.ContourArea(c)).First();
-            if (bestContour.Length < 5)
+            // Pick the largest contour
+            var fitContour = finalContours.OrderByDescending(c => Cv2.ContourArea(c)).First();
+            if (fitContour.Length < 5)
             {
-                Logger.Trace($"AutoMeasure: contour too small ({bestContour.Length} pts)");
+                Logger.Trace($"AutoMeasure: contour too small ({fitContour.Length} pts)");
                 return null;
             }
 
             // === FitEllipse for precise axes ===
-            var ellipse = Cv2.FitEllipse(bestContour);
+            var ellipse = Cv2.FitEllipse(fitContour);
             float majorPx = Math.Max(ellipse.Size.Width, ellipse.Size.Height);
             float minorPx = Math.Min(ellipse.Size.Width, ellipse.Size.Height);
 
@@ -1244,7 +1250,7 @@ public class OcrService
             double majorCm = majorPx / majorPxPerCm;
             double minorCm = minorPx / minorPxPerCm;
 
-            Logger.Trace($"AutoMeasure: contour={bestContour.Length}pts, " +
+            Logger.Trace($"AutoMeasure: contour={fitContour.Length}pts, " +
                 $"ellipse={majorPx:F1}x{minorPx:F1}px@{angleDeg:F0}°, " +
                 $"center=({ellipse.Center.X:F0},{ellipse.Center.Y:F0}), " +
                 $"{majorCm:F1}x{minorCm:F1}cm");
@@ -1265,21 +1271,27 @@ public class OcrService
             int minX2 = (int)(cx + perCos * minorPx / 2);
             int minY2 = (int)(cy + perSin * minorPx / 2);
 
-            // Save debug image: grayscale bg + green mask + yellow ellipse + lines + seed
+            // Save debug image
             try
             {
+                var rData = region.LockBits(new Rectangle(0, 0, captureW, captureH),
+                    ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                using var src = Mat.FromPixelData(captureH, captureW, MatType.CV_8UC4, rData.Scan0, rData.Stride);
+                using var dbgGray = new Mat();
+                Cv2.CvtColor(src, dbgGray, ColorConversionCodes.BGRA2GRAY);
+                region.UnlockBits(rData);
+
                 using var debugMat = new Mat();
-                Cv2.CvtColor(grayMat, debugMat, ColorConversionCodes.GRAY2BGR);
-                // Overlay mask in green
+                Cv2.CvtColor(dbgGray, debugMat, ColorConversionCodes.GRAY2BGR);
                 for (int y = 0; y < captureH; y++)
                     for (int x = 0; x < captureW; x++)
                         if (roiMask.At<byte>(y, x) > 0)
                             debugMat.Set(y, x, new Vec3b(0, 180, 0));
-                Cv2.DrawContours(debugMat, new[] { bestContour }, 0, new Scalar(0, 255, 0), 1);
+                Cv2.DrawContours(debugMat, new[] { fitContour }, 0, new Scalar(0, 255, 0), 1);
                 Cv2.Ellipse(debugMat, ellipse, new Scalar(0, 255, 255), 1);
                 Cv2.Line(debugMat, new OpenCvSharp.Point(majX1, majY1), new OpenCvSharp.Point(majX2, majY2), new Scalar(200, 255, 0), 2);
                 Cv2.Line(debugMat, new OpenCvSharp.Point(minX1, minY1), new OpenCvSharp.Point(minX2, minY2), new Scalar(0, 200, 255), 2);
-                Cv2.Circle(debugMat, seedPt, 4, new Scalar(0, 0, 255), -1);
+                Cv2.Circle(debugMat, new OpenCvSharp.Point(seedX, seedY), 4, new Scalar(0, 0, 255), -1);
                 var debugPath = System.IO.Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "MosaicTools", "measure_debug.png");
