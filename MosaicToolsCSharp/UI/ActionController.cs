@@ -5506,6 +5506,7 @@ public class ActionController : IDisposable
             if (!string.IsNullOrEmpty(currentAccession) && !string.IsNullOrEmpty(reportText)
                 && !_needsBaselineCapture && !_searchingForImpression
                 && !_pendingClarioPriorityRetry
+                && string.IsNullOrEmpty(_pendingMacroAccession)
                 && !IsReportBurstModeActive(nowTick64))
             {
                 _slowPathDormant = true;

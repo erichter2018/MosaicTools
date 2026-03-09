@@ -1,3 +1,7 @@
+4.3.6
+- Fix: macros not populating on drafted studies (dormancy blocked slow-path macro insertion until user toggled dictation)
+- Fix: keyboard hook health checker reinstalling hook every 15s when user is mouse/mic-only (exponential backoff after 2 consecutive reinstalls without keyboard activity)
+
 4.3.5
 - Fix: macros and accession detection failing when CDP returns empty data — now falls through to FlaUI backup scrape
 - Fix: keyboard hotkeys/toggle dying mid-session — hook now runs on dedicated thread with its own message pump (like AutoHotkey)

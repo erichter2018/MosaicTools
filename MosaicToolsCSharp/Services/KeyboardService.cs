@@ -115,6 +115,11 @@ public class KeyboardService : IDisposable
     private volatile bool _hookThreadRunning;
     private readonly ManualResetEventSlim _hookThreadReady = new(false);
 
+    // Health check backoff: prevents constant reinstall when user is mouse-only (no keyboard)
+    // GetLastInputInfo includes mouse movement, so idle=0 doesn't mean keyboard is active.
+    private int _reinstallsSinceLastCallback;  // consecutive reinstalls without a callback in between
+    private int _healthCheckSkipsRemaining;    // backoff counter — skip this many checks before trying again
+
     // UI thread synchronization (kept for session unlock listener)
     public System.Windows.Forms.Control? UiSyncTarget { get; set; }
 
@@ -290,6 +295,8 @@ public class KeyboardService : IDisposable
         if (e.Reason == Microsoft.Win32.SessionSwitchReason.SessionUnlock)
         {
             Logger.Trace("Session unlocked — proactively reinstalling keyboard hook");
+            _reinstallsSinceLastCallback = 0;
+            _healthCheckSkipsRemaining = 0;
             RequestReinstall();
         }
     }
@@ -374,11 +381,22 @@ public class KeyboardService : IDisposable
             {
                 // Hook thread died — restart it
                 Logger.Trace("Hook health: hook thread not running — restarting");
+                _reinstallsSinceLastCallback = 0;
+                _healthCheckSkipsRemaining = 0;
                 StartHookThread();
                 return;
             }
 
             if (_hotkeyActions.Count == 0 && _directHotkeyActions.Count == 0) return;
+
+            // Backoff: skip checks after consecutive reinstalls without any callbacks.
+            // This prevents constant reinstall spam when user is mouse/mic-only (no keyboard).
+            // GetLastInputInfo counts mouse movement as activity, so idle<15s doesn't mean keyboard is in use.
+            if (_healthCheckSkipsRemaining > 0)
+            {
+                _healthCheckSkipsRemaining--;
+                return;
+            }
 
             var secondsSinceCallback = (DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastHookCallbackTicks))
                                         / (double)TimeSpan.TicksPerSecond;
@@ -387,8 +405,23 @@ public class KeyboardService : IDisposable
             // Reinstall if: user has been active (input within 15s) but hook hasn't fired for 15s
             if (secondsSinceCallback > 15 && idleSeconds < 15)
             {
-                Logger.Trace($"Hook health: User active (idle {idleSeconds:F0}s) but no hook callbacks for {secondsSinceCallback:F0}s — requesting reinstall");
-                RequestReinstall();
+                _reinstallsSinceLastCallback++;
+
+                if (_reinstallsSinceLastCallback <= 2)
+                {
+                    // First 2 reinstalls: try immediately (hook might genuinely be dead)
+                    Logger.Trace($"Hook health: User active (idle {idleSeconds:F0}s) but no hook callbacks for {secondsSinceCallback:F0}s — reinstall #{_reinstallsSinceLastCallback}");
+                    RequestReinstall();
+                }
+                else
+                {
+                    // 3+ reinstalls with no callback: user is probably mouse/mic-only.
+                    // Back off exponentially: skip 12/24/48/... checks (60s/120s/240s/... at 5s interval), capped at 5 min.
+                    var skipCount = Math.Min(60, 12 * (1 << (_reinstallsSinceLastCallback - 3)));
+                    _healthCheckSkipsRemaining = skipCount;
+                    Logger.Trace($"Hook health: {_reinstallsSinceLastCallback} reinstalls without callback — backing off {skipCount * 5}s (user likely mouse/mic-only)");
+                    RequestReinstall();
+                }
             }
         }
         catch (Exception ex)
@@ -400,6 +433,8 @@ public class KeyboardService : IDisposable
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         Interlocked.Exchange(ref _lastHookCallbackTicks, DateTime.UtcNow.Ticks);
+        _reinstallsSinceLastCallback = 0;
+        _healthCheckSkipsRemaining = 0;
 
         if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN))
         {
