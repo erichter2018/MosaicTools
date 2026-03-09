@@ -21,6 +21,8 @@ public class OcrService
 {
     private readonly OcrEngine? _engine;
     private readonly MobileSamService _mobileSam = new();
+    private string? _lastVirtualScreenKey;
+    private string? _lastYellowResult;
     
     public OcrService()
     {
@@ -167,7 +169,13 @@ public class OcrService
             var vScreenWidth = GetSystemMetrics(78); // SM_CXVIRTUALSCREEN
             var vScreenHeight = GetSystemMetrics(79); // SM_CYVIRTUALSCREEN
             
-            Logger.Trace($"Virtual screen: Left={vScreenLeft}, Top={vScreenTop}, W={vScreenWidth}, H={vScreenHeight}");
+            // Log virtual screen bounds only once
+            var vsKey = $"{vScreenLeft},{vScreenTop},{vScreenWidth},{vScreenHeight}";
+            if (vsKey != _lastVirtualScreenKey)
+            {
+                _lastVirtualScreenKey = vsKey;
+                Logger.Trace($"Virtual screen: Left={vScreenLeft}, Top={vScreenTop}, W={vScreenWidth}, H={vScreenHeight}");
+            }
             
             using var screenshot = new Bitmap(vScreenWidth, vScreenHeight);
             using var g = Graphics.FromImage(screenshot);
@@ -207,11 +215,13 @@ public class OcrService
                 screenshot.UnlockBits(bmpData);
             }
             
-            Logger.Trace($"Yellow scan found {yellowPoints.Count} points (step 4)");
-            
             if (yellowPoints.Count < 50)
             {
-                Logger.Trace("Not enough yellow pixels found");
+                if (_lastYellowResult != "none")
+                {
+                    _lastYellowResult = "none";
+                    Logger.Trace($"Yellow scan: only {yellowPoints.Count} points, no viewport");
+                }
                 return null;
             }
 
@@ -278,16 +288,12 @@ public class OcrService
                 }
             }
             
-            Logger.Trace($"Found {clusters.Count} clusters");
-
             // Find best cluster
             Rectangle? bestRect = null;
             long maxArea = 0;
 
             foreach (var r in clusters)
             {
-                Logger.Trace($"Cluster: {r.Width}x{r.Height} at {r.X},{r.Y}");
-
                 // Filter noise
                 if (r.Width < 50 || r.Height < 50) continue;
 
@@ -305,11 +311,20 @@ public class OcrService
                 var r = bestRect.Value;
                 // Convert back to screen coords
                 var resultRect = new Rectangle(vScreenLeft + r.X, vScreenTop + r.Y, r.Width, r.Height);
-                Logger.Trace($"Selected Best Cluster: {r.Width}x{r.Height} at ({resultRect.X},{resultRect.Y})");
+                var key = $"{r.Width}x{r.Height}@{resultRect.X},{resultRect.Y}";
+                if (key != _lastYellowResult)
+                {
+                    _lastYellowResult = key;
+                    Logger.Trace($"Yellow viewport: {r.Width}x{r.Height} at ({resultRect.X},{resultRect.Y})");
+                }
                 return resultRect;
             }
 
-            Logger.Trace("No valid clusters found");
+            if (_lastYellowResult != "none")
+            {
+                _lastYellowResult = "none";
+                Logger.Trace("No valid yellow clusters found");
+            }
             return null;
         }
         catch (Exception ex)
@@ -382,7 +397,7 @@ public class OcrService
                         for (int x = 0; x < w; x++)
                         {
                             byte* px = scan0 + y * stride + x * 4;
-                            if (px[2] > 180 && px[1] > 140 && px[0] < 120)
+                            if (px[2] > 180 && px[1] > 80 && px[0] < 120)
                             {
                                 yellowPerCol[x]++;
                                 yellowPerRow[y]++;
@@ -417,6 +432,20 @@ public class OcrService
                     for (int y = 0; y < h; y++) if (yellowPerRow[y] > maxRowYellow) maxRowYellow = yellowPerRow[y];
                     Logger.Trace($"CaptureRulerStrip: borderCols={borderColCount}(thr={borderColThreshold}), borderRows={borderRowCount}(thr={borderRowThreshold}), maxRowYellow={maxRowYellow}, {colDensities}");
 
+                    // Debug: sample pixel RGB at midpoint of strip to diagnose color issues
+                    {
+                        var rgbSample = new System.Text.StringBuilder("RGB samples col5: ");
+                        int sampleCol = Math.Min(5, w - 1);
+                        for (int si = 0; si < 5 && si < h; si++)
+                        {
+                            int sampleRow = h / 6 * (si + 1);
+                            if (sampleRow >= h) sampleRow = h - 1;
+                            byte* sp = scan0 + sampleRow * stride + sampleCol * 4;
+                            rgbSample.Append($"y{sampleRow}=({sp[2]},{sp[1]},{sp[0]}) ");
+                        }
+                        Logger.Trace($"CaptureRulerStrip: {rgbSample}");
+                    }
+
                     // Pass 2: Find the vertical range of tick marks (not the vertical line).
                     // The vertical ruler line is in the leftmost ~3 columns; ticks extend beyond.
                     // We use columns 4+ to determine where ticks exist vertically.
@@ -428,7 +457,7 @@ public class OcrService
                         {
                             if (isBorderCol[x]) continue; // Skip ruler vertical line
                             byte* px = scan0 + y * stride + x * 4;
-                            if (px[2] > 180 && px[1] > 140 && px[0] < 120)
+                            if (px[2] > 180 && px[1] > 80 && px[0] < 120)
                             {
                                 if (y < tickMinRow) tickMinRow = y;
                                 if (y > tickMaxRow) tickMaxRow = y;
@@ -459,7 +488,7 @@ public class OcrService
                         for (int x = 0; x < w; x++)
                         {
                             byte* px = scan0 + y * stride + x * 4;
-                            bool isYellow = (px[2] > 180 && px[1] > 140 && px[0] < 120);
+                            bool isYellow = (px[2] > 180 && px[1] > 80 && px[0] < 120);
                             isTick[y * w + x] = isYellow && x >= rulerStartCol && !isBorderRow[y] && inTickRange;
                         }
                     }
@@ -612,7 +641,7 @@ public class OcrService
                         for (int x = 0; x < w; x++)
                         {
                             byte* px = scan0 + y * stride + x * 4;
-                            if (px[2] > 180 && px[1] > 140 && px[0] < 120)
+                            if (px[2] > 180 && px[1] > 80 && px[0] < 120)
                             {
                                 yellowPerCol[x]++;
                                 yellowPerRow[y]++;
@@ -660,7 +689,7 @@ public class OcrService
                         {
                             if (isBorderCol[x]) continue;
                             byte* px = scan0 + y * stride + x * 4;
-                            if (px[2] > 180 && px[1] > 140 && px[0] < 120)
+                            if (px[2] > 180 && px[1] > 80 && px[0] < 120)
                             {
                                 if (x < tickMinCol) tickMinCol = x;
                                 if (x > tickMaxCol) tickMaxCol = x;
@@ -686,7 +715,7 @@ public class OcrService
                             if (isBorderCol[x]) continue;
                             bool inTickRange = (x >= tickMinCol && x <= tickMaxCol);
                             byte* px = scan0 + y * stride + x * 4;
-                            bool isYellow = (px[2] > 180 && px[1] > 140 && px[0] < 120);
+                            bool isYellow = (px[2] > 180 && px[1] > 80 && px[0] < 120);
                             isTick[y * w + x] = isYellow && inTickRange;
                         }
                     }

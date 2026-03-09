@@ -429,7 +429,7 @@ public class RulerOverlayForm : Form
                         for (int x = 0; x < w; x++)
                         {
                             byte* px = scan0 + y * stride + x * 4;
-                            if (px[2] > 180 && px[1] > 140 && px[0] < 120)
+                            if (px[2] > 180 && px[1] > 80 && px[0] < 120)
                                 count++;
                         }
                 }

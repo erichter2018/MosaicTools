@@ -1,3 +1,7 @@
+4.3.4
+- Fix: ruler overlay and auto-measurement not working when InteleViewer rulers are orange instead of yellow (broadened color detection)
+- Reduced log noise: viewport scanning no longer floods log with per-cycle cluster data
+
 4.3.3
 - Auto-measurement segmentation overhaul: adaptive region growing with bilateral filtering, gradient-based edge stopping, and Canny edge-snap refinement for more accurate lesion boundary detection
 
