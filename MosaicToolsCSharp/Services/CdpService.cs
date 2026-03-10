@@ -148,6 +148,8 @@ public class CdpService : IDisposable
             let t = '';
             for (const c of node.childNodes) {
                 if (c.nodeType === 3) { t += c.textContent; continue; }
+                // Skip MosaicTools-injected elements (fixer buttons, highlight mode buttons, etc.)
+                if (c.id && c.id.startsWith('mt-')) continue;
                 const tag = c.tagName;
                 if (tag === 'BR') { t += '\n'; continue; }
                 if (tag === 'OL') {
@@ -3263,10 +3265,11 @@ ${{visualEnhancements ? `
     /// Inject three small toggle buttons (OFF / STT / RAINBOW) in the bottom-right of the
     /// final report editor. Uses setInterval for periodic re-injection (React re-renders).
     /// </summary>
-    public void InjectHighlightModeButtons()
+    public void InjectHighlightModeButtons(string initialMode = "regular")
     {
         if (!IsIframeConnected || _highlightButtonsInjected) return;
 
+        var safeMode = initialMode == "none" || initialMode == "rainbow" ? initialMode : "regular";
         var js = @"(() => {
             const CID = 'mt-hl-mode-btns';
             const IID = '__mtHlModeBtnInterval';
@@ -3275,7 +3278,7 @@ ${{visualEnhancements ? `
             const old = document.getElementById(CID);
             if (old) old.remove();
 
-            if (!window.__mtHighlightMode) window.__mtHighlightMode = 'regular';
+            window.__mtHighlightMode = '%%MODE%%';".Replace("%%MODE%%", safeMode) + @"
 
             function injectBtns() {
                 if (document.getElementById(CID)) return;
@@ -3321,6 +3324,7 @@ ${{visualEnhancements ? `
                         ev.stopPropagation();
                         ev.preventDefault();
                         window.__mtHighlightMode = m.key;
+                        window.__mtHighlightModeUserChanged = m.key;
                         updateBtns();
                     });
                     btn.addEventListener('mouseenter', () => { btn.style.opacity = '0.8'; });
@@ -3345,15 +3349,17 @@ ${{visualEnhancements ? `
     }
 
     /// <summary>
-    /// Read the current highlight mode from the iframe (none/regular/rainbow).
-    /// Returns null if iframe not connected or eval fails.
+    /// Check if the user clicked a highlight mode button. Returns the new mode
+    /// (none/regular/rainbow) if changed, null otherwise. Clears the flag after reading.
     /// </summary>
-    public string? GetHighlightMode()
+    public string? ConsumeHighlightModeChange()
     {
         if (!IsIframeConnected) return null;
         try
         {
-            return ExtractResultValue(SendToIframe("window.__mtHighlightMode || 'regular'"));
+            var result = ExtractResultValue(SendToIframe(
+                "(() => { const v = window.__mtHighlightModeUserChanged; delete window.__mtHighlightModeUserChanged; return v || ''; })()"));
+            return string.IsNullOrEmpty(result) ? null : result;
         }
         catch { return null; }
     }

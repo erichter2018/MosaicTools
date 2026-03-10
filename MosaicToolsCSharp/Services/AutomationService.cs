@@ -1106,6 +1106,73 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     }
 
     /// <summary>
+    /// Extract ALL modalities from a study description (supports combined studies like "CT ... CTA ...").
+    /// Returns a set: e.g. {"CT", "CTA"} for "CT BRAIN PERFUSION CTA HEAD NECK".
+    /// </summary>
+    public static HashSet<string> ExtractAllModalities(string? text)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(text)) return result;
+        var upper = text.ToUpperInvariant();
+
+        // Check for CTA/MRA patterns anywhere in text (not just prefix)
+        if (upper.Contains("CT ANGIOGRAPHY") || upper.Contains("CT ANGIO")
+            || System.Text.RegularExpressions.Regex.IsMatch(upper, @"\bCTA\b"))
+            result.Add("CTA");
+        if (upper.Contains("MR ANGIOGRAPHY") || upper.Contains("MR ANGIO")
+            || System.Text.RegularExpressions.Regex.IsMatch(upper, @"\bMRA\b"))
+            result.Add("MRA");
+
+        // Check standard modality keywords anywhere (word-boundary)
+        foreach (var m in KnownModalities)
+        {
+            if (m == "CTA" || m == "MRA") continue; // already handled above
+            if (System.Text.RegularExpressions.Regex.IsMatch(upper, @"\b" + m + @"\b"))
+            {
+                var normalized = m == "MRI" ? "MR" : m;
+                // CT is implied by CTA, MR is implied by MRA — don't double-count
+                // unless CT/MR appears independently (e.g. "CT BRAIN ... CTA HEAD NECK" has both)
+                if (normalized == "CT" && result.Contains("CTA"))
+                {
+                    // Check if CT appears outside of CTA context
+                    // e.g. "CT BRAIN PERFUSION CTA HEAD NECK" — "CT " before CTA means both
+                    var ctMatch = System.Text.RegularExpressions.Regex.Match(upper, @"\bCT\b");
+                    if (ctMatch.Success)
+                    {
+                        // Verify this CT is not part of "CTA"
+                        int idx = ctMatch.Index;
+                        if (idx + 2 < upper.Length && upper[idx + 2] == 'A') continue;
+                        result.Add("CT");
+                    }
+                    continue;
+                }
+                if (normalized == "MR" && result.Contains("MRA")) continue;
+                result.Add(normalized);
+            }
+        }
+
+        return result;
+    }
+
+    private static readonly string[] StudyQualifiers = { "PERFUSION" };
+
+    /// <summary>
+    /// Extract protocol-level study qualifiers (e.g. PERFUSION) that must be present
+    /// in the template when they appear in the description.
+    /// </summary>
+    public static HashSet<string> ExtractStudyQualifiers(string? text)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(text)) return result;
+        var upper = text.ToUpperInvariant();
+        foreach (var q in StudyQualifiers)
+        {
+            if (upper.Contains(q)) result.Add(q);
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Extract modality + body parts from a study description for template search.
     /// e.g. "XR ABDOMEN 1 VIEW (KUB)" → "XR Abdomen", "CT CHEST ABDOMEN PELVIS WITH CONTRAST" → "CT Chest Abdomen Pelvis"
     /// </summary>
@@ -3152,16 +3219,28 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
 
         // Also check modality (CT vs XR vs MRI etc.) — body parts alone aren't sufficient
         // (e.g. "XR Abdomen" template should NOT match "CT ABDOMEN" description)
-        var descModality = ExtractModality(description);
-        var templateModality = ExtractModality(templateName);
-        bool modalityMatch = descModality == null || templateModality == null
-            || string.Equals(descModality, templateModality, StringComparison.OrdinalIgnoreCase);
+        // Use set comparison: combined studies like "CT BRAIN PERFUSION CTA HEAD NECK"
+        // contain both CT and CTA modalities, and the template must cover the same set.
+        var descModalities = ExtractAllModalities(description);
+        var templateModalities = ExtractAllModalities(templateName);
+        bool modalityMatch = descModalities.Count == 0 || templateModalities.Count == 0
+            || descModalities.SetEquals(templateModalities);
 
-        bool match = bodyMatch && modalityMatch;
+        // Check study qualifiers (PERFUSION, etc.) — these are protocol-level distinctions
+        // that aren't body parts but must match between description and template
+        var descQualifiers = ExtractStudyQualifiers(description);
+        var templateQualifiers = ExtractStudyQualifiers(templateName);
+        bool qualifierMatch = descQualifiers.IsSubsetOf(templateQualifiers);
+
+        bool match = bodyMatch && modalityMatch && qualifierMatch;
 
         if (!match)
         {
-            Logger.Trace($"Template MISMATCH: Description [{(descModality ?? "?")}:{string.Join(", ", descParts)}] vs Template [{(templateModality ?? "?")}:{string.Join(", ", templateParts)}]");
+            var modDesc = descModalities.Count > 0 ? string.Join("+", descModalities) : "?";
+            var modTpl = templateModalities.Count > 0 ? string.Join("+", templateModalities) : "?";
+            var qualDesc = descQualifiers.Count > 0 ? " qual=[" + string.Join(",", descQualifiers) + "]" : "";
+            var qualTpl = templateQualifiers.Count > 0 ? " qual=[" + string.Join(",", templateQualifiers) + "]" : "";
+            Logger.Trace($"Template MISMATCH: Description [{modDesc}:{string.Join(", ", descParts)}{qualDesc}] vs Template [{modTpl}:{string.Join(", ", templateParts)}{qualTpl}]");
         }
 
         return match;

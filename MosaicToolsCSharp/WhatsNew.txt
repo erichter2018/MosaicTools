@@ -1,3 +1,13 @@
+4.3.7
+- Fix: highlight mode (No Highlight/Regular/Rainbow) now reliably persists across accession changes — user's choice no longer reverts to Regular on new studies
+- Fix: impression fixer button text ("+no change", "=improved", etc.) no longer leaks into report popup display
+- Fix: impression fixer buttons now show in report popup even when "deletable impression points" is disabled
+- Fix: RadAI popup (classic mode) now auto-closes after inserting impression into report
+- Fix: template mismatch detection improved for combined studies (CT+CTA) and perfusion protocols
+- Fix: floating toolbar no longer flickers during ruler refresh when positioned away from rulers
+- Rainbow mode in-editor colors boosted for better visibility on dark backgrounds
+- Custom STT: "comparison none/none available" filtered out when multiple comparisons dictated
+
 4.3.6
 - Fix: macros not populating on drafted studies (dormancy blocked slow-path macro insertion until user toggled dictation)
 - Fix: keyboard hook health checker reinstalling hook every 15s when user is mouse/mic-only (exponential backoff after 2 consecutive reinstalls without keyboard activity)

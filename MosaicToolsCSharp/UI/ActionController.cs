@@ -282,6 +282,7 @@ public class ActionController : IDisposable
 
     // Highlight mode buttons (OFF / STT / RAINBOW) in editor
     private string _currentHighlightMode = "regular";
+    private bool _highlightModeAppliedForStudy; // Reset on accession change to re-apply mode effects
     private string? _lastRainbowReportText; // Track report text to recompute rainbow on changes
     private long _rainbowTextChangedTick64; // Debounce: tick when report text last changed in rainbow mode
 
@@ -2088,7 +2089,11 @@ public class ActionController : IDisposable
             foreach (System.Text.RegularExpressions.Match m in matches)
             {
                 var val = m.Groups[1].Value.Trim();
-                if (!string.IsNullOrWhiteSpace(val)) parts.Add(val);
+                if (string.IsNullOrWhiteSpace(val)) continue;
+                // For comparison: skip "none", "none available", etc. — only keep entries with actual dates
+                if (label == "Comparison" && System.Text.RegularExpressions.Regex.IsMatch(val, @"^none\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                    continue;
+                parts.Add(val);
             }
             if (parts.Count == 0) continue;
 
@@ -4003,6 +4008,7 @@ public class ActionController : IDisposable
         if (!_config.RulerOverlayEnabled || RulerOverlayForm.IsOpen) return;
         RulerOverlayForm.HideOtherOverlays = hide =>
             InvokeUI(() => _mainForm.SetFloatingToolbarVisible(!hide));
+        RulerOverlayForm.GetToolbarBounds = () => _mainForm.GetFloatingToolbarBounds();
         UpdateCachedToolbarBounds();
         InvokeUI(() => RulerOverlayForm.Show(_ocrService));
     }
@@ -4779,6 +4785,11 @@ public class ActionController : IDisposable
             Logger.Trace("RadAI Insert: Impression replaced in report");
             InvokeUI(() =>
             {
+                if (_currentRadAiPopup != null && !_currentRadAiPopup.IsDisposed)
+                {
+                    try { _currentRadAiPopup.Close(); } catch { }
+                    _currentRadAiPopup = null;
+                }
                 if (_currentReportPopup is { IsDisposed: false })
                     _currentReportPopup.SetRadAiImpressionActive(true);
                 _mainForm.ShowStatusToast("RadAI impression inserted", 3000);
@@ -5062,39 +5073,52 @@ public class ActionController : IDisposable
                     {
                         try { _cdpService.InjectHighlightModeButtons(_currentHighlightMode); } catch { }
 
+                        // Check if user clicked a highlight mode button (consume-once flag)
                         try
                         {
-                            var mode = _cdpService.GetHighlightMode();
-                            if (mode != null && mode != _currentHighlightMode)
+                            var userMode = _cdpService.ConsumeHighlightModeChange();
+                            if (userMode != null && userMode != _currentHighlightMode)
                             {
-                                Logger.Trace($"Highlight mode changed: {_currentHighlightMode} -> {mode}");
-                                _currentHighlightMode = mode;
-                                _lastRainbowReportText = null; // Force recompute on mode change
-                                switch (mode)
+                                Logger.Trace($"Highlight mode changed by user: {_currentHighlightMode} -> {userMode}");
+                                _currentHighlightMode = userMode;
+                                _highlightModeAppliedForStudy = false; // Force re-apply
+                            }
+                        }
+                        catch { }
+
+                        // Apply mode effects when needed (new study or user changed mode)
+                        if (!_highlightModeAppliedForStudy)
+                        {
+                            try
+                            {
+                                _lastRainbowReportText = null;
+                                switch (_currentHighlightMode)
                                 {
                                     case "none":
                                         _cdpService.HideAllHighlights();
+                                        _highlightModeAppliedForStudy = true;
                                         break;
                                     case "regular":
                                         _cdpService.ClearRainbowHighlights();
                                         _cdpService.SetRegularHighlightsVisible(true);
+                                        _highlightModeAppliedForStudy = true;
                                         break;
                                     case "rainbow":
                                         _cdpService.SetRegularHighlightsVisible(false);
-                                        // Apply rainbow immediately with last known report text
                                         var currentReport = _mosaicReader.LastFinalReport;
                                         if (!string.IsNullOrEmpty(currentReport))
                                         {
                                             try { ComputeAndApplyRainbow(currentReport); }
                                             catch { }
                                             _lastRainbowReportText = currentReport;
-                                            _rainbowTextChangedTick64 = 0; // No pending debounce
+                                            _rainbowTextChangedTick64 = 0;
+                                            _highlightModeAppliedForStudy = true;
                                         }
                                         break;
                                 }
                             }
+                            catch { }
                         }
-                        catch { }
                     }
 
                     try
@@ -5704,6 +5728,7 @@ public class ActionController : IDisposable
         _lastSeenTemplateName = null;
         _lastPopupReportText = null;
         // _currentHighlightMode intentionally NOT reset — persists across accession changes
+        _highlightModeAppliedForStudy = false; // Re-apply mode effects on new study
         _lastRainbowReportText = null;
         _llmCapturedTemplate = null; // [LLM] Reset template for new study
         _llmCapturedTemplateAccession = null;
@@ -6195,9 +6220,11 @@ public class ActionController : IDisposable
 
         foreach (var item in result.Items)
         {
-            // Use raw palette color — no pre-blending. CSS rgba alpha handles the rest.
+            // Boost colors for dark editor background — raw palette colors look washed out
+            // at 50% opacity on dark grey. Max out saturation and push lightness up.
             var color = item.HighlightColor ?? CorrelationService.Palette[item.ColorIndex];
-            var cssColor = $"{color.R},{color.G},{color.B}";
+            var boosted = CorrelationService.BoostForDarkBg(color);
+            var cssColor = $"{boosted.R},{boosted.G},{boosted.B}";
 
             // Impression text — highlight for matched groups (non-orphans)
             if (!string.IsNullOrWhiteSpace(item.ImpressionText))

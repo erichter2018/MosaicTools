@@ -539,6 +539,18 @@ public static class CorrelationService
     }
 
     /// <summary>
+    /// Boost a color for visibility on dark editor backgrounds: maximize saturation
+    /// and push lightness to ~65% so colors stay vivid at 50% CSS alpha.
+    /// </summary>
+    public static Color BoostForDarkBg(Color c)
+    {
+        var (h, s, l) = RgbToHsl(c);
+        s = Math.Min(1.0, s * 1.5 + 0.3); // push saturation toward 1.0
+        l = Math.Max(l, 0.65);             // ensure lightness is at least 65%
+        return HslToRgb(h, s, l);
+    }
+
+    /// <summary>
     /// Blend a palette color at ~30% alpha with a dark background.
     /// </summary>
     public static Color BlendWithBackground(Color paletteColor, Color background)

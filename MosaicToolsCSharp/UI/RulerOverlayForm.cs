@@ -55,10 +55,15 @@ public class RulerOverlayForm : Form
     public static Action<bool>? HideOtherOverlays { get; set; }
 
     /// <summary>
-    /// Cached toolbar bounds, updated periodically by MainForm/ActionController.
-    /// Used to skip hiding the toolbar when it doesn't overlap the capture area.
+    /// Cached toolbar bounds, updated before each overlap check.
     /// </summary>
     public static Rectangle? CachedToolbarBounds { get; set; }
+
+    /// <summary>
+    /// Callback to get current toolbar bounds (set by ActionController).
+    /// Called on UI thread before each ruler refresh to get up-to-date position.
+    /// </summary>
+    public static Func<Rectangle?>? GetToolbarBounds { get; set; }
 
 
     public static void Show(OcrService ocrService)
@@ -95,6 +100,8 @@ public class RulerOverlayForm : Form
         MouseUp += OnDragEnd;
     }
 
+    private System.Windows.Forms.Timer? _retryTimer;
+
     private void CaptureAndShow()
     {
         var timer = new System.Windows.Forms.Timer { Interval = 500 };
@@ -126,7 +133,25 @@ public class RulerOverlayForm : Form
     private void DoInitialCapture()
     {
         var viewport = _ocrService.FindYellowTarget();
-        if (!viewport.HasValue) return;
+        if (!viewport.HasValue)
+        {
+            // No yellow viewport yet — retry every 2s until one appears
+            if (_retryTimer == null)
+            {
+                _retryTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+                _retryTimer.Tick += (_, _) => DoInitialCapture();
+                _retryTimer.Start();
+            }
+            return;
+        }
+
+        // Found viewport — stop retry timer
+        if (_retryTimer != null)
+        {
+            _retryTimer.Stop();
+            _retryTimer.Dispose();
+            _retryTimer = null;
+        }
 
         bool needHide = ToolbarOverlapsCapture(viewport.Value);
         if (needHide)
@@ -292,6 +317,10 @@ public class RulerOverlayForm : Form
                 if (_hRuler != null && !_hRuler.IsDisposed) _hRuler.Visible = false;
             });
 
+            // Refresh cached toolbar bounds before overlap check (user may have moved it)
+            if (GetToolbarBounds != null)
+                SafeInvoke(() => CachedToolbarBounds = GetToolbarBounds());
+
             // Check if toolbar overlaps capture area using cached bounds
             var preViewport = _ocrService.FindYellowTarget();
             bool needHideToolbar = preViewport.HasValue && ToolbarOverlapsCapture(preViewport.Value);
@@ -443,6 +472,9 @@ public class RulerOverlayForm : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         CloseHorizontalRuler();
+        _retryTimer?.Stop();
+        _retryTimer?.Dispose();
+        _retryTimer = null;
         _checkTimer?.Dispose();
         _checkTimer = null;
         _rulerBitmap?.Dispose();

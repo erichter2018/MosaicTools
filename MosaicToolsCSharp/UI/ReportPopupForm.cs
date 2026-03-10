@@ -329,18 +329,18 @@ public class ReportPopupForm : Form
             ActiveControl = null;
             ApplyCurrentModeFormatting();
             PerformResize();
-            if (_deletableEnabled) PositionTrashIcons();
+            if (_deletableEnabled || _impressionFixerLabels.Count > 0) PositionTrashIcons();
         };
 
         this.Resize += (s, e) =>
         {
             PositionModeLabel();
-            if (_deletableEnabled) PositionTrashIcons();
+            if (_deletableEnabled || _impressionFixerLabels.Count > 0) PositionTrashIcons();
         };
 
         _richTextBox.VScroll += (s, e) =>
         {
-            if (_deletableEnabled) PositionTrashIcons();
+            if (_deletableEnabled || _impressionFixerLabels.Count > 0) PositionTrashIcons();
         };
     }
 
@@ -467,7 +467,7 @@ public class ReportPopupForm : Form
 
             // Deferred reposition: RTB layout from ContentsResized is async,
             // so trash icons may need repositioning after the form finishes resizing
-            if (_deletableEnabled)
+            if (_deletableEnabled || _impressionFixerLabels.Count > 0)
                 BeginInvoke(new Action(PositionTrashIcons));
         }
 
@@ -557,7 +557,6 @@ public class ReportPopupForm : Form
     public void SetImpressionFixers(List<ImpressionFixerEntry> entries)
     {
         if (_useLayeredWindow) return; // Only opaque mode supports interactive labels
-        if (!_deletableEnabled) return;
 
         _impressionFixerEntries = entries;
 
@@ -2008,14 +2007,14 @@ public class ReportPopupForm : Form
     /// </summary>
     private void PositionTrashIcons()
     {
-        if (_richTextBox == null || !_deletableEnabled) return;
+        if (_richTextBox == null) return;
 
         // Parse impression items from RichTextBox text
         var rtbText = _richTextBox.Text;
         int impressionStart = rtbText.IndexOf("IMPRESSION:", StringComparison.OrdinalIgnoreCase);
         if (impressionStart < 0)
         {
-            ClearTrashIcons();
+            if (_deletableEnabled) ClearTrashIcons();
             foreach (var lbl in _impressionFixerLabels) lbl.Visible = false;
             return;
         }
@@ -2066,6 +2065,8 @@ public class ReportPopupForm : Form
                 lbl.Visible = entryVisible;
             }
         }
+
+        if (!_deletableEnabled) return;
 
         // Find numbered items after IMPRESSION:
         int searchFrom = impressionStart + "IMPRESSION:".Length;
