@@ -1116,11 +1116,17 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         var upper = text.ToUpperInvariant();
 
         // Check for CTA/MRA patterns anywhere in text (not just prefix)
+        // "CT HEAD NECK ANGIOGRAPHY" is CTA even though CT and ANGIOGRAPHY aren't adjacent
+        bool hasCT = upper.Contains("CT ");
+        bool hasAngio = upper.Contains("ANGIO");
+        bool hasMR = upper.Contains("MR ") || upper.Contains("MRI");
         if (upper.Contains("CT ANGIOGRAPHY") || upper.Contains("CT ANGIO")
-            || System.Text.RegularExpressions.Regex.IsMatch(upper, @"\bCTA\b"))
+            || System.Text.RegularExpressions.Regex.IsMatch(upper, @"\bCTA\b")
+            || (hasCT && hasAngio))
             result.Add("CTA");
         if (upper.Contains("MR ANGIOGRAPHY") || upper.Contains("MR ANGIO")
-            || System.Text.RegularExpressions.Regex.IsMatch(upper, @"\bMRA\b"))
+            || System.Text.RegularExpressions.Regex.IsMatch(upper, @"\bMRA\b")
+            || (hasMR && hasAngio))
             result.Add("MRA");
 
         // Check standard modality keywords anywhere (word-boundary)
@@ -1134,16 +1140,24 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                 // unless CT/MR appears independently (e.g. "CT BRAIN ... CTA HEAD NECK" has both)
                 if (normalized == "CT" && result.Contains("CTA"))
                 {
-                    // Check if CT appears outside of CTA context
-                    // e.g. "CT BRAIN PERFUSION CTA HEAD NECK" — "CT " before CTA means both
-                    var ctMatch = System.Text.RegularExpressions.Regex.Match(upper, @"\bCT\b");
-                    if (ctMatch.Success)
+                    // CT is implied by CTA. Only add standalone CT if there's a separate
+                    // CT study component (e.g. "CT BRAIN PERFUSION CTA HEAD NECK" has both).
+                    // Look for "\bCT\b" that isn't part of "CTA" and isn't the CT that
+                    // combines with ANGIOGRAPHY later in the text (e.g. "CT HEAD NECK ANGIOGRAPHY").
+                    var ctMatches = System.Text.RegularExpressions.Regex.Matches(upper, @"\bCT\b");
+                    bool hasIndependentCT = false;
+                    foreach (System.Text.RegularExpressions.Match cm in ctMatches)
                     {
-                        // Verify this CT is not part of "CTA"
-                        int idx = ctMatch.Index;
+                        int idx = cm.Index;
+                        // Skip if this CT is part of "CTA"
                         if (idx + 2 < upper.Length && upper[idx + 2] == 'A') continue;
-                        result.Add("CT");
+                        // Skip if this is the only CT and it combines with ANGIO elsewhere
+                        // (e.g. "CT HEAD NECK ANGIOGRAPHY" — the CT + ANGIO = CTA, not CT + CTA)
+                        if (hasAngio && ctMatches.Count == 1) continue;
+                        hasIndependentCT = true;
+                        break;
                     }
+                    if (hasIndependentCT) result.Add("CT");
                     continue;
                 }
                 if (normalized == "MR" && result.Contains("MRA")) continue;
