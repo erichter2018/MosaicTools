@@ -95,6 +95,7 @@ public class SonioxProvider : ISttProvider
                 ["num_channels"] = AudioFormat.Channels,
                 ["enable_endpoint_detection"] = true,
                 ["max_endpoint_delay_ms"] = 300,
+                ["enable_punctuation"] = _autoPunctuate,
             };
             if (context != null)
                 config["context"] = context;
@@ -254,8 +255,35 @@ public class SonioxProvider : ISttProvider
         }
         finally
         {
+            FlushPendingWord(); // Emit any pending word before signaling disconnect
             _connected = false;
             ConnectionStateChanged?.Invoke(false);
+        }
+    }
+
+    /// <summary>Flush any pending word as a final result (e.g., on disconnect/error).</summary>
+    private void FlushPendingWord()
+    {
+        if (_pendingWordText.Length == 0) return;
+
+        var word = new SttWord(
+            Text: _pendingWordText,
+            PunctuatedText: _pendingWordText,
+            Confidence: _pendingWordConfSum / _pendingWordTokenCount,
+            StartTime: _pendingWordStartMs / 1000.0,
+            EndTime: _pendingWordEndMs / 1000.0
+        );
+        var transcript = string.Join("", _pendingTokenTexts).Trim();
+        _pendingTokenTexts.Clear();
+        _pendingWordText = "";
+        _pendingWordConfSum = 0;
+        _pendingWordTokenCount = 0;
+
+        if (!string.IsNullOrEmpty(transcript))
+        {
+            Logger.Trace($"SonioxProvider: Flushing pending word on disconnect: \"{transcript}\"");
+            TranscriptionReceived?.Invoke(new SttResult(transcript, new[] { word }, word.Confidence, true, false,
+                word.EndTime - word.StartTime));
         }
     }
 
@@ -271,6 +299,7 @@ public class SonioxProvider : ISttProvider
             {
                 var errMsg = root.TryGetProperty("error_message", out var em) ? em.GetString() : "Unknown error";
                 Logger.Trace($"SonioxProvider: Error {errCode.GetInt32()}: {errMsg}");
+                FlushPendingWord(); // Save any pending text before connection dies
                 if (errCode.GetInt32() == 401)
                     ErrorOccurred?.Invoke("Invalid API key. Check Settings.");
                 else
@@ -295,6 +324,7 @@ public class SonioxProvider : ISttProvider
             var completedTokenTexts = new List<string>(); // Raw token text for completed words only
             string nonFinalText = "";
             bool gotFinMarker = false;
+            bool gotEndMarker = false; // Soniox endpoint detection signal
 
             foreach (var tok in tokensEl.EnumerateArray())
             {
@@ -308,7 +338,30 @@ public class SonioxProvider : ISttProvider
                     continue;
                 }
                 if (text.StartsWith('<') && text.EndsWith('>'))
-                    continue; // Skip <end>, <sil>, etc.
+                {
+                    if (text == "<end>")
+                        gotEndMarker = true;
+                    Logger.Trace($"SonioxProvider: Special token: \"{text}\" final={isFinalToken}");
+                    continue;
+                }
+
+                // Strip punctuation when auto-punctuate is off.
+                // Punctuation can arrive as standalone tokens ("."), appended to words (" right."),
+                // or with leading space (" ."). Preserve the leading space for BPE word-boundary detection.
+                if (!_autoPunctuate && text.Length > 0)
+                {
+                    var leadingSpace = text.Length > 0 && text[0] == ' ' ? " " : "";
+                    var core = text.TrimStart();
+                    var stripped = core.Trim('.', ',', '!', '?', ';', ':');
+                    if (stripped != core)
+                    {
+                        Logger.Trace($"SonioxProvider: Stripped punctuation: \"{text}\" -> \"{leadingSpace + stripped}\"");
+                        text = leadingSpace + stripped;
+                    }
+                    // Drop token entirely if only whitespace/punctuation remains
+                    if (text.Trim().Length == 0)
+                        continue;
+                }
 
                 var confidence = tok.TryGetProperty("confidence", out var c) ? c.GetSingle() : 1f;
                 var startMs = tok.TryGetProperty("start_ms", out var sm) ? sm.GetInt32() : 0;
@@ -374,9 +427,16 @@ public class SonioxProvider : ISttProvider
                 }
             }
 
-            // Flush pending word on finalize (session end) — otherwise carry across responses
-            // so cross-message BPE splits like "perip"+"ancreatic" → "peripancreatic" merge properly
-            if (gotFinMarker && _pendingWordText.Length > 0)
+            // Flush pending word when:
+            // 1. <fin> marker (session finalize) or <end> marker (endpoint detection)
+            // 2. Word boundary crossed (finalWords.Count > 0) with no non-final text — the server
+            //    has committed words, and the pending word is likely complete.
+            //    NOTE: We use finalWords.Count (not just hadFinalTokens) to avoid flushing BPE
+            //    fragments that just started in this message (e.g., "siz" from "size" split across
+            //    messages). The <end> marker handles the single-word-at-endpoint case.
+            bool shouldFlush = gotFinMarker || gotEndMarker
+                || (_pendingWordText.Length > 0 && finalWords.Count > 0 && string.IsNullOrEmpty(nonFinalText));
+            if (shouldFlush && _pendingWordText.Length > 0)
             {
                 finalWords.Add(new SttWord(
                     Text: _pendingWordText,
@@ -402,6 +462,9 @@ public class SonioxProvider : ISttProvider
                 var transcript = string.Join("", completedTokenTexts).Trim();
                 var avgConf = finalWords.Average(w => w.Confidence);
                 var duration = finalWords.Max(w => w.EndTime) - finalWords.Min(w => w.StartTime);
+                Logger.Trace($"SonioxProvider: Emitting final: transcript=\"{(transcript.Length > 60 ? transcript[..60] + "..." : transcript)}\" words={finalWords.Count} tokenTexts={completedTokenTexts.Count} flush={shouldFlush} end={gotEndMarker} nonFinal=\"{(nonFinalText.Length > 30 ? nonFinalText[..30] + "..." : nonFinalText)}\"");
+                if (string.IsNullOrEmpty(transcript) && finalWords.Count > 0)
+                    Logger.Trace($"SonioxProvider: WARNING empty transcript with {finalWords.Count} words: [{string.Join(", ", finalWords.Select(w => $"\"{w.Text}\""))}]");
                 TranscriptionReceived?.Invoke(new SttResult(transcript, finalWords.ToArray(), avgConf, true, false, duration));
             }
 

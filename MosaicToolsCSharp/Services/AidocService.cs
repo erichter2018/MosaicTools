@@ -237,7 +237,7 @@ public class AidocService
         // Chest CT
         ["CHEST"] = new[] { "PE", "Ptx", "PN", "MalETT", "RV/LV", "AD", "M-Aorta", "CAC", "RibFx" },
         // Abdomen/Pelvis CT
-        ["ABDPELV"] = new[] { "FreeAir", "GIB", "M-AbdAo" },
+        ["ABDPELV"] = new[] { "FreeAir", "GIB", "M-AbdAo", "RibFx" },
         // Spine (non-cervical)
         ["SPINE"] = new[] { "VCFx" }
     };

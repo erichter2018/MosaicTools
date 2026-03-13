@@ -3237,6 +3237,16 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         // contain both CT and CTA modalities, and the template must cover the same set.
         var descModalities = ExtractAllModalities(description);
         var templateModalities = ExtractAllModalities(templateName);
+        // CTA subsumes CT (CTA protocol inherently includes CT), same for MRA/MR.
+        // e.g. "CT BRAIN PERFUSION CTA HEAD NECK" → {CT, CTA} should match template "CTA with Perfusion" → {CTA}
+        if (descModalities.Contains("CTA") && templateModalities.Contains("CTA"))
+            descModalities.Remove("CT");
+        if (descModalities.Contains("MRA") && templateModalities.Contains("MRA"))
+            descModalities.Remove("MR");
+        if (templateModalities.Contains("CTA") && descModalities.Contains("CTA"))
+            templateModalities.Remove("CT");
+        if (templateModalities.Contains("MRA") && descModalities.Contains("MRA"))
+            templateModalities.Remove("MR");
         bool modalityMatch = descModalities.Count == 0 || templateModalities.Count == 0
             || descModalities.SetEquals(templateModalities);
 

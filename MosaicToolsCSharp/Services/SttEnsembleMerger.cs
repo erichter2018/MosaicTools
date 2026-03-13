@@ -55,6 +55,7 @@ public class SttEnsembleMerger
     private readonly Configuration _config;
     private readonly int _waitMs;
     private readonly double _confidenceThreshold;
+    private readonly string _primaryName; // Primary/anchor provider name (e.g. "deepgram")
     private readonly string _s1Name; // Secondary provider 1 name (e.g. "soniox")
     private readonly string _s2Name; // Secondary provider 2 name (e.g. "speechmatics")
     private readonly object _lock = new();
@@ -128,11 +129,12 @@ public class SttEnsembleMerger
     public event Action<List<CorrectionRecord>>? CorrectionsEmitted;
 
     public SttEnsembleMerger(Configuration config, int waitMs = 500, double confidenceThreshold = 0.80,
-        string s1Name = "soniox", string s2Name = "speechmatics")
+        string primaryName = "deepgram", string s1Name = "soniox", string s2Name = "speechmatics")
     {
         _config = config;
         _waitMs = waitMs;
         _confidenceThreshold = confidenceThreshold;
+        _primaryName = primaryName;
         _s1Name = s1Name;
         _s2Name = s2Name;
     }
@@ -143,7 +145,7 @@ public class SttEnsembleMerger
         {
             var name = result.ProviderName;
             var now = Environment.TickCount64;
-            if (name == "deepgram")
+            if (name == _primaryName)
             {
                 _primaryResult = result;
                 _primaryArrivedTicks = now;

@@ -18,7 +18,7 @@ public class SttService : IDisposable
     private ISttProvider? _provider;
 
     // Ensemble mode
-    private ISttProvider? _primaryProvider;     // Deepgram (always)
+    private ISttProvider? _primaryProvider;     // Anchor/driver (configurable, default Deepgram)
     private ISttProvider? _secondaryProvider1;  // Configurable (default: Soniox)
     private ISttProvider? _secondaryProvider2;  // Configurable (default: Speechmatics)
     private string _s1Name = "";               // Provider name for secondary 1
@@ -115,8 +115,9 @@ public class SttService : IDisposable
 
     private bool CanRunEnsemble()
     {
-        // Need Deepgram + at least one secondary that's not "none" with a valid key
-        if (string.IsNullOrEmpty(_config.SttApiKey)) return false;
+        // Need anchor provider + at least one secondary that's not "none" with a valid key
+        var anchor = _config.SttEnsembleAnchor;
+        if (!HasKeyForProvider(anchor)) return false;
         var s1 = _config.SttEnsembleSecondary1;
         var s2 = _config.SttEnsembleSecondary2;
         return (s1 != "none" && HasKeyForProvider(s1)) ||
@@ -125,6 +126,7 @@ public class SttService : IDisposable
 
     private bool HasKeyForProvider(string provider) => provider switch
     {
+        "deepgram" => !string.IsNullOrEmpty(_config.SttApiKey),
         "soniox" => !string.IsNullOrEmpty(_config.SttSonioxApiKey),
         "speechmatics" => !string.IsNullOrEmpty(_config.SttSpeechmaticsApiKey),
         "assemblyai" => !string.IsNullOrEmpty(_config.SttAssemblyAIApiKey),
@@ -132,25 +134,46 @@ public class SttService : IDisposable
         _ => false
     };
 
+    // Providers should punctuate if either global auto-punctuate OR final-report-only punctuation is on
+    private bool EffectivePunctuate => _config.SttAutoPunctuate || _config.SttAutoPunctuateFinalReport;
+
     private ISttProvider CreateEnsembleSecondary(string provider, string keyterms)
     {
+        var punctuate = EffectivePunctuate;
         return provider switch
         {
-            "soniox" => new SonioxProvider(_config.SttSonioxApiKey, _config.SttAutoPunctuate, keyterms),
-            "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, _config.SttAutoPunctuate, keyterms),
-            "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, _config.SttAutoPunctuate, keyterms),
+            "deepgram" => new DeepgramProvider(_config.SttApiKey, _config.SttModel, punctuate, keyterms),
+            "soniox" => new SonioxProvider(_config.SttSonioxApiKey, punctuate, keyterms),
+            "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, punctuate, keyterms),
+            "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, punctuate, keyterms),
             _ => throw new ArgumentException($"Unknown ensemble provider: {provider}")
+        };
+    }
+
+    private string _anchorName = "deepgram";
+
+    private ISttProvider CreateAnchorProvider(string provider, string keyterms)
+    {
+        var punctuate = EffectivePunctuate;
+        return provider switch
+        {
+            "deepgram" => new DeepgramProvider(_config.SttApiKey, _config.SttModel, punctuate, keyterms),
+            "soniox" => new SonioxProvider(_config.SttSonioxApiKey, punctuate, keyterms),
+            "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, punctuate, keyterms),
+            "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, punctuate, keyterms),
+            _ => new DeepgramProvider(_config.SttApiKey, _config.SttModel, punctuate, keyterms)
         };
     }
 
     private string? InitializeEnsemble()
     {
         _ensembleMode = true;
+        _anchorName = _config.SttEnsembleAnchor;
         _s1Name = _config.SttEnsembleSecondary1;
         _s2Name = _config.SttEnsembleSecondary2;
 
-        var dgKeyterms = GetProviderKeyterms("deepgram");
-        _primaryProvider = new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate, dgKeyterms);
+        var anchorKeyterms = GetProviderKeyterms(_anchorName);
+        _primaryProvider = CreateAnchorProvider(_anchorName, anchorKeyterms);
 
         // Create secondary providers (skip "none")
         if (_s1Name != "none" && HasKeyForProvider(_s1Name))
@@ -166,7 +189,7 @@ public class SttService : IDisposable
             _config,
             _config.SttEnsembleWaitMs,
             _config.SttEnsembleConfidenceThreshold,
-            _s1Name, _s2Name);
+            _anchorName, _s1Name, _s2Name);
 
         _merger.MergedResultReady += result =>
         {
@@ -184,10 +207,11 @@ public class SttService : IDisposable
         // Wire "Clear All-Time Stats" button callback to reset live merger counters
         _config.OnClearAllEnsembleStats = () => _merger.ResetAllStats();
 
-        // Primary (Deepgram): interims go to display, finals go to merger + raw event
+        // Primary (anchor): interims go to display, finals go to merger + raw event
+        var anchorShort = ShortName(_anchorName);
         _primaryProvider.TranscriptionReceived += result =>
         {
-            var tagged = result with { ProviderName = "deepgram" };
+            var tagged = result with { ProviderName = _anchorName };
             if (!result.IsFinal)
             {
                 TranscriptionReceived?.Invoke(tagged); // Interims for live display
@@ -197,12 +221,12 @@ public class SttService : IDisposable
                 var wc = result.Words?.Length ?? 0;
                 var lowConf = result.Words?.Count(w => w.Confidence < _config.SttEnsembleConfidenceThreshold) ?? 0;
                 var preview = result.Transcript.Length > 60 ? result.Transcript[..60] + "..." : result.Transcript;
-                Logger.Trace($"Ensemble [DG] final: {wc} words ({lowConf} low-conf), \"{preview}\"");
+                Logger.Trace($"Ensemble [{anchorShort}] final: {wc} words ({lowConf} low-conf), \"{preview}\"");
                 if (result.Words != null)
                 {
                     var wordDetails = string.Join(", ", result.Words.Select(w =>
                         $"{w.Text}({w.Confidence:F2})"));
-                    Logger.Trace($"Ensemble [DG] words: {wordDetails}");
+                    Logger.Trace($"Ensemble [{anchorShort}] words: {wordDetails}");
                 }
                 RawProviderFinalReceived?.Invoke(tagged);
                 _merger?.SubmitResult(tagged);
@@ -629,14 +653,15 @@ public class SttService : IDisposable
         }
 
         var keyterms = _keytermOverride ?? _config.SttDeepgramKeyterms;
+        var punctuate = EffectivePunctuate;
         return _config.SttProvider switch
         {
-            "deepgram" => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate, keyterms),
-            "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, _config.SttAutoPunctuate, keyterms),
-            "soniox" => new SonioxProvider(_config.SttSonioxApiKey, _config.SttAutoPunctuate, keyterms),
-            "corti" => new CortiProvider(_config.SttCortiClientId, _config.SttCortiClientSecret, _config.SttCortiEnvironment, _config.SttAutoPunctuate),
-            "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, _config.SttAutoPunctuate, keyterms),
-            _ => new DeepgramProvider(_config.SttApiKey, _config.SttModel, _config.SttAutoPunctuate, keyterms)
+            "deepgram" => new DeepgramProvider(_config.SttApiKey, _config.SttModel, punctuate, keyterms),
+            "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, punctuate, keyterms),
+            "soniox" => new SonioxProvider(_config.SttSonioxApiKey, punctuate, keyterms),
+            "corti" => new CortiProvider(_config.SttCortiClientId, _config.SttCortiClientSecret, _config.SttCortiEnvironment, punctuate),
+            "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, punctuate, keyterms),
+            _ => new DeepgramProvider(_config.SttApiKey, _config.SttModel, punctuate, keyterms)
         };
     }
 

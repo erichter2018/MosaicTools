@@ -50,6 +50,8 @@ public class SttSection : SettingsSection
     private readonly CheckBox _ensembleCheck;
     private readonly Label _ensembleHint;
     private readonly Label _ensembleKeyStatus;
+    private readonly Label _ensembleAnchorLabel;
+    private readonly ComboBox _ensembleAnchorCombo;
     private readonly Label _ensembleS1Label;
     private readonly ComboBox _ensembleS1Combo;
     private readonly Label _ensembleS2Label;
@@ -70,6 +72,7 @@ public class SttSection : SettingsSection
 
     private readonly ComboBox _audioDeviceCombo;
     private readonly CheckBox _autoPunctuateCheck;
+    private readonly CheckBox _autoPunctuateFinalReportCheck;
     private readonly CheckBox _startBeepCheck;
     private readonly CheckBox _stopBeepCheck;
     private readonly TrackBar _startBeepVolume;
@@ -169,9 +172,19 @@ public class SttSection : SettingsSection
 
         _autoPunctuateCheck = AddCheckBox("Auto-punctuate", LeftMargin + 25, _nextY,
             "Automatically insert punctuation. When off, say \"period\", \"comma\", etc. to punctuate.");
+        _autoPunctuateCheck.CheckedChanged += (_, _) =>
+        {
+            _autoPunctuateFinalReportCheck.Enabled = !_autoPunctuateCheck.Checked;
+            if (_autoPunctuateCheck.Checked)
+                _autoPunctuateFinalReportCheck.Checked = false;
+        };
         _nextY += SubRowHeight;
 
         AddHintLabel("Off = dictate punctuation (say \"period\", \"comma\"). On = auto-inserted.", LeftMargin + 25);
+
+        _autoPunctuateFinalReportCheck = AddCheckBox("Auto-punctuate in final report only", LeftMargin + 50, _nextY,
+            "When auto-punctuate is off, still auto-punctuate text dictated into the final report editor.");
+        _nextY += SubRowHeight;
 
         _newlineAfterSentenceCheck = AddCheckBox("New line after every sentence", LeftMargin + 25, _nextY,
             "Insert a line break after each sentence-ending period.");
@@ -284,35 +297,21 @@ public class SttSection : SettingsSection
         Controls.Add(_ensembleKeyStatus);
         _nextY += SubRowHeight;
 
-        var primaryLabel = new Label
-        {
-            Text = "Primary:",
-            Location = new Point(LeftMargin + 45, _nextY + 3),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(200, 200, 200),
-            Font = new Font("Segoe UI", 8.25f)
-        };
-        Controls.Add(primaryLabel);
-        var primaryValue = new Label
-        {
-            Text = "Deepgram (driver)",
-            Location = new Point(LeftMargin + 140, _nextY + 3),
-            AutoSize = true,
-            ForeColor = Color.FromArgb(76, 175, 80),
-            Font = new Font("Segoe UI", 8.25f, FontStyle.Bold)
-        };
-        Controls.Add(primaryValue);
+        var allProviders = new[] { "Deepgram", "Soniox", "Speechmatics", "AssemblyAI" };
+        _ensembleAnchorLabel = AddLabel("Driver:", LeftMargin + 45, _nextY + 3);
+        _ensembleAnchorCombo = AddComboBox(LeftMargin + 140, _nextY, 130, allProviders);
+        _ensembleAnchorCombo.SelectedIndexChanged += (_, _) => OnEnsembleSelectionChanged();
         _nextY += SubRowHeight;
 
-        var secondaryProviders = new[] { "Soniox", "Speechmatics", "AssemblyAI", "None" };
+        // Secondary combos start empty — populated dynamically by RefreshSecondaryCombos()
         _ensembleS1Label = AddLabel("Secondary 1:", LeftMargin + 45, _nextY + 3);
-        _ensembleS1Combo = AddComboBox(LeftMargin + 140, _nextY, 130, secondaryProviders);
-        _ensembleS1Combo.SelectedIndexChanged += (_, _) => UpdateEnsembleStates();
+        _ensembleS1Combo = AddComboBox(LeftMargin + 140, _nextY, 130, allProviders);
+        _ensembleS1Combo.SelectedIndexChanged += (_, _) => OnEnsembleSelectionChanged();
         _nextY += SubRowHeight;
 
         _ensembleS2Label = AddLabel("Secondary 2:", LeftMargin + 45, _nextY + 3);
-        _ensembleS2Combo = AddComboBox(LeftMargin + 140, _nextY, 130, secondaryProviders);
-        _ensembleS2Combo.SelectedIndexChanged += (_, _) => UpdateEnsembleStates();
+        _ensembleS2Combo = AddComboBox(LeftMargin + 140, _nextY, 130, allProviders);
+        _ensembleS2Combo.SelectedIndexChanged += (_, _) => OnEnsembleSelectionChanged();
         _nextY += SubRowHeight;
 
         _ensembleWaitLabel = AddLabel("Merge wait:", LeftMargin + 45, _nextY + 3);
@@ -559,6 +558,7 @@ public class SttSection : SettingsSection
         _regionCombo.Enabled = enabled;
         _audioDeviceCombo.Enabled = enabled;
         _autoPunctuateCheck.Enabled = enabled;
+        _autoPunctuateFinalReportCheck.Enabled = enabled && !_autoPunctuateCheck.Checked;
         _newlineAfterSentenceCheck.Enabled = enabled;
         _deepgramKeytermsBox.Enabled = enabled;
         _deepgramKeytermsSortButton.Enabled = enabled;
@@ -587,22 +587,24 @@ public class SttSection : SettingsSection
         _ensembleWaitUpDown.Enabled = ensembleEnabled;
         _ensembleThreshUpDown.Enabled = ensembleEnabled;
         _ensembleShowMetricsCheck.Enabled = ensembleEnabled;
+        _ensembleAnchorCombo.Enabled = _enabledCheck.Checked;
         _ensembleS1Combo.Enabled = _enabledCheck.Checked;
         _ensembleS2Combo.Enabled = _enabledCheck.Checked;
 
-        // Dynamic key status based on selected secondaries
+        // Dynamic key status based on selected anchor + secondaries
         var missing = new List<string>();
-        if (string.IsNullOrWhiteSpace(_deepgramKey)) missing.Add("Deepgram");
-        var s1Name = EnsembleComboToProvider(_ensembleS1Combo.SelectedIndex);
-        var s2Name = EnsembleComboToProvider(_ensembleS2Combo.SelectedIndex);
-        if (s1Name != "none" && !HasKeyForSelectedProvider(s1Name)) missing.Add(EnsembleProviderDisplayName(s1Name));
-        if (s2Name != "none" && !HasKeyForSelectedProvider(s2Name)) missing.Add(EnsembleProviderDisplayName(s2Name));
+        var anchorName = GetComboProvider(_ensembleAnchorCombo);
+        if (!HasKeyForSelectedProvider(anchorName)) missing.Add(ProviderDisplayName(anchorName));
+        var s1Name = GetComboProvider(_ensembleS1Combo);
+        var s2Name = GetComboProvider(_ensembleS2Combo);
+        if (s1Name != "none" && !HasKeyForSelectedProvider(s1Name)) missing.Add(ProviderDisplayName(s1Name));
+        if (s2Name != "none" && !HasKeyForSelectedProvider(s2Name)) missing.Add(ProviderDisplayName(s2Name));
 
         var activeCount = 1 + (s1Name != "none" ? 1 : 0) + (s2Name != "none" ? 1 : 0);
         if (missing.Count == 0)
         {
             _ensembleKeyStatus.Text = activeCount == 1
-                ? "Only Deepgram — select secondaries to enable ensemble"
+                ? $"Only {ProviderDisplayName(anchorName)} — select secondaries to enable ensemble"
                 : $"All {activeCount} API keys configured";
             _ensembleKeyStatus.ForeColor = activeCount == 1 ? Color.FromArgb(200, 180, 80) : Color.FromArgb(100, 180, 100);
         }
@@ -613,26 +615,27 @@ public class SttSection : SettingsSection
         }
     }
 
-    private static string EnsembleComboToProvider(int idx) => idx switch
-    {
-        0 => "soniox",
-        1 => "speechmatics",
-        2 => "assemblyai",
-        3 => "none",
-        _ => "soniox"
-    };
+    // All known providers (internal names)
+    private static readonly string[] AllProviders = { "deepgram", "soniox", "speechmatics", "assemblyai" };
 
-    private static int ProviderToEnsembleCombo(string provider) => provider switch
+    /// <summary>Get the internal provider name from a combo's current selection, or "none" if nothing selected.</summary>
+    private static string GetComboProvider(ComboBox combo)
     {
-        "soniox" => 0,
-        "speechmatics" => 1,
-        "assemblyai" => 2,
-        "none" => 3,
-        _ => 0
-    };
+        var text = combo.SelectedItem as string;
+        if (string.IsNullOrEmpty(text) || text == "None") return "none";
+        return text.ToLowerInvariant() switch
+        {
+            "deepgram" => "deepgram",
+            "soniox" => "soniox",
+            "speechmatics" => "speechmatics",
+            "assemblyai" => "assemblyai",
+            _ => "none"
+        };
+    }
 
-    private static string EnsembleProviderDisplayName(string provider) => provider switch
+    private static string ProviderDisplayName(string provider) => provider switch
     {
+        "deepgram" => "Deepgram",
         "soniox" => "Soniox",
         "speechmatics" => "Speechmatics",
         "assemblyai" => "AssemblyAI",
@@ -640,8 +643,73 @@ public class SttSection : SettingsSection
         _ => provider
     };
 
+    private bool _updatingCombos; // prevent re-entrancy during combo repopulation
+
+    /// <summary>Called when any ensemble combo changes. Repopulates secondary combos then updates states.</summary>
+    private void OnEnsembleSelectionChanged()
+    {
+        if (_updatingCombos) return;
+        _updatingCombos = true;
+        try
+        {
+            var anchor = GetComboProvider(_ensembleAnchorCombo);
+            var s1 = GetComboProvider(_ensembleS1Combo);
+            var s2 = GetComboProvider(_ensembleS2Combo);
+
+            // Rebuild S1 items: exclude anchor and current S2 selection
+            RebuildComboItems(_ensembleS1Combo, s1, exclude: new[] { anchor, s2 });
+            // Rebuild S2 items: exclude anchor and current S1 selection (re-read S1 in case it changed)
+            s1 = GetComboProvider(_ensembleS1Combo);
+            RebuildComboItems(_ensembleS2Combo, s2, exclude: new[] { anchor, s1 });
+        }
+        finally { _updatingCombos = false; }
+        UpdateEnsembleStates();
+    }
+
+    /// <summary>Repopulate a secondary combo with available providers + "None", preserving current selection if possible.</summary>
+    private static void RebuildComboItems(ComboBox combo, string currentProvider, string[] exclude)
+    {
+        var items = new List<string>();
+        foreach (var p in AllProviders)
+        {
+            if (!exclude.Contains(p))
+                items.Add(ProviderDisplayName(p));
+        }
+        items.Add("None");
+
+        // Check if items are already correct (avoid unnecessary repopulation flicker)
+        if (combo.Items.Count == items.Count)
+        {
+            bool same = true;
+            for (int i = 0; i < items.Count; i++)
+            {
+                if ((string)combo.Items[i] != items[i]) { same = false; break; }
+            }
+            if (same)
+            {
+                // Items match — just ensure selection is right
+                var targetDisplay = ProviderDisplayName(currentProvider);
+                if (combo.SelectedItem as string != targetDisplay)
+                {
+                    var idx = combo.Items.IndexOf(targetDisplay);
+                    combo.SelectedIndex = idx >= 0 ? idx : combo.Items.Count - 1; // fall back to "None"
+                }
+                return;
+            }
+        }
+
+        combo.Items.Clear();
+        combo.Items.AddRange(items.ToArray());
+
+        // Re-select current provider if still available, otherwise "None"
+        var display = ProviderDisplayName(currentProvider);
+        var selIdx = items.IndexOf(display);
+        combo.SelectedIndex = selIdx >= 0 ? selIdx : items.Count - 1;
+    }
+
     private bool HasKeyForSelectedProvider(string provider) => provider switch
     {
+        "deepgram" => !string.IsNullOrWhiteSpace(_deepgramKey),
         "soniox" => !string.IsNullOrWhiteSpace(_sonioxKey),
         "speechmatics" => !string.IsNullOrWhiteSpace(_speechmaticsKey),
         "assemblyai" => !string.IsNullOrWhiteSpace(_assemblyAIKey),
@@ -981,6 +1049,8 @@ public class SttSection : SettingsSection
         }
 
         _autoPunctuateCheck.Checked = config.SttAutoPunctuate;
+        _autoPunctuateFinalReportCheck.Checked = config.SttAutoPunctuateFinalReport;
+        _autoPunctuateFinalReportCheck.Enabled = !config.SttAutoPunctuate;
         _newlineAfterSentenceCheck.Checked = config.SttNewlineAfterSentence;
         _deepgramKeytermsBox.Text = config.SttDeepgramKeyterms.Replace(",", "\r\n");
         _startBeepCheck.Checked = config.SttStartBeepEnabled;
@@ -994,10 +1064,16 @@ public class SttSection : SettingsSection
         _keytermLearningCheck.Checked = config.SttKeytermLearningEnabled;
         RefreshKeytermLearningStats();
 
-        // Ensemble
+        // Ensemble — set anchor first, then trigger combo rebuild for secondaries
         _ensembleCheck.Checked = config.SttEnsembleEnabled;
-        _ensembleS1Combo.SelectedIndex = ProviderToEnsembleCombo(config.SttEnsembleSecondary1);
-        _ensembleS2Combo.SelectedIndex = ProviderToEnsembleCombo(config.SttEnsembleSecondary2);
+        _updatingCombos = true;
+        _ensembleAnchorCombo.SelectedItem = ProviderDisplayName(config.SttEnsembleAnchor);
+        _updatingCombos = false;
+        // Rebuild secondary combos with correct exclusions, then set selections
+        var s1Excl = new[] { config.SttEnsembleAnchor, config.SttEnsembleSecondary2 };
+        RebuildComboItems(_ensembleS1Combo, config.SttEnsembleSecondary1, s1Excl);
+        var s2Excl = new[] { config.SttEnsembleAnchor, config.SttEnsembleSecondary1 };
+        RebuildComboItems(_ensembleS2Combo, config.SttEnsembleSecondary2, s2Excl);
         _ensembleWaitUpDown.Value = Math.Clamp(config.SttEnsembleWaitMs, 100, 2000);
         _ensembleThreshUpDown.Value = Math.Clamp((int)(config.SttEnsembleConfidenceThreshold * 100), 50, 99);
         _ensembleShowMetricsCheck.Checked = config.SttEnsembleShowMetrics;
@@ -1050,6 +1126,7 @@ public class SttSection : SettingsSection
         }
 
         config.SttAutoPunctuate = _autoPunctuateCheck.Checked;
+        config.SttAutoPunctuateFinalReport = _autoPunctuateFinalReportCheck.Checked;
         config.SttNewlineAfterSentence = _newlineAfterSentenceCheck.Checked;
         config.SttDeepgramKeyterms = _deepgramKeytermsBox.Text.Trim();
         config.SttStartBeepEnabled = _startBeepCheck.Checked;
@@ -1062,8 +1139,9 @@ public class SttSection : SettingsSection
 
         // Ensemble
         config.SttEnsembleEnabled = _ensembleCheck.Checked;
-        config.SttEnsembleSecondary1 = EnsembleComboToProvider(_ensembleS1Combo.SelectedIndex);
-        config.SttEnsembleSecondary2 = EnsembleComboToProvider(_ensembleS2Combo.SelectedIndex);
+        config.SttEnsembleAnchor = GetComboProvider(_ensembleAnchorCombo);
+        config.SttEnsembleSecondary1 = GetComboProvider(_ensembleS1Combo);
+        config.SttEnsembleSecondary2 = GetComboProvider(_ensembleS2Combo);
         config.SttEnsembleWaitMs = (int)_ensembleWaitUpDown.Value;
         config.SttEnsembleConfidenceThreshold = (double)_ensembleThreshUpDown.Value / 100.0;
         config.SttEnsembleShowMetrics = _ensembleShowMetricsCheck.Checked;

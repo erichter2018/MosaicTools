@@ -99,9 +99,12 @@ public class EnsembleMetricsForm : Form
         _ => name
     };
 
-    public EnsembleMetricsForm(Configuration config, string s1Name = "soniox", string s2Name = "speechmatics")
+    private readonly string _anchorDisplay;
+
+    public EnsembleMetricsForm(Configuration config, string s1Name = "soniox", string s2Name = "speechmatics", string anchorName = "deepgram")
     {
         _config = config;
+        _anchorDisplay = DisplayName(anchorName);
         var s1Color = ProviderColor(s1Name);
         var s2Color = ProviderColor(s2Name);
         var s1Display = DisplayName(s1Name);
@@ -137,7 +140,7 @@ public class EnsembleMetricsForm : Form
         // ── Title + close ──
         _titleLabel = new Label
         {
-            Text = "ENSEMBLE (Deepgram + corrections)",
+            Text = $"ENSEMBLE ({_anchorDisplay} + corrections)",
             Location = new Point(pad, y),
             AutoSize = true,
             Font = new Font("Segoe UI", 7f, FontStyle.Bold),
@@ -482,7 +485,7 @@ public class EnsembleMetricsForm : Form
         Controls.Add(_provAccEnsLabel); Controls.Add(_provAccEnsSession); Controls.Add(_provAccEnsAlltime);
         y += 13;
 
-        _provAccDgLabel = new Label { Text = "Deepgram:", Location = new Point(pad + 4, y), AutoSize = true, Font = smallFont, ForeColor = BrightColor };
+        _provAccDgLabel = new Label { Text = _anchorDisplay + ":", Location = new Point(pad + 4, y), AutoSize = true, Font = smallFont, ForeColor = BrightColor };
         _provAccDgSession = new Label { Text = "--", Location = new Point(col1, y), AutoSize = true, Font = smallFont, ForeColor = DimColor };
         _provAccDgAlltime = new Label { Text = "--", Location = new Point(col2, y), AutoSize = true, Font = smallFont, ForeColor = DimColor };
         Controls.Add(_provAccDgLabel); Controls.Add(_provAccDgSession); Controls.Add(_provAccDgAlltime);
@@ -593,7 +596,7 @@ public class EnsembleMetricsForm : Form
 
     private void UpdateTitle()
     {
-        _titleLabel.Text = _recording ? "ENSEMBLE (Deepgram + corrections) \u25cf REC" : "ENSEMBLE (Deepgram + corrections)";
+        _titleLabel.Text = _recording ? $"ENSEMBLE ({_anchorDisplay} + corrections) \u25cf REC" : $"ENSEMBLE ({_anchorDisplay} + corrections)";
         _titleLabel.ForeColor = _recording ? Color.FromArgb(255, 100, 100) : Color.FromArgb(100, 160, 255);
     }
 

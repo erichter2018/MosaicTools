@@ -410,6 +410,31 @@ public static class SttTextProcessor
     }
 
     /// <summary>
+    /// Strip auto-punctuation from provider output so it looks like manual dictation.
+    /// Used when SttAutoPunctuateFinalReport is on but text is going to the transcript editor.
+    /// Lowercase first char and remove trailing sentence-ending period.
+    /// </summary>
+    public static string StripAutoPunctuation(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+
+        // Drop standalone punctuation tokens (Soniox can emit "." as a separate final result)
+        var trimmed = text.Trim();
+        if (trimmed.Length > 0 && trimmed.All(c => char.IsPunctuation(c)))
+            return "";
+
+        // Remove all sentence-ending punctuation (periods, commas, semicolons, etc.)
+        // but preserve decimal points between digits (e.g., "2.5")
+        text = Regex.Replace(text, @"(?<!\d)[.,;!?](?!\d)", "");
+
+        // Lowercase first char (unless it's an acronym — check if second char is also upper)
+        if (text.Length > 0 && char.IsUpper(text[0]) && !(text.Length > 1 && char.IsUpper(text[1])))
+            text = char.ToLower(text[0]) + text[1..];
+
+        return text.Trim();
+    }
+
+    /// <summary>
     /// Apply all enabled STT text transforms in the correct order.
     /// Convenience method for both single-provider paste and ensemble merger.
     /// </summary>
@@ -423,7 +448,9 @@ public static class SttTextProcessor
             transcript = ApplyRadiologyCleanup(transcript);
 
         // In manual punctuation mode, lowercase first char (providers don't capitalize)
-        if (!config.SttAutoPunctuate && transcript.Length > 0 && !(transcript.Length > 1 && char.IsDigit(transcript[1])))
+        // Skip when final-report-only punctuation is on — stripping happens per-editor at paste time
+        if (!config.SttAutoPunctuate && !config.SttAutoPunctuateFinalReport
+            && transcript.Length > 0 && !(transcript.Length > 1 && char.IsDigit(transcript[1])))
             transcript = char.ToLower(transcript[0]) + transcript[1..];
 
         transcript = ApplyCustomReplacements(transcript, config.SttCustomReplacements);

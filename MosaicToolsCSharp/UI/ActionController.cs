@@ -121,7 +121,6 @@ public class ActionController : IDisposable
     {
         "openai/gpt-oss-120b" => "GPT-OSS 120B",
         "meta-llama/llama-4-scout-17b-16e-instruct" => "Llama Scout",
-        "meta-llama/llama-4-maverick-17b-128e-instruct" => "Llama Maverick",
         "llama-3.3-70b-versatile" => "Llama 3.3 70B",
         _ => modelId ?? "Llama"
     };
@@ -708,7 +707,7 @@ public class ActionController : IDisposable
                 {
                     if (_ensembleMetrics == null)
                     {
-                        _ensembleMetrics = new EnsembleMetricsForm(_config, _config.SttEnsembleSecondary1, _config.SttEnsembleSecondary2);
+                        _ensembleMetrics = new EnsembleMetricsForm(_config, _config.SttEnsembleSecondary1, _config.SttEnsembleSecondary2, _config.SttEnsembleAnchor);
                         _ensembleMetrics.SetShowTranscriptCallback(ShowSttTranscriptComparison);
                     }
                     _ensembleMetrics.SetRecording(recording);
@@ -771,6 +770,8 @@ public class ActionController : IDisposable
             }
 
             // [CustomSTT] Direct paste: final results go straight into Mosaic's transcript box.
+            if (result.IsFinal && result.Words?.Length > 0 && (string.IsNullOrEmpty(result.Transcript) || !_sttDirectPasteActive))
+                Logger.Trace($"CustomSTT: SKIPPED paste — transcript={(string.IsNullOrEmpty(result.Transcript) ? "EMPTY" : $"\"{result.Transcript}\"")} pasteActive={_sttDirectPasteActive} words={result.Words.Length}");
             if (result.IsFinal && !string.IsNullOrEmpty(result.Transcript) && _sttDirectPasteActive)
             {
                 // [CustomSTT] Check for voice commands/macros on raw transcript BEFORE
@@ -1229,6 +1230,13 @@ public class ActionController : IDisposable
             }
             if (isSttPaste)
             {
+                // Strip auto-punctuation for transcript when only final-report punctuation is enabled
+                if (idx == 0 && !_config.SttAutoPunctuate && _config.SttAutoPunctuateFinalReport)
+                {
+                    text = SttTextProcessor.StripAutoPunctuation(text);
+                    if (string.IsNullOrEmpty(text)) return; // Standalone punctuation stripped entirely
+                }
+
                 if (ApplyCdpSmartInsert(text, idx, mediumConfIndices, lowConfIndices))
                     return;
             }
@@ -1640,11 +1648,20 @@ public class ActionController : IDisposable
             // Drain any in-flight paste and restore focus in background so the STA
             // action thread is freed up quickly for the next button press.
             var restoreHwnd = _sttPasteTargetWindow;
+            var stopTimestamp = Environment.TickCount64;
             _ = Task.Run(() =>
             {
                 Thread.Sleep(600); // Wait for ensemble merge timer to fire
                 lock (_directPasteLock) { } // drain any in-flight paste
+                // Guard: don't clobber _sttDirectPasteActive if a NEW recording started
+                // after this stop (user quickly pressed record again)
+                if (_dictationActive)
+                {
+                    Logger.Trace($"CustomSTT: Cleanup task skipped — new recording is active (stop@{stopTimestamp})");
+                    return;
+                }
                 _sttDirectPasteActive = false;
+                Logger.Trace($"CustomSTT: Cleanup task set pasteActive=false (stop@{stopTimestamp})");
                 InvokeUI(() => _mainForm.HideTranscriptionForm());
                 if (restoreHwnd != IntPtr.Zero && NativeWindows.IsWindow(restoreHwnd))
                 {
@@ -2355,24 +2372,24 @@ public class ActionController : IDisposable
                 }
                 else if (provider == "groq" && mode == "triple")
                 {
-                    // Groq triple: GPT-OSS-20B + Maverick + 3.3 70B — first wins, 70B upgrades in background
+                    // Groq triple: GPT-OSS-120B + Scout + 3.3 70B — first wins, 70B upgrades in background
                     var gptOss = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token, "openai/gpt-oss-120b");
-                    var maverick = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token, "meta-llama/llama-4-maverick-17b-128e-instruct");
+                    var scout = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, cts.Token, "meta-llama/llama-4-scout-17b-16e-instruct");
                     var llama70b = _llmService.ProcessReportAsync(scrubbedTranscript, safeTemplate, clinicalHistory, CancellationToken.None, "llama-3.3-70b-versatile");
                     gptOss.ContinueWith(t => { modelTimes["GPT-OSS 120B"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["GPT-OSS 120B"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
-                    maverick.ContinueWith(t => { modelTimes["Llama Maverick"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["Llama Maverick"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
+                    scout.ContinueWith(t => { modelTimes["Llama Scout"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["Llama Scout"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
                     llama70b.ContinueWith(t => { modelTimes["Llama 3.3 70B"] = sw.Elapsed.TotalSeconds; if (t.IsCompletedSuccessfully && t.Result != null) modelOutputs["Llama 3.3 70B"] = t.Result; }, TaskContinuationOptions.ExecuteSynchronously);
 
                     (result, resultModel) = Task.Run(async () =>
                     {
                         string? best = null;
                         string? bestModel = null;
-                        var all = new[] { gptOss, maverick, llama70b };
+                        var all = new[] { gptOss, scout, llama70b };
 
                         while (all.Length > 0)
                         {
                             var done = await Task.WhenAny(all);
-                            var name = done == gptOss ? "GPT-OSS 120B" : done == maverick ? "Llama Maverick" : "Llama 3.3 70B";
+                            var name = done == gptOss ? "GPT-OSS 120B" : done == scout ? "Llama Scout" : "Llama 3.3 70B";
                             if (done.IsCompletedSuccessfully && done.Result != null)
                             {
                                 best = done.Result;
@@ -2388,7 +2405,7 @@ public class ActionController : IDisposable
                     }, cts.Token).GetAwaiter().GetResult();
 
                     // Track all model statuses for badge
-                    foreach (var (task, name, isWinner) in new[] { (gptOss, "GPT-OSS 120B", resultModel == "GPT-OSS 120B"), (maverick, "Llama Maverick", resultModel == "Llama Maverick"), (llama70b, "Llama 3.3 70B", resultModel == "Llama 3.3 70B") })
+                    foreach (var (task, name, isWinner) in new[] { (gptOss, "GPT-OSS 120B", resultModel == "GPT-OSS 120B"), (scout, "Llama Scout", resultModel == "Llama Scout"), (llama70b, "Llama 3.3 70B", resultModel == "Llama 3.3 70B") })
                     {
                         if (task.IsCompletedSuccessfully && task.Result != null)
                         {
@@ -6610,12 +6627,13 @@ public class ActionController : IDisposable
 
         // Verify Aidoc findings against report text (runs every tick using persisted list,
         // so checkmarks update as the user addresses findings in the report)
-        // Only verify against text with U+FFFC (real report editor), not the transcript
+        // FlaUI text: only verify against text with U+FFFC (real report editor, not transcript)
+        // CDP text: always valid (CDP scrape targets editors[1] directly, never has U+FFFC)
         List<FindingVerification>? aidocVerifications = null;
         var findingsToVerify = relevantFindings ?? _lastAidocRelevantList;
         bool effectiveAidocRelevant = aidocScrapedThisTick ? aidocAlertActive : _lastAidocRelevant;
         if (effectiveAidocRelevant && findingsToVerify != null && !string.IsNullOrEmpty(reportText)
-            && reportText.Contains('\uFFFC'))
+            && (_cdpService?.IsIframeConnected == true || reportText.Contains('\uFFFC')))
         {
             aidocVerifications = AidocFindingVerifier.VerifyFindings(findingsToVerify, reportText);
         }

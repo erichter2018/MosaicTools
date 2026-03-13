@@ -88,7 +88,7 @@ public class ExperimentalSection : SettingsSection
 
     private static readonly (string Name, string ModelId, decimal InputPer1M, decimal OutputPer1M)[] GroqModels = {
         ("GPT-OSS 120B",     "openai/gpt-oss-120b",                           0.15m, 0.75m),
-        ("Llama 4 Maverick", "meta-llama/llama-4-maverick-17b-128e-instruct",  0.50m, 0.77m),
+        ("Llama 4 Scout",    "meta-llama/llama-4-scout-17b-16e-instruct",     0.11m, 0.34m),
         ("Llama 3.3 70B",    "llama-3.3-70b-versatile",                        0.59m, 0.79m),
     };
 

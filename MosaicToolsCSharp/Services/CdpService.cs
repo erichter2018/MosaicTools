@@ -3383,21 +3383,57 @@ ${{visualEnhancements ? `
             const pm = editors[1];
             const view = pm.editor.view;
 
-            // Clear previous rainbow + STT highlights
+            // Clear previous rainbow highlights (keep STT dictation highlights intact —
+            // mt-dictated provides the yellow background for all dictated text, rainbow
+            // colors layer on top for correlated text only)
             for (const name of [...CSS.highlights.keys()]) {{
-                if (name.startsWith('mt-rainbow-') || name === 'mt-dictated' || name === 'mt-normal' || name === 'mt-medium' || name === 'mt-low')
+                if (name.startsWith('mt-rainbow-'))
                     CSS.highlights.delete(name);
             }}
-            // Also clear the STT style rules so they don't interfere
-            const sttStyle = document.getElementById('mt-dictated-style');
-            if (sttStyle) sttStyle.textContent = '';
-            // Hide Mosaic's native Tiptap highlights so only rainbow colors show
+
+            // Ensure dictation highlight CSS rules are present (SetRegularHighlightsVisible(false)
+            // clears them when entering rainbow mode — restore so mt-dictated background stays visible)
+            const pmEl = editors[0] || pm;
+            const nColor = getComputedStyle(pmEl).color || 'black';
+            let sttSt = document.getElementById('mt-dictated-style');
+            if (!sttSt) {{
+                sttSt = document.createElement('style');
+                sttSt.id = 'mt-dictated-style';
+                document.head.appendChild(sttSt);
+            }}
+            if (!sttSt.textContent || sttSt.textContent.trim() === '') {{
+                sttSt.textContent = '::highlight(mt-dictated) {{ background-color: rgba(90, 85, 50, 0.4); }}'
+                    + ' ::highlight(mt-normal) {{ color: ' + nColor + '; }}'
+                    + ' ::highlight(mt-medium) {{ color: rgb(200, 170, 80); }}'
+                    + ' ::highlight(mt-low) {{ color: rgb(210, 130, 70); }}';
+            }}
+            // Hide Mosaic's native Tiptap highlights (they have their own color scheme
+            // that conflicts with rainbow). We'll recreate the yellow background below
+            // using CSS Custom Highlights so non-correlated dictated text stays highlighted.
             let noHlOvr = document.getElementById('mt-no-highlight-override');
             if (noHlOvr) noHlOvr.remove();
             noHlOvr = document.createElement('style');
             noHlOvr.id = 'mt-no-highlight-override';
             noHlOvr.textContent = '.ProseMirror mark[data-color], .ProseMirror mark.tiptap-highlight, .ProseMirror mark {{ background-color: transparent !important; }}';
             document.head.appendChild(noHlOvr);
+
+            // Recreate the yellow dictation highlight for ALL <mark> regions using CSS Custom
+            // Highlights. This preserves the 'all dictated text is highlighted' look from regular
+            // mode. Rainbow highlights paint on top for correlated text only.
+            CSS.highlights.delete('mt-dictated-final');
+            const markRanges = [];
+            pm.querySelectorAll('mark').forEach(mark => {{
+                try {{
+                    const r = new StaticRange({{
+                        startContainer: mark, startOffset: 0,
+                        endContainer: mark, endOffset: mark.childNodes.length
+                    }});
+                    markRanges.push(r);
+                }} catch(e) {{}}
+            }});
+            if (markRanges.length > 0) {{
+                CSS.highlights.set('mt-dictated-final', new Highlight(...markRanges));
+            }}
 
             // Inject/update rainbow style
             let style = document.getElementById('mt-rainbow-style');
@@ -3406,7 +3442,7 @@ ${{visualEnhancements ? `
                 style.id = 'mt-rainbow-style';
                 document.head.appendChild(style);
             }}
-            let css = '';
+            let css = '::highlight(mt-dictated-final) {{ background-color: rgba(90, 85, 50, 0.4); }} ';
             for (let i = 0; i < entries.length; i++) {{
                 css += '::highlight(mt-rainbow-' + i + ') {{ background-color: rgba(' + entries[i].c + ', 0.5); }} ';
             }}
@@ -3494,10 +3530,13 @@ ${{visualEnhancements ? `
         {
             SendToIframe(@"(() => {
                 for (const name of [...CSS.highlights.keys()]) {
-                    if (name.startsWith('mt-rainbow-')) CSS.highlights.delete(name);
+                    if (name.startsWith('mt-rainbow-') || name === 'mt-dictated-final') CSS.highlights.delete(name);
                 }
                 const style = document.getElementById('mt-rainbow-style');
                 if (style) style.textContent = '';
+                // Restore native marks (remove the transparent override)
+                const noHl = document.getElementById('mt-no-highlight-override');
+                if (noHl) noHl.textContent = '';
                 return 'ok';
             })()");
         }

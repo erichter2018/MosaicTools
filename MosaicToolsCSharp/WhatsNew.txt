@@ -1,3 +1,11 @@
+4.3.8
+- Fix: CTA+Perfusion template mismatch false positive — "CT BRAIN PERFUSION CTA HEAD NECK" no longer flags against "CTA Head and Neck with Perfusion" (CTA subsumes standalone CT)
+- Fix: STT punctuation leaking into transcript editor when "auto-punctuate final report only" is enabled — regex-based stripping of all non-decimal punctuation
+- Fix: STT text loss when quickly restarting recording — cleanup task no longer clobbers paste flag when new recording is already active
+- Ensemble mode: driver/anchor model is now selectable (Deepgram, Soniox, Speechmatics, AssemblyAI) — no longer hardcoded to Deepgram
+- Ensemble mode: secondary provider dropdowns dynamically exclude the driver and each other to prevent duplicate selections
+- Ensemble metrics popup labels now reflect the actual driver provider name
+
 4.3.7
 - Fix: highlight mode (No Highlight/Regular/Rainbow) now reliably persists across accession changes — user's choice no longer reverts to Regular on new studies
 - Fix: impression fixer button text ("+no change", "=improved", etc.) no longer leaks into report popup display

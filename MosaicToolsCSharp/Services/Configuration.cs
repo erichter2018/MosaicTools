@@ -408,6 +408,9 @@ public class Configuration
     [JsonPropertyName("stt_auto_punctuate")]
     public bool SttAutoPunctuate { get; set; } = true;
 
+    [JsonPropertyName("stt_auto_punctuate_final_report")]
+    public bool SttAutoPunctuateFinalReport { get; set; } = false;
+
     [JsonPropertyName("stt_deepgram_keyterms")]
     public string SttDeepgramKeyterms { get; set; } = "";
 
@@ -429,6 +432,9 @@ public class Configuration
 
     [JsonPropertyName("stt_ensemble_show_metrics")]
     public bool SttEnsembleShowMetrics { get; set; } = true;
+
+    [JsonPropertyName("stt_ensemble_anchor")]
+    public string SttEnsembleAnchor { get; set; } = "deepgram";
 
     [JsonPropertyName("stt_ensemble_secondary1")]
     public string SttEnsembleSecondary1 { get; set; } = "soniox";
@@ -651,7 +657,7 @@ public class Configuration
     [JsonPropertyName("llm_quad_model_2")]
     public string LlmQuadModel2 { get; set; } = "gpt-4.1-mini";
     [JsonPropertyName("llm_quad_model_3")]
-    public string LlmQuadModel3 { get; set; } = "meta-llama/llama-4-maverick-17b-128e-instruct";
+    public string LlmQuadModel3 { get; set; } = "meta-llama/llama-4-scout-17b-16e-instruct";
     [JsonPropertyName("llm_quad_model_4")]
     public string LlmQuadModel4 { get; set; } = "grok-4-1-fast-non-reasoning";
 
