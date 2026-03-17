@@ -307,6 +307,9 @@ public class Configuration
     [JsonPropertyName("pace_car_enabled")]
     public bool PaceCarEnabled { get; set; } = false;
 
+    [JsonPropertyName("clario_rvu_inject_enabled")]
+    public bool ClarioRvuInjectEnabled { get; set; } = false;
+
     [JsonPropertyName("pace_car_alternate_seconds")]
     public int PaceCarAlternateSeconds { get; set; } = 8;
 

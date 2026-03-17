@@ -648,6 +648,26 @@ public class MainForm : Form
         // Hide inline panel when vertical stack puts everything in the drawer
         bool isVerticalStack = count >= 3 && _config.RvuOverflowLayout == RvuOverflowLayout.VerticalStack;
         _rvuPanel.Visible = !isVerticalStack;
+
+        // Inject RVU values into Clario's web UI via CDP
+        if (_config.ClarioRvuInjectEnabled && shiftInfo != null)
+        {
+            try
+            {
+                _controller.CdpService?.ClarioInjectRvu(
+                    shiftInfo.TotalRvu,
+                    pipeShift?.AvgPerHour,
+                    pipeShift?.CurrentHourRvu,
+                    pipeShift?.PriorHourRvu,
+                    pipeShift?.EstimatedTotalRvu,
+                    pipeShift?.PaceDiff,
+                    shiftInfo.RecordCount);
+            }
+            catch (Exception ex)
+            {
+                Logger.Trace($"Clario RVU inject error: {ex.Message}");
+            }
+        }
     }
 
     /// <summary>

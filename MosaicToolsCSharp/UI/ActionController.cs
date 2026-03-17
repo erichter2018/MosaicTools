@@ -77,6 +77,7 @@ public class ActionController : IDisposable
     private readonly object _directPasteLock = new(); // [CustomSTT] Serialize direct paste operations
 
     public PipeService PipeService => _pipeService;
+    public CdpService? CdpService => _cdpService;
 
     /// <summary>
     /// Safe BeginInvoke that silently no-ops if the MainForm handle isn't created.

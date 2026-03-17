@@ -1457,7 +1457,9 @@ ${{visualEnhancements ? `
             if (line.Length == 0) continue;
 
             // Patient name: first all-caps alphabetic line (e.g. "SMITH, JOHN" or "WILLIAMS LATRINA")
+            // Exclude status words like DRAFTED/UNDRAFTED and "Current Study" header
             if (result.PatientName == null && line.Length > 2 && line == line.ToUpperInvariant()
+                && line != "DRAFTED" && line != "UNDRAFTED" && line != "CURRENT STUDY"
                 && System.Text.RegularExpressions.Regex.IsMatch(line, @"^[A-Z][A-Z ,'\-]+$"))
             {
                 result.PatientName = line;
@@ -3789,7 +3791,7 @@ ${{visualEnhancements ? `
         }
 
         // Step 3: Find best matching option
-        int bestIndex = 0; // Default to first option
+        int bestIndex = -1; // -1 = no match found; must find a confident match before clicking
         try
         {
             var options = JsonSerializer.Deserialize<string[]>(optionsJson);
@@ -3820,7 +3822,7 @@ ${{visualEnhancements ? `
                     var itemModality = AutomationService.ExtractModality(options[i]);
                     bool modalityMatch = descModality == null || itemModality == null
                         || string.Equals(descModality, itemModality, StringComparison.OrdinalIgnoreCase);
-                    if (modalityMatch && itemParts.Count > 0 && descParts.SetEquals(itemParts))
+                    if (modalityMatch && itemParts.Count > 0 && AutomationService.BodyPartsMatchFlexible(descParts, itemParts))
                     {
                         bestIndex = i;
                         Logger.Trace($"  → Best match at [{i}]: modality+body parts match");
@@ -3828,10 +3830,22 @@ ${{visualEnhancements ? `
                     }
                 }
             }
+            else if (options.Length == 1)
+            {
+                bestIndex = 0; // Only one option and no description to match — safe to pick it
+            }
         }
         catch (Exception ex)
         {
             Logger.Trace($"CDP: SetStudyType option matching error: {ex.Message}");
+        }
+
+        if (bestIndex < 0)
+        {
+            Logger.Trace("CDP: SetStudyType no confident match found — aborting to avoid wrong template");
+            // Blur the combobox to dismiss the dropdown without selecting anything
+            SendToIframe(@"(() => { const input = document.querySelector('[role=""combobox""] input'); if (input) input.blur(); })()");
+            return false;
         }
 
         // Step 4: Click the matched option, then blur to prevent Mosaic re-searching
@@ -4038,6 +4052,223 @@ ${{visualEnhancements ? `
             return null;
         }
     }
+
+    /// <summary>
+    /// Discover the RVU section DOM structure in Clario for debugging/development.
+    /// Returns a JSON string describing found elements, or null.
+    /// </summary>
+    public string? ClarioDiscoverRvuElements()
+    {
+        if (!IsClarioConnected) return null;
+
+        var js = @"(() => {
+            var results = { ancestors: [] };
+
+            // Find the RVU label element
+            var rvuEl = document.getElementById('ext-comp-2930-outerCt');
+            if (!rvuEl) {
+                // Fallback
+                var w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                while (w.nextNode()) {
+                    if (/^\s*RVU\s*$/.test(w.currentNode.textContent)) {
+                        rvuEl = w.currentNode.parentElement;
+                        break;
+                    }
+                }
+            }
+            if (!rvuEl) return JSON.stringify({ error: 'RVU element not found' });
+
+            // Walk up 6 levels, at each level dump the element + all its children
+            var el = rvuEl;
+            for (var lvl = 0; lvl < 6 && el; lvl++) {
+                var r = el.getBoundingClientRect();
+                var childInfo = [];
+                for (var c = 0; c < el.children.length; c++) {
+                    var ch = el.children[c];
+                    var cr = ch.getBoundingClientRect();
+                    childInfo.push({
+                        idx: c,
+                        tag: ch.tagName,
+                        id: ch.id || '',
+                        cls: (ch.className || '').toString().substring(0, 150),
+                        rect: { x: Math.round(cr.x), y: Math.round(cr.y), w: Math.round(cr.width), h: Math.round(cr.height) },
+                        vis: ch.style.display !== 'none',
+                        text: (ch.textContent || '').trim().substring(0, 80)
+                    });
+                }
+                results.ancestors.push({
+                    lvl: lvl,
+                    tag: el.tagName,
+                    id: el.id || '',
+                    cls: (el.className || '').toString().substring(0, 150),
+                    rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+                    childCount: el.children.length,
+                    children: childInfo
+                });
+                el = el.parentElement;
+            }
+
+            return JSON.stringify(results);
+        })()";
+
+        var raw = ExtractResultValue(SendToClario(js));
+        if (raw == null)
+        {
+            Logger.Trace("CDP Clario: RVU discovery returned null");
+            return null;
+        }
+
+        Logger.Trace($"CDP Clario RVU Discovery: {raw}");
+        return raw;
+    }
+
+    /// <summary>
+    /// Inject RVUCounter values into Clario's RVU section, replacing the native display.
+    /// Phase 1: Discovery-only — logs the DOM structure without modifying anything.
+    /// Phase 2: Once we know the selectors, does surgical text replacement.
+    /// </summary>
+    public bool ClarioInjectRvu(double totalRvu, double? rvuPerHour, double? currentHourRvu,
+        double? priorHourRvu, double? estimatedTotal, double? paceDiff, int recordCount)
+    {
+        if (!IsClarioConnected) return false;
+
+        // Throttle: only run discovery once per 30 seconds
+        var now = Environment.TickCount64;
+        if (now - _lastClarioRvuDiscoveryTick < 30_000) return false;
+        _lastClarioRvuDiscoveryTick = now;
+
+        // Run discovery to understand the DOM structure
+        var discovery = ClarioDiscoverRvuElements();
+        if (discovery == null) return false;
+
+        // Hide the native RVU section elements and inject our own clean display
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        var totalStr = totalRvu.ToString("F1", inv);
+        var rvuHrStr = rvuPerHour.HasValue ? rvuPerHour.Value.ToString("F1", inv) : "null";
+        var curHrStr = currentHourRvu.HasValue ? currentHourRvu.Value.ToString("F1", inv) : "null";
+        var prevHrStr = priorHourRvu.HasValue ? priorHourRvu.Value.ToString("F1", inv) : "null";
+        var estTotalStr = estimatedTotal.HasValue ? estimatedTotal.Value.ToString("F1", inv) : "null";
+        var paceDiffStr = paceDiff.HasValue ? paceDiff.Value.ToString("F1", inv) : "null";
+
+        var js = @"(() => {
+            var total = " + totalStr + @";
+            var rvuHr = " + rvuHrStr + @";
+            var curHr = " + curHrStr + @";
+            var prevHr = " + prevHrStr + @";
+            var estTotal = " + estTotalStr + @";
+            var paceDelta = " + paceDiffStr + @";
+            var count = " + recordCount + @";
+
+            var hidden = [];
+
+            // The RVU section has 3 sibling divs inside ext-comp-2935-targetEl:
+            //   ext-comp-2930 = ""RVU"" label (30px wide)
+            //   ext-comp-2931 = bar graph surface (x-surface, 144x53)
+            //   ext-comp-2932 = ""Current:""/""Suggested:"" fields
+            // We need to find the targetEl parent, hide all 3 native children, inject our own.
+
+            // Find the target container by looking for the x-surface (bar graph) element
+            var barGraph = document.getElementById('ext-comp-2931');
+            var targetEl = null;
+
+            if (barGraph) {
+                targetEl = barGraph.parentElement;
+            } else {
+                // Fallback: find RVU text and walk up to targetEl level
+                var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+                while (walker.nextNode()) {
+                    if (/^\s*RVU\s*$/.test(walker.currentNode.textContent)) {
+                        var el = walker.currentNode.parentElement;
+                        // Walk up ~3 levels to reach the targetEl
+                        for (var up = 0; up < 4 && el && el.parentElement; up++) {
+                            el = el.parentElement;
+                            if (el.children.length >= 3) { targetEl = el; break; }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if (!targetEl) return JSON.stringify({ success: false, error: 'RVU target container not found' });
+
+            // Hide all native children
+            for (var c = 0; c < targetEl.children.length; c++) {
+                var child = targetEl.children[c];
+                if (child.getAttribute('data-mt-rvu') === 'true') continue;
+                if (child.style.display !== 'none') {
+                    child.style.display = 'none';
+                    hidden.push('hide:' + (child.id || child.tagName));
+                }
+            }
+
+            // Inject or update our own display
+            var mtDiv = targetEl.querySelector('[data-mt-rvu=""true""]');
+            if (!mtDiv) {
+                mtDiv = document.createElement('div');
+                mtDiv.setAttribute('data-mt-rvu', 'true');
+                targetEl.appendChild(mtDiv);
+                hidden.push('injected');
+            }
+
+            // Parent is an ExtJS box-layout target (height:1, children absolutely positioned)
+            // Position our div to fill the same area the native elements occupied
+            // min-width preserves the panel width so ""My Reading Queue"" header doesn't truncate
+            mtDiv.style.cssText = 'display:flex;align-items:center;padding:2px 6px;gap:6px;white-space:nowrap;position:absolute;left:0;top:0;min-width:305px;height:26px;';
+
+            var sep = '<span style=""color:#555;margin:0 4px;"">|</span>';
+            var blue = '#4B9CD3';
+            var red = '#FF7878';
+            var ss = 'font-size:11px;';
+
+            var parts = [];
+            parts.push('<span style=""color:' + blue + ';font-weight:bold;' + ss + '"">RVU: ' + total.toFixed(1) + '</span>');
+            if (rvuHr !== null) parts.push('<span style=""color:' + blue + ';' + ss + '"">' + rvuHr + '/h</span>');
+            if (prevHr !== null) parts.push('<span style=""color:' + blue + ';' + ss + '"">' + prevHr + ' prev</span>');
+            if (curHr !== null) parts.push('<span style=""color:' + blue + ';' + ss + '"">~' + curHr + ' this</span>');
+            if (estTotal !== null) parts.push('<span style=""color:' + blue + ';' + ss + '"">~' + estTotal + ' total</span>');
+            if (paceDelta !== null) {
+                var pColor = paceDelta >= 0 ? blue : red;
+                var pAbs = Math.abs(paceDelta).toFixed(1);
+                var pText = paceDelta >= 0 ? pAbs + ' ahead' : pAbs + ' behind';
+                parts.push('<span style=""color:' + pColor + ';' + ss + '"">' + pText + '</span>');
+            }
+
+            mtDiv.innerHTML = parts.join(sep);
+            hidden.push('updated');
+
+            return JSON.stringify({ success: hidden.length > 0, hidden: hidden });
+        })()";
+
+        var raw = ExtractResultValue(SendToClario(js));
+        if (raw == null)
+        {
+            Logger.Trace("CDP Clario: RVU inject returned null");
+            return false;
+        }
+
+        try
+        {
+            var doc = JsonDocument.Parse(raw);
+            var success = doc.RootElement.TryGetProperty("success", out var s) && s.GetBoolean();
+            if (success)
+            {
+                var hidden = doc.RootElement.TryGetProperty("hidden", out var r) ? r.ToString() : "?";
+                Logger.Trace($"CDP Clario: RVU injected: {hidden}");
+            }
+            else
+            {
+                Logger.Trace("CDP Clario: RVU inject — no elements found to replace");
+            }
+            return success;
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"CDP Clario: RVU inject parse error: {ex.Message}");
+            return false;
+        }
+    }
+
+    private long _lastClarioRvuDiscoveryTick;
 
     /// <summary>
     /// Scrape exam note text from Clario via CDP JS eval.

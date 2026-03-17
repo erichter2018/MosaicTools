@@ -28,6 +28,7 @@ public class RvuMetricsSection : SettingsSection
     private readonly NumericUpDown _rvuGoalValueBox;
     private readonly CheckBox _paceCarEnabledCheck;
     private readonly NumericUpDown _paceCarSecondsBox;
+    private readonly CheckBox _clarioRvuInjectCheck;
     private readonly TextBox _rvuCounterPathBox;
     private readonly Label _rvuCounterStatusLabel;
 
@@ -92,6 +93,13 @@ public class RvuMetricsSection : SettingsSection
         _paceCarSecondsBox = AddNumericUpDown(LeftMargin + 120, _nextY, 50, 3, 30, 8,
             "Seconds between switching RVU metrics and pace car display (3-30).");
         AddLabel("sec", LeftMargin + 175, _nextY + 3, isSubItem: true);
+        _nextY += RowHeight + 5;
+
+        // Clario Integration
+        AddSectionDivider("Clario Integration");
+
+        _clarioRvuInjectCheck = AddCheckBox("Inject RVU values into Clario worklist", LeftMargin, _nextY,
+            "Replaces Clario's broken RVU display with live RVUCounter values via CDP.");
         _nextY += RowHeight + 5;
 
         // Database Path
@@ -187,6 +195,8 @@ public class RvuMetricsSection : SettingsSection
         _paceCarEnabledCheck.Checked = config.PaceCarEnabled;
         _paceCarSecondsBox.Value = Math.Max(3, Math.Min(30, config.PaceCarAlternateSeconds));
 
+        _clarioRvuInjectCheck.Checked = config.ClarioRvuInjectEnabled;
+
         _rvuCounterPathBox.Text = config.RvuCounterPath ?? "";
 
         UpdateOverflowLayoutState();
@@ -213,6 +223,8 @@ public class RvuMetricsSection : SettingsSection
 
         config.PaceCarEnabled = _paceCarEnabledCheck.Checked;
         config.PaceCarAlternateSeconds = (int)_paceCarSecondsBox.Value;
+
+        config.ClarioRvuInjectEnabled = _clarioRvuInjectCheck.Checked;
 
         config.RvuCounterPath = _rvuCounterPathBox.Text;
     }
