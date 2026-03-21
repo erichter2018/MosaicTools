@@ -1172,7 +1172,16 @@ ${{visualEnhancements ? `
 
     private JsonElement? SendToSlimHub(string js) => SendCommand(_slimHubWs, _slimHubSendLock, js);
     private JsonElement? SendToIframe(string js) => SendCommand(_iframeWs, _iframeSendLock, js);
-    private JsonElement? SendToClario(string js) => SendCommand(_clarioWs, _clarioSendLock, js);
+    private JsonElement? SendToClario(string js)
+    {
+        // Auto-reconnect if connection was dropped (Chrome kills CDP after ~15s)
+        if (_clarioWs?.State != WebSocketState.Open)
+        {
+            _lastClarioConnectAttemptTick64 = 0; // bypass throttle
+            TryConnectClario();
+        }
+        return SendCommand(_clarioWs, _clarioSendLock, js);
+    }
 
     /// <summary>Send async JS (returns a Promise) to iframe with awaitPromise, longer timeout.</summary>
     private string? SendToIframeAsync(string js)
@@ -1272,6 +1281,10 @@ ${{visualEnhancements ? `
             Logger.Trace($"CDP: {label} receive loop error: {ex.GetType().Name}: {ex.Message}");
         }
         Logger.Trace($"CDP: {label} receive loop ended (ws.State={ws.State})");
+
+        // Reset Clario connect throttle so next attempt reconnects immediately
+        if (label == "Clario")
+            _lastClarioConnectAttemptTick64 = 0;
     }
 
     /// <summary>
@@ -1533,6 +1546,9 @@ ${{visualEnhancements ? `
     public bool InsertContent(int editorIndex, string text, bool highlight = false, int[]? mediumConfIndices = null, int[]? lowConfIndices = null)
     {
         if (!IsIframeConnected) return false;
+        // Convert newlines to HTML for ProseMirror (plain \n is ignored by insertContent).
+        // \n\n = new paragraph (<p> break), \n = new line (<br> hard break).
+        bool hasNewlines = text.Contains('\n');
         var escaped = JsonSerializer.Serialize(text); // JSON-escapes the string
 
         // Build JSON arrays for JS
@@ -1553,7 +1569,17 @@ ${{visualEnhancements ? `
                 if (editors.length <= {editorIndex} || !editors[{editorIndex}].editor) return 'no_editor';
                 const editor = editors[{editorIndex}].editor;
                 const posBefore = editor.state.selection.from;
-                editor.commands.insertContent({escaped});
+                {(hasNewlines ? $@"const __paras = {escaped}.split('\n\n');
+                for (let __pi = 0; __pi < __paras.length; __pi++) {{
+                    if (__pi > 0) editor.commands.insertContent('<p></p><p></p>')
+                    const __lines = __paras[__pi].split('\n');
+                    for (let __li = 0; __li < __lines.length; __li++) {{
+                        if (__li > 0) editor.commands.insertContent('<p></p>');
+                        const __seg = (__li > 0 || __pi > 0) ? __lines[__li].trimStart() : __lines[__li];
+                        if (__seg.length > 0) editor.commands.insertContent(__seg);
+                    }}
+                }}" : $"editor.commands.insertContent({escaped});")}
+
                 const posAfter = editor.state.selection.from;
                 if (posAfter <= posBefore) return 'ok';
 
@@ -1644,7 +1670,17 @@ ${{visualEnhancements ? `
             js = $@"(() => {{
                 const editors = document.querySelectorAll('.ProseMirror');
                 if (editors.length <= {editorIndex} || !editors[{editorIndex}].editor) return 'no_editor';
-                editors[{editorIndex}].editor.commands.insertContent({escaped});
+                const editor = editors[{editorIndex}].editor;
+                {(hasNewlines ? $@"const __paras = {escaped}.split('\n\n');
+                for (let __pi = 0; __pi < __paras.length; __pi++) {{
+                    if (__pi > 0) editor.commands.insertContent('<p></p><p></p>')
+                    const __lines = __paras[__pi].split('\n');
+                    for (let __li = 0; __li < __lines.length; __li++) {{
+                        if (__li > 0) editor.commands.insertContent('<p></p>');
+                        const __seg = (__li > 0 || __pi > 0) ? __lines[__li].trimStart() : __lines[__li];
+                        if (__seg.length > 0) editor.commands.insertContent(__seg);
+                    }}
+                }}" : $"editor.commands.insertContent({escaped});")}
                 return 'ok';
             }})()";
         }
@@ -3997,8 +4033,6 @@ ${{visualEnhancements ? `
     /// </summary>
     public ClarioPriorityResult? ClarioExtractPriorityAndClass(string? targetAccession = null)
     {
-        if (!IsClarioConnected) return null;
-
         var js = @"(() => {
             const results = {};
             const labels = document.querySelectorAll('label, .x-form-item-label');
@@ -4059,8 +4093,6 @@ ${{visualEnhancements ? `
     /// </summary>
     public string? ClarioDiscoverRvuElements()
     {
-        if (!IsClarioConnected) return null;
-
         var js = @"(() => {
             var results = { ancestors: [] };
 
@@ -4130,16 +4162,10 @@ ${{visualEnhancements ? `
     public bool ClarioInjectRvu(double totalRvu, double? rvuPerHour, double? currentHourRvu,
         double? priorHourRvu, double? estimatedTotal, double? paceDiff, int recordCount)
     {
-        if (!IsClarioConnected) return false;
-
-        // Throttle: only run discovery once per 30 seconds
+        // Throttle: only inject once per 10 seconds (Chrome kills CDP ~15s, so keep window tight)
         var now = Environment.TickCount64;
-        if (now - _lastClarioRvuDiscoveryTick < 30_000) return false;
+        if (now - _lastClarioRvuDiscoveryTick < 10_000) return false;
         _lastClarioRvuDiscoveryTick = now;
-
-        // Run discovery to understand the DOM structure
-        var discovery = ClarioDiscoverRvuElements();
-        if (discovery == null) return false;
 
         // Hide the native RVU section elements and inject our own clean display
         var inv = System.Globalization.CultureInfo.InvariantCulture;
@@ -4276,8 +4302,6 @@ ${{visualEnhancements ? `
     /// </summary>
     public string? ClarioScrapeExamNote()
     {
-        if (!IsClarioConnected) return null;
-
         var js = @"(() => {
             const notes = [];
 
@@ -4365,8 +4389,6 @@ ${{visualEnhancements ? `
     /// </summary>
     public bool ClarioCreateCriticalNote()
     {
-        if (!IsClarioConnected) return false;
-
         // Step 1: Find and click the "Create" button
         var jsClickCreate = @"(() => {
             // Try ExtJS button query first

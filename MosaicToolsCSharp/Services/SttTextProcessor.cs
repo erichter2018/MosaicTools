@@ -14,8 +14,8 @@ public static class SttTextProcessor
     {
         var replacements = new (string pattern, string replacement)[]
         {
-            (@"\bnew\s+paragraph\b",  "\n\n"),
-            (@"\bnew\s+line\b",       "\n"),
+            (@"\b(?:new|next)\s+paragraph\b[.,;]?",  "\n\n"),
+            (@"\b(?:new|next)\s+line\b[.,;]?",       "\n"),
             (@"\bexclamation\s+mark\b[!.]?", "!"),
             (@"\bquestion\s+mark\b[?.]?",   "?"),
             (@"\bperiod\b\.?",        "."),   // consume trailing dot (auto-punctuator may add one)
@@ -34,7 +34,8 @@ public static class SttTextProcessor
             result = ExpandContractions(result);
 
         // Clean up spaces before punctuation marks (e.g., "word . next" → "word. next")
-        result = Regex.Replace(result, @"\s+([.,;!?])", "$1");
+        // Use [^\S\n]+ to preserve newlines from new line/paragraph commands
+        result = Regex.Replace(result, @"[^\S\n]+([.,;!?])", "$1");
 
         // Clean up redundant punctuation (e.g., ",." → "." from "something, period.")
         result = Regex.Replace(result, @"[,;]\s*\.", ".");
@@ -419,7 +420,8 @@ public static class SttTextProcessor
         if (string.IsNullOrEmpty(text)) return text;
 
         // Drop standalone punctuation tokens (Soniox can emit "." as a separate final result)
-        var trimmed = text.Trim();
+        // Trim only spaces/tabs, not newlines (preserve \n from new line/paragraph commands)
+        var trimmed = text.Trim(' ', '\t');
         if (trimmed.Length > 0 && trimmed.All(c => char.IsPunctuation(c)))
             return "";
 
@@ -427,11 +429,20 @@ public static class SttTextProcessor
         // but preserve decimal points between digits (e.g., "2.5")
         text = Regex.Replace(text, @"(?<!\d)[.,;!?](?!\d)", "");
 
-        // Lowercase first char (unless it's an acronym — check if second char is also upper)
-        if (text.Length > 0 && char.IsUpper(text[0]) && !(text.Length > 1 && char.IsUpper(text[1])))
-            text = char.ToLower(text[0]) + text[1..];
+        // Lowercase first alphabetic char (unless it's an acronym — check if next char is also upper)
+        // Skip leading non-letter chars (e.g. \n from new line/paragraph commands)
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (char.IsUpper(text[i]))
+            {
+                if (i + 1 < text.Length && char.IsUpper(text[i + 1])) break; // acronym
+                text = text[..i] + char.ToLower(text[i]) + text[(i + 1)..];
+                break;
+            }
+            if (char.IsLetter(text[i])) break; // already lowercase
+        }
 
-        return text.Trim();
+        return text.Trim(' ', '\t');
     }
 
     /// <summary>
@@ -442,7 +453,8 @@ public static class SttTextProcessor
     {
         // Always replace spoken punctuation words ("period" → ".", "comma" → ",", etc.)
         // Even with auto-punctuate, providers sometimes output these as literal words.
-        var transcript = ApplySpokenPunctuation(rawText, config.SttExpandContractions).Trim();
+        // Trim only spaces/tabs, not newlines (preserve \n from new line/paragraph commands)
+        var transcript = ApplySpokenPunctuation(rawText, config.SttExpandContractions).Trim(' ', '\t');
 
         if (config.SttRadiologyCleanup)
             transcript = ApplyRadiologyCleanup(transcript);

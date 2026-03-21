@@ -1102,6 +1102,9 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         // Also check for "XRAY" → XR
         if (upper.Contains("XRAY") || upper.Contains("X-RAY") || upper.Contains("X RAY"))
             return "XR";
+        // "ULTRASOUND" → US
+        if (upper.StartsWith("ULTRASOUND ") || upper == "ULTRASOUND")
+            return "US";
         return null;
     }
 
@@ -1164,6 +1167,10 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                 result.Add(normalized);
             }
         }
+
+        // "ULTRASOUND" → US (full word not in KnownModalities)
+        if (upper.Contains("ULTRASOUND"))
+            result.Add("US");
 
         return result;
     }
@@ -1330,7 +1337,7 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
                             var itemModality = ExtractModality(itemName);
                             bool modalityMatch = descModality == null || itemModality == null
                                 || string.Equals(descModality, itemModality, StringComparison.OrdinalIgnoreCase);
-                            if (modalityMatch && itemParts.Count > 0 && descBodyParts.SetEquals(itemParts))
+                            if (modalityMatch && itemParts.Count > 0 && BodyPartsMatchFlexible(descBodyParts, itemParts))
                             {
                                 bestIndex = i;
                                 Logger.Trace($"  → Best match at [{i}]: modality+body parts match");
@@ -3114,11 +3121,12 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         "HEAD", "BRAIN", "NECK", "CERVICAL", "C-SPINE", "CSPINE",
         "CHEST", "THORAX", "THORACIC", "T-SPINE", "TSPINE", "LUNG",
         "ABDOMEN", "ABDOMINAL", "ABD", "PELVIS", "PELVIC", "LUMBAR", "L-SPINE", "LSPINE",
-        "SPINE", "UPPER EXTREMITY", "LOWER EXTREMITY", // No generic "EXTREMITY" to avoid false matches
+        "SPINE", "UPPER EXTREMITY", "LOWER EXTREMITY", "EXTREMITY",
         "ARM", "LEG", "SHOULDER", "HIP", "KNEE", "ANKLE", "WRIST", "ELBOW",
         "FOOT", "HAND", "FINGER", "TOE",
         "CARDIAC", "HEART", "CORONARY", "CTA", "MRA",
         "ANGIOGRAPHY", "ANGIOGRAM", "VENOGRAM",
+        "DUPLEX", "VENOUS", "ARTERIAL",
         "PULMONARY VEINS", "PULMONARY ARTERIES", "PULMONARY EMBOLISM", "PE PROTOCOL",
         "AORTA", "AORTIC", "RUNOFF", "CAROTID",
         "SINUS", "ORBIT", "FACE", "FACIAL", "MAXILLOFACIAL", "TEMPORAL", "IAC",
@@ -3126,12 +3134,13 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
     };
 
     /// <summary>
-    /// Organ-specific keywords that are ignored during template matching.
-    /// These often appear as clinical indications (e.g., "RENAL CALCULI") rather than body regions.
+    /// Organ-specific and vascular-qualifier keywords that are ignored during template matching.
+    /// These are modifiers/indications rather than primary body regions.
     /// </summary>
     public static readonly HashSet<string> OrganKeywords = new(StringComparer.OrdinalIgnoreCase)
     {
-        "RENAL", "KIDNEY", "LIVER", "PANCREAS", "ENTEROGRAPHY", "UROGRAM"
+        "RENAL", "KIDNEY", "LIVER", "PANCREAS", "ENTEROGRAPHY", "UROGRAM",
+        "DUPLEX", "VENOUS", "ARTERIAL"
     };
 
     /// <summary>
@@ -3166,6 +3175,10 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         {
             if (upperText.Contains(part))
             {
+                // Skip bare "EXTREMITY" if a more specific variant was already found
+                if (part == "EXTREMITY" && (result.Contains("UPPER EXTREMITY") || result.Contains("LOWER EXTREMITY")))
+                    continue;
+
                 // Normalize some common variations
                 var normalized = part switch
                 {
@@ -3187,6 +3200,37 @@ public class AutomationService : IMosaicReader, IMosaicCommander, IDisposable
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Flexible body-part matching for template correction.
+    /// Bare "EXTREMITY" matches "LOWER EXTREMITY" or "UPPER EXTREMITY".
+    /// Returns true if every part in descParts has a corresponding match in itemParts and vice versa.
+    /// </summary>
+    public static bool BodyPartsMatchFlexible(HashSet<string> descParts, HashSet<string> itemParts)
+    {
+        if (descParts.SetEquals(itemParts)) return true;
+
+        // Check if every desc part matches some item part (allowing EXTREMITY ↔ LOWER/UPPER EXTREMITY)
+        foreach (var dp in descParts)
+        {
+            if (itemParts.Contains(dp)) continue;
+            if (dp == "EXTREMITY" && (itemParts.Contains("LOWER EXTREMITY") || itemParts.Contains("UPPER EXTREMITY")))
+                continue;
+            if ((dp == "LOWER EXTREMITY" || dp == "UPPER EXTREMITY") && itemParts.Contains("EXTREMITY"))
+                continue;
+            return false;
+        }
+        foreach (var ip in itemParts)
+        {
+            if (descParts.Contains(ip)) continue;
+            if (ip == "EXTREMITY" && (descParts.Contains("LOWER EXTREMITY") || descParts.Contains("UPPER EXTREMITY")))
+                continue;
+            if ((ip == "LOWER EXTREMITY" || ip == "UPPER EXTREMITY") && descParts.Contains("EXTREMITY"))
+                continue;
+            return false;
+        }
+        return true;
     }
 
     /// <summary>

@@ -1197,8 +1197,8 @@ public class ActionController : IDisposable
         bool beforeIsSpace = before == ' ' || before == '\n' || before == '\0';
         bool afterIsSpace = after == ' ' || after == '\n' || after == '\0';
 
-        // Trim existing spaces from text edges before re-adding
-        text = text.Trim();
+        // Trim only spaces from text edges before re-adding (preserve newlines for line/paragraph commands)
+        text = text.Trim(' ');
 
         // Add leading space if needed (char before is a letter/digit, not already a space)
         if (!beforeIsSpace && (char.IsLetterOrDigit(before) || char.IsPunctuation(before)))

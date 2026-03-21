@@ -31,10 +31,10 @@ public class NoteFormatter
             // 1. Extract Name (Look for clinician patterns)
             var segments = new List<string>();
 
-            // Prefer title-based matches — only true PREFIX titles (Dr., Nurse)
-            // Credentials like RN, MD, DO, NP, PA are almost always SUFFIXES ("Berry, RN")
-            // not prefixes, so they're excluded here. The verb-based fallback handles them.
-            var namePattern = @"(\b(?:Dr\.?|Nurse)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is|and|&|connected|contacted|spoke|discussed|transferred|called|notified|informed|reached|paged)\b|\s*[-;:,]|\s+\b(?:Dr\.?|Nurse)\s|\s+\d{2}/\d{2}/|$)";
+            // Prefer title-based matches — PREFIX titles (Dr., Nurse, RN, NP, PA, LPN)
+            // Credential prefixes are included because notes often use "RN Smith" style
+            // Negative lookbehinds prevent matching "Charge Nurse", "Head Nurse", etc. as prefix titles
+            var namePattern = @"(\b(?:Dr\.?|(?<!Charge\s)(?<!Head\s)(?<!Staff\s)(?<!Lead\s)Nurse|RN|NP|PA|LPN)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is|and|&|connected|contacted|spoke|discussed|transferred|called|notified|informed|reached|paged)\b|\s*[-;:,]|\s+\b(?:Dr\.?|Nurse|RN|NP|PA|LPN)\s|\s+\d{2}/\d{2}/|$)";
             var nameMatches = Regex.Matches(rawText, namePattern, RegexOptions.IgnoreCase);
             foreach (Match m in nameMatches)
             {
@@ -49,11 +49,26 @@ public class NoteFormatter
             if (titleAndName == null)
             {
                 segments.Clear();
-                var verbPattern = @"(?<!\bto\s+be\s+)(?<!\bbeen\s+)(?:Transferred|Connected\s+with|Connected\s+to|Connected|Was\s+connected\s+with|Spoke\s+to|Spoke\s+with|Discussed\s+with)\s+(.+?)(?=\s+(?:at|@|said|confirmed|stated|reported|declined|who|are|is)|\s*(?:,(?!\s*(?:RN|NP|PA|MD|DO|LPN|BSN)\b)|[-;:])|\s+\d{2}/\d{2}/|$)";
+                var verbPattern = @"(?<!\bto\s+be\s+)(?<!\bbeen\s+)(?:Transferred|Connected\s+with|Connected\s+to|Connected|Was\s+connected\s+with|Spoke\s+to|Spoke\s+with|Discussed\s+with|(?:agreed|asked|wanted|trying)\s+to\s+connect)\s+(.+?)(?=\s+(?:at|@|said|confirmed|stated|reported|declined|who|are|is|via)\b|\s*(?:,(?!\s*(?:RN|NP|PA|MD|DO|LPN|BSN|Charge\s+Nurse)\b)|[-;:])|\s+\d{2}/\d{2}/|$)";
                 var verbMatch = Regex.Match(rawText, verbPattern, RegexOptions.IgnoreCase);
                 if (verbMatch.Success)
                 {
                     var fullSegment = verbMatch.Groups[1].Value;
+                    var parts = Regex.Split(fullSegment, @"\s+(?:to|with|w/|and|&)\s+", RegexOptions.IgnoreCase);
+                    segments.AddRange(parts);
+                }
+                titleAndName = TryExtractName(segments);
+            }
+
+            // Fallback: preposition-based ("received by", "confirmed by", "relayed to", etc.)
+            if (titleAndName == null)
+            {
+                segments.Clear();
+                var prepPattern = @"(?:received\s+by|confirmed\s+by|acknowledged\s+by|accepted\s+by|relayed\s+to|reported\s+to|communicated\s+to)\s+(.+?)(?=\s+(?:at|@|said|confirmed|stated|reported|declined|who|are|is)\b|\s*(?:,(?!\s*(?:RN|NP|PA|MD|DO|LPN|BSN)\b)|[-;:])|\s+\d{2}/\d{2}/|$)";
+                var prepMatch = Regex.Match(rawText, prepPattern, RegexOptions.IgnoreCase);
+                if (prepMatch.Success)
+                {
+                    var fullSegment = prepMatch.Groups[1].Value;
                     var parts = Regex.Split(fullSegment, @"\s+(?:to|with|w/|and|&)\s+", RegexOptions.IgnoreCase);
                     segments.AddRange(parts);
                 }
@@ -348,7 +363,7 @@ public class NoteFormatter
 
             if (!isCurrentDoctor && cleaned.Length > 2)
             {
-                cleaned = Regex.Split(cleaned, @"\s+(?:to|at|@|w/)\s+|(?:,(?!\s*(?:RN|NP|PA|MD|DO|LPN|BSN)\b))|[-;:]", RegexOptions.IgnoreCase)[0];
+                cleaned = Regex.Split(cleaned, @"\s+(?:to|at|@|w/)\s+|(?:,(?!\s*(?:RN|NP|PA|MD|DO|LPN|BSN|Charge|Head|Staff|Lead)\b))|[-;:]", RegexOptions.IgnoreCase)[0];
                 return ToTitleCase(cleaned);
             }
         }

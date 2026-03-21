@@ -1,3 +1,7 @@
+4.3.9
+- Voice commands: "new line" / "next line" starts a new line, "new paragraph" / "next paragraph" starts a new paragraph (inserts line breaks via CDP)
+- Fix: spoken punctuation cleanup no longer strips newline characters from new line/paragraph commands
+
 4.3.8
 - Fix: CTA+Perfusion template mismatch false positive — "CT BRAIN PERFUSION CTA HEAD NECK" no longer flags against "CTA Head and Neck with Perfusion" (CTA subsumes standalone CT)
 - Fix: STT punctuation leaking into transcript editor when "auto-punctuate final report only" is enabled — regex-based stripping of all non-decimal punctuation
