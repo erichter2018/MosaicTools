@@ -23,6 +23,10 @@ public class TranscriptionForm : Form
     private int _insertionPoint;
     private string _interimText = "";
 
+    // Accumulated final results for full re-render (RichTextBox loses per-char colors on edit)
+    private readonly List<FinalSegment> _finalSegments = new();
+    private record FinalSegment(string[] Words, Color[] Colors);
+
     // Auto-grow
     private int _maxHeight;
     private bool _isAutoGrowing;
@@ -157,34 +161,46 @@ public class TranscriptionForm : Form
 
         if (result.SpeechFinal)
         {
-            // Clear and show the final text briefly before it disappears (utterance-end)
-            _textBox.Clear();
-            _insertionPoint = 0;
-            _interimText = "";
+            // Build word list and color list for this segment
+            HashSet<int>? mediumSet = result.MediumConfWordIndices is { Length: > 0 }
+                ? new HashSet<int>(result.MediumConfWordIndices) : null;
+            HashSet<int>? lowSet = result.LowConfWordIndices is { Length: > 0 }
+                ? new HashSet<int>(result.LowConfWordIndices) : null;
 
-            // Color-code words by confidence if word-level data is available
             if (result.Words is { Length: > 0 })
             {
-                _textBox.SelectionStart = 0;
-                foreach (var word in result.Words)
-                {
-                    var display = (word.PunctuatedText ?? word.Text) + " ";
-                    _textBox.SelectionColor = ConfidenceColor(word.Confidence);
-                    _textBox.SelectionFont = new Font(_textBox.Font, FontStyle.Regular);
-                    _textBox.SelectedText = display;
-                }
-            }
-            else
-            {
-                _textBox.SelectionStart = 0;
-                _textBox.SelectionColor = Color.White;
-                _textBox.SelectionFont = new Font(_textBox.Font, FontStyle.Regular);
-                _textBox.SelectedText = result.Transcript;
-            }
-            _insertionPoint = _textBox.TextLength;
+                var transcriptWords = result.Transcript.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                bool useTranscript = transcriptWords.Length == result.Words.Length;
+                var words = new string[result.Words.Length];
+                var colors = new Color[result.Words.Length];
 
-            _textBox.SelectionStart = _textBox.TextLength;
-            AutoGrowHeight();
+                for (int i = 0; i < result.Words.Length; i++)
+                {
+                    var w = result.Words[i];
+                    words[i] = useTranscript ? transcriptWords[i] : (w.PunctuatedText ?? w.Text);
+
+                    if (lowSet != null && lowSet.Contains(i))
+                        colors[i] = ConfidenceColor(0.50f);
+                    else if (mediumSet != null && mediumSet.Contains(i))
+                        colors[i] = ConfidenceColor(0.75f);
+                    else if (mediumSet != null || lowSet != null)
+                        colors[i] = ConfidenceColor(0.98f);
+                    else
+                        colors[i] = ConfidenceColor(w.Confidence);
+                }
+                _finalSegments.Add(new FinalSegment(words, colors));
+            }
+            else if (!string.IsNullOrEmpty(result.Transcript))
+            {
+                var words = result.Transcript.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var defaultColor = Color.FromArgb(220, 220, 220);
+                var colors = new Color[words.Length];
+                Array.Fill(colors, defaultColor);
+                _finalSegments.Add(new FinalSegment(words, colors));
+            }
+
+            _interimText = "";
+            RebuildDisplay(null);
         }
         else if (result.IsFinal)
         {
@@ -193,38 +209,117 @@ public class TranscriptionForm : Form
         }
         else
         {
-            // Show interim text in gray italic — replaces previous interim
-            RemoveInterimText();
-
+            // Interim: full rebuild with trailing interim text in gray italic
             _interimText = result.Transcript;
-            _textBox.SelectionStart = _insertionPoint;
-            _textBox.SelectionLength = 0;
-            _textBox.SelectionColor = Color.FromArgb(128, 128, 128);
-            _textBox.SelectionFont = new Font(_textBox.Font, FontStyle.Italic);
-            _textBox.SelectedText = _interimText;
-
-            _textBox.SelectionStart = _textBox.TextLength;
-            AutoGrowHeight();
+            RebuildDisplay(_interimText);
         }
 
         _textBox.ReadOnly = true;
     }
 
-    private void RemoveInterimText()
+    /// <summary>
+    /// Build RTF string directly and assign to RichTextBox.Rtf.
+    /// Bypasses SelectionColor API which loses per-character colors on rapid updates.
+    /// </summary>
+    private void RebuildDisplay(string? interimText)
     {
-        if (_interimText.Length > 0)
+        var sb = new System.Text.StringBuilder(512);
+
+        // RTF header with color table
+        // Collect unique colors first
+        var colorList = new List<Color>();
+        var colorIndex = new Dictionary<int, int>(); // argb -> 1-based index in color table
+
+        void EnsureColor(Color c)
         {
-            _textBox.ReadOnly = false;
-            if (_insertionPoint + _interimText.Length <= _textBox.TextLength)
+            int argb = c.ToArgb();
+            if (!colorIndex.ContainsKey(argb))
             {
-                _textBox.SelectionStart = _insertionPoint;
-                _textBox.SelectionLength = _interimText.Length;
-                _textBox.SelectedText = "";
+                colorList.Add(c);
+                colorIndex[argb] = colorList.Count; // 1-based (0 = default)
             }
-            _interimText = "";
-            _textBox.ReadOnly = true;
+        }
+
+        // Pre-register all used colors
+        var defaultColor = Color.FromArgb(220, 220, 220);
+        var grayColor = Color.FromArgb(128, 128, 128);
+        EnsureColor(defaultColor);
+        EnsureColor(grayColor);
+        foreach (var seg in _finalSegments)
+            foreach (var c in seg.Colors)
+                EnsureColor(c);
+
+        // Font size in half-points
+        int fontSize = (int)(_textBox.Font.Size * 2);
+
+        sb.Append(@"{\rtf1\ansi\deff0");
+        // Font table
+        sb.Append(@"{\fonttbl{\f0 ").Append(_textBox.Font.Name).Append(@";}}");
+        // Color table (entry 0 is auto/default, then our colors)
+        sb.Append(@"{\colortbl ;");
+        foreach (var c in colorList)
+            sb.Append($@"\red{c.R}\green{c.G}\blue{c.B};");
+        sb.Append('}');
+
+        // Background color
+        sb.Append($@"\viewkind4\f0\fs{fontSize}\cb0 ");
+
+        // Render final segments
+        for (int s = 0; s < _finalSegments.Count; s++)
+        {
+            if (s > 0)
+                sb.Append($@"\cf{colorIndex[defaultColor.ToArgb()]}  ");
+
+            var seg = _finalSegments[s];
+            for (int i = 0; i < seg.Words.Length; i++)
+            {
+                int ci = colorIndex[seg.Colors[i].ToArgb()];
+                sb.Append($@"\cf{ci} ");
+                AppendRtfEscaped(sb, seg.Words[i]);
+                sb.Append(' ');
+            }
+        }
+
+        // Track where final text ends (approximate char count for _insertionPoint)
+        int finalCharCount = 0;
+        foreach (var seg in _finalSegments)
+        {
+            if (finalCharCount > 0) finalCharCount++; // space separator
+            foreach (var w in seg.Words)
+                finalCharCount += w.Length + 1; // word + space
+        }
+        _insertionPoint = finalCharCount;
+
+        // Interim text in gray italic
+        if (!string.IsNullOrEmpty(interimText))
+        {
+            int gi = colorIndex[grayColor.ToArgb()];
+            sb.Append($@"\cf{gi}\i ");
+            AppendRtfEscaped(sb, interimText);
+            sb.Append(@"\i0 ");
+        }
+
+        sb.Append('}');
+
+        _textBox.Rtf = sb.ToString();
+        _textBox.SelectionStart = _textBox.TextLength;
+        AutoGrowHeight();
+    }
+
+    private static void AppendRtfEscaped(System.Text.StringBuilder sb, string text)
+    {
+        foreach (char c in text)
+        {
+            if (c == '\\') sb.Append(@"\\");
+            else if (c == '{') sb.Append(@"\{");
+            else if (c == '}') sb.Append(@"\}");
+            else if (c > 127) sb.Append($@"\u{(int)c}?");
+            else sb.Append(c);
         }
     }
+
+    // Kept for compatibility but no longer used by AppendResult
+    private void RemoveInterimText() { }
 
     public void ClearTranscript()
     {
@@ -239,6 +334,7 @@ public class TranscriptionForm : Form
         _textBox.Clear();
         _insertionPoint = 0;
         _interimText = "";
+        _finalSegments.Clear();
         _textBox.ReadOnly = true;
         AutoGrowHeight();
     }

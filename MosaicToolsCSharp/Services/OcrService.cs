@@ -405,12 +405,17 @@ public class OcrService
                         }
                     }
 
-                    // Vertical border columns: >80% of rows have yellow (full-height viewport border).
-                    // The ruler's vertical line only spans the tick area (~60-70% density).
+                    // Viewport border columns: near-100% yellow density AND contiguous from column 0.
+                    // The ruler's vertical line also has high density but is NOT a viewport border.
                     bool[] isBorderCol = new bool[w];
                     int borderColThreshold = (int)(h * 0.80);
                     for (int x = 0; x < w; x++)
-                        isBorderCol[x] = yellowPerCol[x] > borderColThreshold;
+                    {
+                        if (yellowPerCol[x] > borderColThreshold)
+                            isBorderCol[x] = true;
+                        else
+                            break; // Stop at first gap — columns beyond are ruler, not viewport border
+                    }
 
                     // Horizontal border rows: yellow spans >60% of strip width
                     bool[] isBorderRow = new bool[h];
@@ -480,17 +485,69 @@ public class OcrService
                     }
                     Logger.Trace($"CaptureRulerStrip: rulerStartCol={rulerStartCol}");
 
-                    // Build tick mask: yellow pixels within tick range, at or right of ruler line
-                    bool[] isTick = new bool[w * h];
+                    // Build tick mask: yellow pixels within tick range, at or right of ruler line.
+                    // Exclude measurement annotations by detecting dense text regions — ruler ticks
+                    // are thin (1-2 row) marks with gaps, while text has many consecutive yellow rows.
+                    bool[] isYellowPx = new bool[w * h];
                     for (int y = 0; y < h; y++)
                     {
                         bool inTickRange = (y >= tickMinRow && y <= tickMaxRow);
-                        for (int x = 0; x < w; x++)
+                        if (isBorderRow[y] || !inTickRange) continue;
+                        for (int x = rulerStartCol; x < w; x++)
                         {
                             byte* px = scan0 + y * stride + x * 4;
-                            bool isYellow = (px[2] > 180 && px[1] > 80 && px[0] < 120);
-                            isTick[y * w + x] = isYellow && x >= rulerStartCol && !isBorderRow[y] && inTickRange;
+                            isYellowPx[y * w + x] = (px[2] > 180 && px[1] > 80 && px[0] < 120);
                         }
+                    }
+
+                    // Identify ruler line columns: contiguous high-density columns starting at rulerStartCol.
+                    // These are the vertical ruler line itself (not text, not ticks).
+                    int tickRange = tickMaxRow - tickMinRow + 1;
+                    bool[] isRulerLineCol = new bool[w];
+                    for (int x = rulerStartCol; x < w; x++)
+                    {
+                        if (yellowPerCol[x] > tickRange * 0.4)
+                            isRulerLineCol[x] = true;
+                        else
+                            break; // Ruler line is contiguous from rulerStartCol
+                    }
+
+                    // Detect text columns: columns where yellow appears in many consecutive rows
+                    // (text glyphs are ~8-14px tall with dense vertical fill; tick marks are 1-2px tall).
+                    // Exempt ruler line columns — they span the full range by design.
+                    bool[] isTextCol = new bool[w];
+                    for (int x = rulerStartCol; x < w; x++)
+                    {
+                        if (isRulerLineCol[x]) continue;
+                        int maxConsec = 0, consec = 0;
+                        for (int y = tickMinRow; y <= tickMaxRow; y++)
+                        {
+                            if (isYellowPx[y * w + x]) { consec++; if (consec > maxConsec) maxConsec = consec; }
+                            else consec = 0;
+                        }
+                        isTextCol[x] = maxConsec >= 5;
+                    }
+
+                    // Expand text columns: if a column is text, mark ±3 neighbors as text too
+                    // (text chars are close together, this fills gaps between strokes).
+                    // Never expand into ruler line columns.
+                    bool[] isTextRegion = new bool[w];
+                    for (int x = 0; x < w; x++)
+                    {
+                        if (!isTextCol[x]) continue;
+                        for (int dx = -3; dx <= 3; dx++)
+                        {
+                            int nx = x + dx;
+                            if (nx >= 0 && nx < w && !isRulerLineCol[nx]) isTextRegion[nx] = true;
+                        }
+                    }
+
+                    bool[] isTick = new bool[w * h];
+                    for (int y = tickMinRow; y <= tickMaxRow; y++)
+                    {
+                        if (isBorderRow[y]) continue;
+                        for (int x = rulerStartCol; x < w; x++)
+                            isTick[y * w + x] = isYellowPx[y * w + x] && !isTextRegion[x];
                     }
 
                     // Calibration: count tick pixels per row to find tick spacing
@@ -649,17 +706,35 @@ public class OcrService
                         }
                     }
 
-                    // Border rows: >80% of columns have yellow (full-width viewport border)
+                    // Viewport border rows: near-100% density AND contiguous from the bottom edge.
+                    // The ruler's horizontal line also has high density but is NOT a viewport border.
                     bool[] isBorderRow = new bool[h];
                     int borderRowThreshold = (int)(w * 0.80);
-                    for (int y = 0; y < h; y++)
-                        isBorderRow[y] = yellowPerRow[y] > borderRowThreshold;
+                    for (int y = h - 1; y >= 0; y--)
+                    {
+                        if (yellowPerRow[y] > borderRowThreshold)
+                            isBorderRow[y] = true;
+                        else
+                            break; // Stop at first gap — rows above are ruler, not viewport border
+                    }
 
-                    // Border columns: yellow spans >60% of strip height (vertical viewport borders)
+                    // Border columns: contiguous from left edge and right edge
                     bool[] isBorderCol = new bool[w];
                     int borderColThreshold = (int)(h * 0.6);
                     for (int x = 0; x < w; x++)
-                        isBorderCol[x] = yellowPerCol[x] > borderColThreshold;
+                    {
+                        if (yellowPerCol[x] > borderColThreshold)
+                            isBorderCol[x] = true;
+                        else
+                            break;
+                    }
+                    for (int x = w - 1; x >= 0; x--)
+                    {
+                        if (yellowPerCol[x] > borderColThreshold)
+                            isBorderCol[x] = true;
+                        else
+                            break;
+                    }
 
                     int borderRowCount = 0, borderColCount = 0;
                     for (int y = 0; y < h; y++) if (isBorderRow[y]) borderRowCount++;
@@ -705,18 +780,70 @@ public class OcrService
                         rowDensities.Append($"r{y}={yellowPerRow[y]}{(isBorderRow[y] ? "B" : "")} ");
                     Logger.Trace($"CaptureHorizontalRulerStrip: borderRows={borderRowCount}(thr={borderRowThreshold}), borderCols={borderColCount}(thr={borderColThreshold}), rulerEndRow={rulerEndRow}, tickRows={tickMinRow}-{tickMaxRow}, tickCols={tickMinCol}-{tickMaxCol}, {rowDensities}");
 
-                    // Build tick mask: yellow at or above rulerEndRow, in tick column range, not border
-                    bool[] isTick = new bool[w * h];
+                    // Build tick mask: yellow at or above rulerEndRow, in tick column range, not border.
+                    // Exclude measurement annotations by detecting dense text regions — ruler ticks
+                    // are thin (1-2 col) marks with gaps, while text has many consecutive yellow columns.
+                    bool[] isYellowPx = new bool[w * h];
                     for (int y = 0; y <= rulerEndRow; y++)
                     {
                         if (isBorderRow[y]) continue;
                         for (int x = 0; x < w; x++)
                         {
                             if (isBorderCol[x]) continue;
-                            bool inTickRange = (x >= tickMinCol && x <= tickMaxCol);
                             byte* px = scan0 + y * stride + x * 4;
-                            bool isYellow = (px[2] > 180 && px[1] > 80 && px[0] < 120);
-                            isTick[y * w + x] = isYellow && inTickRange;
+                            isYellowPx[y * w + x] = (px[2] > 180 && px[1] > 80 && px[0] < 120);
+                        }
+                    }
+
+                    // Identify ruler line rows: contiguous high-density rows upward from rulerEndRow.
+                    // These are the horizontal ruler line itself (not text, not ticks).
+                    int tickColRange = tickMaxCol - tickMinCol + 1;
+                    bool[] isRulerLineRow = new bool[h];
+                    for (int y = rulerEndRow; y >= 0; y--)
+                    {
+                        if (yellowPerRow[y] > tickColRange * 0.4)
+                            isRulerLineRow[y] = true;
+                        else
+                            break;
+                    }
+
+                    // Detect text rows: rows where yellow appears in many consecutive columns
+                    // (text glyphs are ~6-12px wide with dense horizontal fill; tick marks are 1-2px wide).
+                    // Exempt ruler line rows — they span the full range by design.
+                    bool[] isTextRow = new bool[h];
+                    for (int y = 0; y <= rulerEndRow; y++)
+                    {
+                        if (isBorderRow[y] || isRulerLineRow[y]) continue;
+                        int maxConsec = 0, consec = 0;
+                        for (int x = tickMinCol; x <= tickMaxCol; x++)
+                        {
+                            if (isYellowPx[y * w + x]) { consec++; if (consec > maxConsec) maxConsec = consec; }
+                            else consec = 0;
+                        }
+                        isTextRow[y] = maxConsec >= 5;
+                    }
+
+                    // Expand text rows: mark ±3 neighbors as text too (fills gaps between text rows).
+                    // Never expand into ruler line rows.
+                    bool[] isTextRegion = new bool[h];
+                    for (int y = 0; y < h; y++)
+                    {
+                        if (!isTextRow[y]) continue;
+                        for (int dy = -3; dy <= 3; dy++)
+                        {
+                            int ny = y + dy;
+                            if (ny >= 0 && ny < h && !isRulerLineRow[ny]) isTextRegion[ny] = true;
+                        }
+                    }
+
+                    bool[] isTick = new bool[w * h];
+                    for (int y = 0; y <= rulerEndRow; y++)
+                    {
+                        if (isBorderRow[y] || isTextRegion[y]) continue;
+                        for (int x = tickMinCol; x <= tickMaxCol; x++)
+                        {
+                            if (isBorderCol[x]) continue;
+                            isTick[y * w + x] = isYellowPx[y * w + x];
                         }
                     }
 

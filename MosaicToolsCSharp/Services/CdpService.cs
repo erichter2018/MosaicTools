@@ -666,7 +666,10 @@ ${{visualEnhancements ? `
 .ProseMirror [data-drag-handle] {{ display: none !important; }}
 .ProseMirror [data-testid=""DeleteIcon""] {{ display: none !important; }}
 .ProseMirror button:has(> [data-testid=""DeleteIcon""]) {{ display: none !important; }}
-.ProseMirror button:has(> [data-testid=""DragHandleIcon""]) {{ display: none !important; }}`;
+.ProseMirror button:has(> [data-testid=""DragHandleIcon""]) {{ display: none !important; }}
+/* Re-show delete icons inside ordered lists (impression items) */
+.ProseMirror ol [data-testid=""DeleteIcon""] {{ display: revert !important; }}
+.ProseMirror ol button:has(> [data-testid=""DeleteIcon""]) {{ display: revert !important; }}`;
         }}
         styleEl.textContent = css;
         document.head.appendChild(styleEl);
@@ -1603,15 +1606,34 @@ ${{visualEnhancements ? `
                         + ' ::highlight(mt-medium) {{ color: rgb(200, 170, 80); }}'
                         + ' ::highlight(mt-low) {{ color: rgb(210, 130, 70); }}';
 
+                    // Accumulate per-word confidence tiers across insertions.
+                    // Stored as [{{p, l, t}}] where t: 0=normal, 1=medium, 2=low.
+                    if (!window.__mtWordTiers) window.__mtWordTiers = [];
+                    const medSet = new Set({mediumJson});
+                    const lowSet = new Set({lowJson});
+                    const insertedText = editor.state.doc.textBetween(posBefore, posAfter);
+                    let wordIndex = 0;
+                    let charPos = 0;
+                    const ilen = insertedText.length;
+                    while (charPos < ilen) {{
+                        while (charPos < ilen && insertedText[charPos] === ' ') charPos++;
+                        if (charPos >= ilen) break;
+                        const wordStart = charPos;
+                        while (charPos < ilen && insertedText[charPos] !== ' ') charPos++;
+                        const tier = lowSet.has(wordIndex) ? 2 : medSet.has(wordIndex) ? 1 : 0;
+                        window.__mtWordTiers.push({{ p: posBefore + wordStart, l: charPos - wordStart, t: tier }});
+                        wordIndex++;
+                    }}
+
                     // Clear all previous highlights — StaticRanges go stale when ProseMirror
-                    // rebuilds DOM nodes on subsequent inserts, causing wrong word colors.
+                    // rebuilds DOM nodes on subsequent inserts.
                     for (const name of ['mt-dictated', 'mt-normal', 'mt-medium', 'mt-low']) {{
                         if (CSS.highlights.has(name)) CSS.highlights.get(name).clear();
                     }}
 
                     // Re-highlight ALL dictated text from the start of the editor to current position
                     const view = editor.view;
-                    const docStart = 1; // ProseMirror doc starts at pos 1
+                    const docStart = 1;
                     const startDOM = view.domAtPos(docStart);
                     const endDOM = view.domAtPos(posAfter);
                     const range = new Range();
@@ -1621,44 +1643,19 @@ ${{visualEnhancements ? `
                     if (!CSS.highlights.has('mt-dictated')) CSS.highlights.set('mt-dictated', new Highlight());
                     CSS.highlights.get('mt-dictated').add(range);
 
-                    // Assign every word in the NEW insertion an explicit text color (normal/medium/low)
-                    const medSet = new Set({mediumJson});
-                    const lowSet = new Set({lowJson});
-                    const insertedText = editor.state.doc.textBetween(posBefore, posAfter);
-                    let wordIndex = 0;
-                    let charPos = 0;
-                    const len = insertedText.length;
-                    while (charPos < len) {{
-                        while (charPos < len && insertedText[charPos] === ' ') charPos++;
-                        if (charPos >= len) break;
-                        const wordStart = charPos;
-                        while (charPos < len && insertedText[charPos] !== ' ') charPos++;
-                        const hlName = lowSet.has(wordIndex) ? 'mt-low'
-                            : medSet.has(wordIndex) ? 'mt-medium' : 'mt-normal';
+                    // Rebuild per-word highlights from ALL accumulated tiers
+                    const tierNames = ['mt-normal', 'mt-medium', 'mt-low'];
+                    for (const entry of window.__mtWordTiers) {{
+                        const hlName = tierNames[entry.t];
                         try {{
-                            const wStartDOM = view.domAtPos(posBefore + wordStart);
-                            const wEndDOM = view.domAtPos(posBefore + charPos);
+                            const wStartDOM = view.domAtPos(entry.p);
+                            const wEndDOM = view.domAtPos(entry.p + entry.l);
                             const wRange = new StaticRange({{
                                 startContainer: wStartDOM.node, startOffset: wStartDOM.offset,
                                 endContainer: wEndDOM.node, endOffset: wEndDOM.offset
                             }});
                             if (!CSS.highlights.has(hlName)) CSS.highlights.set(hlName, new Highlight());
                             CSS.highlights.get(hlName).add(wRange);
-                        }} catch(e) {{}}
-                        wordIndex++;
-                    }}
-
-                    // Re-color older text (before this insertion) as normal
-                    if (posBefore > docStart) {{
-                        try {{
-                            const oldStartDOM = view.domAtPos(docStart);
-                            const oldEndDOM = view.domAtPos(posBefore);
-                            const oldRange = new StaticRange({{
-                                startContainer: oldStartDOM.node, startOffset: oldStartDOM.offset,
-                                endContainer: oldEndDOM.node, endOffset: oldEndDOM.offset
-                            }});
-                            if (!CSS.highlights.has('mt-normal')) CSS.highlights.set('mt-normal', new Highlight());
-                            CSS.highlights.get('mt-normal').add(oldRange);
                         }} catch(e) {{}}
                     }}
                     return 'ok_highlight';
@@ -2077,7 +2074,30 @@ ${{visualEnhancements ? `
             function escHtml(s) {{ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
 
             function injectButtons() {{
-                if (document.getElementById(CID)) return; // already present
+                const existing = document.getElementById(CID);
+                if (existing) {{
+                    // Already present — but reposition in case the heading moved (scroll, resize)
+                    const editors2 = document.querySelectorAll('.ProseMirror');
+                    if (editors2.length >= 2) {{
+                        let h = null;
+                        for (const c of editors2[1].children) {{
+                            if (c.tagName === 'H3' && (c.textContent || '').trim().toUpperCase().startsWith('IMPRESSION')) {{ h = c; break; }}
+                        }}
+                        if (!h) {{
+                            for (const c of editors2[1].children) {{
+                                if (!c.classList) continue;
+                                const hh = c.querySelector('h3');
+                                if (hh && (hh.textContent || '').trim().toUpperCase().startsWith('IMPRESSION')) {{ h = hh; break; }}
+                            }}
+                        }}
+                        if (h) {{
+                            const pr = existing.parentElement?.getBoundingClientRect();
+                            const hr = h.getBoundingClientRect();
+                            if (pr) existing.style.top = (hr.top - pr.top) + 'px';
+                        }}
+                    }}
+                    return;
+                }}
 
                 const editors = document.querySelectorAll('.ProseMirror');
                 if (editors.length < 2 || !editors[1].editor) return;
@@ -2149,10 +2169,19 @@ ${{visualEnhancements ? `
                 }});
                 const nowMs = Date.now();
 
-                // Create container — positioned absolute to right of heading
+                // Create container — positioned OUTSIDE ProseMirror to avoid DOM corruption
+                // when ProseMirror re-renders (impression edits/deletes were converting button
+                // text into orphaned text nodes inside the heading element)
                 const container = document.createElement('div');
                 container.id = CID;
-                container.style.cssText = 'position:absolute;top:0;right:0;display:inline-flex;gap:4px;line-height:normal;pointer-events:auto;z-index:10;';
+
+                // Position relative to the editor's scrollable parent, not inside the heading
+                const pmParent = pm.parentElement || pm;
+                pmParent.style.position = 'relative';
+                const impRect = impEl.getBoundingClientRect();
+                const parentRect = pmParent.getBoundingClientRect();
+                container.style.cssText = 'position:absolute;display:inline-flex;gap:4px;line-height:normal;pointer-events:auto;z-index:10;'
+                    + 'top:' + (impRect.top - parentRect.top) + 'px;right:0;';
 
                 for (const entry of ENTRIES) {{
                     // RequireComparison filter
@@ -2245,11 +2274,8 @@ ${{visualEnhancements ? `
 
                 if (container.children.length === 0) return 'filtered';
 
-                // Insert container: make the anchor element position:relative, append container inside
-                // Prefer the section wrapper (wider, gives more room for right-aligned buttons)
-                const anchor = impSection || impEl;
-                anchor.style.position = 'relative';
-                anchor.appendChild(container);
+                // Append to editor parent (outside ProseMirror's DOM tree)
+                pmParent.appendChild(container);
                 return 'ok';
             }}
 
@@ -2384,7 +2410,7 @@ ${{visualEnhancements ? `
                     const b=cBody(); if(b) content.push(mkP(b));
                 }}
                 if(!content.length) content.push({{type:'paragraph'}});
-                for(const n of ['mt-dictated','mt-normal','mt-medium','mt-low']) {{ if(CSS.highlights.has(n)) CSS.highlights.delete(n); }}
+                for(const n of ['mt-dictated','mt-normal','mt-medium','mt-low']) {{ if(CSS.highlights.has(n)) CSS.highlights.delete(n); }} window.__mtWordTiers=[];
                 ed.commands.setContent({{type:'doc',content:content}});
                 const v=ed.view, ep=ed.state.doc.content.size-1;
                 const t1=v.state.tr.insertText('\u200B',ep); t1.setMeta('addToHistory',false); v.dispatch(t1);
@@ -2577,6 +2603,7 @@ ${{visualEnhancements ? `
             for (const name of ['mt-dictated', 'mt-normal', 'mt-medium', 'mt-low']) {{
                 if (CSS.highlights.has(name)) CSS.highlights.delete(name);
             }}
+            window.__mtWordTiers = [];
 
             editor.commands.setContent({{ type: 'doc', content: content }});
 
@@ -4239,9 +4266,9 @@ ${{visualEnhancements ? `
             // Parent is an ExtJS box-layout target (height:1, children absolutely positioned)
             // Position our div to fill the same area the native elements occupied
             // min-width preserves the panel width so ""My Reading Queue"" header doesn't truncate
-            mtDiv.style.cssText = 'display:flex;align-items:center;padding:2px 6px;gap:6px;white-space:nowrap;position:absolute;left:0;top:0;min-width:305px;height:26px;';
+            mtDiv.style.cssText = 'display:flex;align-items:center;padding:2px 4px;gap:2px;white-space:nowrap;position:absolute;left:0;top:0;min-width:305px;height:26px;';
 
-            var sep = '<span style=""color:#555;margin:0 4px;"">|</span>';
+            var sep = '<span style=""color:#555;margin:0 1px;"">|</span>';
             var blue = '#4B9CD3';
             var red = '#FF7878';
             var ss = 'font-size:11px;';

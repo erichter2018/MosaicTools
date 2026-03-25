@@ -1,3 +1,13 @@
+4.3.10
+- Fix: dictation confidence colors (green/yellow/orange) now persist across multiple insertions instead of losing earlier word colors
+- Fix: impression action buttons no longer corrupt report text when editing/deleting impression items (buttons moved outside ProseMirror DOM)
+- Fix: impression delete icons (trash can) now visible inside ordered list items
+- Fix: impression buttons reposition correctly on scroll/resize
+- Fix: ruler OCR no longer misreads measurement annotations as tick marks (text region exclusion)
+- Fix: viewport border detection no longer treats ruler lines as borders
+- Fix: transcription overlay no longer loses per-word confidence colors on rapid updates (RTF rebuild)
+- Tighter spacing for RVU values in Clario worklist header
+
 4.3.9
 - Voice commands: "new line" / "next line" starts a new line, "new paragraph" / "next paragraph" starts a new paragraph (inserts line breaks via CDP)
 - Fix: spoken punctuation cleanup no longer strips newline characters from new line/paragraph commands
