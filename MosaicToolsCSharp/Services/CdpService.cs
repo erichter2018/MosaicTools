@@ -4274,7 +4274,7 @@ ${{visualEnhancements ? `
             var ss = 'font-size:11px;';
 
             var parts = [];
-            parts.push('<span style=""color:' + blue + ';font-weight:bold;' + ss + '"">RVU: ' + total.toFixed(1) + '</span>');
+            parts.push('<span style=""color:' + blue + ';font-weight:bold;' + ss + '"">TBWU: ' + total.toFixed(1) + '</span>');
             if (rvuHr !== null) parts.push('<span style=""color:' + blue + ';' + ss + '"">' + rvuHr + '/h</span>');
             if (prevHr !== null) parts.push('<span style=""color:' + blue + ';' + ss + '"">' + prevHr + ' prev</span>');
             if (curHr !== null) parts.push('<span style=""color:' + blue + ';' + ss + '"">~' + curHr + ' this</span>');

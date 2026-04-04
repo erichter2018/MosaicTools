@@ -32,19 +32,19 @@ public class RvuMetricsSection : SettingsSection
     private readonly TextBox _rvuCounterPathBox;
     private readonly Label _rvuCounterStatusLabel;
 
-    public RvuMetricsSection(ToolTip toolTip) : base("RVU & Metrics", toolTip)
+    public RvuMetricsSection(ToolTip toolTip) : base("TBWU & Metrics", toolTip)
     {
         // Metrics Selection
         AddSectionDivider("Display Metrics");
 
         _rvuMetricTotalCheck = AddCheckBox("Total", LeftMargin, _nextY);
-        _rvuMetricPerHourCheck = AddCheckBox("RVU/h", LeftMargin + 70, _nextY);
+        _rvuMetricPerHourCheck = AddCheckBox("TBWU/h", LeftMargin + 70, _nextY);
         _rvuMetricCurrentHourCheck = AddCheckBox("This Hour", LeftMargin + 140, _nextY);
         _rvuMetricPriorHourCheck = AddCheckBox("Prev Hour", LeftMargin + 230, _nextY);
         _rvuMetricEstTotalCheck = AddCheckBox("Est Total", LeftMargin + 325, _nextY);
         _nextY += RowHeight;
 
-        _rvuMetricRvuPerStudyCheck = AddCheckBox("RVU/Study", LeftMargin, _nextY);
+        _rvuMetricRvuPerStudyCheck = AddCheckBox("TBWU/Study", LeftMargin, _nextY);
         _rvuMetricAvgPerHourCheck = AddCheckBox("Avg/h", LeftMargin + 100, _nextY);
         _rvuMetricPaceDeltaCheck = AddCheckBox("Pace +/-", LeftMargin + 170, _nextY,
             "Shows only current pace delta in metrics (for example, +2.1 ahead).");
@@ -79,27 +79,27 @@ public class RvuMetricsSection : SettingsSection
         _rvuGoalValueBox = AddNumericUpDown(LeftMargin + 65, _nextY, 55, 1, 100, 10);
         _rvuGoalValueBox.DecimalPlaces = 1;
         _rvuGoalValueBox.Increment = 0.5m;
-        AddLabel("/h (colors RVU/h red when below)", LeftMargin + 125, _nextY + 3).ForeColor = Color.Gray;
+        AddLabel("/h (colors TBWU/h red when below)", LeftMargin + 125, _nextY + 3).ForeColor = Color.Gray;
         _nextY += RowHeight + 5;
 
         // Pace Car
         AddSectionDivider("Pace Car");
 
         _paceCarEnabledCheck = AddCheckBox("Show full pace car information", LeftMargin, _nextY,
-            "Alternates between RVU metrics and pace comparison display.");
+            "Alternates between TBWU metrics and pace comparison display.");
         _nextY += RowHeight;
 
         AddLabel("Alternate every", LeftMargin + 20, _nextY + 3, isSubItem: true);
         _paceCarSecondsBox = AddNumericUpDown(LeftMargin + 120, _nextY, 50, 3, 30, 8,
-            "Seconds between switching RVU metrics and pace car display (3-30).");
+            "Seconds between switching TBWU metrics and pace car display (3-30).");
         AddLabel("sec", LeftMargin + 175, _nextY + 3, isSubItem: true);
         _nextY += RowHeight + 5;
 
         // Clario Integration
         AddSectionDivider("Clario Integration");
 
-        _clarioRvuInjectCheck = AddCheckBox("Inject RVU values into Clario worklist", LeftMargin, _nextY,
-            "Replaces Clario's broken RVU display with live RVUCounter values via CDP.");
+        _clarioRvuInjectCheck = AddCheckBox("Inject TBWU values into Clario worklist", LeftMargin, _nextY,
+            "Replaces Clario's broken TBWU display with live RVUCounter values via CDP.");
         _nextY += RowHeight + 5;
 
         // Database Path

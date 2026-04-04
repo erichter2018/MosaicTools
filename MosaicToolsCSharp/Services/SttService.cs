@@ -53,6 +53,8 @@ public class SttService : IDisposable
         "soniox" => "SNX",
         "speechmatics" => "SM",
         "assemblyai" => "AAI",
+        "elevenlabs" => "EL",
+        "smallestai" => "SAI",
         _ => provider.ToUpperInvariant()[..Math.Min(3, provider.Length)]
     };
 
@@ -80,6 +82,18 @@ public class SttService : IDisposable
         _keytermOverride = keytermOverride;
         _perProviderKeyterms = perProviderKeyterms;
     }
+
+    /// <summary>Returns the maximum keyterm capacity for each provider.</summary>
+    public static int GetKeytermLimit(string provider) => provider switch
+    {
+        "deepgram" => 100,      // keyterm URL params
+        "assemblyai" => 1000,   // U3 Pro keyterms_prompt
+        "speechmatics" => 1000, // additional_vocab array
+        "soniox" => 500,        // context.terms
+        "smallestai" => 100,    // keywords param
+        "elevenlabs" => 0,      // no keyterm support
+        _ => 100
+    };
 
     public string? Initialize()
     {
@@ -130,6 +144,8 @@ public class SttService : IDisposable
         "soniox" => !string.IsNullOrEmpty(_config.SttSonioxApiKey),
         "speechmatics" => !string.IsNullOrEmpty(_config.SttSpeechmaticsApiKey),
         "assemblyai" => !string.IsNullOrEmpty(_config.SttAssemblyAIApiKey),
+        "elevenlabs" => !string.IsNullOrEmpty(_config.SttElevenLabsApiKey),
+        "smallestai" => !string.IsNullOrEmpty(_config.SttSmallestAiApiKey),
         "none" => true,
         _ => false
     };
@@ -146,6 +162,8 @@ public class SttService : IDisposable
             "soniox" => new SonioxProvider(_config.SttSonioxApiKey, punctuate, keyterms),
             "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, punctuate, keyterms),
             "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, punctuate, keyterms),
+            "elevenlabs" => new ElevenLabsProvider(_config.SttElevenLabsApiKey, punctuate),
+            "smallestai" => new SmallestAiProvider(_config.SttSmallestAiApiKey, punctuate, keyterms),
             _ => throw new ArgumentException($"Unknown ensemble provider: {provider}")
         };
     }
@@ -161,6 +179,8 @@ public class SttService : IDisposable
             "soniox" => new SonioxProvider(_config.SttSonioxApiKey, punctuate, keyterms),
             "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, punctuate, keyterms),
             "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, punctuate, keyterms),
+            "elevenlabs" => new ElevenLabsProvider(_config.SttElevenLabsApiKey, punctuate),
+            "smallestai" => new SmallestAiProvider(_config.SttSmallestAiApiKey, punctuate, keyterms),
             _ => new DeepgramProvider(_config.SttApiKey, _config.SttModel, punctuate, keyterms)
         };
     }
@@ -643,6 +663,8 @@ public class SttService : IDisposable
             "speechmatics" => !string.IsNullOrEmpty(_config.SttSpeechmaticsApiKey),
             "assemblyai" => !string.IsNullOrEmpty(_config.SttAssemblyAIApiKey),
             "soniox" => !string.IsNullOrEmpty(_config.SttSonioxApiKey),
+            "elevenlabs" => !string.IsNullOrEmpty(_config.SttElevenLabsApiKey),
+            "smallestai" => !string.IsNullOrEmpty(_config.SttSmallestAiApiKey),
             "corti" => !string.IsNullOrEmpty(_config.SttCortiClientId),
             _ => !string.IsNullOrEmpty(_config.SttApiKey)
         };
@@ -659,6 +681,8 @@ public class SttService : IDisposable
             "deepgram" => new DeepgramProvider(_config.SttApiKey, _config.SttModel, punctuate, keyterms),
             "assemblyai" => new AssemblyAIProvider(_config.SttAssemblyAIApiKey, punctuate, keyterms),
             "soniox" => new SonioxProvider(_config.SttSonioxApiKey, punctuate, keyterms),
+            "elevenlabs" => new ElevenLabsProvider(_config.SttElevenLabsApiKey, punctuate),
+            "smallestai" => new SmallestAiProvider(_config.SttSmallestAiApiKey, punctuate, keyterms),
             "corti" => new CortiProvider(_config.SttCortiClientId, _config.SttCortiClientSecret, _config.SttCortiEnvironment, punctuate),
             "speechmatics" => new SpeechmaticsProvider(_config.SttSpeechmaticsApiKey, _config.SttSpeechmaticsRegion, punctuate, keyterms),
             _ => new DeepgramProvider(_config.SttApiKey, _config.SttModel, punctuate, keyterms)

@@ -625,25 +625,25 @@ public class ActionController : IDisposable
         string? mergedKeyterms = null;
         Dictionary<string, string>? perProviderKeyterms = null;
 
-        if (_config.SttEnsembleEnabled && _keytermLearningByProvider.Count > 0)
+        if (_config.SttEnsembleEnabled)
         {
-            // Ensemble mode: each provider gets its own merged keyterms
+            // Ensemble mode: each provider gets its own merged keyterms (manual + learned + radiology backfill)
             perProviderKeyterms = new Dictionary<string, string>();
-            foreach (var prov in new[] { "deepgram", _config.SttEnsembleSecondary1, _config.SttEnsembleSecondary2 })
+            foreach (var prov in new[] { _config.SttEnsembleAnchor, _config.SttEnsembleSecondary1, _config.SttEnsembleSecondary2 })
             {
                 if (prov == "none") continue;
-                if (_keytermLearningByProvider.TryGetValue(prov, out var learning))
-                    perProviderKeyterms[prov] = MergeKeyterms(_config.SttDeepgramKeyterms, learning);
-                else
-                    perProviderKeyterms[prov] = _config.SttDeepgramKeyterms;
+                var limit = SttService.GetKeytermLimit(prov);
+                _keytermLearningByProvider.TryGetValue(prov, out var learning);
+                perProviderKeyterms[prov] = MergeKeyterms(_config.SttDeepgramKeyterms, learning, limit);
             }
         }
-        else if (_keytermLearningByProvider.Count > 0)
+        else
         {
             // Single-provider mode: one merged keyterm string
             var provName = _config.SttProvider ?? "deepgram";
-            if (_keytermLearningByProvider.TryGetValue(provName, out var learning))
-                mergedKeyterms = MergeKeyterms(_config.SttDeepgramKeyterms, learning);
+            var limit = SttService.GetKeytermLimit(provName);
+            _keytermLearningByProvider.TryGetValue(provName, out var learning);
+            mergedKeyterms = MergeKeyterms(_config.SttDeepgramKeyterms, learning, limit);
         }
 
         _sttService = new SttService(_config, mergedKeyterms, perProviderKeyterms);
@@ -800,11 +800,35 @@ public class ActionController : IDisposable
                 var triggerKind = voiceTrigger.Kind;
                 var triggerAction = voiceTrigger.ActionName;
                 var triggerMacro = voiceTrigger.Macro;
-                // Only pass confidence indices for full transcript (not voice trigger prefixes)
-                var mediumIdx = voiceTrigger.Kind == VoiceTriggerKind.None
-                    ? result.MediumConfWordIndices : null;
-                var lowIdx = voiceTrigger.Kind == VoiceTriggerKind.None
-                    ? result.LowConfWordIndices : null;
+                // Compute confidence indices for single-provider mode (ensemble already provides them).
+                // Threshold tiers: medium = below threshold but >= 0.60, low = below 0.60.
+                // Only emit indices when word count matches transcript (text processing may change word count).
+                var mediumIdx = result.MediumConfWordIndices;
+                var lowIdx = result.LowConfWordIndices;
+                if (mediumIdx == null && lowIdx == null && result.Words?.Length > 0 && result.ProviderName != "ensemble")
+                {
+                    var transcriptWordCount = transcript.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
+                    if (transcriptWordCount == result.Words.Length)
+                    {
+                        var threshold = _config.SttEnsembleConfidenceThreshold;
+                        var medium = new List<int>();
+                        var low = new List<int>();
+                        for (int wi = 0; wi < result.Words.Length; wi++)
+                        {
+                            var c = result.Words[wi].Confidence;
+                            if (c < 0.60f) low.Add(wi);
+                            else if (c < threshold) medium.Add(wi);
+                        }
+                        if (medium.Count > 0) mediumIdx = medium.ToArray();
+                        if (low.Count > 0) lowIdx = low.ToArray();
+                    }
+                }
+                // Don't pass confidence indices for voice trigger prefixes
+                if (voiceTrigger.Kind != VoiceTriggerKind.None)
+                {
+                    mediumIdx = null;
+                    lowIdx = null;
+                }
 
                 var svc = _automationService;
                 var t = new Thread(() =>
@@ -870,18 +894,39 @@ public class ActionController : IDisposable
         Logger.Trace("SttService: Initialized successfully");
     }
 
-    // [KeytermLearning] Merge manual keyterms with auto-learned ones (manual takes priority)
-    private static string MergeKeyterms(string manual, KeytermLearningService learning)
+    // [KeytermLearning] Merge manual + auto-learned + radiology backfill keyterms.
+    // Priority: manual (user-entered) → learned (from dictation) → radiology (built-in list).
+    // providerLimit caps total terms to each provider's API capacity.
+    private static string MergeKeyterms(string manual, KeytermLearningService? learning, int providerLimit)
     {
+        if (providerLimit <= 0) return "";
+
         var manualTerms = manual.Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries)
             .Select(t => t.Trim()).Where(t => t.Length > 0).ToList();
-        var manualSet = new HashSet<string>(manualTerms, StringComparer.OrdinalIgnoreCase);
-        var autoSlots = Math.Max(0, 100 - manualTerms.Count);
-        var autoTerms = learning.GetTopKeyterms(autoSlots)
-            .Where(t => !manualSet.Contains(t)).Take(autoSlots).ToList();
-        if (autoTerms.Count > 0)
-            Logger.Trace($"KeytermLearning: Merged {manualTerms.Count} manual + {autoTerms.Count} auto keyterms");
-        return string.Join("\n", manualTerms.Concat(autoTerms));
+        var used = new HashSet<string>(manualTerms, StringComparer.OrdinalIgnoreCase);
+        var result = new List<string>(manualTerms.Take(providerLimit));
+
+        // Fill with auto-learned terms
+        if (learning != null && result.Count < providerLimit)
+        {
+            var autoSlots = providerLimit - result.Count;
+            var autoTerms = learning.GetTopKeyterms(autoSlots)
+                .Where(t => !used.Contains(t)).Take(autoSlots).ToList();
+            foreach (var t in autoTerms) used.Add(t);
+            result.AddRange(autoTerms);
+        }
+
+        // Backfill with built-in radiology terms
+        if (result.Count < providerLimit)
+        {
+            var radSlots = providerLimit - result.Count;
+            var radTerms = RadiologyKeyterms.Terms
+                .Where(t => !used.Contains(t)).Take(radSlots);
+            result.AddRange(radTerms);
+        }
+
+        Logger.Trace($"KeytermMerge: {manualTerms.Count} manual + {result.Count - manualTerms.Count} auto/radiology = {result.Count} total (limit {providerLimit})");
+        return string.Join("\n", result);
     }
 
     public void RefreshFloatingToolbar() =>
@@ -5153,6 +5198,14 @@ public class ActionController : IDisposable
                             {
                                 _slowPathEverCompleted = true;
                                 _fastReadFailCount = 0;
+
+                                // New accession via CDP → wake slow path immediately for study change detection
+                                if (cdp.Accession != _lastNonEmptyAccession)
+                                {
+                                    _forceSlowPathOnNextTick = true;
+                                    _slowPathDormant = false;
+                                    _consecutiveIdleScrapes = 0;
+                                }
                             }
                             else
                             {

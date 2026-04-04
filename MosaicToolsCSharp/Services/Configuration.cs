@@ -399,6 +399,12 @@ public class Configuration
     [JsonPropertyName("stt_speechmatics_region")]
     public string SttSpeechmaticsRegion { get; set; } = "us"; // "us" or "eu"
 
+    [JsonPropertyName("stt_elevenlabs_api_key")]
+    public string SttElevenLabsApiKey { get; set; } = "";
+
+    [JsonPropertyName("stt_smallestai_api_key")]
+    public string SttSmallestAiApiKey { get; set; } = "";
+
     [JsonPropertyName("stt_provider")]
     public string SttProvider { get; set; } = "deepgram";
 

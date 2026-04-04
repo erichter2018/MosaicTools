@@ -29,23 +29,55 @@ public class NoteFormatter
         try
         {
             // 1. Extract Name (Look for clinician patterns)
-            var segments = new List<string>();
+            string? titleAndName = null;
 
-            // Prefer title-based matches — PREFIX titles (Dr., Nurse, RN, NP, PA, LPN)
-            // Credential prefixes are included because notes often use "RN Smith" style
-            // Negative lookbehinds prevent matching "Charge Nurse", "Head Nurse", etc. as prefix titles
-            var namePattern = @"(\b(?:Dr\.?|(?<!Charge\s)(?<!Head\s)(?<!Staff\s)(?<!Lead\s)Nurse|RN|NP|PA|LPN)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is|and|&|connected|contacted|spoke|discussed|transferred|called|notified|informed|reached|paged)\b|\s*[-;:,]|\s+\b(?:Dr\.?|Nurse|RN|NP|PA|LPN)\s|\s+\d{2}/\d{2}/|$)";
-            var nameMatches = Regex.Matches(rawText, namePattern, RegexOptions.IgnoreCase);
-            foreach (Match m in nameMatches)
+            // First try: postfix credential — "FirstName LastName RN/NP/PA/MD" (common in nursing notes)
+            // Must run before prefix title matching, otherwise "RN" gets consumed as a prefix title.
             {
-                segments.Add(m.Groups[1].Value);
+                var postfixPattern = @"([A-Z][a-zA-Z'-]+\s+[A-Z][a-zA-Z'-]+)\s*,?\s*(?:RN|NP|PA|MD|DO|LPN|BSN)\b";
+                foreach (Match pm in Regex.Matches(rawText, postfixPattern))
+                {
+                    var candidateName = pm.Groups[0].Value.Trim();
+
+                    // Skip if this is the current doctor
+                    bool isCurrentDoctor = false;
+                    if (!string.IsNullOrWhiteSpace(_doctorName))
+                    {
+                        var nameParts = _doctorName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        isCurrentDoctor = nameParts.Any(part =>
+                            part.Length > 2
+                            && !TitleWords.Contains(part.TrimEnd('.', ','))
+                            && candidateName.Contains(part, StringComparison.OrdinalIgnoreCase));
+                    }
+
+                    if (!isCurrentDoctor && candidateName.Length > 2)
+                    {
+                        // Format as "Firstname Lastname, RN"
+                        var nameOnly = pm.Groups[1].Value.Trim();
+                        var credential = candidateName[nameOnly.Length..].Trim().TrimStart(',').Trim();
+                        titleAndName = $"{ToTitleCase(nameOnly)}, {credential}";
+                        break;
+                    }
+                }
             }
 
-            string? titleAndName = TryExtractName(segments);
+            // Second try: prefix title — "Dr. Smith", "RN Smith", "Nurse Jones"
+            if (titleAndName == null)
+            {
+                var prefixSegments = new List<string>();
+                var namePattern = @"(\b(?:Dr\.?|(?<!Charge\s)(?<!Head\s)(?<!Staff\s)(?<!Lead\s)Nurse|RN|NP|PA|LPN)\s+.+?)(?=\s+(?:at|with|to|w/|@|said|confirmed|stated|reported|declined|who|confirm|are|is|and|&|connected|contacted|spoke|discussed|transferred|called|notified|informed|reached|paged)\b|\s*[-;:,]|\s+\b(?:Dr\.?|Nurse|RN|NP|PA|LPN)\s|\s+\d{2}/\d{2}/|$)";
+                var nameMatches = Regex.Matches(rawText, namePattern, RegexOptions.IgnoreCase);
+                foreach (Match m in nameMatches)
+                {
+                    prefixSegments.Add(m.Groups[1].Value);
+                }
+                titleAndName = TryExtractName(prefixSegments);
+            }
 
             // Fallback: verb-based extraction if title-based found nothing usable
             // (e.g. all title matches were the current doctor)
             // Negative lookbehind prevents matching passive "to be connected" / "been connected"
+            var segments = new List<string>();
             if (titleAndName == null)
             {
                 segments.Clear();

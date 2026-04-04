@@ -1,4 +1,4 @@
-// [CustomSTT] AssemblyAI Universal Streaming v3 WebSocket provider
+// [CustomSTT] AssemblyAI Universal-3 Pro Streaming WebSocket provider
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -7,7 +7,8 @@ namespace MosaicTools.Services;
 
 /// <summary>
 /// Streams audio to AssemblyAI via WebSocket and receives real-time transcription.
-/// Uses the Universal Streaming v3 API with raw PCM input.
+/// Uses the Universal-3 Pro Streaming API (u3-rt-pro) with medical domain, keyterm prompting
+/// (up to 1000 terms), and mid-stream UpdateConfiguration support.
 /// </summary>
 public class AssemblyAIProvider : ISttProvider
 {
@@ -23,7 +24,7 @@ public class AssemblyAIProvider : ISttProvider
     private DateTime _lastDisconnect = DateTime.MinValue; // Rate-limit protection
     private readonly SemaphoreSlim _connectLock = new(1, 1); // Serialize StartSessionAsync calls
 
-    public string Name => "AssemblyAI";
+    public string Name => "AssemblyAI U3 Pro";
     public bool RequiresApiKey => true;
     public string? SignupUrl => "https://www.assemblyai.com/dashboard/signup";
     public bool IsConnected => _connected;
@@ -62,13 +63,13 @@ public class AssemblyAIProvider : ISttProvider
             _ws = new ClientWebSocket();
             _ws.Options.SetRequestHeader("Authorization", _apiKey);
 
-            // Edge endpoint auto-selects nearest server; format_turns=false saves ~200ms
-            // Aggressive endpointing: as ensemble secondary, false turn-endings are fine —
-            // we want words ASAP, Deepgram controls actual paste timing.
+            // Universal-3 Pro Streaming: u3-rt-pro model with medical domain,
+            // aggressive endpointing for ensemble secondary use.
             var uri = new Uri(
-                "wss://streaming.edge.assemblyai.com/v3/ws" +
-                $"?sample_rate={AudioFormat.SampleRate}&encoding=pcm_s16le&format_turns=false" +
-                $"&end_of_turn_confidence_threshold=0.4&min_end_of_turn_silence_when_confident=160&max_turn_silence=1200");
+                "wss://streaming.assemblyai.com/v3/ws" +
+                $"?speech_model=u3-rt-pro&sample_rate={AudioFormat.SampleRate}&encoding=pcm_s16le" +
+                $"&domain=medical-v1&format_turns=false" +
+                $"&end_of_turn_confidence_threshold=0.4&min_turn_silence=160&max_turn_silence=1200");
 
             await _ws.ConnectAsync(uri, ct);
             _connected = true;
@@ -92,12 +93,12 @@ public class AssemblyAIProvider : ISttProvider
                 return false;
             }
 
-            // Send keyterms to boost recognition accuracy (max 100 terms, 50 chars each)
+            // Send keyterms to boost recognition accuracy (U3 Pro supports up to 1000 terms)
             var keytermArray = string.IsNullOrWhiteSpace(_keyterms)
                 ? Array.Empty<string>()
                 : _keyterms.Split(new[] { '\n', '\r', ',' }, StringSplitOptions.RemoveEmptyEntries)
                     .Select(t => t.Trim()).Where(t => t.Length > 0 && t.Length <= 50)
-                    .Take(100).ToArray();
+                    .Take(1000).ToArray();
             if (keytermArray.Length > 0)
             {
                 var config = new { type = "UpdateConfiguration", keyterms_prompt = keytermArray };

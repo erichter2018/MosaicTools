@@ -110,6 +110,26 @@ public class DeepgramProvider : ISttProvider
         }
     }
 
+    /// <summary>
+    /// Flux Configure: update keyterms mid-stream without reconnecting.
+    /// Replaces existing keyterms entirely — include both old and new terms if merging.
+    /// </summary>
+    public async Task UpdateKeytermsAsync(string[] keyterms)
+    {
+        if (!_connected || _ws?.State != WebSocketState.Open) return;
+        try
+        {
+            var msg = JsonSerializer.Serialize(new { type = "Configure", keyterms });
+            var bytes = Encoding.UTF8.GetBytes(msg);
+            await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+            Logger.Trace($"DeepgramProvider: Sent Flux Configure with {keyterms.Length} keyterms");
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"DeepgramProvider: UpdateKeyterms error: {ex.Message}");
+        }
+    }
+
     public void SendAudio(byte[] pcmData, int offset, int count)
     {
         if (!_connected || _ws?.State != WebSocketState.Open) return;

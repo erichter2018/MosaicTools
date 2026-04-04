@@ -1,3 +1,12 @@
+5.0.0
+- Rename: all user-facing text now says "TBWU" instead of "RVU" (settings, metrics bar, Clario injection, tooltips)
+- AssemblyAI upgraded to Universal-3 Pro Streaming (u3-rt-pro) with medical domain and 1000-term keyterm support
+- Deepgram Flux Configure: update keyterms mid-stream without reconnecting
+- New STT providers: ElevenLabs, Smallest AI
+- Radiology keyterm database for STT provider boosting
+- NoteFormatter: postfix credential matching ("Jane Smith RN") before prefix title matching
+- Fix: CDP study change detection delayed up to 30s after idle — now wakes slow path immediately when CDP detects new accession
+
 4.3.10
 - Fix: dictation confidence colors (green/yellow/orange) now persist across multiple insertions instead of losing earlier word colors
 - Fix: impression action buttons no longer corrupt report text when editing/deleting impression items (buttons moved outside ProseMirror DOM)

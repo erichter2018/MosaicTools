@@ -45,6 +45,10 @@ public class SttSection : SettingsSection
     private readonly Button _smLearningViewButton;
     private readonly Label _aaiLearningStats;
     private readonly Button _aaiLearningViewButton;
+    private readonly Label _elLearningStats;
+    private readonly Button _elLearningViewButton;
+    private readonly Label _saiLearningStats;
+    private readonly Button _saiLearningViewButton;
 
     // Ensemble mode
     private readonly CheckBox _ensembleCheck;
@@ -87,12 +91,16 @@ public class SttSection : SettingsSection
     private const int ProviderSpeechmatics = 1;
     private const int ProviderAssemblyAI = 2;
     private const int ProviderSoniox = 3;
+    private const int ProviderElevenLabs = 4;
+    private const int ProviderSmallestAi = 5;
 
     // Per-provider credential storage (swapped on provider change)
     private string _deepgramKey = "";
     private string _speechmaticsKey = "";
     private string _assemblyAIKey = "";
     private string _sonioxKey = "";
+    private string _elevenLabsKey = "";
+    private string _smallestAiKey = "";
     private string _speechmaticsRegion = "us";
     private int _previousProviderIndex;
     private bool _loading; // Suppress OnProviderChanged during LoadSettings
@@ -100,7 +108,7 @@ public class SttSection : SettingsSection
 
     public SttSection(ToolTip toolTip) : base("Speech-to-Text", toolTip)
     {
-        _searchTerms.AddRange(new[] { "stt", "speech", "transcription", "deepgram", "speechmatics", "assemblyai", "soniox", "dictation", "custom stt", "beep", "punctuation", "contraction", "replacement", "correction", "radiology cleanup", "ensemble" });
+        _searchTerms.AddRange(new[] { "stt", "speech", "transcription", "deepgram", "speechmatics", "assemblyai", "soniox", "elevenlabs", "smallest", "pulse", "dictation", "custom stt", "beep", "punctuation", "contraction", "replacement", "correction", "radiology cleanup", "ensemble" });
 
         _enabledCheck = AddCheckBox("Enable Custom STT Mode", LeftMargin, _nextY,
             "Use cloud STT instead of Mosaic's built-in speech recognition. Cancel Mosaic's WebHID prompt when enabled.");
@@ -114,7 +122,7 @@ public class SttSection : SettingsSection
 
         AddLabel("Provider:", LeftMargin + 25, _nextY + 3);
         _providerCombo = AddComboBox(LeftMargin + 110, _nextY, 200,
-            new[] { "Deepgram Nova-3 Medical", "Speechmatics Medical", "AssemblyAI", "Soniox" });
+            new[] { "Deepgram Nova-3 Medical", "Speechmatics Medical", "AssemblyAI U3 Pro", "Soniox", "ElevenLabs Scribe v2", "Smallest.ai Pulse" });
         _providerCombo.SelectedIndexChanged += (_, _) => OnProviderChanged();
         _nextY += RowHeight;
 
@@ -215,7 +223,7 @@ public class SttSection : SettingsSection
             AutoSize = true,
             ForeColor = Color.FromArgb(150, 150, 150),
             Font = new Font("Segoe UI", 7.5f),
-            Text = "0 / 100 terms"
+            Text = "0 custom (+ radiology backfill)"
         };
         Controls.Add(_deepgramKeytermsCount);
         _nextY += 80;
@@ -266,6 +274,20 @@ public class SttSection : SettingsSection
         Controls.Add(_aaiLearningStats);
         _aaiLearningViewButton = AddButton("View", LeftMargin + 210, _nextY - 1, 45, 22, (s, e) => OnViewKeytermLearningClick("assemblyai"), "View AssemblyAI auto-learned keyterms");
         _aaiLearningViewButton.Font = new Font("Segoe UI", 7.5f);
+        _nextY += SubRowHeight;
+
+        AddLabel("ElevenLabs:", LeftMargin + 45, _nextY + 2).Font = statsFont;
+        _elLearningStats = new Label { Text = "0 terms", Location = new Point(LeftMargin + 130, _nextY + 2), AutoSize = true, ForeColor = statsColor, Font = statsFont };
+        Controls.Add(_elLearningStats);
+        _elLearningViewButton = AddButton("View", LeftMargin + 210, _nextY - 1, 45, 22, (s, e) => OnViewKeytermLearningClick("elevenlabs"), "View ElevenLabs auto-learned keyterms");
+        _elLearningViewButton.Font = new Font("Segoe UI", 7.5f);
+        _nextY += SubRowHeight;
+
+        AddLabel("Smallest.ai:", LeftMargin + 45, _nextY + 2).Font = statsFont;
+        _saiLearningStats = new Label { Text = "0 terms", Location = new Point(LeftMargin + 130, _nextY + 2), AutoSize = true, ForeColor = statsColor, Font = statsFont };
+        Controls.Add(_saiLearningStats);
+        _saiLearningViewButton = AddButton("View", LeftMargin + 210, _nextY - 1, 45, 22, (s, e) => OnViewKeytermLearningClick("smallestai"), "View Smallest.ai auto-learned keyterms");
+        _saiLearningViewButton.Font = new Font("Segoe UI", 7.5f);
         _nextY += RowHeight;
 
         // Ensemble Mode
@@ -297,7 +319,7 @@ public class SttSection : SettingsSection
         Controls.Add(_ensembleKeyStatus);
         _nextY += SubRowHeight;
 
-        var allProviders = new[] { "Deepgram", "Soniox", "Speechmatics", "AssemblyAI" };
+        var allProviders = new[] { "Deepgram", "Soniox", "Speechmatics", "AssemblyAI", "ElevenLabs", "Smallest.ai" };
         _ensembleAnchorLabel = AddLabel("Driver:", LeftMargin + 45, _nextY + 3);
         _ensembleAnchorCombo = AddComboBox(LeftMargin + 140, _nextY, 130, allProviders);
         _ensembleAnchorCombo.SelectedIndexChanged += (_, _) => OnEnsembleSelectionChanged();
@@ -493,6 +515,10 @@ public class SttSection : SettingsSection
         _smLearningViewButton.Visible = true;
         _aaiLearningStats.Visible = true;
         _aaiLearningViewButton.Visible = true;
+        _elLearningStats.Visible = true;
+        _elLearningViewButton.Visible = true;
+        _saiLearningStats.Visible = true;
+        _saiLearningViewButton.Visible = true;
         _keytermLearningHint.Visible = true;
 
         // Update pricing hint
@@ -500,11 +526,14 @@ public class SttSection : SettingsSection
         {
             ProviderDeepgramMedical => "Free tier: $200 credit. Nova-3 Medical: $0.0077/min streaming",
             ProviderSpeechmatics => "Free tier: 480 min/month. Medical model: $0.004/min streaming",
-            ProviderAssemblyAI => "Free tier: 330 hours. $0.0025/min streaming",
+            ProviderAssemblyAI => "Free tier: 330 hours. U3 Pro Medical: $0.0075/min streaming",
             ProviderSoniox => "Pay-as-you-go. Real-time model: $0.002/min streaming",
+            ProviderElevenLabs => "Scribe v2 Realtime: ~$0.007/min, sub-150ms latency, 90+ languages",
+            ProviderSmallestAi => "Pulse STT: ~$0.008/min realtime, sub-70ms latency, 39 languages",
             _ => ""
         };
 
+        UpdateKeytermCount(); // Refresh max display for new provider's limit
         UpdateEnsembleStates();
     }
 
@@ -525,6 +554,12 @@ public class SttSection : SettingsSection
             case ProviderSoniox:
                 _sonioxKey = _apiKeyBox.Text;
                 break;
+            case ProviderElevenLabs:
+                _elevenLabsKey = _apiKeyBox.Text;
+                break;
+            case ProviderSmallestAi:
+                _smallestAiKey = _apiKeyBox.Text;
+                break;
         }
     }
 
@@ -544,6 +579,12 @@ public class SttSection : SettingsSection
                 break;
             case ProviderSoniox:
                 _apiKeyBox.Text = _sonioxKey;
+                break;
+            case ProviderElevenLabs:
+                _apiKeyBox.Text = _elevenLabsKey;
+                break;
+            case ProviderSmallestAi:
+                _apiKeyBox.Text = _smallestAiKey;
                 break;
         }
     }
@@ -567,6 +608,8 @@ public class SttSection : SettingsSection
         _snxLearningViewButton.Enabled = enabled;
         _smLearningViewButton.Enabled = enabled;
         _aaiLearningViewButton.Enabled = enabled;
+        _elLearningViewButton.Enabled = enabled;
+        _saiLearningViewButton.Enabled = enabled;
         _expandContractionsCheck.Enabled = enabled;
         _radiologyCleanupCheck.Enabled = enabled;
         _replacementsGrid.Enabled = enabled;
@@ -616,21 +659,21 @@ public class SttSection : SettingsSection
     }
 
     // All known providers (internal names)
-    private static readonly string[] AllProviders = { "deepgram", "soniox", "speechmatics", "assemblyai" };
+    private static readonly string[] AllProviders = { "deepgram", "soniox", "speechmatics", "assemblyai", "elevenlabs", "smallestai" };
 
     /// <summary>Get the internal provider name from a combo's current selection, or "none" if nothing selected.</summary>
     private static string GetComboProvider(ComboBox combo)
     {
         var text = combo.SelectedItem as string;
         if (string.IsNullOrEmpty(text) || text == "None") return "none";
-        return text.ToLowerInvariant() switch
-        {
-            "deepgram" => "deepgram",
-            "soniox" => "soniox",
-            "speechmatics" => "speechmatics",
-            "assemblyai" => "assemblyai",
-            _ => "none"
-        };
+        var lower = text.ToLowerInvariant();
+        if (lower.Contains("deepgram")) return "deepgram";
+        if (lower.Contains("soniox")) return "soniox";
+        if (lower.Contains("speechmatics")) return "speechmatics";
+        if (lower.Contains("assemblyai")) return "assemblyai";
+        if (lower.Contains("elevenlabs")) return "elevenlabs";
+        if (lower.Contains("smallest")) return "smallestai";
+        return "none";
     }
 
     private static string ProviderDisplayName(string provider) => provider switch
@@ -639,6 +682,8 @@ public class SttSection : SettingsSection
         "soniox" => "Soniox",
         "speechmatics" => "Speechmatics",
         "assemblyai" => "AssemblyAI",
+        "elevenlabs" => "ElevenLabs",
+        "smallestai" => "Smallest.ai",
         "none" => "None",
         _ => provider
     };
@@ -723,6 +768,8 @@ public class SttSection : SettingsSection
         RefreshProviderStats("soniox", _snxLearningStats);
         RefreshProviderStats("speechmatics", _smLearningStats);
         RefreshProviderStats("assemblyai", _aaiLearningStats);
+        RefreshProviderStats("elevenlabs", _elLearningStats);
+        RefreshProviderStats("smallestai", _saiLearningStats);
     }
 
     private static void RefreshProviderStats(string providerName, Label label)
@@ -749,8 +796,22 @@ public class SttSection : SettingsSection
             foreach (var t in terms)
                 if (t.Trim().Length > 0) count++;
         }
-        _deepgramKeytermsCount.Text = $"{count} / 100 terms";
-        _deepgramKeytermsCount.ForeColor = count > 100 ? Color.IndianRed : Color.FromArgb(150, 150, 150);
+        // Show custom count + note about radiology backfill up to provider limit
+        var providerName = _providerCombo.SelectedIndex switch
+        {
+            ProviderDeepgramMedical => "deepgram",
+            ProviderSpeechmatics => "speechmatics",
+            ProviderAssemblyAI => "assemblyai",
+            ProviderSoniox => "soniox",
+            ProviderElevenLabs => "elevenlabs",
+            ProviderSmallestAi => "smallestai",
+            _ => "deepgram"
+        };
+        var limit = SttService.GetKeytermLimit(providerName);
+        _deepgramKeytermsCount.Text = limit > 0
+            ? $"{count} custom (+ radiology backfill, {limit} max)"
+            : $"{count} custom (provider has no keyterm support)";
+        _deepgramKeytermsCount.ForeColor = Color.FromArgb(150, 150, 150);
     }
 
     private void OnSortKeytermsClick(object? sender, EventArgs e)
@@ -907,6 +968,8 @@ public class SttSection : SettingsSection
             ProviderSpeechmatics => "https://portal.speechmatics.com/signup",
             ProviderAssemblyAI => "https://www.assemblyai.com/dashboard/signup",
             ProviderSoniox => "https://console.soniox.com",
+            ProviderElevenLabs => "https://elevenlabs.io/app/sign-up",
+            ProviderSmallestAi => "https://smallest.ai/pricing",
             _ => "https://console.deepgram.com/signup"
         };
 
@@ -958,6 +1021,27 @@ public class SttSection : SettingsSection
                 "Token-by-token delivery with word-level confidence.\n\n" +
                 "Keep your API key private \u2014 do not share it.",
                 "Soniox Setup"),
+            ProviderElevenLabs => (
+                "How to get an ElevenLabs API key:\n\n" +
+                "1. Click \"Get API Key\" to open ElevenLabs\n" +
+                "2. Create a free account\n" +
+                "3. After signing in, click your profile icon > Profile + API Key\n" +
+                "4. Copy the API key shown\n" +
+                "5. Paste the key into the API Key field above\n\n" +
+                "Scribe v2 Realtime: ~$0.007/min (~$0.42/hour).\n" +
+                "Sub-150ms latency, 90+ languages, VAD-based commit.\n\n" +
+                "Keep your API key private \u2014 do not share it.",
+                "ElevenLabs Setup"),
+            ProviderSmallestAi => (
+                "How to get a Smallest.ai API key:\n\n" +
+                "1. Click \"Get API Key\" to open Smallest.ai\n" +
+                "2. Create an account and go to Developer > API Keys\n" +
+                "3. Generate a new API key and copy it\n" +
+                "4. Paste the key into the API Key field above\n\n" +
+                "Pulse STT Realtime: ~$0.008/min (~$0.48/hour).\n" +
+                "Sub-70ms latency, 39 languages, keyword boosting.\n\n" +
+                "Keep your API key private \u2014 do not share it.",
+                "Smallest.ai Setup"),
             _ => (
                 "How to get a Deepgram API key:\n\n" +
                 "1. Click \"Get API Key\" to open the Deepgram signup page\n" +
@@ -989,6 +1073,8 @@ public class SttSection : SettingsSection
         _speechmaticsRegion = config.SttSpeechmaticsRegion;
         _assemblyAIKey = config.SttAssemblyAIApiKey;
         _sonioxKey = config.SttSonioxApiKey;
+        _elevenLabsKey = config.SttElevenLabsApiKey;
+        _smallestAiKey = config.SttSmallestAiApiKey;
 
         // Map provider to dropdown index (corti falls back to deepgram)
         var idx = config.SttProvider switch
@@ -997,6 +1083,8 @@ public class SttSection : SettingsSection
             "speechmatics" => ProviderSpeechmatics,
             "assemblyai" => ProviderAssemblyAI,
             "soniox" => ProviderSoniox,
+            "elevenlabs" => ProviderElevenLabs,
+            "smallestai" => ProviderSmallestAi,
             _ => ProviderDeepgramMedical
         };
 
@@ -1024,13 +1112,19 @@ public class SttSection : SettingsSection
         _smLearningViewButton.Visible = true;
         _aaiLearningStats.Visible = true;
         _aaiLearningViewButton.Visible = true;
+        _elLearningStats.Visible = true;
+        _elLearningViewButton.Visible = true;
+        _saiLearningStats.Visible = true;
+        _saiLearningViewButton.Visible = true;
         _keytermLearningHint.Visible = true;
         _pricingHint.Text = idx switch
         {
             ProviderDeepgramMedical => "Free tier: $200 credit. Nova-3 Medical: $0.0077/min streaming",
             ProviderSpeechmatics => "Free tier: 480 min/month. Medical model: $0.004/min streaming",
-            ProviderAssemblyAI => "Free tier: 330 hours. $0.0025/min streaming",
+            ProviderAssemblyAI => "Free tier: 330 hours. U3 Pro Medical: $0.0075/min streaming",
             ProviderSoniox => "Pay-as-you-go. Real-time model: $0.002/min streaming",
+            ProviderElevenLabs => "Scribe v2 Realtime: ~$0.007/min, sub-150ms latency, 90+ languages",
+            ProviderSmallestAi => "Pulse STT: ~$0.008/min realtime, sub-70ms latency, 39 languages",
             _ => ""
         };
 
@@ -1104,6 +1198,8 @@ public class SttSection : SettingsSection
         config.SttSpeechmaticsRegion = _speechmaticsRegion;
         config.SttAssemblyAIApiKey = _assemblyAIKey.Trim();
         config.SttSonioxApiKey = _sonioxKey.Trim();
+        config.SttElevenLabsApiKey = _elevenLabsKey.Trim();
+        config.SttSmallestAiApiKey = _smallestAiKey.Trim();
 
         // Map dropdown index to provider+model
         (config.SttProvider, config.SttModel) = _providerCombo.SelectedIndex switch
@@ -1112,6 +1208,8 @@ public class SttSection : SettingsSection
             ProviderSpeechmatics => ("speechmatics", ""),
             ProviderAssemblyAI => ("assemblyai", ""),
             ProviderSoniox => ("soniox", ""),
+            ProviderElevenLabs => ("elevenlabs", ""),
+            ProviderSmallestAi => ("smallestai", ""),
             _ => ("deepgram", "nova-3-medical")
         };
 

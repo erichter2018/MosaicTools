@@ -192,7 +192,7 @@ public class MainForm : Form
         // RVU suffix label
         _rvuSuffixLabel = new Label
         {
-            Text = "RVU",
+            Text = "TBWU",
             Font = new Font("Segoe UI", 9),
             ForeColor = Color.FromArgb(75, 156, 211), // Carolina blue
             BackColor = Color.Black,
@@ -697,7 +697,7 @@ public class MainForm : Form
         if (metrics.HasFlag(RvuMetric.Total))
         {
             var val = shiftInfo != null ? $"{shiftInfo.TotalRvu:F1}" : "--";
-            result.Add(($"RVU: {val}", "RVU:", val, carolinaBlue));
+            result.Add(($"TBWU: {val}", "TBWU:", val, carolinaBlue));
         }
 
         if (metrics.HasFlag(RvuMetric.PerHour))
@@ -731,7 +731,7 @@ public class MainForm : Form
         {
             var raw = pipeShift?.RvuPerStudy;
             var val = raw.HasValue ? $"{raw.Value:F2}/st" : "--";
-            result.Add((val, "RVU/st:", val, carolinaBlue));
+            result.Add((val, "TBWU/st:", val, carolinaBlue));
         }
 
         if (metrics.HasFlag(RvuMetric.AvgPerHour))
@@ -953,8 +953,8 @@ public class MainForm : Form
         }
 
         // Tooltip with full description
-        var ttText = $"Now: {nowVal} RVU\n" +
-                     $"{pipeShift.PaceDescription ?? modeLabel}: {targetVal} RVU" +
+        var ttText = $"Now: {nowVal} TBWU\n" +
+                     $"{pipeShift.PaceDescription ?? modeLabel}: {targetVal} TBWU" +
                      (pipeShift.PaceTimeText != null ? $" at {pipeShift.PaceTimeText}" : "") +
                      $"\n{diffVal} {aheadBehind}";
 
