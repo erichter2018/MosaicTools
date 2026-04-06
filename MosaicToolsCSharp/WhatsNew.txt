@@ -1,3 +1,6 @@
+5.0.1
+- Fix: Clario priority/class extraction and Aidoc scraping no longer gated behind "Show Clinical History" checkbox — these now run independently so pipe broadcasts, stroke detection, and ignore-inpatient-drafted work even when the clinical history alert box is hidden
+
 5.0.0
 - Rename: all user-facing text now says "TBWU" instead of "RVU" (settings, metrics bar, Clario injection, tooltips)
 - AssemblyAI upgraded to Universal-3 Pro Streaming (u3-rt-pro) with medical domain and 1000-term keyterm support

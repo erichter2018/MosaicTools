@@ -6580,19 +6580,9 @@ public class ActionController : IDisposable
 
         UpdateCdpAlertTextFlashing(reportText, genderMismatches, fimMismatches, consistencyResults);
 
-        // CDP flashing can run even when clinical history UI is hidden.
-        // Skip the rest of the clinical-history/Aidoc UI pipeline in that case.
-        if (!_config.ShowClinicalHistory)
-        {
-            _genderMismatchActive = newGenderMismatch;
-            _fimMismatchActive = newFimMismatch;
-            _consistencyMismatchActive = newConsistencyMismatch;
-            return;
-        }
-
-        // Tick budget: skip heavy cross-process UIA operations (Clario traversal, Aidoc scrape)
-        // if this tick has already spent 3+ seconds. Deferred work runs on the next tick.
-        // Prevents 15+ second mega-ticks on study change when everything fires at once.
+        // Clario priority/class extraction runs regardless of ShowClinicalHistory —
+        // downstream consumers (pipe broadcasts, stroke detection, ignore-inpatient-drafted)
+        // need this data even when the clinical history UI is hidden.
         long clarioNow = Environment.TickCount64;
         bool tickBudgetExceeded = tickStartTick64 > 0 && (clarioNow - tickStartTick64) > 3000;
 
@@ -6622,9 +6612,7 @@ public class ActionController : IDisposable
             }
         }
 
-        // Aidoc scraping - check for AI-detected findings
-        // Aidoc: single scrape per study. User must disable pulse animation in Aidoc settings
-        // (Contextual summary display → No animation) to avoid false positives from color bleed.
+        // Aidoc scraping — gated by its own AidocScrapeEnabled flag, not ShowClinicalHistory.
         bool aidocAlertActive = false;
         bool aidocScrapedThisTick = false;
         string? aidocFindingText = null;
@@ -6694,6 +6682,17 @@ public class ActionController : IDisposable
 
         // Determine if any alerts are active
         bool anyAlertActive = newTemplateMismatch || newGenderMismatch || newFimMismatch || newConsistencyMismatch || _strokeDetectedActive || effectiveAidocRelevant;
+
+        // ShowClinicalHistory only controls whether the clinical history alert box is displayed.
+        // All data collection (Clario, Aidoc) runs above regardless.
+        if (!_config.ShowClinicalHistory)
+        {
+            _templateMismatchActive = newTemplateMismatch;
+            _genderMismatchActive = newGenderMismatch;
+            _fimMismatchActive = newFimMismatch;
+            _consistencyMismatchActive = newConsistencyMismatch;
+            return;
+        }
 
         // Handle visibility based on always-show vs alerts-only mode
         if (_config.AlwaysShowClinicalHistory)
