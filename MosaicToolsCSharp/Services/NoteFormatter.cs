@@ -50,7 +50,11 @@ public class NoteFormatter
                             && candidateName.Contains(part, StringComparison.OrdinalIgnoreCase));
                     }
 
-                    if (!isCurrentDoctor && candidateName.Length > 2)
+                    // Skip if name part contains Clario status words (e.g. "Addendum Connected PA")
+                    var nameWords = pm.Groups[1].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    bool containsNonNameWord = nameWords.Any(w => NonNameWords.Contains(w));
+
+                    if (!isCurrentDoctor && !containsNonNameWord && candidateName.Length > 2)
                     {
                         // Format as "Firstname Lastname, RN"
                         var nameOnly = pm.Groups[1].Value.Trim();
@@ -405,6 +409,10 @@ public class NoteFormatter
     /// <summary>Titles to ignore when matching DoctorName parts against extracted names.</summary>
     private static readonly HashSet<string> TitleWords = new(StringComparer.OrdinalIgnoreCase)
         { "Dr", "Nurse", "NP", "PA", "RN", "MD", "DO", "LPN" };
+
+    /// <summary>Clario note status/metadata words that should not be mistaken for names.</summary>
+    private static readonly HashSet<string> NonNameWords = new(StringComparer.OrdinalIgnoreCase)
+        { "Addendum", "Connected", "Needs", "Pending", "Exam", "Note", "Cancelled", "Completed", "Submitted", "Draft" };
 
     private static readonly HashSet<string> PreservedAcronyms = new(StringComparer.OrdinalIgnoreCase)
         { "NP", "MD", "DO", "PA", "RN", "LPN", "BSN", "MSN", "DNP", "PhD" };

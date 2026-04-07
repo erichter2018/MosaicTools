@@ -1,3 +1,6 @@
+5.0.2
+- Fix: Critical findings name parser no longer mistakes Clario note status words ("Addendum Connected") for clinician names when followed by a credential like PA
+
 5.0.1
 - Fix: Clario priority/class extraction and Aidoc scraping no longer gated behind "Show Clinical History" checkbox — these now run independently so pipe broadcasts, stroke detection, and ignore-inpatient-drafted work even when the clinical history alert box is hidden
 
