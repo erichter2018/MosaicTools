@@ -1,3 +1,6 @@
+5.0.4
+- Fix: Process Report CDP click now finds the button when Mosaic renders it as a <div role="button"> MUI element instead of a native <button>, and logs why a click failed to aid future diagnosis
+
 5.0.3
 - Fix: Mosaic 2.0.4.4 compatibility — report editor (ProseMirror) and metadata scraping now work under the new Mosaic version while remaining compatible with 2.0.3
 - Fix: CDP iframe connection now matches any radpair.com host (new Mosaic uses radpair.prod.aws.radpartners.com instead of rp.radpair.com)

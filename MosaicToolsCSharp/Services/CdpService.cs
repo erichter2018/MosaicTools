@@ -2978,21 +2978,33 @@ ${{visualEnhancements ? `
     /// <summary>Click the Process Report button in the iframe.</summary>
     public bool ClickProcessReport()
     {
-        if (!IsIframeConnected) return false;
-        // Mosaic 2.0.3 used 'Process Report'; 2.0.4.4 uses 'PROCESS REPORT'.
-        // Compare uppercased to cover both without per-version branching.
+        if (!IsIframeConnected)
+        {
+            Logger.Trace("ClickProcessReport: iframe not connected");
+            return false;
+        }
+        // Mosaic 2.0.3 used 'Process Report'; 2.0.4.4 uses 'PROCESS REPORT' and
+        // may render the control as a <div role='button'> inside a MUI component
+        // rather than a native <button>. Query both, and also scan descendants
+        // in case the visible text lives in a child span.
         var js = @"(() => {
-            const btns = document.querySelectorAll('button');
-            for (const b of btns) {
-                const t = (b.innerText || '').trim().toUpperCase();
+            const candidates = document.querySelectorAll('button, [role=""button""]');
+            let seen = [];
+            for (const b of candidates) {
+                const t = (b.innerText || b.textContent || '').trim().toUpperCase();
                 const al = (b.getAttribute('aria-label') || '').trim().toUpperCase();
-                if (t === 'PROCESS REPORT' || al === 'PROCESS REPORT') {
-                    b.click(); return 'ok';
+                if (t === 'PROCESS REPORT' || al === 'PROCESS REPORT' ||
+                    t.replace(/\s+/g, ' ') === 'PROCESS REPORT') {
+                    try { b.click(); return 'ok'; } catch (e) { return 'click_err:' + e.message; }
                 }
+                if (t.includes('PROCESS') || al.includes('PROCESS')) seen.push(t || al);
             }
-            return 'not_found';
+            return 'not_found:' + seen.slice(0, 5).join('|');
         })()";
-        return ExtractResultValue(SendToIframe(js)) == "ok";
+        var result = ExtractResultValue(SendToIframe(js)) ?? "";
+        if (result != "ok")
+            Logger.Trace($"ClickProcessReport: {result}");
+        return result == "ok";
     }
 
     /// <summary>Click the Sign Report button in the iframe.</summary>
