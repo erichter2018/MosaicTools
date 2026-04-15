@@ -2979,10 +2979,14 @@ ${{visualEnhancements ? `
     public bool ClickProcessReport()
     {
         if (!IsIframeConnected) return false;
+        // Mosaic 2.0.3 used 'Process Report'; 2.0.4.4 uses 'PROCESS REPORT'.
+        // Compare uppercased to cover both without per-version branching.
         var js = @"(() => {
             const btns = document.querySelectorAll('button');
             for (const b of btns) {
-                if (b.innerText?.trim() === 'Process Report' || b.getAttribute('aria-label') === 'Process Report') {
+                const t = (b.innerText || '').trim().toUpperCase();
+                const al = (b.getAttribute('aria-label') || '').trim().toUpperCase();
+                if (t === 'PROCESS REPORT' || al === 'PROCESS REPORT') {
                     b.click(); return 'ok';
                 }
             }
@@ -2995,10 +2999,14 @@ ${{visualEnhancements ? `
     public bool ClickSignReport()
     {
         if (!IsIframeConnected) return false;
+        // Mosaic 2.0.3 used 'Sign Report'; 2.0.4.4 renamed it to 'SIGN FINAL'.
         var js = @"(() => {
             const btns = document.querySelectorAll('button');
             for (const b of btns) {
-                if (b.innerText?.trim() === 'Sign Report' || b.getAttribute('aria-label') === 'Sign Report') {
+                const t = (b.innerText || '').trim().toUpperCase();
+                const al = (b.getAttribute('aria-label') || '').trim().toUpperCase();
+                if (t === 'SIGN REPORT' || t === 'SIGN FINAL' ||
+                    al === 'SIGN REPORT' || al === 'SIGN FINAL') {
                     b.click(); return 'ok';
                 }
             }
@@ -3011,11 +3019,12 @@ ${{visualEnhancements ? `
     public bool ClickCreateImpression()
     {
         if (!IsIframeConnected) return false;
+        // Mosaic 2.0.3: 'Create Impression'. 2.0.4.4: 'CUSTOM IMPRESSION'.
         var js = @"(() => {
             const btns = document.querySelectorAll('button');
             for (const b of btns) {
-                const text = b.innerText?.trim() || '';
-                if (text === 'Create Impression' || text.includes('Impression')) {
+                const t = (b.innerText || '').trim().toUpperCase();
+                if (t === 'CREATE IMPRESSION' || t === 'CUSTOM IMPRESSION' || t.includes('IMPRESSION')) {
                     b.click(); return 'ok';
                 }
             }
@@ -3031,9 +3040,10 @@ ${{visualEnhancements ? `
         var js = @"(() => {
             const btns = document.querySelectorAll('button');
             for (const b of btns) {
-                const text = b.innerText?.trim() || '';
-                const label = b.getAttribute('aria-label') || '';
-                if (text === 'Discard' || text === 'Discard Study' || label.includes('Discard')) {
+                const t = (b.innerText || '').trim().toUpperCase();
+                const al = (b.getAttribute('aria-label') || '').trim().toUpperCase();
+                if (t === 'DISCARD' || t === 'DISCARD STUDY' || t === 'DISCARD CHANGES' ||
+                    al.includes('DISCARD')) {
                     b.click(); return 'ok';
                 }
             }
