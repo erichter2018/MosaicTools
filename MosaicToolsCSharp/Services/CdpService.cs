@@ -901,8 +901,12 @@ ${{visualEnhancements ? `
             {
                 if (slimHubWs == null) slimHubWs = wsUrl;
             }
-            // Match iframe by URL — type can be "page" or "iframe"
-            else if (url.Contains("rp.radpair.com") && url.Contains("/reports/"))
+            // Match iframe by URL — type can be "page" or "iframe".
+            // Mosaic 2.0.3 used rp.radpair.com; 2.0.4.4 switched to
+            // radpair.prod.aws.radpartners.com. Match on the "radpair" substring
+            // plus "/reports/" path to cover both without per-version branching.
+            else if ((url.Contains("radpair", StringComparison.OrdinalIgnoreCase))
+                     && url.Contains("/reports/"))
             {
                 iframeWs = wsUrl;
                 iframeUrl = url;
