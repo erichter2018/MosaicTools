@@ -2,6 +2,7 @@
 - Fix: Mosaic 2.0.4.4 compatibility — report editor (ProseMirror) and metadata scraping now work under the new Mosaic version while remaining compatible with 2.0.3
 - Fix: CDP iframe connection now matches any radpair.com host (new Mosaic uses radpair.prod.aws.radpartners.com instead of rp.radpair.com)
 - Fix: DRAFTED status detection works when Mosaic nests it as a child of "Current Study" (2.0.4.4) rather than a sibling (2.0.3)
+- Fix: Process Report, Sign Report, Create Impression, and Discard Study buttons now work with 2.0.4.4's renamed/uppercased labels (PROCESS REPORT, SIGN FINAL, CUSTOM IMPRESSION, Discard Changes)
 - Refactor: Mosaic current-study metadata extraction moved to the shared MosaicUIA library (used by both MosaicTools and RVUCounter)
 
 5.0.2
