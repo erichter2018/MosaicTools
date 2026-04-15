@@ -151,7 +151,10 @@ static class Program
 
             // Restart from the correct path - preserve command line arguments (especially -headless)
             var args = Environment.GetCommandLineArgs();
-            var argsToPass = args.Length > 1 ? string.Join(" ", args.Skip(1).Select(a => a.Contains(' ') ? $"\"{ a}\"" : a)) : "";
+            var argsToPass = args.Length > 1
+                ? string.Join(" ", args.Skip(1).Select(a =>
+                    a.Length > 0 && !a.Any(c => c == ' ' || c == '"') ? a : $"\"{a.Replace("\"", "\\\"")}\""))
+                : "";
 
             var startInfo = new System.Diagnostics.ProcessStartInfo
             {

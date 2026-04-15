@@ -227,6 +227,10 @@ public class ActionController : IDisposable
     private string? _baselineReport;
     private bool _processReportPressedForCurrentAccession = false;
     private string? _processReportLastSeenText; // Last report text seen during hold (for stability detection)
+    private string? _lastProcessReportText; // Post-processed report text — skip if unchanged on next press
+    private bool _processReportBaselinePending; // True while waiting for post-process text to stabilize
+    private string? _processReportBaselineTracker; // Tracks text changes during stabilization
+    private DateTime _processReportBaselineStableSince; // When tracker text last changed
     private DateTime _processReportTextStableSince; // When the held text last changed
     private bool _draftedAutoProcessDetected = false; // Set true when drafted study's report changes from baseline
     private bool _autoShowReportDoneForAccession = false; // Only auto-show report overlay once per accession
@@ -1725,6 +1729,18 @@ public class ActionController : IDisposable
     private void PerformProcessReport(string source = "Manual")
     {
         Logger.Trace($"Process Report (Source: {source})");
+
+        // Skip if report text hasn't changed since last Process Report
+        // Compare against post-processed text (updated by scrape loop after processing stabilizes)
+        var currentText = _cdpService?.GetEditorText(1) ?? _mosaicReader.LastFinalReport;
+        if (!string.IsNullOrEmpty(currentText) && !string.IsNullOrEmpty(_lastProcessReportText)
+            && currentText == _lastProcessReportText)
+        {
+            Logger.Trace("Process Report: Skipped — report text unchanged since last press");
+            InvokeUI(() => _mainForm.ShowStatusToast("Report unchanged — skipping Process Report", 2000));
+            return;
+        }
+
         RequestReportScrapeBurst(ProcessReportBurstMs, "Process Report");
         _discardDialogCheckUntilTick64 = Environment.TickCount64 + 10_000;
 
@@ -1823,6 +1839,12 @@ public class ActionController : IDisposable
                 }
             }
         }
+
+        // Capture pre-process text as interim baseline; scrape loop will update with post-processed text
+        _lastProcessReportText = currentText;
+        _processReportBaselinePending = true;
+        _processReportBaselineTracker = null;
+        _processReportBaselineStableSince = DateTime.UtcNow;
 
         // Invalidate the cached ProseMirror editor element. After Alt+P, Mosaic rebuilds
         // the editor — the old cached element returns stale pre-process text for 10-15s.
@@ -5408,6 +5430,30 @@ public class ActionController : IDisposable
                 _slowPathEverCompleted = true;
             }
 
+            // Update duplicate-press baseline after post-process text stabilizes
+            if (_processReportBaselinePending && !string.IsNullOrEmpty(reportText))
+            {
+                if (reportText != _processReportBaselineTracker)
+                {
+                    _processReportBaselineTracker = reportText;
+                    _processReportBaselineStableSince = DateTime.UtcNow;
+                }
+                else if ((DateTime.UtcNow - _processReportBaselineStableSince).TotalSeconds >= 3)
+                {
+                    _lastProcessReportText = reportText;
+                    _processReportBaselinePending = false;
+                    Logger.Trace($"Process Report baseline updated (post-process, {reportText.Length} chars)");
+                }
+                // Timeout after 25s — use whatever we have
+                if (_processReportBaselinePending
+                    && (DateTime.UtcNow - _processReportBaselineStableSince).TotalSeconds > 25)
+                {
+                    _lastProcessReportText = reportText;
+                    _processReportBaselinePending = false;
+                    Logger.Trace("Process Report baseline updated (timeout)");
+                }
+            }
+
             // [RadAI] Auto-insert: trigger when scrape succeeds after Process Report.
             if (_radAiAutoInsertPending && !string.IsNullOrEmpty(reportText))
             {
@@ -5498,6 +5544,8 @@ public class ActionController : IDisposable
                     _baselineCaptureAttempts = 0;
                     _needsBaselineCapture = _config.ShowReportChanges || _config.CorrelationEnabled;
                     _processReportPressedForCurrentAccession = false;
+                    _lastProcessReportText = null;
+                    _processReportBaselinePending = false;
                     _draftedAutoProcessDetected = false;
                     _llmCapturedTemplate = null; // [LLM] Re-capture template after template switch
                     _llmCapturedTemplateAccession = null;
@@ -5788,6 +5836,8 @@ public class ActionController : IDisposable
         _currentAccessionSigned = false;
         _discardDialogShownForCurrentAccession = false;
         _processReportPressedForCurrentAccession = false;
+        _lastProcessReportText = null;
+        _processReportBaselinePending = false;
         _draftedAutoProcessDetected = false;
         _autoShowReportDoneForAccession = false;
         // Note: _criticalNoteCreatedForAccessions is session-scoped, NOT reset on study change
@@ -6384,6 +6434,9 @@ public class ActionController : IDisposable
                 if (stable || timedOut)
                 {
                     _processReportPressedForCurrentAccession = false;
+                    // Update duplicate-press baseline to post-processed text
+                    if (!string.IsNullOrEmpty(reportText))
+                        _lastProcessReportText = reportText;
                     Logger.Trace($"Process Report popup hold released: stable={stable}, timedOut={timedOut}, hasImpression={hasImpression}, len={reportText?.Length ?? 0}");
                 }
                 else

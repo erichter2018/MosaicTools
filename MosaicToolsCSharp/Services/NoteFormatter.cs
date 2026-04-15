@@ -28,6 +28,12 @@ public class NoteFormatter
     {
         try
         {
+            // Normalize "Title First, Last" name patterns (Clario formats names as "First, Last" after titles)
+            // e.g. "Dr. Erik, Richter" → "Dr. Erik Richter", "PA Zebulon, Wilkin" → "PA Zebulon Wilkin"
+            rawText = Regex.Replace(rawText,
+                @"((?:Dr\.?|Nurse|RN|NP|PA|LPN|MD|DO)\s+[A-Z][a-zA-Z'-]+),\s+([A-Z][a-zA-Z'-]+)",
+                "$1 $2");
+
             // 1. Extract Name (Look for clinician patterns)
             string? titleAndName = null;
 

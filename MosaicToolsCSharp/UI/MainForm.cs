@@ -301,6 +301,9 @@ public class MainForm : Form
         contextMenu.Items.Add("Show Log", null, (_, _) => ShowLogFile());
         contextMenu.Items.Add("Reload", null, (_, _) => BeginInvoke(() => ReloadApp()));
         contextMenu.Items.Add(new ToolStripSeparator());
+        contextMenu.Items.Add("Backup Settings", null, (_, _) => BeginInvoke(BackupSettings));
+        contextMenu.Items.Add("Restore Settings", null, (_, _) => BeginInvoke(RestoreSettings));
+        contextMenu.Items.Add(new ToolStripSeparator());
         var debugMenu = new ToolStripMenuItem("Debug");
         debugMenu.DropDownItems.Add("Copy Template Debug", null, (_, _) => InvokeClinicalHistoryDebug(w => w.CopyTemplateDebugToClipboard()));
         debugMenu.DropDownItems.Add("Copy Clinical History Debug", null, (_, _) => InvokeClinicalHistoryDebug(w => w.CopyClinicalHistoryDebugToClipboard()));
@@ -2143,6 +2146,76 @@ public class MainForm : Form
             action(_clinicalHistoryWindow);
         else
             ShowStatusToast("Clinical history not active", 2000);
+    }
+
+    private void BackupSettings()
+    {
+        try
+        {
+            var settingsPath = Configuration.SettingsPath;
+            if (!File.Exists(settingsPath))
+            {
+                ShowStatusToast("No settings file found", 3000);
+                return;
+            }
+
+            var exeDir = Path.GetDirectoryName(Application.ExecutablePath) ?? AppContext.BaseDirectory;
+            var timestamp = DateTime.Now.ToString("yyyy-MM-dd_HHmmss");
+            var backupPath = Path.Combine(exeDir, $"MosaicTools_{timestamp}.backup");
+
+            File.Copy(settingsPath, backupPath, overwrite: true);
+            Logger.Trace($"Settings backed up to {backupPath}");
+            ShowStatusToast($"Backup saved: {Path.GetFileName(backupPath)}", 3000);
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Backup failed: {ex.Message}");
+            ShowStatusToast($"Backup failed: {ex.Message}", 5000);
+        }
+    }
+
+    private void RestoreSettings()
+    {
+        try
+        {
+            var exeDir = Path.GetDirectoryName(Application.ExecutablePath) ?? AppContext.BaseDirectory;
+
+            using var ofd = new OpenFileDialog
+            {
+                Title = "Restore Settings Backup",
+                Filter = "Backup files (*.backup)|*.backup",
+                InitialDirectory = exeDir
+            };
+
+            if (ofd.ShowDialog() != DialogResult.OK)
+                return;
+
+            var backupJson = File.ReadAllText(ofd.FileName);
+
+            // Validate it's parseable as a Configuration before overwriting
+            try
+            {
+                System.Text.Json.JsonSerializer.Deserialize<Configuration>(backupJson);
+            }
+            catch
+            {
+                MessageBox.Show("The selected file is not a valid MosaicTools backup.",
+                    "Restore Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            File.WriteAllText(Configuration.SettingsPath, backupJson);
+            Logger.Trace($"Settings restored from {ofd.FileName}");
+            ShowStatusToast("Settings restored — reloading...", 2000);
+
+            // Reload with restored settings
+            BeginInvoke(ReloadApp);
+        }
+        catch (Exception ex)
+        {
+            Logger.Trace($"Restore failed: {ex.Message}");
+            ShowStatusToast($"Restore failed: {ex.Message}", 5000);
+        }
     }
 
     private void ExitApp()
